@@ -420,6 +420,8 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   const fontWeightBold = settings?.fontWeightBold ?? 700;
   const lineHeight = 1 + (settings?.linePadding ?? 0) / 10;
   const minimumContrastRatio = settings?.minimumContrastRatio ?? 1;
+  const allowTransparency =
+    settings?.allowTransparency ?? performanceConfig.options.allowTransparency;
   const scrollOnUserInput = shouldEnableNativeUserInputAutoScroll(settings);
   const smoothScrollDuration = settings?.smoothScrolling
     ? performanceConfig.options.smoothScrollDuration
@@ -454,6 +456,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     ignoreBracketedPasteMode: settings?.disableBracketedPaste ?? performanceConfig.options.ignoreBracketedPasteMode,
     // Rescale glyphs that would visually overlap into the next cell (CJK compliance)
     rescaleOverlappingGlyphs: true,
+    // After the performanceConfig spread so the user setting wins over the
+    // platform default.
+    allowTransparency,
     fontSize: effectiveFontSize,
     fontFamily,
     fontWeight: fontWeight as
