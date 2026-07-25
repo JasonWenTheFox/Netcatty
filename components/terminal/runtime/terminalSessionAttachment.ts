@@ -68,6 +68,8 @@ import {
 import {
   FLOW_HIGH_WATER_MARK,
   FLOW_LOW_WATER_MARK,
+  LOCAL_FLOW_HIGH_WATER_MARK,
+  LOCAL_FLOW_LOW_WATER_MARK,
   XTERM_WRITE_CALLBACK_BATCH_BYTES,
   XTERM_WRITE_CALLBACK_FAST_PATH_MAX_BYTES,
 } from "./terminalFlowConstants";
@@ -373,9 +375,24 @@ export const getFlowController = (
 ): OutputFlowController => {
   let controller = terminalFlowControllers.get(term);
   if (!controller) {
+    // A local shell needs no output back-pressure: there is no network to
+    // overwhelm, and the source (a local process) blocks on its own write
+    // when the pipe fills. The 1 MB watermark meant for SSH otherwise pauses
+    // the PTY several times a second under a full-screen animated TUI, which
+    // throttles its frame loop far below what the renderer can paint. Give
+    // local sessions a much higher ceiling so the pause is rare; SSH keeps the
+    // tight default. The ceiling still bounds memory — it does not disable
+    // back-pressure, only relaxes it where a flood cannot originate.
+    const isLocal = (ctx.hostRef?.current ?? ctx.host)?.protocol === "local";
+    const highWaterMark = isLocal
+      ? Math.max(FLOW_HIGH_WATER_MARK, LOCAL_FLOW_HIGH_WATER_MARK)
+      : FLOW_HIGH_WATER_MARK;
+    const lowWaterMark = isLocal
+      ? Math.max(FLOW_LOW_WATER_MARK, LOCAL_FLOW_LOW_WATER_MARK)
+      : FLOW_LOW_WATER_MARK;
     controller = createOutputFlowController({
-      highWaterMark: FLOW_HIGH_WATER_MARK,
-      lowWaterMark: FLOW_LOW_WATER_MARK,
+      highWaterMark,
+      lowWaterMark,
       onPause: () => {
         const id = ctx.sessionRef.current;
         if (id) ctx.terminalBackend.setSessionFlowPaused?.(id, true);
