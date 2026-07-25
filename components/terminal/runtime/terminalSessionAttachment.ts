@@ -47,7 +47,7 @@ import {
   resetTerminalSyncBlockFilter,
 } from "./terminalSyncBlockFilter";
 import { appendEraseScrollbackAfterFullErases } from "../clearTerminalViewport";
-import { apportionFrameGateIngress, collapseAndSplit } from "./terminalFrameGate";
+import { apportionFrameGateIngress, collapseAndSplit, makesFullRepaint } from "./terminalFrameGate";
 import {
   type CoalescedTerminalWriteOptions,
   enqueueCoalescedTerminalWrite,
@@ -470,8 +470,21 @@ export const writeTerminalLine = (
  * instead of letting the backlog (and the latency riding behind it) grow.
  */
 const FRAME_GATE_FORWARD_BACKLOG = 512 * 1024;
-/** Retry cadence for draining the gate's held buffer when the backlog clears. */
+/** Retry cadence for draining held *complete* output when the backlog clears. */
 const FRAME_GATE_FLUSH_MS = 8;
+/**
+ * Fail-open ceiling for the held buffer. Releasing at once past this keeps the
+ * gate from withholding output unboundedly and, kept below the SSH flow
+ * watermark, avoids deadlocking on a frame larger than that watermark (the
+ * backend would pause before the withheld closer could arrive).
+ */
+const FRAME_GATE_MAX_HELD_BYTES = 512 * 1024;
+/**
+ * How long a lone trailing partial (an opener with no closer) may be held before
+ * it is released to xterm. Long enough not to fire during normal frame assembly,
+ * short enough that a process killed mid-frame does not leave its prompt hidden.
+ */
+const FRAME_GATE_PARTIAL_FAILOPEN_MS = 200;
 
 type FrameGateState = {
   buffer: string;
@@ -520,10 +533,13 @@ const drainFrameGate = (
   }
   if (!state.buffer) return;
 
-  // A real full-screen repaint writes at least one byte per cell; require the
-  // superseding frame to clear that bar before dropping its predecessor.
-  const minRepaint = Math.max(0, term.cols * term.rows);
-  const { complete, partial, dropped } = collapseAndSplit(state.buffer, minRepaint);
+  // Drop a frame only when its successor demonstrably repaints the whole
+  // viewport (proven by simulating the writes and counting covered cells), never
+  // on raw payload length, which SGR escapes inflate.
+  const { complete, partial, dropped } = collapseAndSplit(
+    state.buffer,
+    (content) => makesFullRepaint(content, term.cols, term.rows),
+  );
 
   // Apportion the buffered ingress across forwarded / dropped / held so the
   // backend is acknowledged in its own units, not rendered-string lengths.
@@ -557,15 +573,39 @@ const drainFrameGate = (
     }
   }
 
-  // Only a clearing backlog can release held *complete* output, so poll for it.
-  // A lone trailing partial can only be completed by new session data — which
-  // calls drainFrameGate itself — so it must never schedule a timer, or a
-  // session stalled mid-frame would busy-poll indefinitely.
-  if (heldComplete && state.flushTimer === undefined) {
+  if (!state.buffer) return;
+
+  // Fail-open: never withhold output indefinitely. A held buffer past the cap
+  // (e.g. a frame larger than the SSH flow watermark, which would otherwise
+  // deadlock) is released at once.
+  if (state.buffer.length >= FRAME_GATE_MAX_HELD_BYTES) {
+    forwardSessionData(ctx, term, state.buffer, state.ingress, state.meta);
+    state.buffer = "";
+    state.ingress = 0;
+    return;
+  }
+
+  // Held *complete* output is released by a clearing backlog, so poll quickly.
+  // A lone trailing partial can only be completed by new session data (which
+  // calls drainFrameGate itself); poll it only on a longer one-shot that
+  // fail-opens if it fires — so a process killed mid-frame never leaves its
+  // prompt hidden, yet a stalled session never busy-polls.
+  if (state.flushTimer === undefined) {
+    const delay = heldComplete ? FRAME_GATE_FLUSH_MS : FRAME_GATE_PARTIAL_FAILOPEN_MS;
     state.flushTimer = setTimeout(() => {
       state.flushTimer = undefined;
-      drainFrameGate(ctx, term);
-    }, FRAME_GATE_FLUSH_MS);
+      if (heldComplete) {
+        drainFrameGate(ctx, term);
+        return;
+      }
+      // Fired with no intervening drain: the partial is stuck — release it.
+      const stuck = getFrameGateState(term);
+      if (stuck.buffer) {
+        forwardSessionData(ctx, term, stuck.buffer, stuck.ingress, stuck.meta);
+        stuck.buffer = "";
+        stuck.ingress = 0;
+      }
+    }, delay);
   }
 };
 

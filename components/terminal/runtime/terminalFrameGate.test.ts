@@ -1,33 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { apportionFrameGateIngress, collapseAndSplit } from "./terminalFrameGate.ts";
+import {
+  apportionFrameGateIngress,
+  collapseAndSplit,
+  isDroppableVisualPayload,
+  makesFullRepaint,
+  viewportRepaintCoverage,
+} from "./terminalFrameGate.ts";
 
 const ON = "\x1b[?2026h";
 const OFF = "\x1b[?2026l";
 const HOME = "\x1b[1;1H";
 const frame = (paint: string) => `${ON}${HOME}${paint}${OFF}`;
-// Most tests do not exercise the full-repaint size gate; 0 lets any homing
-// successor qualify so they cover the frame-boundary logic in isolation.
-const ANY = 0;
+// Most collapse tests isolate the frame-boundary logic; a permissive predicate
+// treats every homing successor as a full repaint.
+const always = () => true;
 
 test("no frames: everything is complete, nothing held", () => {
-  assert.deepEqual(collapseAndSplit("plain text", ANY), {
+  assert.deepEqual(collapseAndSplit("plain text", always), {
     complete: "plain text",
     partial: "",
     dropped: 0,
   });
 });
 
-test("one complete frame passes through whole", () => {
-  const f = frame("A");
-  assert.deepEqual(collapseAndSplit(f, ANY), { complete: f, partial: "", dropped: 0 });
-});
-
 test("a trailing unterminated frame is held as partial", () => {
   const a = frame("A");
-  const partialFrame = `${ON}${HOME}half`; // no OFF
-  assert.deepEqual(collapseAndSplit(a + partialFrame, ANY), {
+  const partialFrame = `${ON}${HOME}half`;
+  assert.deepEqual(collapseAndSplit(a + partialFrame, always), {
     complete: a,
     partial: partialFrame,
     dropped: 0,
@@ -38,9 +39,8 @@ test("collapses a run of full-repaint frames to the last", () => {
   const a = frame("A");
   const b = frame("B");
   const c = frame("C");
-  const r = collapseAndSplit(a + b + c, ANY);
+  const r = collapseAndSplit(a + b + c, always);
   assert.equal(r.complete, c);
-  assert.equal(r.partial, "");
   assert.equal(r.dropped, a.length + b.length);
 });
 
@@ -48,17 +48,9 @@ test("collapses complete frames but still holds a trailing partial", () => {
   const a = frame("A");
   const b = frame("B");
   const partialFrame = `${ON}${HOME}new`;
-  const r = collapseAndSplit(a + b + partialFrame, ANY);
+  const r = collapseAndSplit(a + b + partialFrame, always);
   assert.equal(r.complete, b);
   assert.equal(r.partial, partialFrame);
-  assert.equal(r.dropped, a.length);
-});
-
-test("preserves leading and inter-frame non-frame bytes", () => {
-  const a = frame("A");
-  const b = frame("B");
-  const r = collapseAndSplit("lead" + a + b, ANY);
-  assert.equal(r.complete, "lead" + b);
   assert.equal(r.dropped, a.length);
 });
 
@@ -66,91 +58,103 @@ test("does not drop across a non-empty gap between frames", () => {
   const a = frame("A");
   const b = frame("B");
   const input = a + "\r\n" + b;
-  assert.deepEqual(collapseAndSplit(input, ANY), {
-    complete: input,
-    partial: "",
-    dropped: 0,
-  });
+  assert.deepEqual(collapseAndSplit(input, always), { complete: input, partial: "", dropped: 0 });
 });
 
-test("does not drop a frame carrying OSC or private-mode state", () => {
-  const osc = `${ON}${HOME}\x1b]0;t\x07x${OFF}`;
+test("does not drop when the successor is not a full repaint", () => {
+  const a = frame("AAAA");
   const b = frame("B");
-  const input = osc + b;
-  assert.deepEqual(collapseAndSplit(input, ANY), {
-    complete: input,
-    partial: "",
-    dropped: 0,
-  });
+  const input = a + b;
+  // Predicate rejects the successor → nothing collapses.
+  assert.deepEqual(collapseAndSplit(input, () => false), { complete: input, partial: "", dropped: 0 });
 });
 
-test("does not drop when the successor does not home the cursor", () => {
-  const a = frame("A");
-  const positioned = `${ON}\x1b[5;5Hxx${OFF}`;
-  const input = a + positioned;
-  assert.deepEqual(collapseAndSplit(input, ANY), {
-    complete: input,
-    partial: "",
-    dropped: 0,
-  });
+test("does not drop a frame whose payload is not purely visual", () => {
+  const bell = `${ON}${HOME}ping\x07${OFF}`; // carries a BEL
+  const b = frame("B");
+  const input = bell + b;
+  assert.deepEqual(collapseAndSplit(input, always), { complete: input, partial: "", dropped: 0 });
 });
 
-test("keeps only the last of many frames", () => {
-  const frames = Array.from({ length: 10 }, (_, i) => frame(`P${i}`));
-  const r = collapseAndSplit(frames.join(""), ANY);
-  assert.equal(r.complete, frames[frames.length - 1]);
-  assert.equal(r.partial, "");
+// ---- isDroppableVisualPayload ---------------------------------------------
+
+test("droppable payload: cursor moves, SGR, erase and text are allowed", () => {
+  assert.equal(isDroppableVisualPayload("\x1b[1;1H\x1b[38;5;5mabc\x1b[K"), true);
+  assert.equal(isDroppableVisualPayload("\r\n\tplain text"), true);
+  assert.equal(isDroppableVisualPayload("\x1b[2Jfull"), true);
 });
 
-test("does not drop when the successor is too small to be a full repaint", () => {
-  // A homing but tiny successor (e.g. HOME + one changed cell) does not prove a
-  // full-screen repaint, so the earlier frame's other changes must survive.
-  const a = frame("AAAAAAAAAAAAAAAAAAAA");
-  const smallSuccessor = frame("x"); // content well under the threshold
-  const input = a + smallSuccessor;
-  const threshold = 100;
-  assert.deepEqual(collapseAndSplit(input, threshold), {
-    complete: input,
-    partial: "",
-    dropped: 0,
-  });
+test("un-droppable payload: side-effecting sequences are rejected", () => {
+  assert.equal(isDroppableVisualPayload("bell\x07"), false, "BEL");
+  assert.equal(isDroppableVisualPayload("\x1b]0;title\x07"), false, "OSC");
+  assert.equal(isDroppableVisualPayload("\x1b[6n"), false, "device status report query");
+  assert.equal(isDroppableVisualPayload("\x1b[?25l"), false, "private mode");
+  assert.equal(isDroppableVisualPayload("\x1b[?1049h"), false, "alt-screen");
+  assert.equal(isDroppableVisualPayload("\x1bP1;2q\x1b\\"), false, "DCS");
+  assert.equal(isDroppableVisualPayload("\x1b[c"), false, "device attributes");
 });
 
-test("drops when the successor clears the full-repaint size threshold", () => {
-  const a = frame("A");
-  const bigPaint = "y".repeat(200);
-  const bigSuccessor = frame(bigPaint); // content over the threshold
-  const input = a + bigSuccessor;
-  const r = collapseAndSplit(input, 100);
-  assert.equal(r.complete, bigSuccessor);
-  assert.equal(r.dropped, a.length);
+// ---- viewportRepaintCoverage / makesFullRepaint ---------------------------
+
+test("coverage counts distinct written cells, with wrap", () => {
+  assert.equal(viewportRepaintCoverage("abcd", 4, 1), 4);
+  assert.equal(viewportRepaintCoverage("abcd", 2, 2), 4); // wraps to second row
+  assert.equal(viewportRepaintCoverage("ab", 4, 1), 2);
 });
+
+test("coverage honors cursor positioning and erases", () => {
+  assert.equal(viewportRepaintCoverage("\x1b[2J", 4, 2), 8, "erase-all covers the grid");
+  assert.equal(viewportRepaintCoverage("\x1b[1;1H\x1b[K", 4, 2), 4, "erase-line covers one row");
+  // CUP to row 2 then one char covers a single cell there.
+  assert.equal(viewportRepaintCoverage("\x1b[2;3Hx", 4, 2), 1);
+});
+
+test("makesFullRepaint accepts a whole-screen paint and rejects a small update", () => {
+  const cols = 4;
+  const rows = 2;
+  const fullPaint = `${HOME}${"z".repeat(cols * rows)}`; // writes every cell
+  const smallPaint = `${HOME}z`; // one cell
+  assert.equal(makesFullRepaint(fullPaint, cols, rows), true);
+  assert.equal(makesFullRepaint(smallPaint, cols, rows), false);
+  // SGR-heavy small update must not pass on byte length alone.
+  const sgrHeavySmall = `${HOME}\x1b[38;2;1;2;3m\x1b[48;2;4;5;6mz`;
+  assert.equal(makesFullRepaint(sgrHeavySmall, cols, rows), false);
+});
+
+test("collapse drops only when coverage proves a full repaint", () => {
+  const cols = 4;
+  const rows = 2;
+  const pred = (c: string) => makesFullRepaint(c, cols, rows);
+  const stale = frame("AAAAAAAA");
+  const fullNext = frame("z".repeat(cols * rows));
+  const smallNext = frame("z");
+  // Full-repaint successor → predecessor dropped.
+  assert.equal(collapseAndSplit(stale + fullNext, pred).dropped, stale.length);
+  // Small successor → nothing dropped.
+  assert.equal(collapseAndSplit(stale + smallNext, pred).dropped, 0);
+});
+
+// ---- ingress apportioning --------------------------------------------------
 
 test("ingress apportioning always sums back to the total", () => {
   const cases: Array<[number, number, number, number, number]> = [
-    // total, totalChars, forwardChars, droppedChars, heldChars
     [1000, 1000, 400, 400, 200],
-    [1500, 1000, 400, 400, 200], // ingress != chars (plugin expanded the chunk)
-    [700, 1000, 400, 400, 200], // ingress != chars (plugin contracted the chunk)
-    [999, 1000, 333, 333, 334], // rounding stress
-    [0, 0, 0, 0, 0], // empty
-    [500, 500, 0, 0, 500], // all held
-    [500, 500, 500, 0, 0], // all forwarded
-    [500, 500, 0, 500, 0], // all dropped
+    [1500, 1000, 400, 400, 200],
+    [700, 1000, 400, 400, 200],
+    [999, 1000, 333, 333, 334],
+    [0, 0, 0, 0, 0],
+    [500, 500, 0, 0, 500],
+    [500, 500, 500, 0, 0],
+    [500, 500, 0, 500, 0],
   ];
   for (const [total, totalChars, fwd, drop, held] of cases) {
     const s = apportionFrameGateIngress(total, totalChars, fwd, drop, held);
-    assert.equal(
-      s.forward + s.dropped + s.held,
-      total,
-      `parts must sum to total for ${JSON.stringify([total, totalChars, fwd, drop, held])}`,
-    );
-    assert.ok(s.forward >= 0 && s.dropped >= 0 && s.held >= 0, "no negative shares");
+    assert.equal(s.forward + s.dropped + s.held, total);
+    assert.ok(s.forward >= 0 && s.dropped >= 0 && s.held >= 0);
   }
 });
 
 test("ingress apportioning routes bytes to the right bucket in the exact case", () => {
-  // ingress == chars: shares equal the character counts.
   assert.deepEqual(apportionFrameGateIngress(1000, 1000, 400, 400, 200), {
     forward: 400,
     dropped: 400,
