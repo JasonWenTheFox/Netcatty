@@ -47,7 +47,7 @@ import {
   resetTerminalSyncBlockFilter,
 } from "./terminalSyncBlockFilter";
 import { appendEraseScrollbackAfterFullErases } from "../clearTerminalViewport";
-import { collapseAndSplit } from "./terminalFrameGate";
+import { apportionFrameGateIngress, collapseAndSplit } from "./terminalFrameGate";
 import {
   type CoalescedTerminalWriteOptions,
   enqueueCoalescedTerminalWrite,
@@ -475,6 +475,14 @@ const FRAME_GATE_FLUSH_MS = 8;
 
 type FrameGateState = {
   buffer: string;
+  /**
+   * Flow-control ingress bytes attributable to `buffer`. Tracked separately
+   * from `buffer.length` because plugin processing can make a chunk's ingress
+   * differ from its rendered length; it is apportioned exactly (via complements)
+   * as bytes are forwarded, dropped or held so the backend is neither over- nor
+   * under-acknowledged.
+   */
+  ingress: number;
   meta?: TerminalSessionDataMeta;
   flushTimer?: ReturnType<typeof setTimeout>;
 };
@@ -483,7 +491,7 @@ const frameGateStates = new WeakMap<XTerm, FrameGateState>();
 const getFrameGateState = (term: XTerm): FrameGateState => {
   let state = frameGateStates.get(term);
   if (!state) {
-    state = { buffer: "" };
+    state = { buffer: "", ingress: 0 };
     frameGateStates.set(term, state);
   }
   return state;
@@ -512,22 +520,48 @@ const drainFrameGate = (
   }
   if (!state.buffer) return;
 
-  const { complete, partial, dropped } = collapseAndSplit(state.buffer);
-  state.buffer = partial;
-  if (dropped > 0) acknowledgeDroppedTerminalDisplayBytes(ctx, dropped);
+  // A real full-screen repaint writes at least one byte per cell; require the
+  // superseding frame to clear that bar before dropping its predecessor.
+  const minRepaint = Math.max(0, term.cols * term.rows);
+  const { complete, partial, dropped } = collapseAndSplit(state.buffer, minRepaint);
 
+  // Apportion the buffered ingress across forwarded / dropped / held so the
+  // backend is acknowledged in its own units, not rendered-string lengths.
+  const {
+    forward: ingressComplete,
+    dropped: ingressDropped,
+    held: ingressPartial,
+  } = apportionFrameGateIngress(
+    state.ingress,
+    state.buffer.length,
+    complete.length,
+    dropped,
+    partial.length,
+  );
+
+  state.buffer = partial;
+  state.ingress = ingressPartial;
+  if (dropped > 0) acknowledgeDroppedTerminalDisplayBytes(ctx, ingressDropped);
+
+  let heldComplete = false;
   if (complete) {
     const backlog = getFlowControllerForTerm(term)?.pendingBytes() ?? 0;
     if (backlog < FRAME_GATE_FORWARD_BACKLOG) {
-      forwardSessionData(ctx, term, complete, complete.length, state.meta);
+      forwardSessionData(ctx, term, complete, ingressComplete, state.meta);
     } else {
       // xterm is still behind: keep the collapsed complete run buffered ahead of
       // the trailing partial so newer frames supersede it rather than queue up.
       state.buffer = complete + state.buffer;
+      state.ingress += ingressComplete;
+      heldComplete = true;
     }
   }
 
-  if (state.buffer && state.flushTimer === undefined) {
+  // Only a clearing backlog can release held *complete* output, so poll for it.
+  // A lone trailing partial can only be completed by new session data — which
+  // calls drainFrameGate itself — so it must never schedule a timer, or a
+  // session stalled mid-frame would busy-poll indefinitely.
+  if (heldComplete && state.flushTimer === undefined) {
     state.flushTimer = setTimeout(() => {
       state.flushTimer = undefined;
       drainFrameGate(ctx, term);
@@ -556,6 +590,7 @@ export const writeSessionData = (
   }
   const gate = getFrameGateState(term);
   gate.buffer += data;
+  gate.ingress += ingressBytes;
   gate.meta = meta;
   drainFrameGate(ctx, term);
 };

@@ -63,14 +63,50 @@ type Frame = { start: number; end: number; content: string };
  */
 export type FrameGateSplit = { complete: string; partial: string; dropped: number };
 
+/** Exact three-way split of buffered ingress bytes; parts always sum to `total`. */
+export type FrameGateIngressSplit = { forward: number; dropped: number; held: number };
+
+/**
+ * Apportion `total` flow-control ingress bytes across the forwarded, dropped and
+ * still-held parts of a buffer, by character share. Each share is the exact
+ * complement of the rounded parts before it, so the three always sum back to
+ * `total` regardless of rounding — the backend is never over- or
+ * under-acknowledged even when a chunk's ingress differs from its length.
+ */
+export const apportionFrameGateIngress = (
+  total: number,
+  totalChars: number,
+  forwardChars: number,
+  droppedChars: number,
+  heldChars: number,
+): FrameGateIngressSplit => {
+  const held = totalChars > 0 ? Math.round((total * heldChars) / totalChars) : 0;
+  const leaving = total - held;
+  const leavingChars = forwardChars + droppedChars;
+  const forward = leavingChars > 0 ? Math.round((leaving * forwardChars) / leavingChars) : 0;
+  const dropped = leaving - forward;
+  return { forward, dropped, held };
+};
+
 /**
  * Split `buffer` into its complete-frame prefix and a trailing incomplete
  * frame, collapsing runs of superseded full-repaint frames in the prefix down
- * to the last. A frame is dropped only when it is a pure visual repaint and the
- * frame directly after it homes the cursor (so it overwrites the whole screen).
+ * to the last.
+ *
+ * A frame is dropped only when it is a pure visual repaint AND the frame
+ * directly after it *demonstrably repaints the whole screen*: it homes the
+ * cursor and carries at least `minSuccessorRepaintBytes` of payload. Homing
+ * alone is not enough — DEC 2026 only makes an update atomic, it does not imply
+ * a full repaint, and a valid incremental successor (`HOME` + one changed cell)
+ * would otherwise discard the earlier frame's changes elsewhere. A real
+ * full-screen repaint writes at least one byte per cell, so a viewport-sized
+ * threshold (`cols * rows`) separates it from a small incremental update.
  * Everything the transform is unsure about is preserved verbatim.
  */
-export const collapseAndSplit = (buffer: string): FrameGateSplit => {
+export const collapseAndSplit = (
+  buffer: string,
+  minSuccessorRepaintBytes: number,
+): FrameGateSplit => {
   // Locate every complete frame; note where an unterminated trailing frame begins.
   const frames: Frame[] = [];
   let cursor = 0;
@@ -106,6 +142,7 @@ export const collapseAndSplit = (buffer: string): FrameGateSplit => {
       next.start === cur.end
       && isPureVisualPayload(cur.content)
       && startsWithCursorHome(next.content)
+      && next.content.length >= minSuccessorRepaintBytes
     ) {
       drop[i] = true;
     }
