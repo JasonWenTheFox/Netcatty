@@ -47,6 +47,7 @@ import {
   resetTerminalSyncBlockFilter,
 } from "./terminalSyncBlockFilter";
 import { appendEraseScrollbackAfterFullErases } from "../clearTerminalViewport";
+import { collapseAndSplit } from "./terminalFrameGate";
 import {
   type CoalescedTerminalWriteOptions,
   enqueueCoalescedTerminalWrite,
@@ -462,7 +463,104 @@ export const writeTerminalLine = (
   flushTerminalWritesForBackgroundOutput(term);
 };
 
+/**
+ * Backlog (unacknowledged bytes awaiting xterm) below which the frame gate
+ * forwards frames straight through — a few frames deep, enough to keep xterm
+ * fed at full rate without starving. Above it the gate drops superseded frames
+ * instead of letting the backlog (and the latency riding behind it) grow.
+ */
+const FRAME_GATE_FORWARD_BACKLOG = 512 * 1024;
+/** Retry cadence for draining the gate's held buffer when the backlog clears. */
+const FRAME_GATE_FLUSH_MS = 8;
+
+type FrameGateState = {
+  buffer: string;
+  meta?: TerminalSessionDataMeta;
+  flushTimer?: ReturnType<typeof setTimeout>;
+};
+const frameGateStates = new WeakMap<XTerm, FrameGateState>();
+
+const getFrameGateState = (term: XTerm): FrameGateState => {
+  let state = frameGateStates.get(term);
+  if (!state) {
+    state = { buffer: "" };
+    frameGateStates.set(term, state);
+  }
+  return state;
+};
+
+export const resetFrameGate = (term: XTerm): void => {
+  const state = frameGateStates.get(term);
+  if (state?.flushTimer !== undefined) clearTimeout(state.flushTimer);
+  frameGateStates.delete(term);
+};
+
+/**
+ * Drain as much of the gate's held buffer as the current backlog allows,
+ * collapsing superseded frames first. Held frames that cannot be forwarded yet
+ * stay buffered so the next arrival (or flush) collapses them against newer
+ * ones instead of letting them pile up.
+ */
+const drainFrameGate = (
+  ctx: TerminalSessionStartersContext,
+  term: XTerm,
+): void => {
+  const state = getFrameGateState(term);
+  if (state.flushTimer !== undefined) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = undefined;
+  }
+  if (!state.buffer) return;
+
+  const { complete, partial, dropped } = collapseAndSplit(state.buffer);
+  state.buffer = partial;
+  if (dropped > 0) acknowledgeDroppedTerminalDisplayBytes(ctx, dropped);
+
+  if (complete) {
+    const backlog = getFlowControllerForTerm(term)?.pendingBytes() ?? 0;
+    if (backlog < FRAME_GATE_FORWARD_BACKLOG) {
+      forwardSessionData(ctx, term, complete, complete.length, state.meta);
+    } else {
+      // xterm is still behind: keep the collapsed complete run buffered ahead of
+      // the trailing partial so newer frames supersede it rather than queue up.
+      state.buffer = complete + state.buffer;
+    }
+  }
+
+  if (state.buffer && state.flushTimer === undefined) {
+    state.flushTimer = setTimeout(() => {
+      state.flushTimer = undefined;
+      drainFrameGate(ctx, term);
+    }, FRAME_GATE_FLUSH_MS);
+  }
+};
+
+/**
+ * Entry point for PTY output. When a full-screen animation is in flight (a DEC
+ * 2026 frame is present or already buffered) it runs through the frame gate,
+ * which caps the display/keyboard latency by dropping superseded frames. All
+ * other output takes the direct path unchanged.
+ */
 export const writeSessionData = (
+  ctx: TerminalSessionStartersContext,
+  term: XTerm,
+  data: string,
+  ingressBytes: number = data.length,
+  meta?: TerminalSessionDataMeta,
+) => {
+  const state = frameGateStates.get(term);
+  const engaged = (state && state.buffer.length > 0) || data.includes("\x1b[?2026h");
+  if (!engaged) {
+    forwardSessionData(ctx, term, data, ingressBytes, meta);
+    return;
+  }
+  const gate = getFrameGateState(term);
+  gate.buffer += data;
+  gate.meta = meta;
+  drainFrameGate(ctx, term);
+};
+
+const forwardSessionData = (
   ctx: TerminalSessionStartersContext,
   term: XTerm,
   data: string,
@@ -807,6 +905,7 @@ export const releaseTerminalFlowBeforeHibernate = (
   setTerminalWriteCoalescerFlushGate(term);
   pendingTimestampSecondByTerm.delete(term);
   resetDeferredTerminalWriteAck(term);
+  resetFrameGate(term);
   terminalFlowControllers.delete(term);
 };
 
@@ -855,6 +954,7 @@ export const attachSessionToTerminal = (
   teardownTerminalOutputPipeline(ctx, term, id, flow);
   flushTerminalWriteCoalescer(term);
   resetTerminalSyncBlockFilter(term);
+  resetFrameGate(term);
   resetTerminalLineTimestamps(term);
   resetTerminalOutputPressure(term);
   ctx.onSessionAttached?.(id);
