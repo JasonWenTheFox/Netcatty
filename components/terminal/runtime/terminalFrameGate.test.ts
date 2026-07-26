@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   apportionFrameGateIngress,
   collapseAndSplit,
+  endsWithSyncOpenerPrefix,
   isDroppableVisualPayload,
   makesFullRepaint,
   viewportRepaintCoverage,
@@ -160,4 +161,24 @@ test("ingress apportioning routes bytes to the right bucket in the exact case", 
     dropped: 400,
     held: 200,
   });
+});
+
+test("ED3 (clear scrollback) makes a frame un-droppable", () => {
+  assert.equal(isDroppableVisualPayload("\x1b[1;1H\x1b[2Jrepaint"), true, "ED2 viewport clear is fine");
+  assert.equal(isDroppableVisualPayload("\x1b[1;1H\x1b[3Jrepaint"), false, "ED3 clears scrollback");
+});
+
+test("holds back a split sync opener as partial", () => {
+  // Buffer ends mid-opener (ESC[?20); it must be held, not forwarded.
+  const r = collapseAndSplit("hello\x1b[?20", always);
+  assert.equal(r.complete, "hello");
+  assert.equal(r.partial, "\x1b[?20");
+  assert.equal(r.dropped, 0);
+});
+
+test("endsWithSyncOpenerPrefix detects a split opener tail", () => {
+  assert.equal(endsWithSyncOpenerPrefix("abc\x1b[?2026"), true);
+  assert.equal(endsWithSyncOpenerPrefix("abc\x1b"), true);
+  assert.equal(endsWithSyncOpenerPrefix("abc\x1b[?2026h"), false, "complete opener is not a prefix hold");
+  assert.equal(endsWithSyncOpenerPrefix("plain"), false);
 });

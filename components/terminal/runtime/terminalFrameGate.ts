@@ -32,6 +32,20 @@
 const SYNC_ON = "\x1b[?2026h";
 const SYNC_OFF = "\x1b[?2026l";
 
+/** Length of a trailing run of `s` that is a proper (non-empty) prefix of the
+ * sync opener — i.e. a `ESC[?2026h` split at a chunk boundary. 0 when none. */
+const trailingSyncOpenerPrefixLen = (s: string): number => {
+  const max = Math.min(SYNC_ON.length - 1, s.length);
+  for (let k = max; k >= 1; k--) {
+    if (s.endsWith(SYNC_ON.slice(0, k))) return k;
+  }
+  return 0;
+};
+
+/** True when `s` ends with a split sync opener (a proper prefix of `ESC[?2026h`). */
+export const endsWithSyncOpenerPrefix = (s: string): boolean =>
+  trailingSyncOpenerPrefixLen(s) > 0;
+
 /** CSI final bytes that only move the cursor, set SGR, or erase. */
 const DROPPABLE_CSI_FINALS = new Set([
   "A", "B", "C", "D", "E", "F", "G", "H", "f", // cursor moves / positioning
@@ -59,10 +73,12 @@ export const isDroppableVisualPayload = (content: string): boolean => {
       if (content[i + 1] !== "[") return false; // only CSI; reject OSC/DCS/APC/single-char ESC
       let j = i + 2;
       let priv = false;
+      let params = "";
       while (j < content.length) {
         const c = content.charCodeAt(j);
         if (c >= 0x30 && c <= 0x3f) {
           if (c === 0x3c || c === 0x3d || c === 0x3e || c === 0x3f) priv = true; // < = > ?
+          else params += content[j];
           j++;
         } else {
           break;
@@ -74,6 +90,10 @@ export const isDroppableVisualPayload = (content: string): boolean => {
       const final = content[j];
       if (final === undefined) return false; // incomplete CSI
       if (priv || !DROPPABLE_CSI_FINALS.has(final)) return false;
+      // `CSI 3 J` (ED3) clears the saved scrollback, not just the viewport — a
+      // side effect a repaint does not restore, so a frame carrying it is not
+      // droppable.
+      if (final === "J" && params.split(";").includes("3")) return false;
       i = j + 1;
       continue;
     }
@@ -216,6 +236,15 @@ export const collapseAndSplit = (
     const end = off + SYNC_OFF.length;
     frames.push({ start: on, end, content: buffer.slice(contentStart, off) });
     cursor = end;
+  }
+
+  // Hold back a trailing byte run that is a proper prefix of the sync opener, so
+  // an opener split across PTY chunks reunites with the next chunk instead of
+  // being forwarded and missed. Only when no unterminated frame already covers
+  // the tail.
+  if (partialStart === buffer.length) {
+    const holdLen = trailingSyncOpenerPrefixLen(buffer);
+    if (holdLen > 0) partialStart = buffer.length - holdLen;
   }
 
   const partial = buffer.slice(partialStart);

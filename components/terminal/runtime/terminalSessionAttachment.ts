@@ -47,7 +47,12 @@ import {
   resetTerminalSyncBlockFilter,
 } from "./terminalSyncBlockFilter";
 import { appendEraseScrollbackAfterFullErases } from "../clearTerminalViewport";
-import { apportionFrameGateIngress, collapseAndSplit, makesFullRepaint } from "./terminalFrameGate";
+import {
+  apportionFrameGateIngress,
+  collapseAndSplit,
+  endsWithSyncOpenerPrefix,
+  makesFullRepaint,
+} from "./terminalFrameGate";
 import {
   type CoalescedTerminalWriteOptions,
   enqueueCoalescedTerminalWrite,
@@ -510,9 +515,19 @@ const getFrameGateState = (term: XTerm): FrameGateState => {
   return state;
 };
 
-export const resetFrameGate = (term: XTerm): void => {
+export const resetFrameGate = (
+  term: XTerm,
+  onHeld?: (buffer: string, ingress: number) => void,
+): void => {
   const state = frameGateStates.get(term);
-  if (state?.flushTimer !== undefined) clearTimeout(state.flushTimer);
+  if (!state) return;
+  if (state.flushTimer !== undefined) clearTimeout(state.flushTimer);
+  // Never silently drop held output before its state is deleted: a reset racing
+  // an incomplete frame (hibernation, detach) would otherwise lose the buffered
+  // bytes and leave their ingress unacknowledged to the backend. The caller
+  // decides how to release it — forward it where a write context exists,
+  // acknowledge its ingress where only the backend is available.
+  if (state.buffer) onHeld?.(state.buffer, state.ingress);
   frameGateStates.delete(term);
 };
 
@@ -623,7 +638,12 @@ export const writeSessionData = (
   meta?: TerminalSessionDataMeta,
 ) => {
   const state = frameGateStates.get(term);
-  const engaged = (state && state.buffer.length > 0) || data.includes("\x1b[?2026h");
+  // Engage on a complete opener, on already-buffered output, or on a trailing
+  // split opener (`ESC[?2026h` cut across PTY chunks) so an aligned stream can
+  // never bypass the gate by landing the opener on a chunk boundary.
+  const engaged = (state && state.buffer.length > 0)
+    || data.includes("\x1b[?2026h")
+    || endsWithSyncOpenerPrefix(data);
   if (!engaged) {
     forwardSessionData(ctx, term, data, ingressBytes, meta);
     return;
@@ -980,7 +1000,14 @@ export const releaseTerminalFlowBeforeHibernate = (
   setTerminalWriteCoalescerFlushGate(term);
   pendingTimestampSecondByTerm.delete(term);
   resetDeferredTerminalWriteAck(term);
-  resetFrameGate(term);
+  // Only the backend is in scope here; acknowledge held ingress so hibernation
+  // does not leave the source paused on bytes that will never be written.
+  resetFrameGate(term, (_buffer, ingress) => {
+    if (ingress > 0) {
+      ackTerminalSessionFlow(backend, sessionId, ingress);
+      flushTerminalSessionFlowAck(sessionId);
+    }
+  });
   terminalFlowControllers.delete(term);
 };
 
@@ -1029,7 +1056,11 @@ export const attachSessionToTerminal = (
   teardownTerminalOutputPipeline(ctx, term, id, flow);
   flushTerminalWriteCoalescer(term);
   resetTerminalSyncBlockFilter(term);
-  resetFrameGate(term);
+  // A write context exists here, so flush any held output to xterm rather than
+  // dropping it (forwardSessionData also acknowledges its ingress).
+  resetFrameGate(term, (buffer, ingress) => {
+    forwardSessionData(ctx, term, buffer, ingress);
+  });
   resetTerminalLineTimestamps(term);
   resetTerminalOutputPressure(term);
   ctx.onSessionAttached?.(id);
