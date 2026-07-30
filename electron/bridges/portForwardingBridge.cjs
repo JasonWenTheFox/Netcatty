@@ -1248,18 +1248,26 @@ async function startPortForward(event, payload) {
       : useSshAgent === true
         ? undefined
         : await getAvailableAgentSocket(identityAgent, { hostname, port, username });
-    const systemAuthAgent = hasCertificate ? null : await prepareSystemSshAgentForAuth({
-      useSshAgent,
-      agentPublicKeys,
-      identityAgent,
-      identityFilePaths,
-      identitiesOnly,
-      addKeysToAgent,
-      useKeychain,
-      hostname,
-      port,
-      username,
-    }, "[PortForward]");
+    const {
+      buildFidoAwareAgentPrepOptions,
+      looksLikeSkOpenSshMaterial,
+    } = require("./sshAuthHelper.cjs");
+    const systemAuthAgent = hasCertificate ? null : await prepareSystemSshAgentForAuth(
+      buildFidoAwareAgentPrepOptions({
+        useSshAgent,
+        agentPublicKeys,
+        identityAgent,
+        identityFilePaths,
+        identitiesOnly,
+        addKeysToAgent,
+        useKeychain,
+        privateKey,
+        hostname,
+        port,
+        username,
+      }, sender),
+      "[PortForward]",
+    );
     const identityFile = !privateKey && !systemAuthAgent
       ? await loadFirstIdentityFileForAuth({
         sender,
@@ -1273,7 +1281,9 @@ async function startPortForward(event, payload) {
         },
       })
       : null;
-    const inlineKey = privateKey && !systemAuthAgent
+    const inlineKey = privateKey
+      && !systemAuthAgent
+      && !looksLikeSkOpenSshMaterial(privateKey)
       ? await preparePrivateKeyForAuth({
         sender,
         privateKey,

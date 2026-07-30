@@ -225,9 +225,13 @@ function createOpenConnectionApi(ctx) {
           const hasCertificate =
             typeof jump.certificate === "string" && jump.certificate.trim().length > 0;
 
+          const { buildFidoAwareAgentPrepOptions, looksLikeSkOpenSshMaterial } = require("../sshAuthHelper.cjs");
           const systemAuthAgent = hasCertificate
             ? null
-            : await prepareSystemSshAgentForAuth(jump, `[SFTP Chain] Hop ${i + 1}:`);
+            : await prepareSystemSshAgentForAuth(
+              buildFidoAwareAgentPrepOptions(jump, sender),
+              `[SFTP Chain] Hop ${i + 1}:`,
+            );
     
           const identityFile = !jump.privateKey && !systemAuthAgent
             ? await loadFirstIdentityFileForAuth({
@@ -244,7 +248,9 @@ function createOpenConnectionApi(ctx) {
               },
             })
             : null;
-          const inlineKey = jump.privateKey && !systemAuthAgent
+          const inlineKey = jump.privateKey
+            && !systemAuthAgent
+            && !looksLikeSkOpenSshMaterial(jump.privateKey)
             ? await preparePrivateKeyForAuth({
               sender,
               privateKey: jump.privateKey,
@@ -964,9 +970,13 @@ function createOpenConnectionApi(ctx) {
       let inlineKey = null;
       let systemAuthAgent = null;
       try {
+        const { buildFidoAwareAgentPrepOptions, looksLikeSkOpenSshMaterial } = require("../sshAuthHelper.cjs");
         systemAuthAgent = hasCertificate
           ? null
-          : await prepareSystemSshAgentForAuth(options, "[SFTP]");
+          : await prepareSystemSshAgentForAuth(
+            buildFidoAwareAgentPrepOptions(options, event.sender),
+            "[SFTP]",
+          );
         identityFile = !options.privateKey && !systemAuthAgent
           ? await loadFirstIdentityFileForAuth({
             sender: event.sender,
@@ -982,7 +992,9 @@ function createOpenConnectionApi(ctx) {
             },
           })
           : null;
-        inlineKey = options.privateKey && !systemAuthAgent
+        inlineKey = options.privateKey
+          && !systemAuthAgent
+          && !looksLikeSkOpenSshMaterial(options.privateKey)
           ? await preparePrivateKeyForAuth({
             sender: event.sender,
             privateKey: options.privateKey,

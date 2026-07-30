@@ -146,10 +146,8 @@ function handleAskpassClient(socket) {
         socket.end(`${JSON.stringify({ ok: false, error: "cancelled" })}\n`);
         return;
       }
-      // Touch prompts need empty success response (confirm only).
-      const response = kind === "touch" || kind === "confirm"
-        ? (result.response || "")
-        : (result.response || "");
+      // Touch/confirm: empty string is fine; PIN: return entered secret.
+      const response = kind === "pin" ? (result.response || "") : "";
       socket.end(`${JSON.stringify({ ok: true, response })}\n`);
     } catch (err) {
       socket.end(`${JSON.stringify({

@@ -159,15 +159,24 @@ main();
       return raw.toLowerCase().endsWith(".pub") ? raw : `${raw}.pub`;
     }
 
-    async function prepareEtSshAgentOptions(options) {
+    async function prepareEtSshAgentOptions(options, sender) {
+      const { buildFidoAwareAgentPrepOptions, resolvePreparedAgentSocket, isFidoSkAuthOptions } = require("../sshAuthHelper.cjs");
       const prepareOne = async (connectionOptions, logPrefix) => {
-        if (connectionOptions?.useSshAgent !== true) return connectionOptions;
-        await prepareSystemSshAgentForAuth(connectionOptions, logPrefix);
-        const socketPath = await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
+        const forceFido = isFidoSkAuthOptions(connectionOptions)
+          && connectionOptions.authMethod !== "password";
+        if (connectionOptions?.useSshAgent !== true && !forceFido) return connectionOptions;
+        const prepOptions = buildFidoAwareAgentPrepOptions(connectionOptions, sender);
+        const agent = await prepareSystemSshAgentForAuth(prepOptions, logPrefix);
+        const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
+          || await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
         if (!socketPath) {
-          throw new Error("System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.");
+          throw new Error(
+            forceFido
+              ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
+              : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+          );
         }
-        return { ...connectionOptions, _resolvedSshAgentSocket: socketPath };
+        return { ...connectionOptions, useSshAgent: true, _resolvedSshAgentSocket: socketPath };
       };
 
       const preparedTarget = await prepareOne(options, "[ET]");
@@ -1161,7 +1170,7 @@ main();
 
       let sshEnvironment;
       try {
-        const preparedOptions = await prepareEtSshAgentOptions(options);
+        const preparedOptions = await prepareEtSshAgentOptions(options, event?.sender);
         options = preparedOptions;
         sshEnvironment = prepareEtSshEnvironment(sessionId, preparedOptions);
       } catch (err) {
