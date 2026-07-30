@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { SK_ECDSA_NISTP256, SK_SSH_ED25519 } from "../../domain/fidoSsh.ts";
 import { detectKeyType, resolveImportedKeyType } from "./utils.ts";
@@ -48,8 +50,6 @@ test("resolveImportedKeyType keeps soft keys", () => {
 });
 
 test("KeychainManager handleImport uses material type not seeded draft type", () => {
-  const { readFileSync } = require("node:fs") as typeof import("node:fs");
-  const { join } = require("node:path") as typeof import("node:path");
   const source = readFileSync(join(import.meta.dirname, "../KeychainManager.tsx"), "utf8");
   // Must resolve from material; must not keep draftKey.type first (openImport seeds ED25519).
   assert.match(source, /resolveImportedKeyType/);
