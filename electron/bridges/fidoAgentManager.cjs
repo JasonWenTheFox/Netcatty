@@ -264,10 +264,9 @@ function installFidoAgentQuitHook() {
     try { shutdownFidoAgentSubsystem(); } catch { /* ignore */ }
   };
   // Terminal/auth often runs in a utilityProcess where `app` is unavailable.
-  // Always hook process lifetime so daemonized ssh-agent children do not leak.
+  // Use only the `exit` hook so we do not swallow SIGTERM/SIGINT default exit
+  // behavior (installing those handlers without process.exit leaves workers hung).
   process.once("exit", shutdown);
-  process.once("SIGTERM", shutdown);
-  process.once("SIGINT", shutdown);
   try {
     const { app } = require("electron");
     app.once("before-quit", shutdown);
