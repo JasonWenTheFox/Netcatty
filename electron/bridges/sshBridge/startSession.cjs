@@ -1019,12 +1019,11 @@ printf '%s\n' '${scanCompleteMarker}'`;
 
         let authAgent = null;
         // FIDO2 sk-* handles cannot be used as ssh2 software privateKeys.
+        // Detect only from key material (public/private text), not path names —
+        // path heuristics false-positive soft keys like id_mask.
         const isFidoSkAuth = looksLikeSkOpenSshMaterial(options.privateKey)
           || (Array.isArray(options.agentPublicKeys)
-            && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
-          || (Array.isArray(options.identityFilePaths)
-            && options.identityFilePaths.some((filePath) =>
-              typeof filePath === "string" && /_sk$|id_.*sk/i.test(filePath)));
+            && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)));
         const forceSystemAgentForFido = isFidoSkAuth && options.authMethod !== "password";
         const systemAuthAgent = (shouldPrepareSystemAgentForLogin(options) || forceSystemAgentForFido)
           ? await prepareSystemSshAgentForAuth({

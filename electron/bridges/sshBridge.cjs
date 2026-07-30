@@ -43,6 +43,7 @@ const {
   loadFirstIdentityFileForAuth,
   hasUserConfiguredKey,
   isPasswordProvided,
+  looksLikeSkOpenSshMaterial,
   PassphraseCancelledError,
   isPassphraseCancelledError,
 } = require("./sshAuthHelper.cjs");
@@ -612,9 +613,27 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
       const hasCertificate =
         typeof jump.certificate === "string" && jump.certificate.trim().length > 0;
 
+      const isJumpFidoSk = looksLikeSkOpenSshMaterial(jump.privateKey)
+        || (Array.isArray(jump.agentPublicKeys)
+          && jump.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)));
+      const forceJumpFidoAgent = isJumpFidoSk && jump.authMethod !== "password";
+
       const systemAuthAgent = hasCertificate
         ? null
-        : await prepareSystemSshAgentForAuth(jump, `[Chain] Hop ${i + 1}:`);
+        : await prepareSystemSshAgentForAuth({
+          ...jump,
+          useSshAgent: forceJumpFidoAgent ? true : jump.useSshAgent,
+          useFidoAgent: forceJumpFidoAgent || jump.useFidoAgent === true,
+          loadIdentityFilesIntoAgent: forceJumpFidoAgent || jump.loadIdentityFilesIntoAgent,
+          addKeysToAgent: jump.addKeysToAgent || (forceJumpFidoAgent ? "yes" : jump.addKeysToAgent),
+          resolveWebContents: () => {
+            try {
+              return sender && !sender.isDestroyed?.() ? sender : null;
+            } catch {
+              return null;
+            }
+          },
+        }, `[Chain] Hop ${i + 1}:`);
 
       const identityFile = !jump.privateKey && !systemAuthAgent
         ? await loadFirstIdentityFileForAuth({
@@ -641,7 +660,9 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           },
         })
         : null;
-      const inlineKey = jump.privateKey && !systemAuthAgent
+      const inlineKey = jump.privateKey
+        && !systemAuthAgent
+        && !looksLikeSkOpenSshMaterial(jump.privateKey)
         ? await preparePrivateKeyForAuth({
           sender,
           privateKey: jump.privateKey,

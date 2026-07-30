@@ -146,8 +146,6 @@ export const FidoPromptModal: React.FC<FidoPromptModalProps> = ({
             >
               {isSubmitting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
-              ) : isTouch ? (
-                t("fido.prompt.touchDone")
               ) : (
                 t("common.continue")
               )}

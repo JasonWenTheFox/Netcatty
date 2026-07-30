@@ -897,6 +897,15 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     });
     if (agent && ownedFidoAgent) {
       agent._netcattyOwnedFidoAgent = true;
+      // Soft lease: release when process is idle after a delay if no other
+      // acquires. Session teardown is best-effort; quit hook hard-kills.
+      agent._releaseNetcattyFidoAgent = () => {
+        try {
+          require("./fidoAgentManager.cjs").releaseFidoAgent();
+        } catch {
+          // ignore
+        }
+      };
     }
     return agent;
   } finally {

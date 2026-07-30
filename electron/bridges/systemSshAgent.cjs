@@ -147,7 +147,20 @@ function resolveSshAddBinary(platform, env = process.env) {
   if (typeof env.NETCATTY_SSH_ADD_PATH === "string" && env.NETCATTY_SSH_ADD_PATH.trim()) {
     return env.NETCATTY_SSH_ADD_PATH.trim();
   }
-  if (platform === "darwin") return "/usr/bin/ssh-add";
+  // Pair with Homebrew OpenSSH when present (same stack as ssh-agent / ssh-keygen).
+  if (platform === "darwin") {
+    for (const candidate of [
+      "/opt/homebrew/bin/ssh-add",
+      "/usr/local/bin/ssh-add",
+      "/usr/bin/ssh-add",
+    ]) {
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        // continue
+      }
+    }
+  }
   if (platform === "win32") return "ssh-add";
   return "ssh-add";
 }
@@ -163,8 +176,8 @@ async function defaultRunSshAdd(args, { socketPath, env, platform, askpassEnv })
   };
   // OpenSSH only invokes askpass when stdin is not a TTY; force that here.
   await execFileAsync(sshAdd, args, {
-    // FIDO PIN / touch can take longer than a soft key unlock.
-    timeout: 120000,
+    // Align with FIDO prompt TTL (~180s) so the modal is not left open after failure.
+    timeout: 170000,
     windowsHide: true,
     env: mergedEnv,
     // Detach from parent's TTY so SSH_ASKPASS_REQUIRE=force is honored.
