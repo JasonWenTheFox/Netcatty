@@ -8,6 +8,15 @@ const {
 } = require("./systemSshAgent.cjs");
 const { parseKey } = require("ssh2/lib/protocol/keyParser.js");
 
+const SK_SSH_ED25519 = "sk-ssh-ed25519@openssh.com";
+
+function makeSkPrivatePem() {
+  const body = Buffer.from(`openssh-key-v1\0\0\0\0\0none\0\0\0\0\0\0\0\0\0\x01${SK_SSH_ED25519}`).toString("base64");
+  const pem = `-----BEGIN OPENSSH PRIVATE KEY-----\n${body}\n-----END OPENSSH PRIVATE KEY-----\n`;
+  assert.equal(pem.includes("@openssh.com"), false);
+  return pem;
+}
+
 test("shouldLoadIdentityFileIntoAgent loads sk public keys", async () => {
   const type = Buffer.from("sk-ssh-ed25519@openssh.com");
   const pub = Buffer.alloc(32, 3);
@@ -57,4 +66,18 @@ test("shouldLoadIdentityFileIntoAgent loads sk public keys", async () => {
   const parsed = parseKey(pubLine);
   assert.equal(parsed instanceof Error, false);
   assert.ok(publicKeyBlob(parsed));
+});
+
+test("shouldLoadIdentityFileIntoAgent detects base64-only sk private PEMs", async () => {
+  const pem = makeSkPrivatePem();
+  const deps = {
+    readFile: async (p) => {
+      if (p === "/tmp/id_ed25519_sk" || p.endsWith("/id_ed25519_sk")) return pem;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    },
+  };
+  assert.equal(
+    await shouldLoadIdentityFileIntoAgent("/tmp/id_ed25519_sk", {}, deps),
+    true,
+  );
 });

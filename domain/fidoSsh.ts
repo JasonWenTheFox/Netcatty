@@ -42,23 +42,42 @@ export const isSkPublicKey = (publicKey: string | undefined | null): boolean =>
   isSkPublicKeyType(extractOpenSshPublicKeyType(publicKey));
 
 /**
+ * Decode OpenSSH private-key PEM body (base64) for algorithm probing.
+ * Real sk-* handles only contain `sk-*-@openssh.com` *inside* the base64 payload
+ * (`@` is not a base64 alphabet character), so raw-text regex on PEM is insufficient.
+ */
+export const decodeOpenSshPrivateKeyBody = (
+  privateKey: string | undefined | null,
+): string | null => {
+  if (typeof privateKey !== "string" || !privateKey.trim()) return null;
+  const match = OPENSSH_PRIVATE_KEY_RE.exec(privateKey);
+  if (!match) return null;
+  try {
+    return Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
+  } catch {
+    return null;
+  }
+};
+
+const skTypeInText = (text: string | undefined | null): FidoSshKeyType | undefined => {
+  if (!text) return undefined;
+  if (text.includes(SK_ECDSA_NISTP256) || /ecdsa-sk|sk-ecdsa/i.test(text)) return "ECDSA-SK";
+  if (text.includes(SK_SSH_ED25519) || /ed25519-sk|sk-ssh-ed25519/i.test(text)) return "ED25519-SK";
+  return undefined;
+};
+
+/**
  * Best-effort detection of an OpenSSH sk-* private key (handle) blob.
  * Decodes the base64 body and looks for the algorithm string.
  */
 export const isSkPrivateKey = (privateKey: string | undefined | null): boolean => {
   if (typeof privateKey !== "string" || !privateKey.trim()) return false;
-  const match = OPENSSH_PRIVATE_KEY_RE.exec(privateKey);
-  if (!match) {
-    // Some exporters only put the type on a comment line / nearby text.
-    return /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(privateKey);
+  const decoded = decodeOpenSshPrivateKeyBody(privateKey);
+  if (decoded) {
+    return decoded.includes(SK_SSH_ED25519) || decoded.includes(SK_ECDSA_NISTP256);
   }
-  try {
-    const body = Buffer.from(match[1].replace(/\s+/g, ""), "base64");
-    const asUtf8 = body.toString("utf8");
-    return asUtf8.includes(SK_SSH_ED25519) || asUtf8.includes(SK_ECDSA_NISTP256);
-  } catch {
-    return /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(privateKey);
-  }
+  // Some exporters only put the type on a comment line / nearby text.
+  return /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(privateKey);
 };
 
 export const detectFidoSshKeyType = (args: {
@@ -71,10 +90,8 @@ export const detectFidoSshKeyType = (args: {
   if (pubType === SK_SSH_ED25519) return "ED25519-SK";
   if (pubType === SK_ECDSA_NISTP256) return "ECDSA-SK";
   if (isSkPrivateKey(args.privateKey)) {
-    if (args.privateKey?.includes(SK_ECDSA_NISTP256) || args.privateKey?.toLowerCase().includes("ecdsa-sk")) {
-      return "ECDSA-SK";
-    }
-    return "ED25519-SK";
+    const decoded = decodeOpenSshPrivateKeyBody(args.privateKey);
+    return skTypeInText(decoded) || skTypeInText(args.privateKey) || "ED25519-SK";
   }
   return undefined;
 };

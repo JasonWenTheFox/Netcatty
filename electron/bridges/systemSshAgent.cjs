@@ -185,9 +185,28 @@ async function defaultRunSshAdd(args, { socketPath, env, platform, askpassEnv })
   });
 }
 
+const OPENSSH_PRIVATE_KEY_RE =
+  /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+?)-----END OPENSSH PRIVATE KEY-----/;
+const SK_SSH_ED25519 = "sk-ssh-ed25519@openssh.com";
+const SK_ECDSA_NISTP256 = "sk-ecdsa-sha2-nistp256@openssh.com";
+
 function looksLikeSkPublicKeyText(text) {
   return typeof text === "string"
     && /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(text);
+}
+
+/** True for sk public lines *or* sk private PEMs (type may only exist after base64 decode). */
+function looksLikeSkKeyMaterial(text) {
+  if (typeof text !== "string" || !text.trim()) return false;
+  if (looksLikeSkPublicKeyText(text)) return true;
+  const match = OPENSSH_PRIVATE_KEY_RE.exec(text);
+  if (!match) return false;
+  try {
+    const body = Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
+    return body.includes(SK_SSH_ED25519) || body.includes(SK_ECDSA_NISTP256);
+  } catch {
+    return false;
+  }
 }
 
 async function shouldLoadIdentityFileIntoAgent(identityPath, options, deps) {
@@ -199,13 +218,13 @@ async function shouldLoadIdentityFileIntoAgent(identityPath, options, deps) {
   try {
     const pubPath = identityPath.endsWith(".pub") ? identityPath : `${identityPath}.pub`;
     const pub = await deps.readFile(pubPath, "utf8");
-    if (looksLikeSkPublicKeyText(pub)) return true;
+    if (looksLikeSkKeyMaterial(pub)) return true;
   } catch {
     // fall through to private-key probe
   }
   try {
     const privateKey = await deps.readFile(identityPath, "utf8");
-    if (looksLikeSkPublicKeyText(privateKey)) return true;
+    if (looksLikeSkKeyMaterial(privateKey)) return true;
   } catch {
     return false;
   }

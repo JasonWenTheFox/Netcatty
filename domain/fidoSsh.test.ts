@@ -32,13 +32,28 @@ test("detectFidoSshKeyType maps vault and OpenSSH types", () => {
   assert.equal(detectFidoSshKeyType({ type: "ED25519", publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJust test" }), undefined);
 });
 
-test("isSkPrivateKey detects OpenSSH sk key handles", () => {
-  // Minimal fake OpenSSH private key body containing the sk type string after base64.
-  const body = Buffer.from(`openssh-key-v1\0\0\0\0\0none\0\0\0\0\0\0\0\0\0\x01${SK_SSH_ED25519}`).toString("base64");
+/** Real-shaped PEM: sk type only appears after base64 decode (`@` not in b64 alphabet). */
+function makeSkPrivatePem(algo: string): string {
+  const raw = Buffer.from(`openssh-key-v1\0\0\0\0\0none\0\0\0\0\0\0\0\0\0\x01${algo}`);
+  const body = raw.toString("base64");
+  // Guard: the PEM text must NOT contain the plain algorithm (skeptic regression).
   const pem = `-----BEGIN OPENSSH PRIVATE KEY-----\n${body}\n-----END OPENSSH PRIVATE KEY-----\n`;
+  assert.equal(pem.includes("@openssh.com"), false);
+  return pem;
+}
+
+test("isSkPrivateKey detects OpenSSH sk key handles", () => {
+  const pem = makeSkPrivatePem(SK_SSH_ED25519);
   assert.equal(isSkPrivateKey(pem), true);
   assert.equal(isSkPrivateKey("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----"), false);
   assert.equal(requiresFidoSshAgentAuth({ publicKey: skEdPub }), true);
   assert.equal(requiresFidoSshAgentAuth({ privateKey: pem }), true);
   assert.equal(requiresFidoSshAgentAuth({ type: "ED25519", privateKey: "soft-key" }), false);
+});
+
+test("detectFidoSshKeyType reads sk algorithm from base64-only private PEM", () => {
+  const edPem = makeSkPrivatePem(SK_SSH_ED25519);
+  const ecPem = makeSkPrivatePem(SK_ECDSA_NISTP256);
+  assert.equal(detectFidoSshKeyType({ privateKey: edPem }), "ED25519-SK");
+  assert.equal(detectFidoSshKeyType({ privateKey: ecPem }), "ECDSA-SK");
 });

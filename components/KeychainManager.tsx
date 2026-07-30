@@ -22,6 +22,7 @@ import { STORAGE_KEY_VAULT_KEYS_VIEW_MODE } from "../infrastructure/config/stora
 import { logger } from "../lib/logger";
 import { cn } from "../lib/utils";
 import { Host, Identity, KeyType, ProxyProfile, SSHKey } from "../types";
+import { detectFidoSshKeyType } from "../domain/fidoSsh";
 import { ManagedSource } from "../domain/models";
 import { useKeychainBackend } from "../application/state/useKeychainBackend";
 import SelectHostPanel from "./SelectHostPanel";
@@ -429,17 +430,20 @@ echo $3 >> "$FILE"`);
       return;
     }
 
-    // Detect key type from private key content (including OpenSSH FIDO2 sk-*)
+    // Detect key type from private/public material (SK PEMs only expose sk-* after base64 decode).
     let detectedType: KeyType = "ED25519";
-    const pk = draftKey.privateKey;
-    const pkLower = pk.toLowerCase();
-    if (pk.includes("sk-ssh-ed25519@openssh.com") || pkLower.includes("ed25519-sk")) {
-      detectedType = "ED25519-SK";
-    } else if (pk.includes("sk-ecdsa-sha2-nistp256@openssh.com") || /ecdsa-sk|sk-ecdsa/.test(pkLower)) {
-      detectedType = "ECDSA-SK";
-    } else if (pkLower.includes("rsa")) detectedType = "RSA";
-    else if (pkLower.includes("ecdsa") || pkLower.includes("ec ")) detectedType = "ECDSA";
-    else if (pkLower.includes("ed25519")) detectedType = "ED25519";
+    const fidoType = detectFidoSshKeyType({
+      publicKey: draftKey.publicKey,
+      privateKey: draftKey.privateKey,
+    });
+    if (fidoType) {
+      detectedType = fidoType;
+    } else {
+      const pkLower = draftKey.privateKey.toLowerCase();
+      if (pkLower.includes("rsa")) detectedType = "RSA";
+      else if (pkLower.includes("ecdsa") || pkLower.includes("ec ")) detectedType = "ECDSA";
+      else if (pkLower.includes("ed25519")) detectedType = "ED25519";
+    }
 
     const newKey: SSHKey = {
       id: crypto.randomUUID(),
@@ -553,20 +557,23 @@ echo $3 >> "$FILE"`);
       reader.onload = (e) => {
         const content = e.target?.result as string;
         if (content) {
-          // Try to detect key type from content
+          // Detect type from content; SK private PEMs need base64 decode (domain helper).
           let detectedType: KeyType = "ED25519";
-          const lc = content.toLowerCase();
-          if (content.includes("sk-ssh-ed25519@openssh.com") || lc.includes("ed25519-sk")) {
-            detectedType = "ED25519-SK";
-          } else if (
-            content.includes("sk-ecdsa-sha2-nistp256@openssh.com")
-            || /ecdsa-sk|sk-ecdsa/.test(lc)
-          ) {
-            detectedType = "ECDSA-SK";
-          } else if (lc.includes("rsa")) detectedType = "RSA";
-          else if (lc.includes("ecdsa") || lc.includes("ec private"))
-            detectedType = "ECDSA";
-          else if (lc.includes("ed25519")) detectedType = "ED25519";
+          const fidoType = detectFidoSshKeyType({
+            publicKey: content.includes("sk-") && !content.includes("PRIVATE KEY")
+              ? content
+              : undefined,
+            privateKey: content.includes("PRIVATE KEY") ? content : undefined,
+          });
+          if (fidoType) {
+            detectedType = fidoType;
+          } else {
+            const lc = content.toLowerCase();
+            if (lc.includes("rsa")) detectedType = "RSA";
+            else if (lc.includes("ecdsa") || lc.includes("ec private"))
+              detectedType = "ECDSA";
+            else if (lc.includes("ed25519")) detectedType = "ED25519";
+          }
 
           // Extract label from filename (remove extension)
           const label = file.name.replace(/\.(pem|key|pub|ppk)$/i, "");

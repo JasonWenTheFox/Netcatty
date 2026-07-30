@@ -769,9 +769,30 @@ async function getNativeOpenSshAgentSocket(identityAgent, injected = {}) {
   return socketPath;
 }
 
+const OPENSSH_PRIVATE_KEY_RE =
+  /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+?)-----END OPENSSH PRIVATE KEY-----/;
+const SK_SSH_ED25519 = "sk-ssh-ed25519@openssh.com";
+const SK_ECDSA_NISTP256 = "sk-ecdsa-sha2-nistp256@openssh.com";
+
+/**
+ * Detect OpenSSH FIDO sk-* material in public keys *or* private-key PEMs.
+ *
+ * Real sk private PEMs only embed `sk-*-@openssh.com` inside the base64 body
+ * (`@` is not in the base64 alphabet), so a raw-text regex on the PEM fails.
+ * Mirror domain/fidoSsh.ts isSkPrivateKey: decode the PEM body first.
+ */
 function looksLikeSkOpenSshMaterial(text) {
-  return typeof text === "string"
-    && /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(text);
+  if (typeof text !== "string" || !text.trim()) return false;
+  // Public keys / agent blobs / already-decoded comments keep the type in plain text.
+  if (/sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com/.test(text)) return true;
+  const match = OPENSSH_PRIVATE_KEY_RE.exec(text);
+  if (!match) return false;
+  try {
+    const body = Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
+    return body.includes(SK_SSH_ED25519) || body.includes(SK_ECDSA_NISTP256);
+  } catch {
+    return false;
+  }
 }
 
 function resolveWebContentsFromSender(sender) {
