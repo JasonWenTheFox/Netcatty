@@ -378,6 +378,12 @@ echo $3 >> "$FILE"`);
         type: keyType,
         bits: keySize,
         comment: `${draftKey.label.trim()}@netcatty`,
+        resident: keyType === "ED25519-SK" || keyType === "ECDSA-SK"
+          ? !!(draftKey as { resident?: boolean }).resident
+          : undefined,
+        verifyRequired: keyType === "ED25519-SK" || keyType === "ECDSA-SK"
+          ? !!(draftKey as { verifyRequired?: boolean }).verifyRequired
+          : undefined,
       });
       if (!result) {
         throw new Error(
@@ -388,15 +394,17 @@ echo $3 >> "$FILE"`);
         throw new Error(result.error || t("keychain.error.generateKeyPairFailed"));
       }
 
+      const resolvedType = (result.keyType as KeyType | undefined) || keyType;
+      const isFidoSk = resolvedType === "ED25519-SK" || resolvedType === "ECDSA-SK";
       const newKey: SSHKey = {
         id: crypto.randomUUID(),
         label: draftKey.label.trim(),
-        type: keyType,
-        keySize: keyType !== "ED25519" ? keySize : undefined,
+        type: resolvedType,
+        keySize: resolvedType === "ED25519" || isFidoSk ? undefined : keySize,
         privateKey: result.privateKey,
         publicKey: result.publicKey,
-        passphrase: draftKey.passphrase,
-        savePassphrase: draftKey.savePassphrase,
+        passphrase: isFidoSk ? undefined : draftKey.passphrase,
+        savePassphrase: isFidoSk ? undefined : draftKey.savePassphrase,
         source: "generated",
         category: "key",
         created: Date.now(),
@@ -421,12 +429,17 @@ echo $3 >> "$FILE"`);
       return;
     }
 
-    // Detect key type from private key content
+    // Detect key type from private key content (including OpenSSH FIDO2 sk-*)
     let detectedType: KeyType = "ED25519";
-    const pk = draftKey.privateKey.toLowerCase();
-    if (pk.includes("rsa")) detectedType = "RSA";
-    else if (pk.includes("ecdsa") || pk.includes("ec ")) detectedType = "ECDSA";
-    else if (pk.includes("ed25519")) detectedType = "ED25519";
+    const pk = draftKey.privateKey;
+    const pkLower = pk.toLowerCase();
+    if (pk.includes("sk-ssh-ed25519@openssh.com") || pkLower.includes("ed25519-sk")) {
+      detectedType = "ED25519-SK";
+    } else if (pk.includes("sk-ecdsa-sha2-nistp256@openssh.com") || /ecdsa-sk|sk-ecdsa/.test(pkLower)) {
+      detectedType = "ECDSA-SK";
+    } else if (pkLower.includes("rsa")) detectedType = "RSA";
+    else if (pkLower.includes("ecdsa") || pkLower.includes("ec ")) detectedType = "ECDSA";
+    else if (pkLower.includes("ed25519")) detectedType = "ED25519";
 
     const newKey: SSHKey = {
       id: crypto.randomUUID(),
@@ -543,7 +556,14 @@ echo $3 >> "$FILE"`);
           // Try to detect key type from content
           let detectedType: KeyType = "ED25519";
           const lc = content.toLowerCase();
-          if (lc.includes("rsa")) detectedType = "RSA";
+          if (content.includes("sk-ssh-ed25519@openssh.com") || lc.includes("ed25519-sk")) {
+            detectedType = "ED25519-SK";
+          } else if (
+            content.includes("sk-ecdsa-sha2-nistp256@openssh.com")
+            || /ecdsa-sk|sk-ecdsa/.test(lc)
+          ) {
+            detectedType = "ECDSA-SK";
+          } else if (lc.includes("rsa")) detectedType = "RSA";
           else if (lc.includes("ecdsa") || lc.includes("ec private"))
             detectedType = "ECDSA";
           else if (lc.includes("ed25519")) detectedType = "ED25519";

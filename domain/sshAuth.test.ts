@@ -99,6 +99,36 @@ test("resolveBridgeSshAgentAuth carries system agent settings without private ma
   );
 });
 
+test("resolveBridgeSshAgentAuth forces agent auth for FIDO2 SK vault keys", () => {
+  const skKey: SSHKey = {
+    id: "sk-1",
+    label: "YubiKey",
+    type: "ED25519-SK",
+    privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nsk-ssh-ed25519@openssh.com\n-----END OPENSSH PRIVATE KEY-----",
+    publicKey: "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABHNzaDo= yubi",
+    source: "imported",
+    category: "key",
+    created: 1,
+  };
+
+  assert.deepEqual(
+    resolveBridgeSshAgentAuth({ ...autofillBaseHost, useSshAgent: false }, skKey, "key"),
+    {
+      useSshAgent: true,
+      identityAgent: undefined,
+      identitiesOnly: true,
+      addKeysToAgent: "yes",
+      useKeychain: undefined,
+      agentPublicKeys: [skKey.publicKey!],
+    },
+  );
+
+  assert.equal(
+    resolveBridgeKeyAuth({ key: skKey }).privateKey?.includes("OPENSSH PRIVATE KEY"),
+    true,
+  );
+});
+
 test("resolveBridgeSshAgentAuth keeps certificate authentication independent", () => {
   assert.deepEqual(
     resolveBridgeSshAgentAuth({

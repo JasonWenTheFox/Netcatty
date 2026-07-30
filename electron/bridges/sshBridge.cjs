@@ -15,6 +15,7 @@ const { Client: SSHClient, utils: sshUtils } = require("ssh2");
 const { NetcattyAgent } = require("./netcattyAgent.cjs");
 const keyboardInteractiveHandler = require("./keyboardInteractiveHandler.cjs");
 const passphraseHandler = require("./passphraseHandler.cjs");
+const fidoPromptHandler = require("./fidoPromptHandler.cjs");
 const hostKeyVerifier = require("./hostKeyVerifier.cjs");
 const { createProxySocket, runWhenProxyConnectionReady } = require("./proxyUtils.cjs");
 const { attachX11Forwarding } = require("./x11Forwarding.cjs");
@@ -994,6 +995,25 @@ async function generateKeyPair(event, options) {
   const { type, bits, comment } = options;
 
   try {
+    // FIDO2 / security-key types require OpenSSH + libfido2 hardware interaction.
+    // Generate via ssh-keygen so the key handle is created on the token.
+    if (type === "ED25519-SK" || type === "ECDSA-SK") {
+      const { generateFidoSshKeyPair } = require("./fidoSshKeygen.cjs");
+      return await generateFidoSshKeyPair({
+        type,
+        comment: comment || "netcatty-fido-key",
+        resident: options?.resident === true,
+        verifyRequired: options?.verifyRequired === true,
+        resolveWebContents: () => {
+          try {
+            return event?.sender && !event.sender.isDestroyed?.() ? event.sender : null;
+          } catch {
+            return null;
+          }
+        },
+      });
+    }
+
     let keyType;
     let keyBits = bits;
 
@@ -1421,6 +1441,12 @@ function registerHandlers(ipcMain, options = {}) {
       "netcatty:host-key:respond",
       hostKeyVerifier,
     );
+    registerOwnedAuthResponseHandler(
+      ipcMain,
+      terminalWorkerManager,
+      "netcatty:fido-prompt:respond",
+      fidoPromptHandler,
+    );
     ipcMain.on("netcatty:zmodem:overwrite-response", (event, payload) => {
       terminalWorkerManager.send("netcatty:zmodem:overwrite-response", payload, {
         webContentsId: event?.sender?.id,
@@ -1444,6 +1470,8 @@ function registerHandlers(ipcMain, options = {}) {
     keyboardInteractiveHandler.registerHandler(ipcMain);
     // Register the passphrase response handler
     passphraseHandler.registerHandler(ipcMain);
+    // FIDO2 PIN / touch presence prompts (ssh-sk-helper / ssh-add / ssh-keygen)
+    fidoPromptHandler.registerHandler(ipcMain);
     // Register the SSH host key verification response handler
     hostKeyVerifier.registerHandler(ipcMain);
   }

@@ -17,6 +17,7 @@ const { runWhenProxyConnectionReady } = require("../proxyUtils.cjs");
 const { getAttachHomeWebContentsId } = require("../terminalAttachRestore.cjs");
 const { executeBoundedSshCommand } = require("../boundedSshExec.cjs");
 const { openBoundedSshShellCallback } = require("../boundedSshChannelOpen.cjs");
+const { looksLikeSkOpenSshMaterial } = require("../sshAuthHelper.cjs");
 
 const SSH_TCP_CONNECT_TIMEOUT_MS = 20000;
 const SSH_AUTH_READY_TIMEOUT_MS = 120000;
@@ -1017,8 +1018,36 @@ printf '%s\n' '${scanCompleteMarker}'`;
         });
 
         let authAgent = null;
-        const systemAuthAgent = shouldPrepareSystemAgentForLogin(options)
-          ? await prepareSystemSshAgentForAuth(options, "[SSH]")
+        // FIDO2 sk-* handles cannot be used as ssh2 software privateKeys.
+        const isFidoSkAuth = looksLikeSkOpenSshMaterial(options.privateKey)
+          || (Array.isArray(options.agentPublicKeys)
+            && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+          || (Array.isArray(options.identityFilePaths)
+            && options.identityFilePaths.some((filePath) =>
+              typeof filePath === "string" && /_sk$|id_.*sk/i.test(filePath)));
+        const forceSystemAgentForFido = isFidoSkAuth && options.authMethod !== "password";
+        const systemAuthAgent = (shouldPrepareSystemAgentForLogin(options) || forceSystemAgentForFido)
+          ? await prepareSystemSshAgentForAuth({
+            ...options,
+            useSshAgent: true,
+            useFidoAgent: forceSystemAgentForFido || options.useFidoAgent === true,
+            // Prefer loading the sk handle; keep identitiesOnly when a public
+            // key selector is available.
+            identitiesOnly: options.identitiesOnly === true
+              || (forceSystemAgentForFido && Boolean(
+                (Array.isArray(options.agentPublicKeys) && options.agentPublicKeys.length)
+                || (Array.isArray(options.identityFilePaths) && options.identityFilePaths.length),
+              )),
+            addKeysToAgent: options.addKeysToAgent || (forceSystemAgentForFido ? "yes" : options.addKeysToAgent),
+            loadIdentityFilesIntoAgent: forceSystemAgentForFido || options.loadIdentityFilesIntoAgent,
+            resolveWebContents: () => {
+              try {
+                return sender && !sender.isDestroyed?.() ? sender : null;
+              } catch {
+                return null;
+              }
+            },
+          }, "[SSH]")
           : null;
         // Kick off the default-key scan now so it overlaps the identity-file /
         // inline-key preparation below instead of running serially after it.
@@ -1047,7 +1076,10 @@ printf '%s\n' '${scanCompleteMarker}'`;
             },
           })
           : null;
-        const inlineKey = options.authMethod !== "password" && options.privateKey && !systemAuthAgent
+        const inlineKey = options.authMethod !== "password"
+          && options.privateKey
+          && !systemAuthAgent
+          && !looksLikeSkOpenSshMaterial(options.privateKey)
           ? await preparePrivateKeyForAuth({
             sender,
             privateKey: options.privateKey,
