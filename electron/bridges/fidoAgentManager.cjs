@@ -90,27 +90,37 @@ function isAgentLive() {
 
 function clearAgentState({ kill = true } = {}) {
   if (kill && agentChild) {
+    const ownedPid = agentChild.pid;
+    // Only kill OUR tracked pid. Never run `ssh-agent -k` with the ambient
+    // process.env SSH_AGENT_PID — that can kill the user's login agent.
     try {
-      if (agentChild.pid && isProcessAlive(agentChild.pid)) {
-        process.kill(agentChild.pid, "TERM");
-      } else {
-        agentChild.kill?.("TERM");
+      if (ownedPid && isProcessAlive(ownedPid)) {
+        process.kill(ownedPid, "TERM");
       }
     } catch {
       // ignore
     }
-    // Prefer ssh-agent -k when socket known
-    if (agentSocket) {
+    if (ownedPid && agentSocket) {
       try {
         const sshAgent = resolveSshAgentBinary();
+        // Isolate env: only our sock + pid, no inheritance of login agent vars.
         execFile(sshAgent, ["-k"], {
-          env: { ...process.env, SSH_AUTH_SOCK: agentSocket },
+          env: {
+            PATH: process.env.PATH || "/usr/bin:/bin",
+            SSH_AUTH_SOCK: agentSocket,
+            SSH_AGENT_PID: String(ownedPid),
+          },
           windowsHide: true,
           timeout: 3000,
         }, () => {});
       } catch {
         // ignore
       }
+    }
+    try {
+      agentChild.kill?.("TERM");
+    } catch {
+      // ignore
     }
   }
   agentChild = null;
@@ -250,19 +260,24 @@ let quitHookInstalled = false;
 function installFidoAgentQuitHook() {
   if (quitHookInstalled) return;
   quitHookInstalled = true;
+  const shutdown = () => {
+    try { shutdownFidoAgentSubsystem(); } catch { /* ignore */ }
+  };
+  // Terminal/auth often runs in a utilityProcess where `app` is unavailable.
+  // Always hook process lifetime so daemonized ssh-agent children do not leak.
+  process.once("exit", shutdown);
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
   try {
     const { app } = require("electron");
-    const shutdown = () => {
-      try { shutdownFidoAgentSubsystem(); } catch { /* ignore */ }
-    };
     app.once("before-quit", shutdown);
     app.once("will-quit", shutdown);
   } catch {
-    // non-electron
+    // non-electron / utility process
   }
 }
 
-// Best-effort install when module loads in Electron main.
+// Best-effort install when module loads in Electron main or worker.
 try { installFidoAgentQuitHook(); } catch { /* ignore */ }
 
 module.exports = {
