@@ -132,9 +132,10 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
     const key = providerConnectionStorageKey(provider);
     const stored = this.loadFromStorage<Partial<ProviderConnection>>(key);
 
-    // Config may be a valid scalar (false, 0, "") — only null/undefined means absent.
+    // Config may be a valid scalar including JSON null (schema type: "null").
+    // Presence is property existence; only a missing property means absent.
     const hasCreds = stored?.tokens != null
-      || (stored != null && Object.prototype.hasOwnProperty.call(stored, 'config') && stored.config != null);
+      || (stored != null && Object.prototype.hasOwnProperty.call(stored, 'config'));
     // Determine the correct status: if tokens or config exist, should be 'connected'
     // Never restore 'syncing' or 'error' status - those are transient.
     // Dynamic plugin providers only rejoin sync when the host is ready AND the
@@ -246,7 +247,7 @@ export function setAvailablePluginSyncProviderIdsImpl(
     // single-provider mode (convergent multi-provider allows it).
     // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
     const hasRetainedConfig = conn.tokens != null
-      || (Object.prototype.hasOwnProperty.call(conn, 'config') && conn.config != null);
+      || Object.prototype.hasOwnProperty.call(conn, 'config');
     if (hasRetainedConfig && conn.status === 'disconnected') {
       let convergentActive = false;
       try {
@@ -305,8 +306,8 @@ export async function initProviderDecryptionImpl(this: any): Promise<void> {
     for (const p of providers) {
       try {
         const conn = this.state.providers[p];
-        // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
-        if (conn.tokens != null || conn.config != null) {
+        // Config may be a valid scalar including JSON null — presence is property existence.
+        if (conn.tokens != null || Object.prototype.hasOwnProperty.call(conn, 'config')) {
           const seq = ++this.providerDecryptSeq[p];
           const decrypted = await decryptProviderSecrets(conn);
           // Only apply if no newer update has occurred during the async gap
@@ -346,8 +347,9 @@ export async function saveProviderConnectionImpl(this: any,
       // Keep dynamic plugin providers in the restart registry while connected
       // (or while credentials/config remain so a missing plugin cannot drop them).
       if (isPluginCloudProviderId(provider)) {
-        // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
-        const hasData = encrypted.tokens != null || encrypted.config != null;
+        // Config may be a valid scalar including JSON null — presence is property existence.
+        const hasData = encrypted.tokens != null
+          || Object.prototype.hasOwnProperty.call(encrypted, 'config');
         if (hasData || encrypted.status === 'connected' || encrypted.status === 'syncing') {
           registerPluginProviderIdImpl.call(this, provider);
         }
@@ -588,8 +590,8 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
     // startup (IPC handler not registered yet), retry now.
     if (!this.providerDecrypted[provider]) {
       const conn = this.state.providers[provider];
-      // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
-      if (conn.tokens != null || conn.config != null) {
+      // Config may be a valid scalar including JSON null — presence is property existence.
+      if (conn.tokens != null || Object.prototype.hasOwnProperty.call(conn, 'config')) {
         try {
           const seq = ++this.providerDecryptSeq[provider];
           const decrypted = await decryptProviderSecrets(conn);
@@ -614,8 +616,10 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
     const connection = this.state.providers[provider];
     const tokens = connection?.tokens;
     const config = connection?.config;
-    // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
-    if (tokens == null && config == null) {
+    // Config may be a valid scalar including JSON null — presence is property existence.
+    const hasConfigProperty = connection != null
+      && Object.prototype.hasOwnProperty.call(connection, 'config');
+    if (tokens == null && !hasConfigProperty) {
       throw new Error('Provider not connected');
     }
 

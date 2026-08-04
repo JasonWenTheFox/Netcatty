@@ -60,8 +60,13 @@ type ElectronPluginSyncApi = {
 
 function getPluginSyncApi(): ElectronPluginSyncApi | null {
   if (typeof window === 'undefined') return null;
-  const electron = (window as Window & { electron?: ElectronPluginSyncApi }).electron;
-  return electron ?? null;
+  // Preload exposes the production bridge as window.netcatty only.
+  const bridge = (window as Window & {
+    netcatty?: ElectronPluginSyncApi;
+    electron?: ElectronPluginSyncApi;
+  }).netcatty
+    ?? (window as Window & { electron?: ElectronPluginSyncApi }).electron;
+  return bridge ?? null;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

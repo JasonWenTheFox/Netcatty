@@ -176,12 +176,15 @@ export interface ProviderConnection {
 
 /**
  * Whether a connection still has usable credentials/config to retry.
- * Plugin configs may be valid falsy JSON scalars (`false`, `0`, `""`); only
- * `null`/`undefined` means absent. Do not use truthiness (`||` / `Boolean`).
+ * Plugin configs may be valid falsy JSON scalars (`false`, `0`, `""`) or even
+ * JSON `null` when a schema uses `type: "null"`. Presence is property
+ * existence for `config`; do not use truthiness (`||` / `Boolean`).
  */
 export const hasProviderConnectionData = (
   connection: Pick<ProviderConnection, 'tokens' | 'config'>,
-): boolean => connection.tokens != null || connection.config != null;
+): boolean =>
+  connection.tokens != null
+  || Object.prototype.hasOwnProperty.call(connection, 'config');
 
 export const isProviderReadyForSync = (
   connection: Pick<ProviderConnection, 'status' | 'tokens' | 'config'>,

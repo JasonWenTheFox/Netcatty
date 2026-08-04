@@ -45,8 +45,13 @@ type ElectronSidecarApi = {
 
 function getSidecarApi(): ElectronSidecarApi | null {
   if (typeof window === 'undefined') return null;
-  const electron = (window as Window & { electron?: ElectronSidecarApi }).electron;
-  return electron ?? null;
+  // Preload exposes the production bridge as window.netcatty only.
+  const bridge = (window as Window & {
+    netcatty?: ElectronSidecarApi;
+    electron?: ElectronSidecarApi;
+  }).netcatty
+    ?? (window as Window & { electron?: ElectronSidecarApi }).electron;
+  return bridge ?? null;
 }
 
 function readBundle(key: string): PluginSyncSidecarBundle | null {
