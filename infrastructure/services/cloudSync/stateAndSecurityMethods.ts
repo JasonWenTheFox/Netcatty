@@ -174,6 +174,48 @@ export function markPluginSyncProviderUnavailableImpl(this: any, provider: Cloud
   }
 }
 
+/**
+ * Replace the live contribution-available set. Called when the renderer
+ * refreshes plugin sync provider contributions so disabled/uninstalled
+ * providers stop rejoining sync cycles after restart.
+ */
+export function setAvailablePluginSyncProviderIdsImpl(
+  this: any,
+  providerIds: readonly string[],
+): void {
+  const next = [...new Set(
+    providerIds.filter((id): id is string => typeof id === 'string' && isPluginCloudProviderId(id)),
+  )].sort();
+  if (next.length === 0) {
+    this.removeFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY);
+  } else {
+    this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, next);
+  }
+  if (!this.state?.providers) return;
+  let changed = false;
+  for (const id of Object.keys(this.state.providers)) {
+    if (!isPluginCloudProviderId(id)) continue;
+    const conn = this.state.providers[id];
+    if (!conn) continue;
+    if (!next.includes(id) && conn.status === 'connected') {
+      this.state.providers[id] = {
+        ...conn,
+        status: 'disconnected',
+        error: 'Plugin sync provider is no longer installed or enabled',
+      };
+      changed = true;
+      const adapter = this.adapters?.get?.(id);
+      if (adapter) {
+        try { adapter.signOut(); } catch { /* ignore */ }
+        this.adapters.delete(id);
+      }
+    }
+  }
+  if (changed && typeof this.notifyStateChange === 'function') {
+    this.notifyStateChange();
+  }
+}
+
 export function registerPluginProviderIdImpl(this: any, provider: CloudProvider): void {
   if (!isPluginCloudProviderId(provider)) return;
   const next = new Set(listRegisteredPluginProviderIdsImpl.call(this));

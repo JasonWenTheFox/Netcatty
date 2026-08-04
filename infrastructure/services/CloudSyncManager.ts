@@ -119,6 +119,7 @@ import {
   changeMasterKeyImpl,
   verifyPasswordImpl,
   handleProviderReauthRequiredImpl,
+  setAvailablePluginSyncProviderIdsImpl,
 } from './cloudSync/stateAndSecurityMethods';
 import {
   clearConvergentSyncStorageImpl,
@@ -515,6 +516,15 @@ export class CloudSyncManager {
     configuration: unknown = {},
   ): Promise<void> {
     return connectPluginProviderImpl.call(this, providerId, configuration);
+  }
+
+  /**
+   * Replace the live set of contribution-available plugin sync provider IDs.
+   * Call when plugin contributions change so disabled/uninstalled providers
+   * leave the auto-sync ready set.
+   */
+  setAvailablePluginSyncProviders(providerIds: readonly string[]): void {
+    setAvailablePluginSyncProviderIdsImpl.call(this, providerIds);
   }
 
   /**

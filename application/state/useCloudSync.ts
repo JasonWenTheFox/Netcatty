@@ -305,6 +305,38 @@ export const useCloudSync = (): CloudSyncHook => {
       // A missing/corrupt replica is surfaced by the next explicit sync.
     });
   }, [state.securityState]);
+
+  // Keep plugin sync provider availability aligned with live contributions so
+  // disabled/uninstalled providers leave the auto-sync ready set after restart.
+  useEffect(() => {
+    let cancelled = false;
+    const refreshAvailable = async () => {
+      try {
+        const { pluginExtensionBridge } = await import('./pluginExtensionBridge');
+        const listed = await pluginExtensionBridge.listProviders('sync');
+        if (cancelled) return;
+        const ids = (listed ?? []).map((entry) => {
+          const nested = (entry as { provider?: { id?: string } }).provider;
+          return typeof nested?.id === 'string' ? nested.id : '';
+        }).filter((id) => id.length > 0);
+        manager.setAvailablePluginSyncProviders(ids);
+      } catch {
+        if (!cancelled) manager.setAvailablePluginSyncProviders([]);
+      }
+    };
+    void refreshAvailable();
+    let unsubscribe = () => {};
+    void import('./pluginExtensionBridge').then(({ pluginExtensionBridge }) => {
+      if (cancelled) return;
+      unsubscribe = pluginExtensionBridge.onContributionsChanged(() => {
+        void refreshAvailable();
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
   
   // ========== Computed Values ==========
   

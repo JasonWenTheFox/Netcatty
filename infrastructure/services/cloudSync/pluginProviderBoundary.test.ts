@@ -7,11 +7,13 @@ import type { EncryptedObjectStorage } from '../../../domain/encryptedObjectStor
 import { DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY } from '../../../domain/encryptedObjectStorage';
 import {
   getConnectedAdapterImpl,
+  listAvailablePluginSyncProviderIdsImpl,
   listRegisteredPluginProviderIdsImpl,
   loadInitialStateImpl,
   loadProviderConnectionImpl,
   registerPluginProviderIdImpl,
   saveProviderConnectionImpl,
+  setAvailablePluginSyncProviderIdsImpl,
   unregisterPluginProviderIdImpl,
 } from './stateAndSecurityMethods';
 
@@ -99,6 +101,29 @@ describe('plugin provider manager boundary', () => {
     assert.deepEqual(listRegisteredPluginProviderIdsImpl.call(manager), [
       'com.example.backup.sync',
     ]);
+  });
+
+  it('setAvailablePluginSyncProviderIds drops missing providers from the ready set', () => {
+    const storage = memoryStorage();
+    const manager = createManagerHarness(storage);
+    manager.state = {
+      providers: {
+        'com.example.backup.sync': {
+          provider: 'com.example.backup.sync',
+          status: 'connected',
+          config: { endpoint: 'https://example.test' },
+        },
+      },
+    };
+    manager.adapters = new Map();
+    registerPluginProviderIdImpl.call(manager, 'com.example.backup.sync');
+    assert.deepEqual(listAvailablePluginSyncProviderIdsImpl.call(manager), [
+      'com.example.backup.sync',
+    ]);
+    // Plugin uninstalled / contribution gone.
+    setAvailablePluginSyncProviderIdsImpl.call(manager, []);
+    assert.deepEqual(listAvailablePluginSyncProviderIdsImpl.call(manager), []);
+    assert.equal(manager.state.providers['com.example.backup.sync'].status, 'disconnected');
   });
 
   it('saveProviderConnection registers plugin IDs and disconnect unregisters them', async () => {
