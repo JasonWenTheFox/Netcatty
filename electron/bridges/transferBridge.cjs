@@ -2879,12 +2879,22 @@ async function downloadFileResumableFast(
     if (remoteHandle) {
       const skipClose = disposeChannel && (failed || transfer.cancelled);
       if (!skipClose) {
+        // Shared/sudo channels stay alive after failure; bound CLOSE so a dead
+        // channel cannot hang before truncate/fallback and lease release.
+        let closeTimeout = null;
         try {
-          await closeSftpHandle(sftp, remoteHandle);
+          await Promise.race([
+            closeSftpHandle(sftp, remoteHandle),
+            new Promise((_, reject) => {
+              closeTimeout = setTimeout(() => reject(new Error("SFTP close timed out")), 2000);
+            }),
+          ]);
         } catch (error) {
-          if (!failed && !transfer.cancelled) {
+          if (!failed && !transfer.cancelled && !/timed out/i.test(error?.message || "")) {
             remoteCloseError = error;
           }
+        } finally {
+          if (closeTimeout) clearTimeout(closeTimeout);
         }
       }
     }
