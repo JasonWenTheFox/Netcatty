@@ -554,21 +554,26 @@ export function mergeSyncPayloads(
   const groupConfigs = unwrapGC(groupConfigsResult.merged);
 
   // Plugin sidecars: three-way merge so local resets propagate and baselines
-  // from missing plugins are preserved.
+  // from missing plugins are preserved. An *omitted* pluginSidecars field means
+  // legacy/unsupported (treat as base for that side). Explicit { entries: [] }
+  // is an authoritative wipe.
+  const baseHasSidecars = Object.prototype.hasOwnProperty.call(b, 'pluginSidecars');
+  const localHasSidecars = Object.prototype.hasOwnProperty.call(local, 'pluginSidecars');
+  const remoteHasSidecars = Object.prototype.hasOwnProperty.call(remote, 'pluginSidecars');
   const baseSidecars = Array.isArray(b.pluginSidecars?.entries) ? b.pluginSidecars.entries : [];
-  const localSidecars = Array.isArray(local.pluginSidecars?.entries) ? local.pluginSidecars.entries : [];
-  const remoteSidecars = Array.isArray(remote.pluginSidecars?.entries) ? remote.pluginSidecars.entries : [];
+  const localSidecars = localHasSidecars
+    ? (Array.isArray(local.pluginSidecars?.entries) ? local.pluginSidecars.entries : [])
+    : baseSidecars;
+  const remoteSidecars = remoteHasSidecars
+    ? (Array.isArray(remote.pluginSidecars?.entries) ? remote.pluginSidecars.entries : [])
+    : baseSidecars;
   const mergedSidecarEntries = mergePluginSyncSidecarsThreeWay({
     base: baseSidecars,
     local: localSidecars,
     remote: remoteSidecars,
   });
-  // When any side explicitly carried pluginSidecars (including an empty
-  // reset), keep the field so apply paths clear local DB rather than
-  // treating the payload as a legacy sidecar-less snapshot.
-  const anySideHadPluginSidecars = [b, local, remote].some((side) => (
-    Object.prototype.hasOwnProperty.call(side, 'pluginSidecars')
-  ));
+  // Emit the field when any side explicitly carried it (including empty reset).
+  const anySideHadPluginSidecars = baseHasSidecars || localHasSidecars || remoteHasSidecars;
 
   const payload: SyncPayload = carryForwardSyncDeletions({
     hosts: hosts.merged,

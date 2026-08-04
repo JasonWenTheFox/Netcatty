@@ -221,13 +221,8 @@ export function setAvailablePluginSyncProviderIdsImpl(
       try { adapter?.signOut?.(); } catch { /* ignore */ }
       this.adapters.delete(id);
     }
-    // Re-enable retained configs that were only offline due to prior unavailability.
-    if (
-      (conn.config || conn.tokens)
-      && conn.status === 'disconnected'
-      && typeof conn.error === 'string'
-      && conn.error.includes('no longer installed')
-    ) {
+    // Re-enable retained configs whenever the contribution reappears.
+    if ((conn.config || conn.tokens) && conn.status === 'disconnected') {
       this.state.providers[id] = {
         ...conn,
         status: 'connected',

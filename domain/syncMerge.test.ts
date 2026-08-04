@@ -478,7 +478,8 @@ test("mergeSyncPayloads propagates local sidecar setting resets via three-way me
   const local: SyncPayload = {
     hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
     syncedAt: 2,
-    // user reset: settings omitted
+    // user reset: explicit empty sidecar bundle (omitted field = legacy/unsupported)
+    pluginSidecars: { version: 1, entries: [] },
   };
   const remote: SyncPayload = {
     hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
@@ -496,6 +497,33 @@ test("mergeSyncPayloads propagates local sidecar setting resets via three-way me
     "explicit empty sidecar field must remain so apply clears remote/local DB",
   );
   assert.deepEqual(result.payload.pluginSidecars, { version: 1, entries: [] });
+});
+
+test("mergeSyncPayloads preserves sidecars when remote legacy payload omits the field", () => {
+  const entry = {
+    pluginId: "com.example.p",
+    kind: "settings" as const,
+    key: "com.example.p.theme\0application\0application",
+    value: "dark",
+    updatedAt: 1,
+  };
+  const base: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 1,
+    pluginSidecars: { version: 1, entries: [entry] },
+  };
+  const local: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 2,
+    pluginSidecars: { version: 1, entries: [entry] },
+  };
+  const remote: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 2,
+    // legacy remote omits pluginSidecars entirely
+  };
+  const result = mergeSyncPayloads(base, local, remote);
+  assert.ok(result.payload.pluginSidecars?.entries?.some((e) => e.key === entry.key));
 });
 
 test("mergeSyncPayloads treats missing optional arrays as legacy payloads, not deletions", () => {

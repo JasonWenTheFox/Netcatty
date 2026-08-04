@@ -186,6 +186,47 @@ class PluginSyncSidecarService {
   }
 
   /**
+   * After a plugin is installed/enabled, validate and apply retained settings
+   * sidecars into plugin_settings so the running plugin sees cloud values.
+   */
+  async hydrateInstalledPluginSettings(pluginId) {
+    if (typeof pluginId !== "string" || pluginId.length < 1) return;
+    const declared = this.#declaredSettingsByPlugin().get(pluginId);
+    if (!declared) return;
+    const rows = typeof this.database.listSyncSidecars === "function"
+      ? this.database.listSyncSidecars(pluginId)
+      : [];
+    for (const entry of rows) {
+      if (entry.kind !== "settings") continue;
+      const parsed = parseSettingsSidecarKey(entry.key);
+      if (!parsed) continue;
+      const field = declared.find((item) => item.id === parsed.settingId);
+      if (!field || !isCloudSyncablePluginSetting(field)) continue;
+      if (typeof this.contributionService?.updateSetting === "function") {
+        try {
+          await this.contributionService.updateSetting(
+            pluginId,
+            parsed.settingId,
+            entry.value,
+            parsed.scopeId,
+            { source: "host" },
+          );
+          this.database.setSetting(
+            pluginId,
+            parsed.settingId,
+            parsed.scope,
+            parsed.scopeId,
+            entry.value,
+            entry.updatedAt,
+          );
+        } catch {
+          // Invalid against current schema — keep sidecar only.
+        }
+      }
+    }
+  }
+
+  /**
    * Persist an account or CRDT baseline without cascading on uninstall.
    */
   setBaseline(pluginId, kind, key, value) {

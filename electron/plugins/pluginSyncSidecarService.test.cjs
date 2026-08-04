@@ -247,6 +247,43 @@ test("applyFromSync does not drop local baselines for plugins absent remotely", 
   assert.ok(all.some((entry) => entry.pluginId === "com.remote.plugin" && entry.value === "light"));
 });
 
+test("hydrateInstalledPluginSettings applies retained sidecars through contribution service", async (context) => {
+  const database = tempDb(context);
+  database.setSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
+    "from-cloud",
+    9,
+  );
+  const updates = [];
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+      async updateSetting(pluginId, settingId, value, scopeId) {
+        updates.push({ pluginId, settingId, value, scopeId });
+      },
+    },
+  });
+  await service.hydrateInstalledPluginSettings("com.example.sync");
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].value, "from-cloud");
+  assert.equal(
+    database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
+    "from-cloud",
+  );
+});
+
 test("applyFromSync empty remote bundle wipes missing-plugin retained rows", async (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);
