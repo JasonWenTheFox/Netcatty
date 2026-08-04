@@ -218,10 +218,16 @@ export async function applyPluginSyncSidecarsFromHost(
         writeLastKnownSidecars({ version: 1, entries: collected.entries });
         return;
       }
+      // Collect returned a non-authoritative shape — leave prior last-known so
+      // a later offline upload cannot drop preserved missing-plugin rows.
+      return;
     } catch {
-      // Fall through to cache the applied remote bundle.
+      // Apply already committed on the host. Do not replace last-known with the
+      // unmerged remote bundle (that would discard preserved local rows).
+      return;
     }
   }
+  // No collect API: best-effort use remote as last-known (legacy hosts).
   // Keep explicit empty resets as { entries: [] } so later offline collects
   // do not omit the field and resurrect deleted sidecars.
   writeLastKnownSidecars(normalized);

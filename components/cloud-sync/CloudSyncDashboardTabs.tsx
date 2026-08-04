@@ -363,7 +363,15 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                                     connection?.status === 'connecting'
                                     || pluginConnectBusy === providerId
                                 }
-                                account={connection?.account}
+                                account={connection?.account
+                                  ? {
+                                      // Never load plugin-supplied avatar URLs in the main
+                                      // renderer (offline plugin network boundary).
+                                      id: connection.account.id,
+                                      name: connection.account.name,
+                                      email: connection.account.email,
+                                    }
+                                  : undefined}
                                 lastSync={connection?.lastSync}
                                 error={connection?.error}
                                 disabled={isConnectDisabled(providerId as CloudProvider)}
