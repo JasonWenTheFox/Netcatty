@@ -370,8 +370,17 @@ export async function connectPluginProviderImpl(
       undefined,
       { createPluginStorage },
     );
+    // Only cache after initializeSync succeeds so a rejected reconnect cannot
+    // leave a half-authenticated adapter pinned for later auto-sync.
+    let resourceId: string | null;
+    try {
+      resourceId = await adapter.initializeSync();
+    } catch (error) {
+      try { adapter.signOut(); } catch { /* ignore */ }
+      this.adapters.delete(providerId);
+      throw error;
+    }
     this.adapters.set(providerId, adapter);
-    const resourceId = await adapter.initializeSync();
     const account = adapter.accountInfo ?? { id: providerId };
     if (this.providerDecryptSeq[providerId] == null) this.providerDecryptSeq[providerId] = 0;
     if (this.providerWriteSeq[providerId] == null) this.providerWriteSeq[providerId] = 0;

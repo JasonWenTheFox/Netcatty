@@ -618,10 +618,13 @@ export async function syncConvergentProvidersUnlockedImpl(
       ?? runtime.latestRemotePayload?.pluginSidecars;
     if (!remoteBundle) continue;
     const baseForProvider = cycleBaseByProvider.get(runtime.provider) ?? [];
+    const finalSidecarStrategy =
+      strategy === 'preferCloud' || strategy === 'preferLocal' ? strategy : 'smart';
     finalSidecarEntries = mergeSidecarsThreeWayFinal({
       base: baseForProvider,
       local: finalSidecarEntries,
       remote: Array.isArray(remoteBundle.entries) ? remoteBundle.entries : [],
+      strategy: finalSidecarStrategy,
     });
   }
   const finalPluginSidecars = finalSidecarEntries.length > 0

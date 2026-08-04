@@ -82,9 +82,14 @@ export function createPluginSyncObjectStorage(options: {
   return {
     providerId,
     async connect(connectConfiguration, connectOptions): Promise<{ account: EncryptedObjectAccount }> {
+      // Only treat undefined as "use stored / default". Explicit null is a
+      // valid JSON configuration for schemas with type: "null".
+      const resolvedConfiguration = connectConfiguration !== undefined
+        ? connectConfiguration
+        : (configuration !== undefined ? configuration : {});
       return host.connectSync({
         providerId,
-        configuration: connectConfiguration ?? configuration ?? {},
+        configuration: resolvedConfiguration,
         ...(credential ? { credential } : {}),
         deadlineMs,
       }, { signal: connectOptions?.signal });

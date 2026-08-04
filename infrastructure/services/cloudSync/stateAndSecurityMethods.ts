@@ -240,11 +240,28 @@ export function setAvailablePluginSyncProviderIdsImpl(
       try { adapter?.signOut?.(); } catch { /* ignore */ }
       this.adapters.delete(id);
     }
-    // Re-enable retained configs whenever the contribution reappears.
+    // Re-enable retained configs whenever the contribution reappears, but only
+    // when doing so cannot create a second active provider in legacy
+    // single-provider mode (convergent multi-provider allows it).
     // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
     const hasRetainedConfig = conn.tokens != null
       || (Object.prototype.hasOwnProperty.call(conn, 'config') && conn.config != null);
     if (hasRetainedConfig && conn.status === 'disconnected') {
+      const convergentActive = this.state?.convergentSyncConfig?.initialized === true
+        || this.convergentSyncConfig?.initialized === true
+        || (typeof this.getConvergentSyncConfig === 'function'
+          && this.getConvergentSyncConfig()?.initialized === true);
+      const anotherReady = Object.entries(this.state.providers as Record<string, ProviderConnection>)
+        .some(([otherId, other]) => (
+          otherId !== id
+          && other != null
+          && (other.status === 'connected' || other.status === 'syncing')
+        ));
+      if (!convergentActive && anotherReady) {
+        // Keep disconnected with retained config until the user reconnects
+        // explicitly; auto-reactivation would mirror two legacy providers.
+        continue;
+      }
       this.state.providers[id] = {
         ...conn,
         status: 'connected',
