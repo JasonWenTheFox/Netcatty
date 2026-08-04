@@ -94,9 +94,11 @@ describe('encryptedObjectStorageBridge', () => {
 
   it('adapts EncryptedObjectStorage back to CloudAdapter for manager upload/download', async () => {
     const memory = new Map<string, Uint8Array>();
+    let backingResourceId: string | null = '/persisted/path.json';
     const storage = {
       providerId: 'com.example.sync',
       async connect() {
+        backingResourceId = '/after-connect/path.json';
         return { account: { id: 'plugin-acct' } };
       },
       async disconnect() {},
@@ -128,9 +130,17 @@ describe('encryptedObjectStorageBridge', () => {
       },
     };
 
-    const adapter = encryptedObjectStorageAsCloudAdapter(storage);
+    const adapter = encryptedObjectStorageAsCloudAdapter(storage, {
+      initiallyAuthenticated: true,
+      resourceId: '/persisted/path.json',
+      resolveResourceId: () => backingResourceId,
+    });
+    assert.equal(adapter.isAuthenticated, true);
+    assert.equal(adapter.resourceId, '/persisted/path.json');
+
     await adapter.initializeSync();
     assert.equal(adapter.accountInfo?.id, 'plugin-acct');
+    assert.equal(adapter.resourceId, '/after-connect/path.json');
 
     const file = makeSyncedFile(9, 'plugin-cipher');
     await adapter.upload(file);

@@ -74,6 +74,11 @@ export const createAdapter = async (
       });
       return encryptedObjectStorageAsCloudAdapter(storage, {
         account: raw.accountInfo,
+        // Match raw WebDAVAdapter: config present ⇒ authenticated for cache reuse.
+        initiallyAuthenticated: raw.isAuthenticated,
+        // Preserve constructor/persisted resourceId; refresh from raw after connect.
+        resourceId: raw.resourceId ?? resourceId ?? null,
+        resolveResourceId: () => raw.resourceId,
       });
     }
     case 's3': {
@@ -90,7 +95,12 @@ export const createAdapter = async (
         );
       }
       const storage = await options.createPluginStorage(provider);
-      return encryptedObjectStorageAsCloudAdapter(storage);
+      // Credentials/config already validated by getConnectedAdapter; report
+      // authenticated so the manager reuses this instance across sync calls.
+      return encryptedObjectStorageAsCloudAdapter(storage, {
+        initiallyAuthenticated: true,
+        resourceId: resourceId ?? null,
+      });
     }
   }
 };

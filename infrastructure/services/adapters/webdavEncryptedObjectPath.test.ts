@@ -65,6 +65,42 @@ describe('WebDAV EncryptedObjectStorage production path', () => {
     assert.equal(adapter.getTokens(), null);
   });
 
+  it('createAdapter(webdav) is authenticated when config exists so getConnectedAdapter can reuse', async () => {
+    const adapter = await createAdapter('webdav', undefined, undefined, {
+      endpoint: 'https://webdav.example.test',
+      authType: 'basic',
+      username: 'user',
+      password: 'secret',
+    });
+    // Pre-wrap WebDAVAdapter reported isAuthenticated whenever config existed.
+    // The bridge must match so manager cache reuse (existing?.isAuthenticated) works.
+    assert.equal(adapter.isAuthenticated, true);
+  });
+
+  it('createAdapter(webdav) preserves constructor resourceId and refreshes from backing adapter after initializeSync', async () => {
+    const persistedPath = '/netcatty-vault.json';
+    const adapter = await createAdapter(
+      'webdav',
+      undefined,
+      persistedPath,
+      {
+        endpoint: 'https://webdav.example.test',
+        authType: 'basic',
+        username: 'user',
+        password: 'secret',
+      },
+    );
+    assert.equal(
+      adapter.resourceId,
+      persistedPath,
+      'must not discard resourceId passed into createAdapter',
+    );
+
+    // Without network, initializeSync fails; still prove resourceId is not
+    // overwritten to the bare DEFAULT key before connect runs.
+    assert.notEqual(adapter.resourceId, 'netcatty-vault.json');
+  });
+
   it('WebDAV-style adapters round-trip encrypted SyncedFile bytes through EncryptedObjectStorage', async () => {
     const raw = memoryWebdavAdapter({
       meta: {

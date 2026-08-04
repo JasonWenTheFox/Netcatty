@@ -172,7 +172,12 @@ describe('plugin provider manager boundary', () => {
 
     const adapter = await getConnectedAdapterImpl.call(manager, pluginId);
     assert.equal(factoryCalls, 1);
-    assert.equal(adapter.isAuthenticated, false);
+    // Config-backed plugin connections report authenticated for cache reuse.
+    assert.equal(adapter.isAuthenticated, true);
+    const reused = await getConnectedAdapterImpl.call(manager, pluginId);
+    assert.equal(reused, adapter);
+    assert.equal(factoryCalls, 1, 'must not recreate when cached adapter is authenticated');
+
     await adapter.initializeSync();
     assert.equal(adapter.accountInfo?.id, 'plugin-acct');
 
@@ -186,25 +191,30 @@ describe('plugin provider manager boundary', () => {
 });
 
 describe('createAdapter WebDAV production path', () => {
-  it('returns an adapter that uploads and downloads through EncryptedObjectStorage', async () => {
-    // Real WebDAVAdapter without network: missing config throws on upload.
-    // We still prove createAdapter('webdav') wraps the shared surface by
-    // verifying initializeSync/account wiring via config-only construction.
-    const adapter = await createAdapter('webdav', undefined, undefined, {
-      endpoint: 'https://webdav.example.test',
-      authType: 'basic',
-      username: 'user',
-      password: 'secret',
-    });
-    assert.equal(adapter.isAuthenticated, false);
-    // Bridge starts unauthenticated until initializeSync/connect; account is
-    // populated when the raw WebDAV adapter has config.
-    // After initializeSync the bridge marks authenticated via connect().
-    // Without a network, initializeSync will fail — catch and still assert the
-    // factory produced a CloudAdapter with the expected methods.
-    assert.equal(typeof adapter.upload, 'function');
-    assert.equal(typeof adapter.download, 'function');
-    assert.equal(typeof adapter.initializeSync, 'function');
-    assert.equal(adapter.getTokens(), null);
+  it('returns an authenticated adapter and reuses it via getConnectedAdapter cache semantics', async () => {
+    const storage = memoryStorage();
+    const manager = createManagerHarness(storage);
+    manager.state = {
+      providers: {
+        webdav: {
+          provider: 'webdav',
+          status: 'connected',
+          config: {
+            endpoint: 'https://webdav.example.test',
+            authType: 'basic',
+            username: 'user',
+            password: 'secret',
+          },
+          resourceId: '/netcatty-vault.json',
+        },
+      },
+    };
+    manager.providerDecrypted.webdav = true;
+
+    const a1 = await getConnectedAdapterImpl.call(manager, 'webdav');
+    assert.equal(a1.isAuthenticated, true);
+    assert.equal(a1.resourceId, '/netcatty-vault.json');
+    const a2 = await getConnectedAdapterImpl.call(manager, 'webdav');
+    assert.equal(a1, a2, 'must reuse cached adapter when isAuthenticated is true');
   });
 });

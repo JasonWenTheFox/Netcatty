@@ -130,18 +130,46 @@ export function cloudAdapterAsEncryptedObjectStorage(
  * Adapt EncryptedObjectStorage into the legacy CloudAdapter surface so the
  * existing encrypt→upload / download→decrypt manager path can drive WebDAV and
  * plugin providers through one code path.
+ *
+ * Authentication and resourceId must match pre-bridge CloudAdapter semantics:
+ * config-backed providers (WebDAV) report authenticated as soon as credentials
+ * exist so getConnectedAdapter can reuse the cached instance; resourceId must
+ * preserve the persisted path (or the backing adapter's authoritative id) rather
+ * than always forcing the default object key.
  */
 export function encryptedObjectStorageAsCloudAdapter(
   storage: EncryptedObjectStorage,
   options: {
     objectKey?: string;
     account?: ProviderAccount | null;
+    /** When true, getConnectedAdapter reuses this instance without recreating. */
+    initiallyAuthenticated?: boolean;
+    /** Seeded resource id (e.g. path restored from provider connection storage). */
+    resourceId?: string | null;
+    /**
+     * Prefer the backing adapter's resource id after connect/upload (WebDAV sets
+     * `/netcatty-vault.json` via initializeSync; plugins may use object keys).
+     */
+    resolveResourceId?: () => string | null | undefined;
   } = {},
 ): CloudAdapter {
   const objectKey = options.objectKey ?? DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY;
   let account: ProviderAccount | null = options.account ?? null;
-  let resourceId: string | null = null;
-  let authenticated = false;
+  let resourceId: string | null = options.resourceId ?? null;
+  let authenticated = options.initiallyAuthenticated === true;
+
+  const refreshResourceId = (fallback?: string | null): string | null => {
+    const resolved = options.resolveResourceId?.();
+    if (typeof resolved === 'string' && resolved.length > 0) {
+      resourceId = resolved;
+      return resourceId;
+    }
+    if (typeof fallback === 'string' && fallback.length > 0) {
+      resourceId = fallback;
+      return resourceId;
+    }
+    return resourceId;
+  };
 
   return {
     get isAuthenticated() {
@@ -163,15 +191,13 @@ export function encryptedObjectStorageAsCloudAdapter(
       const result = await storage.connect();
       account = result.account;
       authenticated = true;
-      resourceId = objectKey;
-      return resourceId;
+      return refreshResourceId(objectKey);
     },
     async upload(syncedFile: SyncedFile): Promise<string> {
       const bytes = syncedFileToBytes(syncedFile);
       await storage.writeObject(objectKey, bytes);
-      resourceId = objectKey;
       authenticated = true;
-      return objectKey;
+      return refreshResourceId(objectKey) ?? objectKey;
     },
     async download(): Promise<SyncedFile | null> {
       const result = await storage.readObject(objectKey);
