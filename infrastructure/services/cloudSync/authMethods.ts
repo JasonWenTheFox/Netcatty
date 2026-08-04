@@ -326,6 +326,18 @@ export async function connectPluginProviderImpl(
   if (!isPluginCloudProviderId(providerId)) {
     throw new Error(`Invalid plugin sync provider ID: ${providerId}`);
   }
+  // Initialize sequence counters before the first status write so cross-window
+  // handlers never see NaN and discard every later update.
+  if (this.providerWriteSeq[providerId] == null || Number.isNaN(this.providerWriteSeq[providerId])) {
+    this.providerWriteSeq[providerId] = 0;
+  }
+  if (this.providerDecryptSeq[providerId] == null || Number.isNaN(this.providerDecryptSeq[providerId])) {
+    this.providerDecryptSeq[providerId] = 0;
+  }
+  if (this.providerDecrypted[providerId] == null) this.providerDecrypted[providerId] = true;
+  if (this.providerAuthAttemptSeq[providerId] == null || Number.isNaN(this.providerAuthAttemptSeq[providerId])) {
+    this.providerAuthAttemptSeq[providerId] = 0;
+  }
   this.updateProviderStatus(providerId, 'connecting');
   try {
     const createPluginStorage = async (id: string) => {

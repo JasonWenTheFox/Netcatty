@@ -77,6 +77,39 @@ test("collectForSync excludes secrets and preserves missing-plugin baselines", (
   assert.ok(persisted.some((entry) => entry.kind === "crdt_baseline"));
 });
 
+test("collectForSync hydrates retained sidecars into settings after plugin reinstall", (context) => {
+  const database = tempDb(context);
+  // Sidecar applied while plugin was missing (no plugin_settings row).
+  database.setSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
+    "from-cloud",
+    9,
+  );
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+    },
+  });
+  const bundle = service.collectForSync();
+  assert.ok(bundle.entries.some((e) => e.value === "from-cloud"));
+  assert.equal(
+    database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
+    "from-cloud",
+  );
+});
+
 test("collectForSync re-emits settings after plugin uninstall via non-cascade table", (context) => {
   const database = tempDb(context);
   database.installVersion({
@@ -117,13 +150,18 @@ test("collectForSync re-emits settings after plugin uninstall via non-cascade ta
 
 test("collectForSync omits deleted settings for installed plugins but keeps missing-plugin rows", (context) => {
   const database = tempDb(context);
-  // Previously synced setting row still in sidecars, but plugin_settings was reset.
+  // User reset clears both plugin_settings and the matching sidecar row.
   database.setSyncSidecar(
     "com.example.sync",
     "settings",
     "com.example.sync.theme\0application\0application",
     "stale",
     5,
+  );
+  database.deleteSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
   );
   database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "keep", 5);
   // Only store a different setting for the installed plugin.

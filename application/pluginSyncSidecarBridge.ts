@@ -136,12 +136,22 @@ export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSid
   if (pendingRemote && typeof api.applyPluginSyncSidecars === 'function') {
     try {
       const replayResult = await api.applyPluginSyncSidecars(pendingRemote);
-      if (isSuccessfulApplyResult(replayResult)) {
-        clearPendingRemoteSidecars();
+      if (!isSuccessfulApplyResult(replayResult)) {
+        // Do not collect a live (stale) local bundle that could overwrite the
+        // authoritative remote state still waiting to be applied.
+        return pendingRemote;
       }
-    } catch {
-      // Leave pending for a later collect; still attempt live collect below.
+      clearPendingRemoteSidecars();
+    } catch (error) {
+      // Operational failure: keep pending and surface so upload aborts.
+      // Host-unavailable during replay: return pending as the safest payload.
+      if (isPluginSidecarHostUnavailableError(error)) {
+        return pendingRemote;
+      }
+      throw error;
     }
+  } else if (pendingRemote && typeof api.applyPluginSyncSidecars !== 'function') {
+    return pendingRemote;
   }
 
   const bundle = await api.collectPluginSyncSidecars();

@@ -121,12 +121,14 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
     const hasCreds = Boolean(stored?.tokens || stored?.config);
     // Determine the correct status: if tokens or config exist, should be 'connected'
     // Never restore 'syncing' or 'error' status - those are transient.
-    // Dynamic plugin providers stay disconnected until the plugin host is
-    // available; otherwise every sync cycle tries a dead adapter and leaves
-    // multi-provider runs in a partial/error state while built-ins work.
+    // Dynamic plugin providers only rejoin sync when the host is ready AND the
+    // provider was recorded as contribution-available (survives restart).
+    // Host-off or uninstalled providers stay disconnected with config retained.
     let status: ProviderConnection['status'] = hasCreds ? 'connected' : 'disconnected';
-    if (isPluginCloudProviderId(provider) && hasCreds && !isPluginSyncIpcAvailable()) {
-      status = 'disconnected';
+    if (isPluginCloudProviderId(provider) && hasCreds) {
+      const hostReady = isPluginSyncIpcAvailable();
+      const available = listAvailablePluginSyncProviderIdsImpl.call(this);
+      status = hostReady && available.includes(provider) ? 'connected' : 'disconnected';
     }
 
     return {
@@ -144,11 +146,40 @@ export function listRegisteredPluginProviderIdsImpl(this: any): string[] {
     .sort();
 }
 
+const AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY = 'netcatty_available_plugin_sync_providers_v1';
+
+export function listAvailablePluginSyncProviderIdsImpl(this: any): string[] {
+  if (typeof this.loadFromStorage !== 'function') return [];
+  const raw = this.loadFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY) as unknown;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((id: unknown): id is string => typeof id === 'string' && isPluginCloudProviderId(id))
+    .sort();
+}
+
+export function markPluginSyncProviderAvailableImpl(this: any, provider: CloudProvider): void {
+  if (!isPluginCloudProviderId(provider)) return;
+  const next = new Set(listAvailablePluginSyncProviderIdsImpl.call(this));
+  next.add(provider);
+  this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, [...next].sort());
+}
+
+export function markPluginSyncProviderUnavailableImpl(this: any, provider: CloudProvider): void {
+  if (!isPluginCloudProviderId(provider)) return;
+  const next = listAvailablePluginSyncProviderIdsImpl.call(this).filter((id) => id !== provider);
+  if (next.length === 0) {
+    this.removeFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY);
+  } else {
+    this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, next);
+  }
+}
+
 export function registerPluginProviderIdImpl(this: any, provider: CloudProvider): void {
   if (!isPluginCloudProviderId(provider)) return;
   const next = new Set(listRegisteredPluginProviderIdsImpl.call(this));
   next.add(provider);
   this.saveToStorage(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS, [...next].sort());
+  markPluginSyncProviderAvailableImpl.call(this, provider);
 }
 
 export function unregisterPluginProviderIdImpl(this: any, provider: CloudProvider): void {
@@ -159,6 +190,7 @@ export function unregisterPluginProviderIdImpl(this: any, provider: CloudProvide
   } else {
     this.saveToStorage(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS, next);
   }
+  markPluginSyncProviderUnavailableImpl.call(this, provider);
 }
 
 export async function initProviderDecryptionImpl(this: any): Promise<void> {
