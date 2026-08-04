@@ -188,6 +188,51 @@ describe('encryptedObjectStorageBridge', () => {
       'rebindSession must call connect on each ensureConnected path');
   });
 
+  it('re-issues connect after an I/O failure so replaced runtimes can recover', async () => {
+    const ops: string[] = [];
+    let failNextRead = true;
+    const storage = {
+      providerId: 'com.example.sync',
+      async connect() {
+        ops.push('connect');
+        return { account: { id: 'a1' } };
+      },
+      async disconnect() {},
+      async getAccount() {
+        return { id: 'a1' };
+      },
+      async getCapabilities() {
+        return { revisions: false, conditionalWrites: false, atomicReplacement: true };
+      },
+      async readObject(key: string) {
+        if (failNextRead) {
+          failNextRead = false;
+          throw new Error('runtime gone');
+        }
+        return { found: false as const, key, bytes: null };
+      },
+      async writeObject() {
+        return { created: true as const };
+      },
+      async deleteObject() {
+        return { deleted: false as const };
+      },
+    };
+
+    const adapter = encryptedObjectStorageAsCloudAdapter(storage, {
+      initiallyAuthenticated: true,
+    });
+    await adapter.initializeSync();
+    assert.equal(ops.filter((op) => op === 'connect').length, 1);
+    await assert.rejects(() => adapter.download(), /runtime gone/);
+    await adapter.download();
+    assert.equal(
+      ops.filter((op) => op === 'connect').length,
+      2,
+      'failed I/O must stale the session so the next ensureConnected rebinds',
+    );
+  });
+
   it('lazy-connects before first I/O and passes revisions for conditional writes', async () => {
     const ops: string[] = [];
     let revision: string | undefined = 'rev-1';

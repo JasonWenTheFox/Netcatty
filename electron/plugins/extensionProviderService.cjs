@@ -43,12 +43,10 @@ const MAX_SYNC_OBJECT_BYTES = syncLimits.maxObjectBytes;
 const MAX_SYNC_OBJECT_KEY_LENGTH = syncLimits.maxObjectKeyLength;
 const MAX_SYNC_REVISION_LENGTH = syncLimits.maxRevisionLength;
 const INLINE_SYNC_OBJECT_BYTES = syncLimits.inlineObjectBytes;
-// Base64 expands ~4/3 and the invoke envelope still needs headroom under the
-// 128 KiB provider JSON budget. Prefer streaming below the contract max.
-const INLINE_SYNC_OBJECT_SAFE_BYTES = Math.min(
-  INLINE_SYNC_OBJECT_BYTES,
-  Math.floor((120 * 1024 * 3) / 4),
-);
+// Prefer streaming below the public contract max. Control-plane JSON budget
+// must still accept providers that return the advertised inlineObjectBytes
+// (base64 expands ~4/3; envelope headroom uses the full 128 KiB invoke cap).
+const INLINE_SYNC_OBJECT_SAFE_BYTES = INLINE_SYNC_OBJECT_BYTES;
 const definitionValidators = Object.freeze({
   AuthenticationResult: createDefinitionValidator("AuthenticationResult"),
   ConnectionOpenResult: createDefinitionValidator("ConnectionOpenResult"),

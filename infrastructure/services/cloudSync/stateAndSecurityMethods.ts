@@ -639,10 +639,16 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
         );
       }
       const host = createPluginSyncIpcHost();
+      // Preserve explicit null configuration (schema type: "null"); only
+      // default to {} when the config property is truly absent.
+      const configuration = connection != null
+        && Object.prototype.hasOwnProperty.call(connection, 'config')
+        ? connection.config
+        : {};
       return createPluginSyncObjectStorage({
         providerId,
         host,
-        configuration: connection.config ?? {},
+        configuration,
       });
     };
 

@@ -25,7 +25,10 @@ import {
   materializeSyncPayloadFromConvergentState,
   withConvergentSyncEnvelope,
 } from './payload';
-import { mergePluginSyncSidecars } from '../pluginSyncSidecar';
+import {
+  mergePluginSyncSidecars,
+  mergePluginSyncSidecarsThreeWay,
+} from '../pluginSyncSidecar';
 
 /** LWW-union plugin sidecars from every migration input that carries them. */
 function mergeMigrationSidecars(
@@ -39,6 +42,40 @@ function mergeMigrationSidecars(
     entries = mergePluginSyncSidecars({ local: entries, remote: bundle });
   }
   return sawAny ? { version: 1, entries } : undefined;
+}
+
+/**
+ * Three-way merge local sidecars against each remote source using that
+ * source's trusted baseline (falls back to local baseline). Preserves
+ * explicit local deletions instead of resurrecting them via LWW union.
+ */
+function mergeMigrationSidecarsWithBaselines(options: {
+  local: SyncPayload['pluginSidecars'] | null | undefined;
+  localBaseline: SyncPayload['pluginSidecars'] | null | undefined;
+  sources: Array<{
+    remote: SyncPayload['pluginSidecars'] | null | undefined;
+    baseline: SyncPayload['pluginSidecars'] | null | undefined;
+  }>;
+}): SyncPayload['pluginSidecars'] | undefined {
+  let entries = Array.isArray(options.local?.entries) ? [...options.local.entries] : [];
+  const localBase = Array.isArray(options.localBaseline?.entries)
+    ? options.localBaseline.entries
+    : [];
+  let sawAny = Array.isArray(options.local?.entries);
+  for (const source of options.sources) {
+    if (!source.remote || !Array.isArray(source.remote.entries)) continue;
+    sawAny = true;
+    const base = Array.isArray(source.baseline?.entries)
+      ? source.baseline.entries
+      : localBase;
+    entries = mergePluginSyncSidecarsThreeWay({
+      base,
+      local: entries,
+      remote: source.remote.entries,
+    });
+  }
+  if (!sawAny) return undefined;
+  return { version: 1, entries };
 }
 
 /*
@@ -235,11 +272,22 @@ export function planConvergentSyncMigration(options: {
     }
   } else if (blockedReasons.length === 0) {
     state = v2Inputs.map((input) => input.state).reduce(mergeConvergentSyncStates);
-    const joinedSidecars = mergeMigrationSidecars(
-      options.localPayload.pluginSidecars,
-      ...v2Inputs.map((input) => input.payload.pluginSidecars),
-      ...v1Inputs.map((input) => input.payload.pluginSidecars),
-    );
+    // Three-way per provider so local resets are not resurrected from a
+    // still-stale remote entry during convergent enablement.
+    const joinedSidecars = mergeMigrationSidecarsWithBaselines({
+      local: options.localPayload.pluginSidecars,
+      localBaseline: options.localTrustedBaseline?.pluginSidecars,
+      sources: [
+        ...v2Inputs.map((input) => ({
+          remote: input.payload.pluginSidecars,
+          baseline: input.trustedBaseline?.pluginSidecars,
+        })),
+        ...v1Inputs.map((input) => ({
+          remote: input.payload.pluginSidecars,
+          baseline: input.trustedBaseline?.pluginSidecars,
+        })),
+      ],
+    });
     const joinedPayload = materializeSyncPayloadFromConvergentState(state, {
       syncedAt: options.now,
       ...(joinedSidecars ? { pluginSidecars: joinedSidecars } : {}),

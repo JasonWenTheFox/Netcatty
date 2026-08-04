@@ -191,6 +191,11 @@ export function encryptedObjectStorageAsCloudAdapter(
     refreshResourceId(objectKey);
   };
 
+  /** After I/O failure, force the next ensureConnected to re-issue connect(). */
+  const markSessionStale = (): void => {
+    sessionConnected = false;
+  };
+
   return {
     get isAuthenticated() {
       return authenticated;
@@ -216,70 +221,90 @@ export function encryptedObjectStorageAsCloudAdapter(
       });
     },
     async initializeSync(): Promise<string | null> {
-      await ensureConnected();
-      return refreshResourceId(objectKey);
+      try {
+        await ensureConnected();
+        return refreshResourceId(objectKey);
+      } catch (error) {
+        markSessionStale();
+        throw error;
+      }
     },
     async upload(syncedFile: SyncedFile): Promise<string> {
-      await ensureConnected();
-      const bytes = syncedFileToBytes(syncedFile);
-      if (
-        capabilities?.maxObjectBytes != null
-        && bytes.byteLength > capabilities.maxObjectBytes
-      ) {
-        throw new Error(
-          `Encrypted object exceeds provider maxObjectBytes (${capabilities.maxObjectBytes})`,
-        );
-      }
-      const conditional = capabilities?.conditionalWrites === true;
-      const writeResult = await storage.writeObject(objectKey, bytes, {
-        ...(conditional && lastRevision !== undefined
-          ? { expectedRevision: lastRevision }
-          : {}),
-      });
-      // Host-owned write verification: re-read and compare ciphertext bytes.
-      const verified = await storage.readObject(objectKey);
-      if (!verified.found || !verified.bytes) {
-        throw new Error('Encrypted object write verification failed: object missing after write');
-      }
-      if (verified.bytes.byteLength !== bytes.byteLength) {
-        throw new Error('Encrypted object write verification failed: size mismatch');
-      }
-      for (let i = 0; i < bytes.byteLength; i += 1) {
-        if (verified.bytes[i] !== bytes[i]) {
-          throw new Error('Encrypted object write verification failed: content mismatch');
+      try {
+        await ensureConnected();
+        const bytes = syncedFileToBytes(syncedFile);
+        if (
+          capabilities?.maxObjectBytes != null
+          && bytes.byteLength > capabilities.maxObjectBytes
+        ) {
+          throw new Error(
+            `Encrypted object exceeds provider maxObjectBytes (${capabilities.maxObjectBytes})`,
+          );
         }
+        const conditional = capabilities?.conditionalWrites === true;
+        const writeResult = await storage.writeObject(objectKey, bytes, {
+          ...(conditional && lastRevision !== undefined
+            ? { expectedRevision: lastRevision }
+            : {}),
+        });
+        // Host-owned write verification: re-read and compare ciphertext bytes.
+        const verified = await storage.readObject(objectKey);
+        if (!verified.found || !verified.bytes) {
+          throw new Error('Encrypted object write verification failed: object missing after write');
+        }
+        if (verified.bytes.byteLength !== bytes.byteLength) {
+          throw new Error('Encrypted object write verification failed: size mismatch');
+        }
+        for (let i = 0; i < bytes.byteLength; i += 1) {
+          if (verified.bytes[i] !== bytes[i]) {
+            throw new Error('Encrypted object write verification failed: content mismatch');
+          }
+        }
+        if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
+          lastRevision = writeResult.revision;
+        } else if (typeof verified.revision === 'string' && verified.revision.length > 0) {
+          lastRevision = verified.revision;
+        } else {
+          lastRevision = undefined;
+        }
+        authenticated = true;
+        return refreshResourceId(objectKey) ?? objectKey;
+      } catch (error) {
+        markSessionStale();
+        throw error;
       }
-      if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
-        lastRevision = writeResult.revision;
-      } else if (typeof verified.revision === 'string' && verified.revision.length > 0) {
-        lastRevision = verified.revision;
-      } else {
-        lastRevision = undefined;
-      }
-      authenticated = true;
-      return refreshResourceId(objectKey) ?? objectKey;
     },
     async download(): Promise<SyncedFile | null> {
-      await ensureConnected();
-      const result = await storage.readObject(objectKey);
-      if (!result.found || !result.bytes) {
-        // Confirmed absence: next conditional write must use expectedRevision null.
-        lastRevision = null;
-        return null;
+      try {
+        await ensureConnected();
+        const result = await storage.readObject(objectKey);
+        if (!result.found || !result.bytes) {
+          // Confirmed absence: next conditional write must use expectedRevision null.
+          lastRevision = null;
+          return null;
+        }
+        if (typeof result.revision === 'string' && result.revision.length > 0) {
+          lastRevision = result.revision;
+        } else {
+          lastRevision = undefined;
+        }
+        return bytesToSyncedFile(result.bytes);
+      } catch (error) {
+        markSessionStale();
+        throw error;
       }
-      if (typeof result.revision === 'string' && result.revision.length > 0) {
-        lastRevision = result.revision;
-      } else {
-        lastRevision = undefined;
-      }
-      return bytesToSyncedFile(result.bytes);
     },
     async deleteSync(): Promise<void> {
-      await ensureConnected();
-      await storage.deleteObject(objectKey, {
-        ...(typeof lastRevision === 'string' ? { expectedRevision: lastRevision } : {}),
-      });
-      lastRevision = null;
+      try {
+        await ensureConnected();
+        await storage.deleteObject(objectKey, {
+          ...(typeof lastRevision === 'string' ? { expectedRevision: lastRevision } : {}),
+        });
+        lastRevision = null;
+      } catch (error) {
+        markSessionStale();
+        throw error;
+      }
     },
     getTokens(): OAuthTokens | null {
       return null;
