@@ -151,6 +151,43 @@ describe('encryptedObjectStorageBridge', () => {
 
   // note: upload() re-reads for verification; memory map above is sufficient
 
+  it('rebindSession re-issues connect after a prior session for plugin runtime replacement', async () => {
+    const ops: string[] = [];
+    const storage = {
+      providerId: 'com.example.sync',
+      async connect() {
+        ops.push('connect');
+        return { account: { id: 'a1' } };
+      },
+      async disconnect() {},
+      async getAccount() {
+        return { id: 'a1' };
+      },
+      async getCapabilities() {
+        return { revisions: false, conditionalWrites: false, atomicReplacement: true };
+      },
+      async readObject(key: string) {
+        return { found: false as const, key, bytes: null };
+      },
+      async writeObject() {
+        return { created: true as const };
+      },
+      async deleteObject() {
+        return { deleted: false as const };
+      },
+    };
+
+    const adapter = encryptedObjectStorageAsCloudAdapter(storage, {
+      initiallyAuthenticated: true,
+      rebindSession: true,
+    });
+    await adapter.initializeSync();
+    await adapter.download();
+    await adapter.download();
+    assert.ok(ops.filter((op) => op === 'connect').length >= 3,
+      'rebindSession must call connect on each ensureConnected path');
+  });
+
   it('lazy-connects before first I/O and passes revisions for conditional writes', async () => {
     const ops: string[] = [];
     let revision: string | undefined = 'rev-1';

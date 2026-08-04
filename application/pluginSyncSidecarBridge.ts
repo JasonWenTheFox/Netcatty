@@ -74,11 +74,40 @@ function isAuthoritativeBundle(
  * - a real bundle (possibly empty entries) when the host collected successfully
  * - last-known bundle when the host is unavailable (protect remote from wipe)
  * Throws on operational host failure (DB/runtime error) so sync aborts.
+ *
+ * When the host is available, any last-known cache from a prior host-offline
+ * download is replayed into the main-process store before collection so a
+ * later collect cannot erase cloud-downloaded sidecars that never reached DB.
  */
 export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSidecarBundle | null> {
   const api = getSidecarApi();
   if (typeof api?.collectPluginSyncSidecars !== 'function') {
     return readLastKnownSidecars();
+  }
+  // Replay offline-applied cache into the host DB before authoritative collect.
+  const lastKnown = readLastKnownSidecars();
+  if (
+    lastKnown
+    && lastKnown.entries.length > 0
+    && typeof api.applyPluginSyncSidecars === 'function'
+  ) {
+    try {
+      const replayResult = await api.applyPluginSyncSidecars(lastKnown);
+      if (
+        replayResult != null
+        && !(
+          typeof replayResult === 'object'
+          && replayResult !== null
+          && 'applied' in replayResult
+          && (replayResult as { applied?: unknown }).applied === false
+        )
+      ) {
+        // Host accepted the replay; continue to collect for the merged truth.
+      }
+    } catch {
+      // Operational replay failures are ignored here — collect still runs and
+      // will surface DB errors if the host is truly broken.
+    }
   }
   const bundle = await api.collectPluginSyncSidecars();
   // Passive/null means the plugin host is gated off or manager resolution failed.

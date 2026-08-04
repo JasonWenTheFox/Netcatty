@@ -118,11 +118,16 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
     const key = providerConnectionStorageKey(provider);
     const stored = this.loadFromStorage<Partial<ProviderConnection>>(key);
 
+    const hasCreds = Boolean(stored?.tokens || stored?.config);
     // Determine the correct status: if tokens or config exist, should be 'connected'
-    // Never restore 'syncing' or 'error' status - those are transient
-    const status: ProviderConnection['status'] = (stored?.tokens || stored?.config)
-      ? 'connected'
-      : 'disconnected';
+    // Never restore 'syncing' or 'error' status - those are transient.
+    // Dynamic plugin providers stay disconnected until the plugin host is
+    // available; otherwise every sync cycle tries a dead adapter and leaves
+    // multi-provider runs in a partial/error state while built-ins work.
+    let status: ProviderConnection['status'] = hasCreds ? 'connected' : 'disconnected';
+    if (isPluginCloudProviderId(provider) && hasCreds && !isPluginSyncIpcAvailable()) {
+      status = 'disconnected';
+    }
 
     return {
       provider,

@@ -89,7 +89,13 @@ describe('plugin provider manager boundary', () => {
 
     const state = loadInitialStateImpl.call(manager);
     assert.ok(state.providers['com.example.backup.sync']);
-    assert.equal(state.providers['com.example.backup.sync'].status, 'connected');
+    // Without the plugin host IPC surface, dynamic providers keep config but
+    // must not join sync cycles as "connected".
+    assert.equal(state.providers['com.example.backup.sync'].status, 'disconnected');
+    assert.deepEqual(
+      (state.providers['com.example.backup.sync'].config as { endpoint?: string })?.endpoint,
+      'https://example.test',
+    );
     assert.deepEqual(listRegisteredPluginProviderIdsImpl.call(manager), [
       'com.example.backup.sync',
     ]);

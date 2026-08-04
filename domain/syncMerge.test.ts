@@ -491,6 +491,11 @@ test("mergeSyncPayloads propagates local sidecar setting resets via three-way me
     false,
     "local reset must not be resurrected from base/remote",
   );
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(result.payload, "pluginSidecars"),
+    "explicit empty sidecar field must remain so apply clears remote/local DB",
+  );
+  assert.deepEqual(result.payload.pluginSidecars, { version: 1, entries: [] });
 });
 
 test("mergeSyncPayloads treats missing optional arrays as legacy payloads, not deletions", () => {

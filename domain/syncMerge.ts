@@ -563,6 +563,12 @@ export function mergeSyncPayloads(
     local: localSidecars,
     remote: remoteSidecars,
   });
+  // When any side explicitly carried pluginSidecars (including an empty
+  // reset), keep the field so apply paths clear local DB rather than
+  // treating the payload as a legacy sidecar-less snapshot.
+  const anySideHadPluginSidecars = [b, local, remote].some((side) => (
+    Object.prototype.hasOwnProperty.call(side, 'pluginSidecars')
+  ));
 
   const payload: SyncPayload = carryForwardSyncDeletions({
     hosts: hosts.merged,
@@ -577,7 +583,7 @@ export function mergeSyncPayloads(
     portForwardingRules: portForwardingRules.merged,
     groupConfigs,
     settings,
-    ...(mergedSidecarEntries.length > 0
+    ...(mergedSidecarEntries.length > 0 || anySideHadPluginSidecars
       ? { pluginSidecars: { version: 1 as const, entries: mergedSidecarEntries } }
       : {}),
     syncedAt: Date.now(),

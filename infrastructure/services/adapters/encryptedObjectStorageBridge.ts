@@ -152,6 +152,12 @@ export function encryptedObjectStorageAsCloudAdapter(
      * `/netcatty-vault.json` via initializeSync; plugins may use object keys).
      */
     resolveResourceId?: () => string | null | undefined;
+    /**
+     * When true, re-issue connect() even if a prior session was established.
+     * Required for plugin providers whose in-process clients die on runtime
+     * restart/replace while the CloudAdapter cache stays alive.
+     */
+    rebindSession?: boolean;
   } = {},
 ): CloudAdapter {
   const objectKey = options.objectKey ?? DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY;
@@ -184,7 +190,9 @@ export function encryptedObjectStorageAsCloudAdapter(
   let capabilities: EncryptedObjectStorageCapabilities | null = null;
 
   const ensureConnected = async (): Promise<void> => {
-    if (sessionConnected) return;
+    if (sessionConnected && !options.rebindSession) return;
+    // rebindSession: always re-run connect so a replaced plugin runtime gets a
+    // fresh client. Connect is expected to be idempotent when still healthy.
     const result = await storage.connect();
     account = result.account;
     capabilities = await storage.getCapabilities();

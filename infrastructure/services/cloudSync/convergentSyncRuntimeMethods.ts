@@ -140,8 +140,31 @@ function mergeStates(
   return merged;
 }
 
-function materializedPayload(state: ConvergentSyncStateV2, now: number): SyncPayload {
-  return materializeSyncPayloadFromConvergentState(state, { syncedAt: now });
+function materializedPayload(
+  state: ConvergentSyncStateV2,
+  now: number,
+  pluginSidecars?: SyncPayload['pluginSidecars'],
+): SyncPayload {
+  return materializeSyncPayloadFromConvergentState(state, {
+    syncedAt: now,
+    ...(pluginSidecars && Array.isArray(pluginSidecars.entries)
+      ? { pluginSidecars }
+      : {}),
+  });
+}
+
+function sidecarBundleFromPayload(
+  payload: SyncPayload | null | undefined,
+): SyncPayload['pluginSidecars'] | undefined {
+  if (!payload || !Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    entries: Array.isArray(payload.pluginSidecars?.entries)
+      ? payload.pluginSidecars.entries
+      : [],
+  };
 }
 
 function currentConflicts(state: ConvergentSyncStateV2): ConvergentFieldConflict[] {
@@ -809,6 +832,7 @@ async function prepareConvergentConflictResolutionImpl(
   addressKey: string,
   candidateDot: string,
   now = Date.now(),
+  pluginSidecars?: SyncPayload['pluginSidecars'],
 ): Promise<{ state: ConvergentSyncStateV2; payload: SyncPayload; now: number }> {
   const replica = await this.loadConvergentReplica();
   if (!replica) throw new Error('Convergent sync replica is unavailable');
@@ -823,7 +847,31 @@ async function prepareConvergentConflictResolutionImpl(
     this.state.deviceId,
     now,
   );
-  return { state: resolved, payload: materializedPayload(resolved, now), now };
+  // Prefer caller-provided sidecars; otherwise keep any baseline-carried
+  // sidecars from the last verified provider materialization.
+  let sidecars = pluginSidecars;
+  if (!sidecars && typeof this.loadConvergentProviderBaseline === 'function') {
+    try {
+      const providers = connectedProviders(this);
+      for (const provider of providers) {
+        const baseline = await this.loadConvergentProviderBaseline(provider) as {
+          materializedPayload?: SyncPayload;
+        } | null;
+        const fromBase = sidecarBundleFromPayload(baseline?.materializedPayload);
+        if (fromBase) {
+          sidecars = fromBase;
+          break;
+        }
+      }
+    } catch {
+      // ignore missing baselines
+    }
+  }
+  return {
+    state: resolved,
+    payload: materializedPayload(resolved, now, sidecars),
+    now,
+  };
 }
 
 export async function resolveConvergentConflictAndSyncImpl(
@@ -862,7 +910,11 @@ export async function resolveConvergentConflictAndSyncImpl(
     if (!finalReplica) {
       throw new Error('Convergent sync replica disappeared after conflict propagation');
     }
-    const finalPayload = materializedPayload(finalReplica.state, Date.now());
+    const finalPayload = materializedPayload(
+      finalReplica.state,
+      Date.now(),
+      sidecarBundleFromPayload(prepared.payload),
+    );
     return { payload: finalPayload, results };
   });
 }
@@ -884,6 +936,7 @@ export async function downgradeConvergentSyncImpl(
     const replica = await this.loadConvergentReplica();
     if (!replica) throw new Error('Convergent sync replica is unavailable');
     const localPayload = await buildLocalPayload();
+    const localSidecars = sidecarBundleFromPayload(localPayload);
     assertSyncSecurityGeneration(this, syncSecurityGeneration);
     const results = new Map<CloudProvider, SyncResult>();
     this.state.syncState = 'SYNCING';
@@ -912,9 +965,23 @@ export async function downgradeConvergentSyncImpl(
     // vault change made since the last persisted replica into causal local
     // writes before joining provider states; otherwise downgrade would
     // materialize the stale replica and overwrite those paused edits.
+    // Prefer local sidecars, else any remote-decoded bundle so downgrade does
+    // not upload a sidecar-free vault that erases plugin settings/baselines.
+    let downgradeSidecars = localSidecars;
+    if (!downgradeSidecars) {
+      for (const runtime of runtimes) {
+        const remoteBundle = sidecarBundleFromPayload(
+          runtime.verifiedPayload ?? runtime.latestRemotePayload,
+        );
+        if (remoteBundle) {
+          downgradeSidecars = remoteBundle;
+          break;
+        }
+      }
+    }
     const withLocalWrites = applyLegacySyncPayload(
       replica.state,
-      materializedPayload(replica.state, now),
+      materializedPayload(replica.state, now, downgradeSidecars),
       stripConvergentSyncEnvelope(localPayload),
       this.state.deviceId,
       now,
@@ -939,7 +1006,7 @@ export async function downgradeConvergentSyncImpl(
       return results;
     }
 
-    const outgoing = materializedPayload(canonical, now);
+    const outgoing = materializedPayload(canonical, now, downgradeSidecars);
     assertSyncSecurityGeneration(this, syncSecurityGeneration);
     let committed = false;
     try {

@@ -230,8 +230,16 @@ export function materializeSyncPayloadFromConvergentState(
     settings,
     syncedAt: options.syncedAt,
     ...(options.syncMeta ? { syncMeta: options.syncMeta } : {}),
-    ...(options.pluginSidecars && Array.isArray(options.pluginSidecars.entries) && options.pluginSidecars.entries.length > 0
-      ? { pluginSidecars: options.pluginSidecars }
+    // Preserve explicit empty bundles so lifecycle materializations (conflict
+    // resolve / downgrade) can clear or re-upload sidecars rather than omit
+    // the field and look like a legacy payload.
+    ...(options.pluginSidecars && Array.isArray(options.pluginSidecars.entries)
+      ? {
+        pluginSidecars: {
+          version: 1 as const,
+          entries: options.pluginSidecars.entries,
+        },
+      }
       : {}),
   };
 }
