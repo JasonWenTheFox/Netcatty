@@ -68,12 +68,13 @@ export async function applyPluginSyncSidecarsFromHost(
     version: 1,
     entries: Array.isArray(bundle?.entries) ? bundle.entries : [],
   };
-  writeLastKnownSidecars(normalized.entries.length > 0 ? normalized : null);
   const api = getSidecarApi();
-  if (typeof api?.applyPluginSyncSidecars !== 'function') return;
-  try {
-    await api.applyPluginSyncSidecars(normalized);
-  } catch {
-    // Host temporarily unavailable — last-known cache still updated for upload safety.
+  if (typeof api?.applyPluginSyncSidecars !== 'function') {
+    // Host offline: cache for later upload protection, but surface failure so
+    // callers know the DB was not updated.
+    writeLastKnownSidecars(normalized);
+    throw new Error('Plugin sidecar host is unavailable; cannot apply downloaded sidecars');
   }
+  await api.applyPluginSyncSidecars(normalized);
+  writeLastKnownSidecars(normalized.entries.length > 0 ? normalized : null);
 }

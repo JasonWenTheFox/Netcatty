@@ -1349,7 +1349,7 @@ test("withPluginSyncSidecars attaches non-empty plugin sidecar bundles", () => {
     customGroups: [],
   });
   const withEmpty = withPluginSyncSidecars(base, { version: 1, entries: [] });
-  assert.equal(withEmpty.pluginSidecars, undefined);
+  assert.deepEqual(withEmpty.pluginSidecars, { version: 1, entries: [] });
 
   const withData = withPluginSyncSidecars(base, {
     version: 1,

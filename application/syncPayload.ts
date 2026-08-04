@@ -895,20 +895,18 @@ export function withPluginSyncSidecars(
   payload: SyncPayload,
   sidecars: SyncPayload['pluginSidecars'] | null | undefined,
 ): SyncPayload {
-  // Explicit empty array is authoritative (no sidecars). null/undefined means
-  // "leave payload unchanged" so callers can skip when collection was skipped.
+  // null/undefined: collector unavailable — leave payload field unchanged
+  // (callers should reattach last-known before upload).
   if (sidecars == null) {
     return payload;
   }
-  if (!Array.isArray(sidecars.entries) || sidecars.entries.length === 0) {
-    const { pluginSidecars: _omit, ...rest } = payload;
-    return rest;
-  }
+  // Explicit empty entries is a real reset and must remain on the wire so
+  // apply paths can distinguish it from a legacy payload missing the field.
   return {
     ...payload,
     pluginSidecars: {
       version: 1,
-      entries: sidecars.entries,
+      entries: Array.isArray(sidecars.entries) ? sidecars.entries : [],
     },
   };
 }
@@ -1028,10 +1026,12 @@ function applyPayload(
       importers.onSettingsApplied?.();
     }
 
-    // Plugin encrypted sidecars (settings + baselines). Missing plugins keep
-    // non-cascade rows; secrets never enter the collector on the host side.
-    const applySidecars = options.applyPluginSidecars ?? defaultApplyPluginSyncSidecars;
-    await applySidecars(payload.pluginSidecars);
+    // Plugin encrypted sidecars: only apply when the field is present so
+    // legacy payloads without pluginSidecars do not wipe installed settings.
+    if (Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
+      const applySidecars = options.applyPluginSidecars ?? defaultApplyPluginSyncSidecars;
+      await applySidecars(payload.pluginSidecars ?? { version: 1, entries: [] });
+    }
   });
 }
 

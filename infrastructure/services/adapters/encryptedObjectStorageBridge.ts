@@ -187,11 +187,7 @@ export function encryptedObjectStorageAsCloudAdapter(
     if (sessionConnected) return;
     const result = await storage.connect();
     account = result.account;
-    try {
-      capabilities = await storage.getCapabilities();
-    } catch {
-      capabilities = null;
-    }
+    capabilities = await storage.getCapabilities();
     authenticated = true;
     sessionConnected = true;
     refreshResourceId(objectKey);

@@ -441,8 +441,14 @@ export async function syncConvergentProvidersUnlockedImpl(
         : [],
       remote: inputPayload.pluginSidecars,
     });
-    for (const decoded of preflightVerified.values()) {
-      const remoteBundle = decoded?.payload?.pluginSidecars;
+    // Merge sidecars from every successful download (not only preflight-dominating
+    // providers) so behind remotes still contribute unique baselines/settings.
+    for (const runtime of usable) {
+      if (runtime.error) continue;
+      const fromPreflight = preflightVerified.get(runtime.provider)?.payload?.pluginSidecars;
+      const fromLatest = (runtime as { latestRemotePayload?: SyncPayload }).latestRemotePayload
+        ?.pluginSidecars;
+      const remoteBundle = fromPreflight ?? fromLatest;
       if (!remoteBundle) continue;
       mergedSidecars = mergePluginSyncSidecars({
         local: mergedSidecars,
@@ -535,8 +541,31 @@ export async function syncConvergentProvidersUnlockedImpl(
       && versionVectorDominates(runtime.verifiedState.vector, canonical.vector)
   ));
   const hasSuccess = successfulRuntimes.length > 0;
-  const mergedPayload = materializedPayload(canonical, now());
-  const localPayloadChanged = !cloudSyncPayloadsEqual(inputPayload, mergedPayload);
+  const { mergePluginSyncSidecars: mergeSidecarsFinal } = await import('../../../domain/pluginSyncSidecar');
+  let finalSidecarEntries = Array.isArray(inputPayload.pluginSidecars?.entries)
+    ? [...inputPayload.pluginSidecars.entries]
+    : [];
+  for (const runtime of successfulRuntimes) {
+    const remoteBundle = (runtime as { verifiedPayload?: SyncPayload }).verifiedPayload?.pluginSidecars
+      ?? (runtime as { latestRemotePayload?: SyncPayload }).latestRemotePayload?.pluginSidecars;
+    if (!remoteBundle) continue;
+    finalSidecarEntries = mergeSidecarsFinal({
+      local: finalSidecarEntries,
+      remote: remoteBundle,
+    });
+  }
+  const finalPluginSidecars = finalSidecarEntries.length > 0
+    || Object.prototype.hasOwnProperty.call(inputPayload, 'pluginSidecars')
+    ? { version: 1 as const, entries: finalSidecarEntries }
+    : undefined;
+  const mergedPayloadBase = materializedPayload(canonical, now());
+  const mergedPayload: SyncPayload = {
+    ...mergedPayloadBase,
+    ...(finalPluginSidecars ? { pluginSidecars: finalPluginSidecars } : {}),
+  };
+  const localPayloadChanged = !cloudSyncPayloadsEqual(inputPayload, mergedPayload)
+    || JSON.stringify(inputPayload.pluginSidecars ?? null)
+      !== JSON.stringify(mergedPayload.pluginSidecars ?? null);
   let mergedPayloadApplied = false;
   if (hasSuccess && localPayloadChanged) {
     try {

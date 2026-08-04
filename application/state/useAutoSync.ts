@@ -140,6 +140,7 @@ const getSyncPayloadDataHash = (payload: SyncPayload): string => {
     portForwardingRules: sanitizePortForwardingRulesForSync(payload.portForwardingRules),
     groupConfigs: payload.groupConfigs,
     settings: payload.settings,
+    pluginSidecars: payload.pluginSidecars,
   });
 };
 
@@ -254,19 +255,24 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     config.groupConfigs,
   ]);
 
-  // Build sync payload
+  // Build sync payload (includes plugin sidecars when host is available)
   const buildPayload = useCallback(async (): Promise<SyncPayload> => {
-    return {
+    const { withPluginSyncSidecars } = await import('../syncPayload');
+    const { collectPluginSyncSidecarsFromHost } = await import('../pluginSyncSidecarBridge');
+    const base: SyncPayload = {
       ...getSyncSnapshot(),
       settings: await collectCloudSyncableSettings(),
       syncedAt: Date.now(),
     };
+    const sidecars = await collectPluginSyncSidecarsFromHost();
+    return withPluginSyncSidecars(base, sidecars);
   }, [getSyncSnapshot]);
   
-  // Create a hash of current data for comparison (includes settings)
+  // Create a hash of current data for comparison (includes settings + sidecars)
   const getDataHash = useCallback(async () => {
-    return JSON.stringify({ ...getSyncSnapshot(), settings: await collectCloudSyncableSettings() });
-  }, [getSyncSnapshot]);
+    const payload = await buildPayload();
+    return getSyncPayloadDataHash(payload);
+  }, [buildPayload]);
   
   // Sync now handler - get fresh state directly from manager
   const syncNow = useCallback(async (options?: SyncNowOptions): Promise<boolean> => {
