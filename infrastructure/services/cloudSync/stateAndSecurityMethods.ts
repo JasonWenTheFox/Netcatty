@@ -214,14 +214,10 @@ export function setAvailablePluginSyncProviderIdsImpl(
       }
       continue;
     }
-    // Still contributed: drop cached adapters so a restarted plugin runtime
-    // gets a fresh connect on the next sync instead of reusing sessionConnected.
-    if (this.adapters?.has?.(id)) {
-      const adapter = this.adapters.get(id);
-      try { adapter?.signOut?.(); } catch { /* ignore */ }
-      this.adapters.delete(id);
-    }
     // Re-enable retained configs whenever the contribution reappears.
+    // Do not drop live adapters on every availability refresh (contribution
+    // noise would tear down in-flight sync); adapters are recreated when the
+    // provider leaves the available set or the user reconnects.
     if ((conn.config || conn.tokens) && conn.status === 'disconnected') {
       this.state.providers[id] = {
         ...conn,

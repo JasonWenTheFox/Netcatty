@@ -218,16 +218,16 @@ function createPluginHostService(options) {
       database,
       contributionService,
     });
-    // Replay retained cloud sidecars into plugin_settings when a plugin enables.
+    // Replay retained cloud sidecars into plugin_settings before the plugin
+    // runtime starts so onStartupFinished sees hydrated values.
     const originalOnPluginEnabled = contributionService.onPluginEnabled.bind(contributionService);
     contributionService.onPluginEnabled = async (pluginId) => {
-      const plugin = await originalOnPluginEnabled(pluginId);
       try {
         await syncSidecarService.hydrateInstalledPluginSettings(pluginId);
       } catch {
         // Hydration is best-effort; enable must still succeed.
       }
-      return plugin;
+      return originalOnPluginEnabled(pluginId);
     };
     const terminalDataPipelineService = options.electron.MessageChannelMain
       ? new PluginTerminalDataPipelineService({

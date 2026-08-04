@@ -162,26 +162,30 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
   }
 
   if (out.config) {
-    // WebDAV — use authType (required field unique to WebDAVConfig) as discriminator
-    // so that token-auth configs (which may lack a password key after JSON round-trip)
-    // still get their token field encrypted.
-    if ("authType" in out.config) {
+    const providerId = String(out.provider ?? "");
+    const isBuiltin = providerId === "webdav"
+      || providerId === "s3"
+      || providerId === "github"
+      || providerId === "google"
+      || providerId === "onedrive";
+    // Built-in providers use field-level encryption; plugin IDs always seal
+    // the whole opaque config so field-name collisions cannot leak secrets.
+    if (isBuiltin && "authType" in out.config) {
       const c = { ...out.config } as WebDAVConfig;
       c.password = await encryptField(c.password);
       c.token = await encryptField(c.token);
       out.config = c;
-    } else if ("secretAccessKey" in out.config) {
-      // S3
+    } else if (isBuiltin && "secretAccessKey" in out.config) {
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await encryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await encryptField(c.sessionToken);
       out.config = c;
     } else if (
-      out.config
+      !isBuiltin
+      && out.config
       && typeof out.config === "object"
       && !("__encryptedPluginConfig" in out.config)
     ) {
-      // Opaque plugin provider configuration may contain secrets; seal whole object.
       const sealed = await encryptField(JSON.stringify(out.config));
       if (sealed) {
         out.config = { __encryptedPluginConfig: sealed } as ProviderConnection["config"];
@@ -203,12 +207,18 @@ export async function decryptProviderSecrets(conn: ProviderConnection): Promise<
   }
 
   if (out.config) {
-    if ("authType" in out.config) {
+    const providerId = String(out.provider ?? "");
+    const isBuiltin = providerId === "webdav"
+      || providerId === "s3"
+      || providerId === "github"
+      || providerId === "google"
+      || providerId === "onedrive";
+    if (isBuiltin && "authType" in out.config) {
       const c = { ...out.config } as WebDAVConfig;
       c.password = await decryptField(c.password);
       c.token = await decryptField(c.token);
       out.config = c;
-    } else if ("secretAccessKey" in out.config) {
+    } else if (isBuiltin && "secretAccessKey" in out.config) {
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await decryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await decryptField(c.sessionToken);
