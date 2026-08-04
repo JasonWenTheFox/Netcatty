@@ -125,12 +125,24 @@ export interface SyncableVaultData {
  * Returns true when the payload contains any meaningful user data worth
  * protecting or syncing.
  */
+function hasMeaningfulPluginSidecars(payload: SyncPayload): boolean {
+  return Boolean(
+    payload.pluginSidecars
+    && Array.isArray(payload.pluginSidecars.entries)
+    && payload.pluginSidecars.entries.length > 0,
+  );
+}
+
 export function hasMeaningfulSyncData(payload: SyncPayload): boolean {
   if (hasSyncPayloadEntityData(payload, SYNC_PAYLOAD_ENTITY_KEYS)) return true;
 
-  return Boolean(
-    payload.settings && Object.values(payload.settings).some((value) => value !== undefined),
-  );
+  if (
+    payload.settings && Object.values(payload.settings).some((value) => value !== undefined)
+  ) {
+    return true;
+  }
+
+  return hasMeaningfulPluginSidecars(payload);
 }
 
 /**
@@ -147,11 +159,7 @@ export function hasMeaningfulCloudSyncData(payload: SyncPayload): boolean {
   }
 
   // Plugin-only profiles (settings/baselines, no vault entities) must still sync.
-  return Boolean(
-    payload.pluginSidecars
-    && Array.isArray(payload.pluginSidecars.entries)
-    && payload.pluginSidecars.entries.length > 0,
-  );
+  return hasMeaningfulPluginSidecars(payload);
 }
 
 /**
@@ -979,11 +987,28 @@ export function buildLocalVaultPayload(
   vault: SyncableVaultData,
   portForwardingRules?: PortForwardingRule[],
 ): SyncPayload {
-  return {
+  const base: SyncPayload = {
     ...buildSyncPayload(vault, portForwardingRules),
     settings: collectLocalBackupSettings(),
     knownHosts: vault.knownHosts,
   };
+  // Protective backups must capture plugin sidecars so restore can recover
+  // plugin settings/baselines. Prefer the last successful host collect cache
+  // (sync); live main-process collect is async and used on the cloud path.
+  try {
+    const raw = localStorageAdapter.read<{ version?: number; entries?: unknown }>(
+      'netcatty_plugin_sidecars_last_known_v1',
+    );
+    if (raw && Array.isArray(raw.entries)) {
+      return withPluginSyncSidecars(base, {
+        version: 1,
+        entries: raw.entries as NonNullable<SyncPayload['pluginSidecars']>['entries'],
+      });
+    }
+  } catch {
+    // ignore cache read failures; backup still carries vault entities
+  }
+  return base;
 }
 
 /**

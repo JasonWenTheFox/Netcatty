@@ -60,10 +60,15 @@ function writeBundle(key: string, bundle: PluginSyncSidecarBundle | null | undef
     localStorageAdapter.remove(key);
     return;
   }
-  localStorageAdapter.write(key, {
+  const ok = localStorageAdapter.write(key, {
     version: 1,
     entries: bundle.entries,
   });
+  if (ok === false) {
+    throw new Error(
+      `Failed to persist plugin sidecars (${key}); local storage write was rejected`,
+    );
+  }
 }
 
 function readLastKnownSidecars(): PluginSyncSidecarBundle | null {
@@ -83,10 +88,17 @@ function readPendingRemoteSidecars(): PluginSyncSidecarBundle | null {
 }
 
 function writePendingRemoteSidecars(bundle: PluginSyncSidecarBundle): void {
-  localStorageAdapter.write(PENDING_REMOTE_SIDECARS_KEY, {
+  const ok = localStorageAdapter.write(PENDING_REMOTE_SIDECARS_KEY, {
     version: 1,
     entries: bundle.entries,
   });
+  if (ok === false) {
+    // Operational failure — must not look like host-unavailable (which apply
+    // swallows). Sync must abort so the remote bundle is not lost.
+    throw new Error(
+      'Failed to queue pending remote plugin sidecars; local storage write was rejected',
+    );
+  }
 }
 
 function clearPendingRemoteSidecars(): void {

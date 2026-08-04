@@ -203,14 +203,30 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = createConvergentSyncStateFromPayload(merged, options.deviceId, options.now);
+      // Carry plugin sidecars from the merged legacy payload so first publish
+      // does not strip local plugin settings/baselines.
+      const migrationSidecars = merged.pluginSidecars
+        ?? options.localPayload.pluginSidecars;
       materialized = materializeSyncPayloadFromConvergentState(state, {
         syncedAt: options.now,
         syncMeta: merged.syncMeta,
+        ...(migrationSidecars && Array.isArray(migrationSidecars.entries)
+          ? { pluginSidecars: migrationSidecars }
+          : {}),
       });
     }
   } else if (blockedReasons.length === 0) {
     state = v2Inputs.map((input) => input.state).reduce(mergeConvergentSyncStates);
-    const joinedPayload = materializeSyncPayloadFromConvergentState(state, { syncedAt: options.now });
+    const joinedSidecars = options.localPayload.pluginSidecars
+      ?? v2Inputs.map((input) => input.payload.pluginSidecars).find((bundle) => (
+        bundle && Array.isArray(bundle.entries)
+      ));
+    const joinedPayload = materializeSyncPayloadFromConvergentState(state, {
+      syncedAt: options.now,
+      ...(joinedSidecars && Array.isArray(joinedSidecars.entries)
+        ? { pluginSidecars: joinedSidecars }
+        : {}),
+    });
     const legacySources: Array<{
       id: string;
       payload: SyncPayload;
@@ -257,7 +273,17 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = branches.reduce(mergeConvergentSyncStates, state);
-      materialized = materializeSyncPayloadFromConvergentState(state, { syncedAt: options.now });
+      const migrationSidecars = options.localPayload.pluginSidecars
+        ?? v1Inputs.map((input) => input.payload.pluginSidecars).find((bundle) => (
+          bundle && Array.isArray(bundle.entries)
+        ))
+        ?? joinedSidecars;
+      materialized = materializeSyncPayloadFromConvergentState(state, {
+        syncedAt: options.now,
+        ...(migrationSidecars && Array.isArray(migrationSidecars.entries)
+          ? { pluginSidecars: migrationSidecars }
+          : {}),
+      });
     }
   }
 
@@ -265,7 +291,13 @@ export function planConvergentSyncMigration(options: {
   if (conflicts.length > 0) blockedReasons.push('The convergent state contains unresolved field conflicts');
   const canInitialize = blockedReasons.length === 0 && state !== null && materialized !== null;
   const payload = canInitialize && state
-    ? withConvergentSyncEnvelope(state, { syncedAt: options.now, syncMeta: materialized?.syncMeta })
+    ? withConvergentSyncEnvelope(state, {
+      syncedAt: options.now,
+      syncMeta: materialized?.syncMeta,
+      ...(materialized?.pluginSidecars
+        ? { pluginSidecars: materialized.pluginSidecars }
+        : {}),
+    })
     : null;
   const previewPayload = materialized ?? options.localPayload;
   const entityCounts = Object.fromEntries(

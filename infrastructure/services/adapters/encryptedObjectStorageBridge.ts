@@ -32,19 +32,9 @@ function syncedFileToBytes(syncedFile: SyncedFile): Uint8Array {
 
 function bytesToSyncedFile(bytes: Uint8Array): SyncedFile {
   const raw = textDecoder.decode(bytes);
-  try {
-    return JSON.parse(raw) as SyncedFile;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const match = /Unexpected non-whitespace character after JSON at position (\d+)/i.exec(message);
-    if (match) {
-      const pos = Number(match[1]);
-      if (Number.isFinite(pos) && pos > 0 && pos <= raw.length) {
-        return JSON.parse(raw.slice(0, pos)) as SyncedFile;
-      }
-    }
-    throw error;
-  }
+  // Require a complete JSON object. Do not accept a valid prefix with trailing
+  // garbage — that hides provider corruption from read-and-verify recovery.
+  return JSON.parse(raw) as SyncedFile;
 }
 
 /**

@@ -47,6 +47,7 @@ const {
   buildSyncPayload,
   hasCloudSyncEntityData,
   hasMeaningfulCloudSyncData,
+  hasMeaningfulSyncData,
   shouldPromptCloudVaultRecovery,
   SYNCABLE_SETTING_STORAGE_KEYS,
 } = await import("./syncPayload.ts");
@@ -790,6 +791,30 @@ test("hasMeaningfulCloudSyncData ignores legacy cloud known hosts", () => {
     }),
     false,
   );
+});
+
+test("buildLocalVaultPayload includes last-known plugin sidecars for protective backups", () => {
+  localStorage.setItem(
+    "netcatty_plugin_sidecars_last_known_v1",
+    JSON.stringify({
+      version: 1,
+      entries: [{
+        pluginId: "com.example.p",
+        kind: "settings",
+        key: "com.example.p.theme\0application\0application",
+        value: "dark",
+        updatedAt: 1,
+      }],
+    }),
+  );
+  try {
+    const payload = buildLocalVaultPayload(vault([]));
+    assert.equal(payload.pluginSidecars?.entries?.length, 1);
+    assert.equal(payload.pluginSidecars?.entries?.[0].value, "dark");
+    assert.equal(hasMeaningfulSyncData(payload), true);
+  } finally {
+    localStorage.removeItem("netcatty_plugin_sidecars_last_known_v1");
+  }
 });
 
 test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful", () => {
