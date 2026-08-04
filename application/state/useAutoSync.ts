@@ -204,6 +204,21 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     return () => window.removeEventListener('sftp-bookmarks-changed', handler);
   }, []);
 
+  // Plugin settings live in the main-process DB; contribution change events
+  // are the renderer signal that sidecar-backed values may have changed.
+  const [pluginSidecarsVersion, setPluginSidecarsVersion] = useState(0);
+  useEffect(() => {
+    const bridge = netcattyBridge.get() as {
+      onPluginContributionsChanged?: (callback: () => void) => () => void;
+    } | null | undefined;
+    const unsubscribe = bridge?.onPluginContributionsChanged?.(() => {
+      setPluginSidecarsVersion((v) => v + 1);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
   const [syncableSettingsStorageVersion, setSyncableSettingsStorageVersion] = useState(0);
   useEffect(() => {
     const bumpIfSyncableSetting = (key: string | null | undefined) => {
@@ -1005,6 +1020,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     config.settingsVersion,
     enabled,
     bookmarksVersion,
+    pluginSidecarsVersion,
     convergentSyncPaused,
     syncableSettingsStorageVersion,
   ]);
@@ -1021,6 +1037,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     config.settingsVersion,
     enabled,
     bookmarksVersion,
+    pluginSidecarsVersion,
     syncableSettingsStorageVersion,
   ]);
   

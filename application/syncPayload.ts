@@ -140,8 +140,17 @@ export function hasMeaningfulSyncData(payload: SyncPayload): boolean {
 export function hasMeaningfulCloudSyncData(payload: SyncPayload): boolean {
   if (hasSyncPayloadEntityData(payload, CLOUD_SYNC_PAYLOAD_ENTITY_KEYS)) return true;
 
+  if (
+    payload.settings && Object.values(payload.settings).some((value) => value !== undefined)
+  ) {
+    return true;
+  }
+
+  // Plugin-only profiles (settings/baselines, no vault entities) must still sync.
   return Boolean(
-    payload.settings && Object.values(payload.settings).some((value) => value !== undefined),
+    payload.pluginSidecars
+    && Array.isArray(payload.pluginSidecars.entries)
+    && payload.pluginSidecars.entries.length > 0,
   );
 }
 
@@ -921,11 +930,20 @@ async function defaultCollectPluginSyncSidecars(): Promise<SyncPayload['pluginSi
 async function defaultApplyPluginSyncSidecars(
   sidecars: SyncPayload['pluginSidecars'] | null | undefined,
 ): Promise<void> {
+  const {
+    applyPluginSyncSidecarsFromHost,
+    isPluginSidecarHostUnavailableError,
+  } = await import('./pluginSyncSidecarBridge');
   try {
-    const { applyPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
     await applyPluginSyncSidecarsFromHost(sidecars);
-  } catch {
-    // Host unavailable — vault apply must still succeed.
+  } catch (error) {
+    // Only tolerate the host-gated-off / manager-unavailable path so a later
+    // plugin-enabled session can still apply from last-known cache. DB/runtime
+    // failures must fail the surrounding sync so the same remote is retried.
+    if (isPluginSidecarHostUnavailableError(error)) {
+      return;
+    }
+    throw error;
   }
 }
 

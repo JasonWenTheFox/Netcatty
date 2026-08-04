@@ -792,6 +792,42 @@ test("hasMeaningfulCloudSyncData ignores legacy cloud known hosts", () => {
   );
 });
 
+test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful", () => {
+  assert.equal(
+    hasMeaningfulCloudSyncData({
+      hosts: [],
+      keys: [],
+      identities: [],
+      snippets: [],
+      customGroups: [],
+      syncedAt: 1,
+      pluginSidecars: {
+        version: 1,
+        entries: [{
+          pluginId: "com.example.p",
+          kind: "settings",
+          key: "com.example.p.theme\0application\0application",
+          value: "dark",
+          updatedAt: 1,
+        }],
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    hasMeaningfulCloudSyncData({
+      hosts: [],
+      keys: [],
+      identities: [],
+      snippets: [],
+      customGroups: [],
+      syncedAt: 1,
+      pluginSidecars: { version: 1, entries: [] },
+    }),
+    false,
+  );
+});
+
 test("hasCloudSyncEntityData ignores settings-only payloads for empty-vault recovery", () => {
   assert.equal(
     hasCloudSyncEntityData({

@@ -652,8 +652,10 @@ function registerPluginBridge(ipcMain, options) {
     return extensionProviderService.listProviders(payload ?? {});
   });
 
+  // Fallback null = host gated off / manager unavailable. Renderer must treat
+  // null as "unavailable" (last-known) rather than an authoritative empty set.
   handlePassive(CHANNELS.syncSidecarsCollect, null, async () => {
-    if (!syncSidecarService) return { version: 1, entries: [] };
+    if (!syncSidecarService) return null;
     return syncSidecarService.collectForSync();
   });
 

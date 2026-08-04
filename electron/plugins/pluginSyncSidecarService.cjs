@@ -67,6 +67,12 @@ class PluginSyncSidecarService {
       existingSidecars: filteredExisting,
     });
     bundle.entries = excludeSecretPluginSettingsFromSidecars(bundle.entries, declared);
+    // Persist collected settings into the non-cascade table so a later uninstall
+    // still has rows to re-emit (plugin_settings alone is not enough once the
+    // declaration disappears and collection skips undeclared stored values).
+    if (typeof this.database.replaceAllSyncSidecars === "function") {
+      this.database.replaceAllSyncSidecars(bundle.entries);
+    }
     return bundle;
   }
 

@@ -5,6 +5,7 @@ import {
   excludeSecretPluginSettingsFromSidecars,
   isCloudSyncablePluginSetting,
   mergePluginSyncSidecars,
+  mergePluginSyncSidecarsThreeWay,
   parseSettingsSidecarKey,
   type PluginSettingFieldDescriptor,
   type PluginSyncSidecarEntry,
@@ -157,5 +158,43 @@ describe('pluginSyncSidecar', () => {
     const filtered = excludeSecretPluginSettingsFromSidecars(entries, declared);
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].value, 'dark');
+  });
+
+  it('three-way merge propagates local settings deletions against an unchanged remote', () => {
+    const entry: PluginSyncSidecarEntry = {
+      pluginId,
+      kind: 'settings',
+      key: `${pluginId}.theme\0application\0application`,
+      value: 'dark',
+      updatedAt: 10,
+    };
+    const merged = mergePluginSyncSidecarsThreeWay({
+      base: [entry],
+      local: [],
+      remote: [entry],
+    });
+    assert.equal(merged.some((item) => item.key === entry.key), false);
+  });
+
+  it('three-way merge keeps a newer remote edit over a local deletion', () => {
+    const base: PluginSyncSidecarEntry = {
+      pluginId,
+      kind: 'settings',
+      key: `${pluginId}.theme\0application\0application`,
+      value: 'dark',
+      updatedAt: 10,
+    };
+    const remote: PluginSyncSidecarEntry = {
+      ...base,
+      value: 'light',
+      updatedAt: 20,
+    };
+    const merged = mergePluginSyncSidecarsThreeWay({
+      base: [base],
+      local: [],
+      remote: [remote],
+    });
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].value, 'light');
   });
 });

@@ -71,6 +71,48 @@ test("collectForSync excludes secrets and preserves missing-plugin baselines", (
   assert.ok(bundle.entries.some((entry) => entry.kind === "crdt_baseline" && entry.pluginId === "com.missing.plugin"));
   assert.ok(bundle.entries.some((entry) => entry.kind === "settings" && entry.value === "dark"));
   assert.equal(bundle.entries.some((entry) => entry.value === "secret"), false);
+  // Collected settings must land in the non-cascade table for post-uninstall collect.
+  const persisted = database.listAllSyncSidecars();
+  assert.ok(persisted.some((entry) => entry.kind === "settings" && entry.value === "dark"));
+  assert.ok(persisted.some((entry) => entry.kind === "crdt_baseline"));
+});
+
+test("collectForSync re-emits settings after plugin uninstall via non-cascade table", (context) => {
+  const database = tempDb(context);
+  database.installVersion({
+    pluginId: "com.example.sync",
+    version: "1.0.0",
+    manifest: { id: "com.example.sync", version: "1.0.0" },
+    archiveSha256: "b".repeat(64),
+    packageRelativePath: "packages/com.example.sync/1.0.0",
+  }, { enable: true });
+  database.setSetting("com.example.sync", "com.example.sync.theme", "application", "application", "dark");
+
+  const contributionService = {
+    snapshot() {
+      return {
+        plugins: [{
+          id: "com.example.sync",
+          settings: [
+            { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+          ],
+        }],
+      };
+    },
+  };
+  const service = new PluginSyncSidecarService({ database, contributionService });
+  service.collectForSync();
+
+  database.removePlugin("com.example.sync");
+  const missingService = new PluginSyncSidecarService({
+    database,
+    contributionService: { snapshot: () => ({ plugins: [] }) },
+  });
+  const afterUninstall = missingService.collectForSync();
+  assert.ok(
+    afterUninstall.entries.some((entry) => entry.kind === "settings" && entry.value === "dark"),
+    "settings sidecar must survive uninstall via non-cascade persistence",
+  );
 });
 
 test("collectForSync omits deleted settings for installed plugins but keeps missing-plugin rows", (context) => {
