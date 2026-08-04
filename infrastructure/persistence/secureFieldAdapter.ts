@@ -182,10 +182,14 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
       out.config = c;
     } else if (
       !isBuiltin
-      && out.config
-      && typeof out.config === "object"
-      && !("__encryptedPluginConfig" in out.config)
+      && out.config != null
+      && !(
+        typeof out.config === "object"
+        && out.config !== null
+        && "__encryptedPluginConfig" in out.config
+      )
     ) {
+      // Seal any JSON shape (object, string, number, array) as one opaque blob.
       const sealed = await encryptField(JSON.stringify(out.config));
       if (sealed) {
         out.config = { __encryptedPluginConfig: sealed } as ProviderConnection["config"];

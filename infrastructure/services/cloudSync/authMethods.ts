@@ -379,10 +379,28 @@ export async function connectPluginProviderImpl(
     const previous = this.state.providers[providerId];
     const previousAccountId = previous?.account?.id ?? null;
     const previousResource = previous?.resourceId ?? null;
-    const previousConfigFp = JSON.stringify(previous?.config ?? null);
+    const configFingerprint = (value: unknown): string => {
+      const normalize = (input: unknown): unknown => {
+        if (Array.isArray(input)) return input.map(normalize);
+        if (input && typeof input === 'object') {
+          return Object.fromEntries(
+            Object.keys(input as Record<string, unknown>)
+              .sort()
+              .map((key) => [key, normalize((input as Record<string, unknown>)[key])]),
+          );
+        }
+        return input;
+      };
+      try {
+        return JSON.stringify(normalize(value ?? null));
+      } catch {
+        return String(value);
+      }
+    };
+    const previousConfigFp = configFingerprint(previous?.config ?? null);
     const nextAccountId = account?.id ?? null;
     const nextResource = resourceId || null;
-    const nextConfigFp = JSON.stringify(configuration ?? null);
+    const nextConfigFp = configFingerprint(configuration ?? null);
     this.state.providers[providerId] = {
       provider: providerId,
       status: 'connected',

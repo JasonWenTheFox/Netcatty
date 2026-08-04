@@ -380,8 +380,8 @@ function assertSyncResult(operation, value) {
       } else if (value.encoding === "base64") {
         if (typeof value.data !== "string") throw new TypeError("Sync readObject data is invalid");
         const decoded = Buffer.byteLength(value.data, "base64");
-        // base64 decoded size is approximate; enforce declared byteLength against limit.
-        if (value.byteLength > INLINE_SYNC_OBJECT_BYTES) {
+        // Use the safe inline cutoff (base64 + envelope must fit control-plane JSON).
+        if (value.byteLength > INLINE_SYNC_OBJECT_SAFE_BYTES) {
           throw new TypeError("Sync readObject inline payload exceeds the inline limit");
         }
         if (decoded < value.byteLength) {
