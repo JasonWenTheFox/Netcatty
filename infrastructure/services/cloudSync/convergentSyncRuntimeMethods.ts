@@ -555,6 +555,12 @@ export async function syncConvergentProvidersUnlockedImpl(
         runtime.resourceId = await runtime.adapter.upload(file);
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
         runtime.latestRemote = file;
+        // Sidecar-only (or any) upload invalidates preflight verification so the
+        // post-write payload is re-downloaded and baselines stay current.
+        preflightVerified.delete(runtime.provider);
+        runtime.verifiedState = undefined;
+        runtime.verifiedPayload = undefined;
+        runtime.verifiedFile = undefined;
       } catch (error) {
         runtime.error = errorMessage(error);
       }

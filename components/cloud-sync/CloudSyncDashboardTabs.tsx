@@ -51,6 +51,8 @@ interface CloudSyncDashboardTabsProps {
   onCancelConvergentMigration: () => void;
   onResolveConvergentConflict: (addressKey: string, candidateDot: string) => void | Promise<void>;
   onDowngradeConvergent: () => void | Promise<void>;
+  /** Disconnect other legacy providers before connecting a plugin backend. */
+  disconnectOtherProviders?: (current: CloudProvider) => Promise<void>;
 }
 
 export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
@@ -81,8 +83,13 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
   onCancelConvergentMigration,
   onResolveConvergentConflict,
   onDowngradeConvergent,
+  disconnectOtherProviders,
 }) => {
-  const [pluginSyncProviders, setPluginSyncProviders] = useState<Array<{ id: string; title: string }>>([]);
+  const [pluginSyncProviders, setPluginSyncProviders] = useState<Array<{
+    id: string;
+    title: string;
+    requiresConfig: boolean;
+  }>>([]);
   const [pluginConnectBusy, setPluginConnectBusy] = useState<string | null>(null);
 
   useEffect(() => {
@@ -92,15 +99,30 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
         const listed = await pluginExtensionBridge.listProviders('sync');
         if (cancelled) return;
         setPluginSyncProviders(
-          (listed ?? []).map((entry) => ({
-            id: String((entry as { id?: string }).id ?? ''),
-            title: String(
-              (entry as { title?: string; label?: string; id?: string }).title
-              ?? (entry as { label?: string }).label
-              ?? (entry as { id?: string }).id
-              ?? 'Plugin sync',
-            ),
-          })).filter((entry) => entry.id.length > 0 && isPluginCloudProviderId(entry.id)),
+          (listed ?? []).map((entry) => {
+            const nested = (entry as {
+              provider?: {
+                id?: string;
+                label?: string;
+                configurationSchema?: { required?: string[] };
+              };
+              pluginDisplayName?: string;
+            }).provider;
+            const id = String(nested?.id ?? '');
+            const required = Array.isArray(nested?.configurationSchema?.required)
+              ? nested!.configurationSchema!.required!
+              : [];
+            return {
+              id,
+              title: String(
+                nested?.label
+                ?? (entry as { pluginDisplayName?: string }).pluginDisplayName
+                ?? id
+                ?? 'Plugin sync',
+              ),
+              requiresConfig: required.length > 0,
+            };
+          }).filter((entry) => entry.id.length > 0 && isPluginCloudProviderId(entry.id)),
         );
       } catch {
         if (!cancelled) setPluginSyncProviders([]);
@@ -236,6 +258,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                         const listed = pluginSyncProviders.find((entry) => entry.id === providerId);
                         const title = listed?.title ?? providerId;
                         const connected = connection ? isProviderReadyForSync(connection) : false;
+                        const requiresConfig = listed?.requiresConfig === true;
                         return (
                             <ProviderCard
                                 key={providerId}
@@ -250,11 +273,23 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                                 }
                                 account={connection?.account}
                                 lastSync={connection?.lastSync}
-                                error={connection?.error}
-                                disabled={isConnectDisabled(providerId as CloudProvider)}
+                                error={
+                                  connection?.error
+                                  ?? (requiresConfig && !connected
+                                    ? 'This plugin requires configuration before connect'
+                                    : undefined)
+                                }
+                                disabled={
+                                  isConnectDisabled(providerId as CloudProvider)
+                                  || requiresConfig
+                                }
                                 onConnect={async () => {
+                                    if (requiresConfig) return;
                                     setPluginConnectBusy(providerId);
                                     try {
+                                        if (disconnectOtherProviders) {
+                                          await disconnectOtherProviders(providerId as CloudProvider);
+                                        }
                                         await sync.connectPluginProvider(providerId, {});
                                     } finally {
                                         setPluginConnectBusy(null);

@@ -190,8 +190,10 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
         if (hasConnectingProvider && connection?.status !== 'connecting') {
             return true;
         }
-        // Unlisted / never-connected plugin providers have no connection record.
-        if (!connection) return false;
+        // Never-connected plugin providers still honor the single-provider gate.
+        if (!connection) {
+            return !sync.convergentSyncConfig.initialized && sync.hasAnyConnectedProvider;
+        }
         return !sync.convergentSyncConfig.initialized
             && sync.hasAnyConnectedProvider
             && !isProviderReadyForSync(connection);
@@ -917,6 +919,7 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
                 }}
                 onResolveConvergentConflict={handleResolveConvergentConflict}
                 onDowngradeConvergent={handleDowngradeConvergent}
+                disconnectOtherProviders={disconnectOtherProviders}
             />
 
             <CloudSyncDialogs
