@@ -6,6 +6,7 @@ import {
   generateDeviceId,
   getDefaultDeviceName,
   isOneDriveReauthRequiredMessage,
+  providerConnectionStorageKey,
 } from '../../../domain/sync';
 import {
   DEFAULT_CLOUD_SYNC_STRATEGY,
@@ -95,7 +96,7 @@ export function loadInitialStateImpl(this: any): SyncManagerState {
   }
 
 export function loadProviderConnectionImpl(this: any,provider: CloudProvider): ProviderConnection {
-    const key = SYNC_STORAGE_KEYS[`PROVIDER_${provider.toUpperCase()}` as keyof typeof SYNC_STORAGE_KEYS];
+    const key = providerConnectionStorageKey(provider);
     const stored = this.loadFromStorage<Partial<ProviderConnection>>(key);
 
     // Determine the correct status: if tokens or config exist, should be 'connected'
@@ -141,9 +142,10 @@ export async function saveProviderConnectionImpl(this: any,
   connection: ProviderConnection,
   authAttemptId?: number
 ): Promise<void> {
-    const key = SYNC_STORAGE_KEYS[`PROVIDER_${provider.toUpperCase()}` as keyof typeof SYNC_STORAGE_KEYS];
+    const key = providerConnectionStorageKey(provider);
     // Use write-specific counter so status-only updates cannot discard
     // an in-flight encrypted write that must be persisted.
+    if (this.providerWriteSeq[provider] == null) this.providerWriteSeq[provider] = 0;
     const seq = ++this.providerWriteSeq[provider];
     const encrypted = await encryptProviderSecrets(connection);
     // Only persist if no newer save has started during the async gap

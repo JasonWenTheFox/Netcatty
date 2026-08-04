@@ -19,6 +19,8 @@ const REQUIRED_SCHEMA_COLUMNS = Object.freeze({
   plugin_permission_grants: ["plugin_id", "permission", "resource", "resource_kind", "declaration_hash", "granted_at"],
   plugin_secrets: ["plugin_id", "key", "secret_ref", "ciphertext", "created_at", "updated_at"],
   plugin_security_audit: ["id", "plugin_id", "event", "details_json", "created_at"],
+  // User-owned encrypted-sync sidecars: no FK cascade on package uninstall.
+  plugin_sync_sidecars: ["plugin_id", "kind", "key", "value_json", "updated_at"],
 });
 
 function parseJson(text, label) {
@@ -152,6 +154,16 @@ class PluginDatabase {
           );
           CREATE INDEX plugin_security_audit_lookup
             ON plugin_security_audit(plugin_id, created_at DESC);
+          CREATE TABLE plugin_sync_sidecars (
+            plugin_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('settings', 'account_baseline', 'crdt_baseline')),
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (plugin_id, kind, key)
+          );
+          CREATE INDEX plugin_sync_sidecars_lookup
+            ON plugin_sync_sidecars(plugin_id, kind, key);
           PRAGMA user_version = 1;
         `);
       });
@@ -486,6 +498,107 @@ class PluginDatabase {
       value: parseJson(row.value_json, "setting value"),
       updatedAt: Number(row.updated_at),
     }));
+  }
+
+  listAllSettings() {
+    return this.db.prepare(`
+      SELECT plugin_id, setting_id, scope, scope_id, value_json, updated_at
+      FROM plugin_settings
+      ORDER BY plugin_id COLLATE BINARY, setting_id COLLATE BINARY, scope COLLATE BINARY, scope_id COLLATE BINARY
+    `).all().map((row) => ({
+      pluginId: row.plugin_id,
+      settingId: row.setting_id,
+      scope: row.scope,
+      scopeId: row.scope_id,
+      value: parseJson(row.value_json, "setting value"),
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  getSyncSidecar(pluginId, kind, key) {
+    const row = this.db.prepare(`
+      SELECT value_json, updated_at FROM plugin_sync_sidecars
+      WHERE plugin_id = ? AND kind = ? AND key = ?
+    `).get(pluginId, kind, key);
+    if (!row) return undefined;
+    return {
+      pluginId,
+      kind,
+      key,
+      value: parseJson(row.value_json, "sync sidecar value"),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  setSyncSidecar(pluginId, kind, key, value, updatedAt = this.clock()) {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new TypeError("Plugin sync sidecar value must be JSON serializable");
+    this.db.prepare(`
+      INSERT INTO plugin_sync_sidecars(plugin_id, kind, key, value_json, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(plugin_id, kind, key) DO UPDATE SET
+        value_json = excluded.value_json,
+        updated_at = excluded.updated_at
+    `).run(pluginId, kind, key, serialized, updatedAt);
+  }
+
+  deleteSyncSidecar(pluginId, kind, key) {
+    this.db.prepare(`
+      DELETE FROM plugin_sync_sidecars
+      WHERE plugin_id = ? AND kind = ? AND key = ?
+    `).run(pluginId, kind, key);
+  }
+
+  listSyncSidecars(pluginId) {
+    return this.db.prepare(`
+      SELECT plugin_id, kind, key, value_json, updated_at
+      FROM plugin_sync_sidecars
+      WHERE plugin_id = ?
+      ORDER BY kind COLLATE BINARY, key COLLATE BINARY
+    `).all(pluginId).map((row) => ({
+      pluginId: row.plugin_id,
+      kind: row.kind,
+      key: row.key,
+      value: parseJson(row.value_json, "sync sidecar value"),
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  listAllSyncSidecars() {
+    return this.db.prepare(`
+      SELECT plugin_id, kind, key, value_json, updated_at
+      FROM plugin_sync_sidecars
+      ORDER BY plugin_id COLLATE BINARY, kind COLLATE BINARY, key COLLATE BINARY
+    `).all().map((row) => ({
+      pluginId: row.plugin_id,
+      kind: row.kind,
+      key: row.key,
+      value: parseJson(row.value_json, "sync sidecar value"),
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  replaceAllSyncSidecars(entries) {
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM plugin_sync_sidecars").run();
+      const insert = this.db.prepare(`
+        INSERT INTO plugin_sync_sidecars(plugin_id, kind, key, value_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const entry of entries) {
+        const serialized = JSON.stringify(entry.value);
+        if (serialized === undefined) {
+          throw new TypeError("Plugin sync sidecar value must be JSON serializable");
+        }
+        insert.run(
+          entry.pluginId,
+          entry.kind,
+          entry.key,
+          serialized,
+          Number(entry.updatedAt) || this.clock(),
+        );
+      }
+    });
   }
 
   getViewState(pluginId, viewId, scopeId) {

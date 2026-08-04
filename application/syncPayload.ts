@@ -898,6 +898,27 @@ export async function buildCloudSyncPayload(
   };
 }
 
+/**
+ * Attach a host-collected plugin sidecar bundle to a cloud payload.
+ * Secrets must already be excluded by the collector; this only drops empty bundles.
+ */
+export function withPluginSyncSidecars(
+  payload: SyncPayload,
+  sidecars: SyncPayload['pluginSidecars'] | null | undefined,
+): SyncPayload {
+  if (!sidecars || !Array.isArray(sidecars.entries) || sidecars.entries.length === 0) {
+    const { pluginSidecars: _omit, ...rest } = payload;
+    return rest;
+  }
+  return {
+    ...payload,
+    pluginSidecars: {
+      version: 1,
+      entries: sidecars.entries,
+    },
+  };
+}
+
 /** Build a local backup/restore payload, including local-only trust records. */
 export function buildLocalVaultPayload(
   vault: SyncableVaultData,

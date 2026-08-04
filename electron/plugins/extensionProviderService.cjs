@@ -14,16 +14,18 @@ const { PluginRpcError, RPC_ERRORS, raceWithAbort } = require("./rpcRouter.cjs")
 const { compileRestrictedJsonSchema } = require("./restrictedJsonSchema.cjs");
 const pluginContractSchema = require("./generated/plugin-contract.schema.json");
 
-const EXTENSION_PROVIDER_KINDS = Object.freeze(["connection", "authentication", "importer"]);
+const EXTENSION_PROVIDER_KINDS = Object.freeze(["connection", "authentication", "importer", "sync"]);
 const PROVIDER_PERMISSIONS = Object.freeze({
   connection: "provider.connection",
   authentication: "provider.authentication",
   importer: "provider.importer",
+  sync: "provider.sync",
 });
 const OPERATIONS = Object.freeze({
   connection: new Set(["validateConfiguration", "probe", "open", "resize", "signal", "reconnect", "close", "getStatus"]),
   authentication: new Set(["begin", "respond", "cancel"]),
   importer: new Set(["detect", "parse"]),
+  sync: new Set(["connect", "disconnect", "getAccount", "getCapabilities", "readObject", "writeObject", "deleteObject"]),
 });
 const MAX_PROVIDER_JSON_BYTES = 128 * 1024;
 const DEFAULT_DEADLINE_MS = 30_000;
@@ -36,6 +38,11 @@ const MAX_IMPORT_BYTES = importerLimits.maxInputBytes;
 const MAX_IMPORT_OUTPUT_BYTES = importerLimits.maxOutputBytes;
 const MAX_IMPORT_RECORDS = importerLimits.maxRecords;
 const MAX_IMPORT_RECORD_BYTES = importerLimits.maxRecordBytes;
+const syncLimits = pluginContractSchema.$defs.SyncLimits.const;
+const MAX_SYNC_OBJECT_BYTES = syncLimits.maxObjectBytes;
+const MAX_SYNC_OBJECT_KEY_LENGTH = syncLimits.maxObjectKeyLength;
+const MAX_SYNC_REVISION_LENGTH = syncLimits.maxRevisionLength;
+const INLINE_SYNC_OBJECT_BYTES = syncLimits.inlineObjectBytes;
 const definitionValidators = Object.freeze({
   AuthenticationResult: createDefinitionValidator("AuthenticationResult"),
   ConnectionOpenResult: createDefinitionValidator("ConnectionOpenResult"),
@@ -46,6 +53,13 @@ const definitionValidators = Object.freeze({
   ImporterDetectResult: createDefinitionValidator("ImporterDetectResult"),
   ImporterParseResult: createDefinitionValidator("ImporterParseResult"),
   ImporterRecord: createDefinitionValidator("ImporterRecord"),
+  SyncConnectResult: createDefinitionValidator("SyncConnectResult"),
+  SyncDisconnectResult: createDefinitionValidator("SyncDisconnectResult"),
+  SyncGetAccountResult: createDefinitionValidator("SyncGetAccountResult"),
+  SyncCapabilitiesResult: createDefinitionValidator("SyncCapabilitiesResult"),
+  SyncReadObjectResult: createDefinitionValidator("SyncReadObjectResult"),
+  SyncWriteObjectResult: createDefinitionValidator("SyncWriteObjectResult"),
+  SyncDeleteObjectResult: createDefinitionValidator("SyncDeleteObjectResult"),
 });
 
 function invalidArgument(message) {
@@ -312,6 +326,96 @@ function normalizeImportRecord(value) {
   return freezeJson(value);
 }
 
+function assertSyncObjectKey(value) {
+  return assertString(value, "Sync object key", MAX_SYNC_OBJECT_KEY_LENGTH);
+}
+
+function assertSyncRevision(value, label = "Sync object revision") {
+  if (value == null) return value;
+  return assertString(value, label, MAX_SYNC_REVISION_LENGTH);
+}
+
+function assertSyncResult(operation, value) {
+  if (operation === "disconnect") {
+    assertDefinition("SyncDisconnectResult", value, "Sync disconnect result");
+    if (value !== null) throw new TypeError("Sync disconnect result must be null");
+    return value;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`Sync ${operation} result must be an object`);
+  }
+  if (operation === "connect") {
+    assertDefinition("SyncConnectResult", value, "Sync connect result");
+    assertString(value.account?.id, "Sync account ID", 512);
+  } else if (operation === "getAccount") {
+    assertDefinition("SyncGetAccountResult", value, "Sync getAccount result");
+    if (value.account != null) assertString(value.account.id, "Sync account ID", 512);
+  } else if (operation === "getCapabilities") {
+    assertDefinition("SyncCapabilitiesResult", value, "Sync capabilities result");
+    if (typeof value.revisions !== "boolean"
+      || typeof value.conditionalWrites !== "boolean"
+      || typeof value.atomicReplacement !== "boolean") {
+      throw new TypeError("Sync capabilities result is invalid");
+    }
+    if (value.maxObjectBytes != null
+      && (!Number.isSafeInteger(value.maxObjectBytes)
+        || value.maxObjectBytes < 1
+        || value.maxObjectBytes > MAX_SYNC_OBJECT_BYTES)) {
+      throw new TypeError("Sync maxObjectBytes is invalid");
+    }
+  } else if (operation === "readObject") {
+    assertDefinition("SyncReadObjectResult", value, "Sync readObject result");
+    if (value.found === true) {
+      if (!Number.isSafeInteger(value.byteLength) || value.byteLength < 0 || value.byteLength > MAX_SYNC_OBJECT_BYTES) {
+        throw new TypeError("Sync readObject byteLength is invalid");
+      }
+      if (value.streamed === true) {
+        // Host streams the ciphertext separately.
+      } else if (value.encoding === "base64") {
+        if (typeof value.data !== "string") throw new TypeError("Sync readObject data is invalid");
+        const decoded = Buffer.byteLength(value.data, "base64");
+        // base64 decoded size is approximate; enforce declared byteLength against limit.
+        if (value.byteLength > INLINE_SYNC_OBJECT_BYTES) {
+          throw new TypeError("Sync readObject inline payload exceeds the inline limit");
+        }
+        if (decoded < value.byteLength) {
+          throw new TypeError("Sync readObject data is shorter than byteLength");
+        }
+      } else {
+        throw new TypeError("Sync readObject result encoding is invalid");
+      }
+      if (value.revision !== undefined) assertSyncRevision(value.revision);
+    } else if (value.found !== false) {
+      throw new TypeError("Sync readObject found flag is invalid");
+    }
+  } else if (operation === "writeObject") {
+    assertDefinition("SyncWriteObjectResult", value, "Sync writeObject result");
+    if (typeof value.created !== "boolean") throw new TypeError("Sync writeObject created flag is invalid");
+    if (value.revision !== undefined) assertSyncRevision(value.revision);
+  } else if (operation === "deleteObject") {
+    assertDefinition("SyncDeleteObjectResult", value, "Sync deleteObject result");
+    if (typeof value.deleted !== "boolean") throw new TypeError("Sync deleteObject deleted flag is invalid");
+  } else {
+    throw new TypeError(`Unsupported sync operation result: ${operation}`);
+  }
+  assertBoundedJson(value, `Sync ${operation} result`);
+  return freezeJson(value);
+}
+
+function decodeBase64Bytes(data, expectedLength, label) {
+  if (typeof data !== "string") throw invalidArgument(`${label} data is invalid`);
+  let bytes;
+  try {
+    bytes = Buffer.from(data, "base64");
+  } catch {
+    throw invalidArgument(`${label} data is not valid base64`);
+  }
+  if (bytes.byteLength !== expectedLength) {
+    throw invalidArgument(`${label} byteLength does not match decoded data`);
+  }
+  return bytes;
+}
+
 class PluginExtensionProviderService {
   constructor(options) {
     if (!options?.contributionService || !options?.permissionEngine || !options?.runtimeSupervisor
@@ -400,6 +504,7 @@ class PluginExtensionProviderService {
       if (kind === "connection") return assertConnectionResult(operation, result);
       if (kind === "authentication") return assertAuthenticationResult(result);
       if (kind === "importer" && operation === "detect") return assertImporterDetectResult(result);
+      if (kind === "sync") return assertSyncResult(operation, result);
       return freezeJson(assertBoundedJson(result, "Extension Provider result"));
     } catch (error) {
       throw new PluginRpcError(RPC_ERRORS.dataLoss, `Extension Provider result failed validation: ${error?.message ?? error}`);
@@ -904,6 +1009,295 @@ class PluginExtensionProviderService {
     }
   }
 
+  async connectSync(params, options = {}) {
+    const providerId = assertString(params?.providerId, "Sync Provider ID");
+    const operationId = `sync:connect:${randomUUID()}`;
+    const activation = options.activation ?? await this.activate(providerId, "sync", options.signal);
+    try {
+      return await this.invoke({
+        providerId,
+        kind: "sync",
+        operation: "connect",
+        payload: {
+          operationId,
+          configuration: freezeJson(assertBoundedJson(
+            params?.configuration === undefined ? {} : params.configuration,
+            "Sync configuration",
+          )),
+          ...(params.credential === undefined ? {} : { credential: params.credential }),
+        },
+        deadlineMs: params?.deadlineMs,
+      }, { ...options, activation });
+    } finally {
+      this.leaseStore.revokeOperation(activation.identity.pluginId, operationId);
+    }
+  }
+
+  async disconnectSync(params, options = {}) {
+    return this.invoke({
+      providerId: assertString(params?.providerId, "Sync Provider ID"),
+      kind: "sync",
+      operation: "disconnect",
+      payload: {
+        operationId: `sync:disconnect:${randomUUID()}`,
+      },
+      deadlineMs: params?.deadlineMs,
+    }, options);
+  }
+
+  async getSyncAccount(params, options = {}) {
+    return this.invoke({
+      providerId: assertString(params?.providerId, "Sync Provider ID"),
+      kind: "sync",
+      operation: "getAccount",
+      payload: {
+        operationId: `sync:getAccount:${randomUUID()}`,
+      },
+      deadlineMs: params?.deadlineMs,
+    }, options);
+  }
+
+  async getSyncCapabilities(params, options = {}) {
+    return this.invoke({
+      providerId: assertString(params?.providerId, "Sync Provider ID"),
+      kind: "sync",
+      operation: "getCapabilities",
+      payload: {
+        operationId: `sync:getCapabilities:${randomUUID()}`,
+      },
+      deadlineMs: params?.deadlineMs,
+    }, options);
+  }
+
+  async readSyncObject(params, options = {}) {
+    const providerId = assertString(params?.providerId, "Sync Provider ID");
+    const key = assertSyncObjectKey(params?.key);
+    const deadlineMs = normalizeDeadlineMs(params?.deadlineMs);
+    const deadlineAt = performance.now() + deadlineMs;
+    const activation = options.activation ?? await this.activate(providerId, "sync", options.signal);
+    const operationId = `sync:read:${randomUUID()}`;
+    // Always offer an output stream so large encrypted objects can leave the
+    // JSON control plane; small objects may still return inline base64.
+    const outputStreamId = `${operationId}:output`;
+    const chunks = [];
+    let totalBytes = 0;
+    let resolveOutputDone;
+    let rejectOutputDone;
+    let outputSettled = false;
+    const outputDone = new Promise((resolve, reject) => {
+      resolveOutputDone = (value) => {
+        if (outputSettled) return;
+        outputSettled = true;
+        resolve(value);
+      };
+      rejectOutputDone = (error) => {
+        if (outputSettled) return;
+        outputSettled = true;
+        reject(error);
+      };
+    });
+    void outputDone.catch(() => {});
+
+    const expected = this.expectIncoming(activation.identity, outputStreamId, async (stream) => {
+      stream.bind({
+        onChunk: (chunk, release) => {
+          try {
+            if (chunk.encoding !== "binary") throw new Error("Sync object stream must be binary");
+            totalBytes += chunk.bytes.byteLength;
+            if (totalBytes > MAX_SYNC_OBJECT_BYTES) {
+              throw new PluginRpcError(RPC_ERRORS.resourceExhausted, "Sync object exceeds its size limit");
+            }
+            chunks.push(Buffer.from(chunk.bytes));
+            release();
+          } catch (error) {
+            rejectOutputDone(error);
+            throw error;
+          }
+        },
+        onClose: (reason) => {
+          try {
+            if (reason !== "end") {
+              throw new PluginRpcError(RPC_ERRORS.dataLoss, "Sync object stream did not end normally");
+            }
+            resolveOutputDone(Buffer.concat(chunks));
+          } catch (error) {
+            rejectOutputDone(error);
+          }
+        },
+      });
+      return stream;
+    }, options.signal, deadlineMs);
+
+    const request = this.invoke({
+      providerId,
+      kind: "sync",
+      operation: "readObject",
+      payload: {
+        key,
+        operationId,
+        outputStreamId,
+        windowBytes: STREAM_WINDOW_BYTES,
+      },
+      deadlineMs,
+    }, { ...options, activation });
+
+    try {
+      const result = await waitUntilDeadline(
+        request,
+        deadlineAt,
+        options.signal,
+        "Sync readObject exceeded its deadline",
+      );
+      if (result.found !== true) {
+        // Swallow the cancelled expectation; inline/not-found paths intentionally
+        // do not consume the pre-opened output stream.
+        void expected.promise.catch(() => {});
+        expected.cancel(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object not found"));
+        return Object.freeze({ found: false, key, bytes: null, revision: undefined });
+      }
+      if (result.streamed === true) {
+        await waitUntilDeadline(
+          waitForStreamOrRequestFailure(expected.promise, request),
+          deadlineAt,
+          options.signal,
+          "Sync readObject stream exceeded its deadline",
+        );
+        const bytes = await waitUntilDeadline(
+          outputDone,
+          deadlineAt,
+          options.signal,
+          "Sync readObject stream exceeded its deadline",
+        );
+        if (bytes.byteLength !== result.byteLength) {
+          throw new PluginRpcError(RPC_ERRORS.dataLoss, "Sync readObject stream size does not match byteLength");
+        }
+        // Bytes are mutable buffers; freeze only the metadata envelope.
+        return Object.freeze({
+          found: true,
+          key,
+          bytes: new Uint8Array(bytes),
+          revision: result.revision,
+          contentType: result.contentType,
+        });
+      }
+      // Inline base64 path — cancel unused stream expectation.
+      void expected.promise.catch(() => {});
+      expected.cancel(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object returned inline"));
+      const bytes = decodeBase64Bytes(result.data, result.byteLength, "Sync readObject");
+      return Object.freeze({
+        found: true,
+        key,
+        bytes: new Uint8Array(bytes),
+        revision: result.revision,
+        contentType: result.contentType,
+      });
+    } catch (error) {
+      void expected?.promise?.catch?.(() => {});
+      expected?.cancel?.(error);
+      throw error;
+    }
+  }
+
+  async writeSyncObject(params, options = {}) {
+    const providerId = assertString(params?.providerId, "Sync Provider ID");
+    const key = assertSyncObjectKey(params?.key);
+    const rawBytes = params?.bytes instanceof Uint8Array
+      ? params.bytes
+      : params?.bytes == null
+        ? null
+        : new Uint8Array(params.bytes);
+    if (!rawBytes) throw invalidArgument("Sync writeObject bytes are required");
+    if (rawBytes.byteLength > MAX_SYNC_OBJECT_BYTES) {
+      throw invalidArgument("Sync writeObject payload exceeds the size limit");
+    }
+    const deadlineMs = normalizeDeadlineMs(params?.deadlineMs);
+    const deadlineAt = performance.now() + deadlineMs;
+    const activation = options.activation ?? await this.activate(providerId, "sync", options.signal);
+    const operationId = `sync:write:${randomUUID()}`;
+    const useStream = rawBytes.byteLength > INLINE_SYNC_OBJECT_BYTES || params?.preferStream === true;
+    const inputStreamId = useStream ? `${operationId}:input` : undefined;
+    const expectedRevision = params?.expectedRevision === undefined
+      ? undefined
+      : params.expectedRevision === null
+        ? null
+        : assertSyncRevision(params.expectedRevision, "Sync expectedRevision");
+
+    const request = this.invoke({
+      providerId,
+      kind: "sync",
+      operation: "writeObject",
+      payload: {
+        key,
+        operationId,
+        byteLength: rawBytes.byteLength,
+        ...(expectedRevision === undefined ? {} : { expectedRevision }),
+        ...(useStream
+          ? { inputStreamId, windowBytes: STREAM_WINDOW_BYTES }
+          : {
+            encoding: "base64",
+            data: Buffer.from(rawBytes).toString("base64"),
+          }),
+      },
+      deadlineMs,
+    }, { ...options, activation });
+
+    let input;
+    try {
+      if (useStream) {
+        input = await waitUntilDeadline(
+          waitForStreamOrRequestFailure(
+            this.runtimeSupervisor.openStream(activation.activation.plugin.id, inputStreamId, STREAM_WINDOW_BYTES, {
+              expectedIdentity: activation.identity,
+            }),
+            request,
+          ),
+          deadlineAt,
+          options.signal,
+          "Sync writeObject input stream exceeded its deadline",
+        );
+        for (let offset = 0; offset < rawBytes.byteLength; offset += STREAM_WINDOW_BYTES) {
+          await waitUntilDeadline(
+            input.write(rawBytes.subarray(offset, Math.min(rawBytes.byteLength, offset + STREAM_WINDOW_BYTES))),
+            deadlineAt,
+            options.signal,
+            "Sync writeObject input stream exceeded its deadline",
+          );
+        }
+        await waitUntilDeadline(
+          input.end(),
+          deadlineAt,
+          options.signal,
+          "Sync writeObject input stream exceeded its deadline",
+        );
+      }
+      return await waitUntilDeadline(
+        request,
+        deadlineAt,
+        options.signal,
+        "Sync writeObject exceeded its deadline",
+      );
+    } catch (error) {
+      try { input?.cancel?.(); } catch {}
+      throw error;
+    }
+  }
+
+  async deleteSyncObject(params, options = {}) {
+    return this.invoke({
+      providerId: assertString(params?.providerId, "Sync Provider ID"),
+      kind: "sync",
+      operation: "deleteObject",
+      payload: {
+        key: assertSyncObjectKey(params?.key),
+        operationId: `sync:delete:${randomUUID()}`,
+        ...(params?.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: assertSyncRevision(params.expectedRevision, "Sync expectedRevision") }),
+      },
+      deadlineMs: params?.deadlineMs,
+    }, options);
+  }
+
   shutdown() {
     this.streamRegistration?.dispose();
     this.runtimeRegistration?.dispose();
@@ -917,9 +1311,12 @@ class PluginExtensionProviderService {
 module.exports = {
   DEFAULT_DEADLINE_MS,
   EXTENSION_PROVIDER_KINDS,
+  INLINE_SYNC_OBJECT_BYTES,
   MAX_IMPORT_BYTES,
   MAX_IMPORT_RECORDS,
+  MAX_SYNC_OBJECT_BYTES,
   PluginExtensionProviderService,
   STREAM_WINDOW_BYTES,
+  assertSyncResult,
   normalizeImportRecord,
 };

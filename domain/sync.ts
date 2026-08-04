@@ -55,9 +55,23 @@ export type ConflictResolution =
 // ============================================================================
 
 /**
- * Supported cloud storage providers
+ * Supported cloud storage providers.
+ * Built-in short IDs remain stable; plugin sync Providers use namespaced
+ * contribution IDs (e.g. com.example.backup.sync).
  */
-export type CloudProvider = 'github' | 'google' | 'onedrive' | 'webdav' | 's3';
+export type BuiltinCloudProvider = 'github' | 'google' | 'onedrive' | 'webdav' | 's3';
+export type CloudProvider = BuiltinCloudProvider | (string & {});
+
+export const BUILTIN_CLOUD_PROVIDERS: readonly BuiltinCloudProvider[] = [
+  'github',
+  'google',
+  'onedrive',
+  'webdav',
+  's3',
+] as const;
+
+export const isBuiltinCloudProvider = (provider: string): provider is BuiltinCloudProvider =>
+  (BUILTIN_CLOUD_PROVIDERS as readonly string[]).includes(provider);
 
 export type WebDAVAuthType = 'basic' | 'digest' | 'token';
 
@@ -298,6 +312,12 @@ export interface SyncPayload {
       showTerminalSelectionAction?: boolean;
     };
   };
+
+  /**
+   * Encrypted-sidecar envelope for plugin user data that must survive missing
+   * plugins (sync:true settings, account/CRDT baselines). Secrets never appear here.
+   */
+  pluginSidecars?: import('./pluginSyncSidecar').PluginSyncSidecarBundle;
 
   // Sync metadata
   syncedAt: number;         // When this payload was created
@@ -624,11 +644,28 @@ export const SYNC_STORAGE_KEYS = {
   PROVIDER_WEBDAV: 'netcatty_provider_webdav_v1',
   PROVIDER_S3: 'netcatty_provider_s3_v1',
   PROVIDER_SMB: 'netcatty_provider_smb_v1',
+  /** Registry of connected namespaced plugin sync provider IDs. */
+  PLUGIN_CLOUD_PROVIDERS: 'netcatty_plugin_cloud_providers_v1',
   LOCAL_SYNC_META: 'netcatty_local_sync_meta_v1',
   SYNC_BASE_PAYLOAD: 'netcatty_sync_base_payload_v1',
   CONVERGENT_REPLICA: 'netcatty_convergent_sync_replica_v2',
   CONVERGENT_PROVIDER_BASELINE: 'netcatty_convergent_sync_provider_baseline_v2',
 } as const;
+
+/** Resolve the localStorage key used for a provider connection (built-in or plugin). */
+export function providerConnectionStorageKey(provider: CloudProvider): string {
+  if (isBuiltinCloudProvider(provider)) {
+    const map: Record<BuiltinCloudProvider, string> = {
+      github: SYNC_STORAGE_KEYS.PROVIDER_GITHUB,
+      google: SYNC_STORAGE_KEYS.PROVIDER_GOOGLE,
+      onedrive: SYNC_STORAGE_KEYS.PROVIDER_ONEDRIVE,
+      webdav: SYNC_STORAGE_KEYS.PROVIDER_WEBDAV,
+      s3: SYNC_STORAGE_KEYS.PROVIDER_S3,
+    };
+    return map[provider];
+  }
+  return `netcatty_provider_plugin_v1:${provider}`;
+}
 
 // ============================================================================
 // Constants

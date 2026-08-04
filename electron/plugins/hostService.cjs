@@ -35,6 +35,7 @@ const { SecretLeaseStore } = require("./secretLease.cjs");
 const { PluginTerminalProviderService } = require("./terminalProviderService.cjs");
 const { PluginTerminalDataPipelineService } = require("./terminalDataPipelineService.cjs");
 const { PluginExtensionProviderService } = require("./extensionProviderService.cjs");
+const { PluginSyncSidecarService } = require("./pluginSyncSidecarService.cjs");
 
 function getElectronProcessMetrics(app, pid) {
   const metric = app.getAppMetrics?.().find((candidate) => candidate.pid === pid);
@@ -213,6 +214,10 @@ function createPluginHostService(options) {
       rpcRegistry,
       runtimeSupervisor,
     });
+    const syncSidecarService = new PluginSyncSidecarService({
+      database,
+      contributionService,
+    });
     const terminalDataPipelineService = options.electron.MessageChannelMain
       ? new PluginTerminalDataPipelineService({
           contributionService,
@@ -260,6 +265,7 @@ function createPluginHostService(options) {
       database,
       filesystemBroker,
       extensionProviderService,
+      syncSidecarService,
       leaseStore,
       manager,
       moduleResources,

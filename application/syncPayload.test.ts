@@ -43,6 +43,7 @@ const {
   applySyncPayload,
   buildLocalVaultPayload,
   buildCloudSyncPayload,
+  withPluginSyncSidecars,
   buildSyncPayload,
   hasCloudSyncEntityData,
   hasMeaningfulCloudSyncData,
@@ -1337,4 +1338,29 @@ test("applyLocalVaultPayload does not commit convergent writes when local import
   );
 
   assert.equal(committed, false);
+});
+
+test("withPluginSyncSidecars attaches non-empty plugin sidecar bundles", () => {
+  const base = buildSyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+  });
+  const withEmpty = withPluginSyncSidecars(base, { version: 1, entries: [] });
+  assert.equal(withEmpty.pluginSidecars, undefined);
+
+  const withData = withPluginSyncSidecars(base, {
+    version: 1,
+    entries: [{
+      pluginId: "com.example.sync",
+      kind: "settings",
+      key: "com.example.sync.theme\0application\0application",
+      value: "dark",
+      updatedAt: 1,
+    }],
+  });
+  assert.equal(withData.pluginSidecars?.entries.length, 1);
+  assert.equal(withData.pluginSidecars?.entries[0].value, "dark");
 });

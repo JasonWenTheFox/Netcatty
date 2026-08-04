@@ -10,6 +10,13 @@ import type {
   WebDAVConfig,
   S3Config,
 } from '../../../domain/sync';
+import { isBuiltinCloudProvider } from '../../../domain/sync';
+import type { EncryptedObjectStorage } from '../../../domain/encryptedObjectStorage';
+import {
+  cloudAdapterAsEncryptedObjectStorage,
+  encryptedObjectStorageAsCloudAdapter,
+  webdavEncryptedObjectCapabilities,
+} from './encryptedObjectStorageBridge';
 
 /**
  * Unified adapter interface
@@ -27,14 +34,22 @@ export interface CloudAdapter {
   getTokens(): OAuthTokens | null;
 }
 
+export type { EncryptedObjectStorage };
+
 /**
- * Create adapter for a specific provider
+ * Create adapter for a specific provider.
+ * Built-in providers keep their dedicated adapters. Namespaced plugin provider
+ * IDs require an EncryptedObjectStorage factory (plugin host bridge).
  */
 export const createAdapter = async (
   provider: CloudProvider,
   tokens?: OAuthTokens,
   resourceId?: string,
-  config?: WebDAVConfig | S3Config
+  config?: WebDAVConfig | S3Config,
+  options?: {
+    /** Plugin sync storage factory for namespaced provider IDs. */
+    createPluginStorage?: (providerId: string) => EncryptedObjectStorage | Promise<EncryptedObjectStorage>;
+  },
 ): Promise<CloudAdapter> => {
   switch (provider) {
     case 'github': {
@@ -57,7 +72,36 @@ export const createAdapter = async (
       const { S3Adapter } = await import('./S3Adapter');
       return new S3Adapter(config as S3Config | undefined, resourceId);
     }
-    default:
-      throw new Error(`Unknown provider: ${provider}`);
+    default: {
+      if (isBuiltinCloudProvider(provider)) {
+        throw new Error(`Unknown provider: ${provider}`);
+      }
+      if (!options?.createPluginStorage) {
+        throw new Error(
+          `Plugin sync provider ${provider} is unavailable (missing or not registered)`,
+        );
+      }
+      const storage = await options.createPluginStorage(provider);
+      return encryptedObjectStorageAsCloudAdapter(storage);
+    }
   }
 };
+
+/**
+ * View a CloudAdapter as EncryptedObjectStorage. WebDAV is the first built-in
+ * adapted through this shared surface for configuration, secrets, upload,
+ * download, verification, and recovery exercises.
+ */
+export const asEncryptedObjectStorage = (
+  provider: CloudProvider,
+  adapter: CloudAdapter,
+): EncryptedObjectStorage =>
+  cloudAdapterAsEncryptedObjectStorage(adapter, provider, {
+    capabilities: provider === 'webdav'
+      ? webdavEncryptedObjectCapabilities()
+      : {
+        revisions: provider === 'github',
+        conditionalWrites: false,
+        atomicReplacement: provider === 'webdav' || provider === 's3',
+      },
+  });
