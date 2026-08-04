@@ -216,10 +216,17 @@ export function setAvailablePluginSyncProviderIdsImpl(
       }
       continue;
     }
+    // Still contributed: drop cached adapters so a restarted/replaced plugin
+    // runtime gets a fresh connect on the next sync. Contribution refresh is
+    // the host signal that runtimes may have been replaced; setting-only
+    // updates do not flow through this availability catalog.
+    if (this.adapters?.has?.(id)) {
+      const adapter = this.adapters.get(id);
+      try { adapter?.signOut?.(); } catch { /* ignore */ }
+      this.adapters.delete(id);
+    }
     // Re-enable retained configs whenever the contribution reappears.
-    // Do not drop live adapters on every availability refresh (contribution
-    // noise would tear down in-flight sync); adapters are recreated when the
-    // provider leaves the available set or the user reconnects.
+    // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
     const hasRetainedConfig = conn.tokens != null
       || (Object.prototype.hasOwnProperty.call(conn, 'config') && conn.config != null);
     if (hasRetainedConfig && conn.status === 'disconnected') {
@@ -263,7 +270,8 @@ export async function initProviderDecryptionImpl(this: any): Promise<void> {
     for (const p of providers) {
       try {
         const conn = this.state.providers[p];
-        if (conn.tokens || conn.config) {
+        // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
+        if (conn.tokens != null || conn.config != null) {
           const seq = ++this.providerDecryptSeq[p];
           const decrypted = await decryptProviderSecrets(conn);
           // Only apply if no newer update has occurred during the async gap

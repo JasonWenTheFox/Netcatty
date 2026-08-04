@@ -161,7 +161,8 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
     out.tokens = t;
   }
 
-  if (out.config) {
+  // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
+  if (out.config != null) {
     const providerId = String(out.provider ?? "");
     const isBuiltin = providerId === "webdav"
       || providerId === "s3"
@@ -170,26 +171,25 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
       || providerId === "onedrive";
     // Built-in providers use field-level encryption; plugin IDs always seal
     // the whole opaque config so field-name collisions cannot leak secrets.
-    if (isBuiltin && "authType" in out.config) {
+    if (isBuiltin && typeof out.config === "object" && "authType" in out.config) {
       const c = { ...out.config } as WebDAVConfig;
       c.password = await encryptField(c.password);
       c.token = await encryptField(c.token);
       out.config = c;
-    } else if (isBuiltin && "secretAccessKey" in out.config) {
+    } else if (isBuiltin && typeof out.config === "object" && "secretAccessKey" in out.config) {
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await encryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await encryptField(c.sessionToken);
       out.config = c;
     } else if (
       !isBuiltin
-      && out.config != null
       && !(
         typeof out.config === "object"
         && out.config !== null
         && "__encryptedPluginConfig" in out.config
       )
     ) {
-      // Seal any JSON shape (object, string, number, array) as one opaque blob.
+      // Seal any JSON shape (object, string, number, boolean, array) as one opaque blob.
       const sealed = await encryptField(JSON.stringify(out.config));
       if (sealed) {
         out.config = { __encryptedPluginConfig: sealed } as ProviderConnection["config"];
@@ -210,32 +210,34 @@ export async function decryptProviderSecrets(conn: ProviderConnection): Promise<
     out.tokens = t;
   }
 
-  if (out.config) {
+  // Config may be a valid falsy scalar — only null/undefined means absent.
+  if (out.config != null) {
     const providerId = String(out.provider ?? "");
     const isBuiltin = providerId === "webdav"
       || providerId === "s3"
       || providerId === "github"
       || providerId === "google"
       || providerId === "onedrive";
-    if (isBuiltin && "authType" in out.config) {
+    if (isBuiltin && typeof out.config === "object" && "authType" in out.config) {
       const c = { ...out.config } as WebDAVConfig;
       c.password = await decryptField(c.password);
       c.token = await decryptField(c.token);
       out.config = c;
-    } else if (isBuiltin && "secretAccessKey" in out.config) {
+    } else if (isBuiltin && typeof out.config === "object" && "secretAccessKey" in out.config) {
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await decryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await decryptField(c.sessionToken);
       out.config = c;
     } else if (
-      out.config
-      && typeof out.config === "object"
+      typeof out.config === "object"
+      && out.config !== null
       && "__encryptedPluginConfig" in out.config
       && typeof (out.config as { __encryptedPluginConfig?: unknown }).__encryptedPluginConfig === "string"
     ) {
       const sealed = (out.config as { __encryptedPluginConfig: string }).__encryptedPluginConfig;
       const plain = await decryptField(sealed);
-      if (plain) {
+      // plain may be JSON "false"/"0"/'""' — treat empty decrypt as failure only.
+      if (plain != null && plain !== "") {
         try {
           out.config = JSON.parse(plain) as ProviderConnection["config"];
         } catch {

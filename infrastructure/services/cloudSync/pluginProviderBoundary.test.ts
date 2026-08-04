@@ -143,6 +143,41 @@ describe('plugin provider manager boundary', () => {
     assert.equal(manager.state.providers['com.example.backup.sync'].status, 'disconnected');
   });
 
+  it('setAvailablePluginSyncProviderIds drops cached adapters for still-contributed providers', () => {
+    const storage = memoryStorage();
+    const manager = createManagerHarness(storage);
+    const pluginId = 'com.example.backup.sync';
+    let signedOut = 0;
+    manager.state = {
+      providers: {
+        [pluginId]: {
+          provider: pluginId,
+          status: 'connected',
+          config: { endpoint: 'https://example.test' },
+        },
+      },
+    };
+    manager.adapters = new Map([
+      [pluginId, {
+        isAuthenticated: true,
+        accountInfo: { id: 'acct' },
+        resourceId: null,
+        signOut() { signedOut += 1; },
+        async initializeSync() { return null; },
+        async upload() { return 'ok'; },
+        async download() { return null; },
+        async deleteSync() {},
+        getTokens() { return null; },
+      }],
+    ]);
+    registerPluginProviderIdImpl.call(manager, pluginId);
+    // Same contribution still present (e.g. plugin runtime restarted).
+    setAvailablePluginSyncProviderIdsImpl.call(manager, [pluginId]);
+    assert.equal(manager.adapters.has(pluginId), false, 'must drop cached adapter for rebind');
+    assert.equal(signedOut, 1);
+    assert.equal(manager.state.providers[pluginId].status, 'connected');
+  });
+
   it('saveProviderConnection registers plugin IDs and disconnect unregisters them', async () => {
     const storage = memoryStorage();
     const manager = createManagerHarness(storage);
