@@ -15,6 +15,7 @@ type ElectronPluginSyncApi = {
   pluginSyncConnect?: (params: {
     providerId: string;
     configuration?: unknown;
+    credential?: unknown;
     deadlineMs?: number;
   }) => Promise<{ account: EncryptedObjectAccount }>;
   pluginSyncDisconnect?: (params: {

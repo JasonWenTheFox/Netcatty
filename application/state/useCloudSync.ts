@@ -108,7 +108,11 @@ export interface CloudSyncHook {
   ) => Promise<void>;
   connectGoogle: () => Promise<string>;
   /** Connect a namespaced plugin sync Provider (encrypted-object storage only). */
-  connectPluginProvider: (providerId: string, configuration?: unknown) => Promise<void>;
+  connectPluginProvider: (
+    providerId: string,
+    configuration?: unknown,
+    credential?: unknown,
+  ) => Promise<void>;
   connectOneDrive: () => Promise<string>;
   connectWebDAV: (config: WebDAVConfig) => Promise<void>;
   connectS3: (config: S3Config) => Promise<void>;
@@ -321,7 +325,8 @@ export const useCloudSync = (): CloudSyncHook => {
         }).filter((id) => id.length > 0);
         manager.setAvailablePluginSyncProviders(ids);
       } catch {
-        if (!cancelled) manager.setAvailablePluginSyncProviders([]);
+        // Transient IPC / host startup failures must not wipe the availability
+        // catalog; leave the previous set until a successful discovery.
       }
     };
     void refreshAvailable();
@@ -718,8 +723,9 @@ export const useCloudSync = (): CloudSyncHook => {
   const connectPluginProvider = useCallback(async (
     providerId: string,
     configuration: unknown = {},
+    credential?: unknown,
   ): Promise<void> => {
-    await manager.connectPluginProvider(providerId, configuration);
+    await manager.connectPluginProvider(providerId, configuration, credential);
   }, []);
   
   const cancelOAuthConnect = useCallback(() => {

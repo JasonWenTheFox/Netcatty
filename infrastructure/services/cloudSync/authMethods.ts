@@ -322,6 +322,7 @@ export async function connectPluginProviderImpl(
   this: any,
   providerId: string,
   configuration: unknown = {},
+  credential?: unknown,
 ): Promise<void> {
   if (!isPluginCloudProviderId(providerId)) {
     throw new Error(`Invalid plugin sync provider ID: ${providerId}`);
@@ -359,6 +360,7 @@ export async function connectPluginProviderImpl(
         providerId: id,
         host: createPluginSyncIpcHost(),
         configuration,
+        credential: credential as import('../adapters/pluginSyncObjectStorage').PluginSyncCredentialRef | undefined,
       });
     };
     const adapter = await createAdapter(

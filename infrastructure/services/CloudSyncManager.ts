@@ -514,8 +514,9 @@ export class CloudSyncManager {
   async connectPluginProvider(
     providerId: string,
     configuration: unknown = {},
+    credential?: unknown,
   ): Promise<void> {
-    return connectPluginProviderImpl.call(this, providerId, configuration);
+    return connectPluginProviderImpl.call(this, providerId, configuration, credential);
   }
 
   /**

@@ -118,7 +118,9 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
     const key = providerConnectionStorageKey(provider);
     const stored = this.loadFromStorage<Partial<ProviderConnection>>(key);
 
-    const hasCreds = Boolean(stored?.tokens || stored?.config);
+    // Config may be a valid scalar (false, 0, "") — only null/undefined means absent.
+    const hasCreds = stored?.tokens != null
+      || (stored != null && Object.prototype.hasOwnProperty.call(stored, 'config') && stored.config != null);
     // Determine the correct status: if tokens or config exist, should be 'connected'
     // Never restore 'syncing' or 'error' status - those are transient.
     // Dynamic plugin providers only rejoin sync when the host is ready AND the
@@ -218,7 +220,9 @@ export function setAvailablePluginSyncProviderIdsImpl(
     // Do not drop live adapters on every availability refresh (contribution
     // noise would tear down in-flight sync); adapters are recreated when the
     // provider leaves the available set or the user reconnects.
-    if ((conn.config || conn.tokens) && conn.status === 'disconnected') {
+    const hasRetainedConfig = conn.tokens != null
+      || (Object.prototype.hasOwnProperty.call(conn, 'config') && conn.config != null);
+    if (hasRetainedConfig && conn.status === 'disconnected') {
       this.state.providers[id] = {
         ...conn,
         status: 'connected',

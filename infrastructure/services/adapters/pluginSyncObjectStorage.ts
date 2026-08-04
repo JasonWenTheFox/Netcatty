@@ -13,9 +13,21 @@ import type {
   EncryptedObjectWriteResult,
 } from '../../../domain/encryptedObjectStorage';
 
+/** Host-owned secret/credential reference from SyncConnectPayload. */
+export type PluginSyncCredentialRef = {
+  kind: 'secret' | 'credential' | 'secretLease';
+  id: string;
+  key?: string;
+};
+
 export interface PluginSyncProviderHost {
   connectSync(
-    params: { providerId: string; configuration?: unknown; deadlineMs?: number },
+    params: {
+      providerId: string;
+      configuration?: unknown;
+      credential?: PluginSyncCredentialRef;
+      deadlineMs?: number;
+    },
     options?: { signal?: AbortSignal },
   ): Promise<{ account: EncryptedObjectAccount }>;
   disconnectSync(
@@ -61,9 +73,11 @@ export function createPluginSyncObjectStorage(options: {
   providerId: string;
   host: PluginSyncProviderHost;
   configuration?: unknown;
+  /** Canonical SyncConnectPayload.credential for host-owned secret refs. */
+  credential?: PluginSyncCredentialRef;
   deadlineMs?: number;
 }): EncryptedObjectStorage {
-  const { providerId, host, configuration, deadlineMs } = options;
+  const { providerId, host, configuration, credential, deadlineMs } = options;
 
   return {
     providerId,
@@ -71,6 +85,7 @@ export function createPluginSyncObjectStorage(options: {
       return host.connectSync({
         providerId,
         configuration: connectConfiguration ?? configuration ?? {},
+        ...(credential ? { credential } : {}),
         deadlineMs,
       }, { signal: connectOptions?.signal });
     },
