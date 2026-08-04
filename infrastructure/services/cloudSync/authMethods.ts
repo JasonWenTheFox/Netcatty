@@ -379,8 +379,10 @@ export async function connectPluginProviderImpl(
     const previous = this.state.providers[providerId];
     const previousAccountId = previous?.account?.id ?? null;
     const previousResource = previous?.resourceId ?? null;
+    const previousConfigFp = JSON.stringify(previous?.config ?? null);
     const nextAccountId = account?.id ?? null;
     const nextResource = resourceId || null;
+    const nextConfigFp = JSON.stringify(configuration ?? null);
     this.state.providers[providerId] = {
       provider: providerId,
       status: 'connected',
@@ -391,8 +393,12 @@ export async function connectPluginProviderImpl(
     registerPluginProviderIdImpl.call(this, providerId);
     await this.saveProviderConnection(providerId, this.state.providers[providerId]);
     // Preserve merge base / anchors when reconnecting the same account+resource
-    // after a temporary disable; only clear when identity of the remote changes.
-    if (previousAccountId !== nextAccountId || previousResource !== nextResource) {
+    // and configuration; clear when backend identity or config changes.
+    if (
+      previousAccountId !== nextAccountId
+      || previousResource !== nextResource
+      || previousConfigFp !== nextConfigFp
+    ) {
       clearProviderMergeStateImpl.call(this, providerId);
     }
     this.emit({

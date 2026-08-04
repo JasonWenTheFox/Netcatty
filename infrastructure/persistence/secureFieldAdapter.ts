@@ -170,13 +170,22 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
       c.password = await encryptField(c.password);
       c.token = await encryptField(c.token);
       out.config = c;
-    }
-    // S3
-    if ("secretAccessKey" in out.config) {
+    } else if ("secretAccessKey" in out.config) {
+      // S3
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await encryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await encryptField(c.sessionToken);
       out.config = c;
+    } else if (
+      out.config
+      && typeof out.config === "object"
+      && !("__encryptedPluginConfig" in out.config)
+    ) {
+      // Opaque plugin provider configuration may contain secrets; seal whole object.
+      const sealed = await encryptField(JSON.stringify(out.config));
+      if (sealed) {
+        out.config = { __encryptedPluginConfig: sealed } as ProviderConnection["config"];
+      }
     }
   }
 
@@ -199,12 +208,26 @@ export async function decryptProviderSecrets(conn: ProviderConnection): Promise<
       c.password = await decryptField(c.password);
       c.token = await decryptField(c.token);
       out.config = c;
-    }
-    if ("secretAccessKey" in out.config) {
+    } else if ("secretAccessKey" in out.config) {
       const c = { ...out.config } as S3Config;
       c.secretAccessKey = (await decryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await decryptField(c.sessionToken);
       out.config = c;
+    } else if (
+      out.config
+      && typeof out.config === "object"
+      && "__encryptedPluginConfig" in out.config
+      && typeof (out.config as { __encryptedPluginConfig?: unknown }).__encryptedPluginConfig === "string"
+    ) {
+      const sealed = (out.config as { __encryptedPluginConfig: string }).__encryptedPluginConfig;
+      const plain = await decryptField(sealed);
+      if (plain) {
+        try {
+          out.config = JSON.parse(plain) as ProviderConnection["config"];
+        } catch {
+          // leave sealed if corrupt
+        }
+      }
     }
   }
 

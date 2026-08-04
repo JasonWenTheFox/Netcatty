@@ -43,6 +43,12 @@ const MAX_SYNC_OBJECT_BYTES = syncLimits.maxObjectBytes;
 const MAX_SYNC_OBJECT_KEY_LENGTH = syncLimits.maxObjectKeyLength;
 const MAX_SYNC_REVISION_LENGTH = syncLimits.maxRevisionLength;
 const INLINE_SYNC_OBJECT_BYTES = syncLimits.inlineObjectBytes;
+// Base64 expands ~4/3 and the invoke envelope still needs headroom under the
+// 128 KiB provider JSON budget. Prefer streaming below the contract max.
+const INLINE_SYNC_OBJECT_SAFE_BYTES = Math.min(
+  INLINE_SYNC_OBJECT_BYTES,
+  Math.floor((120 * 1024 * 3) / 4),
+);
 const definitionValidators = Object.freeze({
   AuthenticationResult: createDefinitionValidator("AuthenticationResult"),
   ConnectionOpenResult: createDefinitionValidator("ConnectionOpenResult"),
@@ -1229,7 +1235,7 @@ class PluginExtensionProviderService {
     const deadlineAt = performance.now() + deadlineMs;
     const activation = options.activation ?? await this.activate(providerId, "sync", options.signal);
     const operationId = `sync:write:${randomUUID()}`;
-    const useStream = rawBytes.byteLength > INLINE_SYNC_OBJECT_BYTES || params?.preferStream === true;
+    const useStream = rawBytes.byteLength > INLINE_SYNC_OBJECT_SAFE_BYTES || params?.preferStream === true;
     const inputStreamId = useStream ? `${operationId}:input` : undefined;
     const expectedRevision = params?.expectedRevision === undefined
       ? undefined
