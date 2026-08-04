@@ -201,6 +201,29 @@ describe('encryptedObjectStorageBridge', () => {
       ops.some((op) => op === 'write:netcatty-vault.json:rev-1'),
       `expected conditional write with rev-1, got ${JSON.stringify(ops)}`,
     );
+
+    // Confirmed absence → must-not-exist (expectedRevision null)
+    revision = undefined;
+    const storageAbsent = {
+      ...storage,
+      async readObject(key: string) {
+        ops.push(`read-absent:${key}`);
+        return { found: false as const, key, bytes: null };
+      },
+      async writeObject(key: string, _bytes: Uint8Array, options?: { expectedRevision?: string | null }) {
+        ops.push(`write-absent:${key}:${options?.expectedRevision === null ? 'null' : String(options?.expectedRevision)}`);
+        return { created: true, revision: 'rev-new' };
+      },
+    };
+    const adapter2 = encryptedObjectStorageAsCloudAdapter(storageAbsent, {
+      initiallyAuthenticated: true,
+    });
+    assert.equal(await adapter2.download(), null);
+    await adapter2.upload(makeSyncedFile(3, 'fresh'));
+    assert.ok(
+      ops.some((op) => op === 'write-absent:netcatty-vault.json:null'),
+      `expected must-not-exist write, got ${JSON.stringify(ops)}`,
+    );
   });
 
   it('plugin sync object storage only forwards encrypted bytes to the host', async () => {

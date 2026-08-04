@@ -144,6 +144,89 @@ export function collectPluginSyncSidecars(
  * local rows for plugins that are not present on the remote (partial sync safety).
  * Secret settings are never applied even if a malicious remote marks them as settings.
  */
+/**
+ * Three-way merge for settings sidecars so local resets (absent from local,
+ * present in base) propagate instead of being resurrected from base/remote.
+ * Non-settings kinds (baselines) still use last-writer-wins union.
+ */
+export function mergePluginSyncSidecarsThreeWay(params: {
+  base: readonly PluginSyncSidecarEntry[];
+  local: readonly PluginSyncSidecarEntry[];
+  remote: readonly PluginSyncSidecarEntry[];
+}): PluginSyncSidecarEntry[] {
+  const keyOf = (entry: PluginSyncSidecarEntry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`;
+  const toMap = (entries: readonly PluginSyncSidecarEntry[]) => {
+    const map = new Map<string, PluginSyncSidecarEntry>();
+    for (const entry of entries) {
+      if (!entry || typeof entry.pluginId !== 'string' || !isPluginSyncSidecarKind(entry.kind)) continue;
+      map.set(keyOf(entry), {
+        pluginId: entry.pluginId,
+        kind: entry.kind,
+        key: String(entry.key),
+        value: entry.value,
+        updatedAt: Number(entry.updatedAt) || 0,
+      });
+    }
+    return map;
+  };
+  const baseMap = toMap(params.base);
+  const localMap = toMap(params.local);
+  const remoteMap = toMap(params.remote);
+  const allKeys = new Set([...baseMap.keys(), ...localMap.keys(), ...remoteMap.keys()]);
+  const out: PluginSyncSidecarEntry[] = [];
+
+  for (const mapKey of allKeys) {
+    const b = baseMap.get(mapKey);
+    const l = localMap.get(mapKey);
+    const r = remoteMap.get(mapKey);
+    const kind = (l?.kind ?? r?.kind ?? b?.kind) as PluginSyncSidecarKind | undefined;
+    if (!kind) continue;
+
+    if (kind !== 'settings') {
+      // Baselines: LWW between local and remote; preserve orphans.
+      const winner = !l ? r : !r ? l : (l.updatedAt >= r.updatedAt ? l : r);
+      if (winner) out.push(winner);
+      continue;
+    }
+
+    // Settings three-way:
+    // base+remote, not local → local deleted (keep remote only if newer than base)
+    if (b && !l && r) {
+      if (r.updatedAt > b.updatedAt) out.push(r);
+      continue;
+    }
+    // base+local, not remote → remote deleted (keep local only if newer than base)
+    if (b && l && !r) {
+      if (l.updatedAt > b.updatedAt) out.push(l);
+      continue;
+    }
+    // both deleted
+    if (b && !l && !r) continue;
+    // only local / only remote additions
+    if (!b && l && !r) {
+      out.push(l);
+      continue;
+    }
+    if (!b && !l && r) {
+      out.push(r);
+      continue;
+    }
+    // both sides present (with or without base)
+    if (l && r) {
+      out.push(l.updatedAt >= r.updatedAt ? l : r);
+      continue;
+    }
+    if (l) out.push(l);
+    else if (r) out.push(r);
+  }
+
+  return out.sort((a, b) => {
+    if (a.pluginId !== b.pluginId) return a.pluginId < b.pluginId ? -1 : 1;
+    if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+}
+
 export function mergePluginSyncSidecars(params: {
   local: readonly PluginSyncSidecarEntry[];
   remote: PluginSyncSidecarBundle | null | undefined;

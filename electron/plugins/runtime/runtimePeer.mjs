@@ -732,6 +732,11 @@ export async function startPluginRuntime({
         if (cancellationToken.isCancellationRequested) {
           return { requestId, status: "cancelled" };
         }
+        // Sync readObject may return inline base64 or found:false while the host
+        // still opened an output stream for large-object fallback — release it.
+        if (syncReadStream && output && !(result && result.streamed === true)) {
+          try { output.cancel?.(); } catch { /* best-effort */ }
+        }
         return { requestId, status: "ok", result: result === undefined ? null : result };
       } catch (error) {
         cancelStreams?.();

@@ -435,12 +435,30 @@ export async function syncConvergentProvidersUnlockedImpl(
     const needsUpload = usable.some((runtime) => (
       !runtime.error && !preflightVerified.has(runtime.provider)
     ));
+    // Merge plugin sidecars from local input and any decoded remote payloads so
+    // remote-only baselines/settings are not dropped on the next upload.
+    const { mergePluginSyncSidecars } = await import('../../../domain/pluginSyncSidecar');
+    let mergedSidecars = mergePluginSyncSidecars({
+      local: Array.isArray(inputPayload.pluginSidecars?.entries)
+        ? inputPayload.pluginSidecars.entries
+        : [],
+      remote: inputPayload.pluginSidecars,
+    });
+    for (const decoded of preflightVerified.values()) {
+      const remoteBundle = decoded?.payload?.pluginSidecars;
+      if (!remoteBundle) continue;
+      mergedSidecars = mergePluginSyncSidecars({
+        local: mergedSidecars,
+        remote: remoteBundle,
+      });
+    }
+    const pluginSidecars = mergedSidecars.length > 0
+      ? { version: 1 as const, entries: mergedSidecars }
+      : inputPayload.pluginSidecars;
     const outgoingPayload = needsUpload
       ? withConvergentSyncEnvelope(expected, {
         syncedAt: now(),
-        // Plugin sidecars are not CRDT fields; reattach the caller's collected
-        // bundle so convergent uploads do not strip previously synced data.
-        pluginSidecars: inputPayload.pluginSidecars,
+        pluginSidecars,
       })
       : null;
     await Promise.all(usable.map(async (runtime) => {

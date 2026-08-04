@@ -21,7 +21,7 @@
 
 import { carryForwardSyncDeletions, getDeletedEntityIds } from './syncReliability';
 import type { CloudSyncPayloadEntityKey, SyncPayload } from './sync';
-import { mergePluginSyncSidecars } from './pluginSyncSidecar';
+import { mergePluginSyncSidecarsThreeWay } from './pluginSyncSidecar';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -553,17 +553,15 @@ export function mergeSyncPayloads(
 
   const groupConfigs = unwrapGC(groupConfigsResult.merged);
 
-  // Plugin sidecars are user-owned encrypted-sync data outside CRDT entity
-  // arrays. Prefer a last-writer-wins merge of the sidecar rows so smart merge
-  // and conflict resolution never drop baselines / sync:true settings.
+  // Plugin sidecars: three-way merge so local resets propagate and baselines
+  // from missing plugins are preserved.
   const baseSidecars = Array.isArray(b.pluginSidecars?.entries) ? b.pluginSidecars.entries : [];
-  // Seed with base + local, then fold remote so concurrent edits LWW by updatedAt.
-  const mergedSidecarEntries = mergePluginSyncSidecars({
-    local: mergePluginSyncSidecars({
-      local: baseSidecars,
-      remote: local.pluginSidecars,
-    }),
-    remote: remote.pluginSidecars,
+  const localSidecars = Array.isArray(local.pluginSidecars?.entries) ? local.pluginSidecars.entries : [];
+  const remoteSidecars = Array.isArray(remote.pluginSidecars?.entries) ? remote.pluginSidecars.entries : [];
+  const mergedSidecarEntries = mergePluginSyncSidecarsThreeWay({
+    base: baseSidecars,
+    local: localSidecars,
+    remote: remoteSidecars,
   });
 
   const payload: SyncPayload = carryForwardSyncDeletions({

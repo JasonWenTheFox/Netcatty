@@ -462,6 +462,37 @@ test("mergeSyncPayloads carries plugin sidecars through without dropping remote 
   assert.ok(result.payload.pluginSidecars!.entries.some((e) => e.kind === "account_baseline"));
 });
 
+test("mergeSyncPayloads propagates local sidecar setting resets via three-way merge", () => {
+  const entry = {
+    pluginId: "com.example.p",
+    kind: "settings" as const,
+    key: "com.example.p.theme\0application\0application",
+    value: "dark",
+    updatedAt: 1,
+  };
+  const base: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 1,
+    pluginSidecars: { version: 1, entries: [entry] },
+  };
+  const local: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 2,
+    // user reset: settings omitted
+  };
+  const remote: SyncPayload = {
+    hosts: [], keys: [], identities: [], snippets: [], customGroups: [],
+    syncedAt: 2,
+    pluginSidecars: { version: 1, entries: [entry] },
+  };
+  const result = mergeSyncPayloads(base, local, remote);
+  assert.equal(
+    result.payload.pluginSidecars?.entries?.some((e) => e.key === entry.key) ?? false,
+    false,
+    "local reset must not be resurrected from base/remote",
+  );
+});
+
 test("mergeSyncPayloads treats missing optional arrays as legacy payloads, not deletions", () => {
   const identity = {
     id: "identity-1",

@@ -109,7 +109,7 @@ test("collectForSync omits deleted settings for installed plugins but keeps miss
   assert.ok(bundle.entries.some((e) => e.pluginId === "com.missing.plugin" && e.value === "keep"));
 });
 
-test("applyFromSync preserves remote updatedAt when writing settings", (context) => {
+test("applyFromSync preserves remote updatedAt when writing settings", async (context) => {
   const database = tempDb(context);
   const service = new PluginSyncSidecarService({
     database,
@@ -126,7 +126,7 @@ test("applyFromSync preserves remote updatedAt when writing settings", (context)
       },
     },
   });
-  service.applyFromSync({
+  await service.applyFromSync({
     version: 1,
     entries: [{
       pluginId: "com.example.sync",
@@ -142,7 +142,7 @@ test("applyFromSync preserves remote updatedAt when writing settings", (context)
   assert.equal(theme?.updatedAt, 42);
 });
 
-test("applyFromSync does not drop local baselines for plugins absent remotely", (context) => {
+test("applyFromSync does not drop local baselines for plugins absent remotely", async (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.local.only", "account_baseline", "account", { id: "local" }, 1);
 
@@ -150,7 +150,7 @@ test("applyFromSync does not drop local baselines for plugins absent remotely", 
     database,
     contributionService: { snapshot: () => ({ plugins: [] }) },
   });
-  service.applyFromSync({
+  await service.applyFromSync({
     version: 1,
     entries: [{
       pluginId: "com.remote.plugin",

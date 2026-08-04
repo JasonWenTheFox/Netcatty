@@ -107,6 +107,8 @@ export interface CloudSyncHook {
     authAttemptId?: number
   ) => Promise<void>;
   connectGoogle: () => Promise<string>;
+  /** Connect a namespaced plugin sync Provider (encrypted-object storage only). */
+  connectPluginProvider: (providerId: string, configuration?: unknown) => Promise<void>;
   connectOneDrive: () => Promise<string>;
   connectWebDAV: (config: WebDAVConfig) => Promise<void>;
   connectS3: (config: S3Config) => Promise<void>;

@@ -73,8 +73,10 @@ class PluginSyncSidecarService {
   /**
    * Merge a remote sidecar bundle into local non-cascade storage.
    * Does not delete local rows for plugins absent from the remote bundle.
+   * Installed-plugin settings go through the contribution service when available
+   * so values are validated and runtime change events fire.
    */
-  applyFromSync(remoteBundle) {
+  async applyFromSync(remoteBundle) {
     const declared = this.#declaredSettingsByPlugin();
     const local = typeof this.database.listAllSyncSidecars === "function"
       ? this.database.listAllSyncSidecars()
@@ -88,8 +90,6 @@ class PluginSyncSidecarService {
     if (typeof this.database.replaceAllSyncSidecars === "function") {
       this.database.replaceAllSyncSidecars(safe);
     }
-    // Best-effort: write settings sidecar values into plugin_settings when the
-    // field is declared and non-secret. Missing plugins keep sidecar-only rows.
     for (const entry of safe) {
       if (entry.kind !== "settings") continue;
       const fields = declared.get(entry.pluginId);
@@ -98,6 +98,29 @@ class PluginSyncSidecarService {
       if (!parsed) continue;
       const field = fields.find((item) => item.id === parsed.settingId);
       if (!field || !isCloudSyncablePluginSetting(field)) continue;
+      if (typeof this.contributionService?.updateSetting === "function") {
+        try {
+          await this.contributionService.updateSetting(
+            entry.pluginId,
+            parsed.settingId,
+            entry.value,
+            parsed.scopeId,
+            { source: "host" },
+          );
+          // Preserve remote LWW timestamp after validated write (updateSetting uses clock).
+          this.database.setSetting(
+            entry.pluginId,
+            parsed.settingId,
+            parsed.scope,
+            parsed.scopeId,
+            entry.value,
+            entry.updatedAt,
+          );
+        } catch {
+          // Invalid against current schema — keep sidecar row only.
+        }
+        continue;
+      }
       this.database.setSetting(
         entry.pluginId,
         parsed.settingId,

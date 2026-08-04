@@ -659,7 +659,7 @@ function registerPluginBridge(ipcMain, options) {
 
   handlePassive(CHANNELS.syncSidecarsApply, null, async (_activeManager, payload) => {
     if (!syncSidecarService) return { applied: false };
-    const entries = syncSidecarService.applyFromSync(payload ?? { version: 1, entries: [] });
+    const entries = await syncSidecarService.applyFromSync(payload ?? { version: 1, entries: [] });
     return { applied: true, count: entries.length };
   });
 

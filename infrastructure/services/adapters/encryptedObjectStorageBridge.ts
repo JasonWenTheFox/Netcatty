@@ -159,8 +159,13 @@ export function encryptedObjectStorageAsCloudAdapter(
   let authenticated = options.initiallyAuthenticated === true;
   /** Distinct from credential presence: plugin providers need an explicit connect. */
   let sessionConnected = false;
-  /** Last observed remote revision for conditional writes when the backend supports them. */
-  let lastRevision: string | undefined;
+  /**
+   * Last observed remote revision for conditional writes.
+   * - string: known revision
+   * - null: confirmed absent (must-not-exist write)
+   * - undefined: unknown / unconditional
+   */
+  let lastRevision: string | null | undefined;
 
   const refreshResourceId = (fallback?: string | null): string | null => {
     const resolved = options.resolveResourceId?.();
@@ -214,6 +219,8 @@ export function encryptedObjectStorageAsCloudAdapter(
       });
       if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
         lastRevision = writeResult.revision;
+      } else {
+        lastRevision = undefined;
       }
       authenticated = true;
       return refreshResourceId(objectKey) ?? objectKey;
@@ -222,20 +229,23 @@ export function encryptedObjectStorageAsCloudAdapter(
       await ensureConnected();
       const result = await storage.readObject(objectKey);
       if (!result.found || !result.bytes) {
-        lastRevision = undefined;
+        // Confirmed absence: next conditional write must use expectedRevision null.
+        lastRevision = null;
         return null;
       }
       if (typeof result.revision === 'string' && result.revision.length > 0) {
         lastRevision = result.revision;
+      } else {
+        lastRevision = undefined;
       }
       return bytesToSyncedFile(result.bytes);
     },
     async deleteSync(): Promise<void> {
       await ensureConnected();
       await storage.deleteObject(objectKey, {
-        ...(lastRevision !== undefined ? { expectedRevision: lastRevision } : {}),
+        ...(typeof lastRevision === 'string' ? { expectedRevision: lastRevision } : {}),
       });
-      lastRevision = undefined;
+      lastRevision = null;
     },
     getTokens(): OAuthTokens | null {
       return null;
