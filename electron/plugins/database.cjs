@@ -167,6 +167,23 @@ class PluginDatabase {
           PRAGMA user_version = 1;
         `);
       });
+    } else if (version === 1) {
+      // Pre-sidecar schema-1 databases only created the original tables.
+      // Ensure the non-cascade sidecar table exists in place (AGENTS.md storage migrations).
+      this.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS plugin_sync_sidecars (
+            plugin_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('settings', 'account_baseline', 'crdt_baseline')),
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (plugin_id, kind, key)
+          );
+          CREATE INDEX IF NOT EXISTS plugin_sync_sidecars_lookup
+            ON plugin_sync_sidecars(plugin_id, kind, key);
+        `);
+      });
     }
     this.#assertSchemaLayout();
   }

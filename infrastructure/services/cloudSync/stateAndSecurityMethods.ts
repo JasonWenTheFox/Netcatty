@@ -40,6 +40,19 @@ import type { SyncManagerState } from '../CloudSyncManager';
 
 const SYNC_HISTORY_STORAGE_KEY = 'netcatty_sync_history_v1';
 
+/** Ensure per-provider sequence counters exist (dynamic plugins arrive late). */
+function ensureProviderSeqCounters(manager: any, provider: CloudProvider): void {
+  if (manager.providerDecryptSeq[provider] == null || Number.isNaN(manager.providerDecryptSeq[provider])) {
+    manager.providerDecryptSeq[provider] = 0;
+  }
+  if (manager.providerWriteSeq[provider] == null || Number.isNaN(manager.providerWriteSeq[provider])) {
+    manager.providerWriteSeq[provider] = 0;
+  }
+  if (manager.providerDecrypted[provider] == null) {
+    manager.providerDecrypted[provider] = false;
+  }
+}
+
 export function loadInitialStateImpl(this: any): SyncManagerState {
     // Load persisted configuration
     const masterKeyConfig = this.loadFromStorage<MasterKeyConfig>(
@@ -299,7 +312,7 @@ export async function saveProviderConnectionImpl(this: any,
     const key = providerConnectionStorageKey(provider);
     // Use write-specific counter so status-only updates cannot discard
     // an in-flight encrypted write that must be persisted.
-    if (this.providerWriteSeq[provider] == null) this.providerWriteSeq[provider] = 0;
+    ensureProviderSeqCounters(this, provider);
     const seq = ++this.providerWriteSeq[provider];
     const encrypted = await encryptProviderSecrets(connection);
     // Only persist if no newer save has started during the async gap
@@ -477,6 +490,10 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
       provider = key.slice('netcatty_provider_plugin_v1:'.length) as CloudProvider;
     }
     if (provider) {
+      // Dynamic plugin providers may receive their first storage event before
+      // the registry handler initializes counters; undefined++ becomes NaN and
+      // every subsequent decrypt result is discarded (NaN !== NaN).
+      ensureProviderSeqCounters(this, provider);
       const rawNext = this.loadProviderConnection(provider);
       const seq = ++this.providerDecryptSeq[provider];
       // Also bump write seq so any in-flight save from this window for the
@@ -489,7 +506,10 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
       decryptProviderSecrets(rawNext).then((next) => {
         if (seq !== this.providerDecryptSeq[provider]) return; // stale — discard
 
-        const prev = this.state.providers[provider];
+        const prev = this.state.providers[provider] ?? {
+          provider,
+          status: 'disconnected' as const,
+        };
         const preserveTransientStatus =
           prev.status === 'connecting' || prev.status === 'syncing';
 
@@ -502,7 +522,8 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
         const nextTokens = next.tokens;
         const nextConfig = next.config;
         const adapter = this.adapters.get(provider);
-        if (!nextTokens && !nextConfig) {
+        // Config may be a valid falsy scalar — only null/undefined means absent.
+        if (nextTokens == null && nextConfig == null) {
           if (adapter) {
             adapter.signOut();
             this.adapters.delete(provider);
@@ -538,6 +559,7 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
 export async function getConnectedAdapterImpl(this: any,provider: CloudProvider): Promise<CloudAdapter> {
     // Ensure startup decryption has finished before reading tokens
     await this.decryptionReady;
+    ensureProviderSeqCounters(this, provider);
 
     // If this provider's secrets were not successfully decrypted at
     // startup (IPC handler not registered yet), retry now.
@@ -651,6 +673,7 @@ export function persistRefreshedProviderTokensImpl(
 
   // Invalidate any in-flight decrypt (startup / cross-window) so it cannot
   // overwrite the rotated tokens we are about to commit.
+  ensureProviderSeqCounters(this, provider);
   ++this.providerDecryptSeq[provider];
   this.state.providers[provider] = {
     ...existing,

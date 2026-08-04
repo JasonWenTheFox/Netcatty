@@ -151,6 +151,37 @@ export function decryptProxyProfiles(profiles: ProxyProfile[]): Promise<ProxyPro
 // Provider Connection (Cloud Sync)
 // ---------------------------------------------------------------------------
 
+/**
+ * Host-owned sealed-config envelope. Must be unambiguous against plugin-owned
+ * JSON: exactly one reserved key, no extra properties. Never treat a plugin
+ * object that merely contains a similar key as already sealed.
+ */
+const PLUGIN_CONFIG_ENVELOPE_KEY = "__netcatty_plugin_config_v1" as const;
+const LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY = "__encryptedPluginConfig" as const;
+
+type PluginConfigEnvelope = {
+  [PLUGIN_CONFIG_ENVELOPE_KEY]: string;
+};
+
+function isPluginConfigEnvelope(value: unknown): value is PluginConfigEnvelope {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return keys.length === 1
+    && keys[0] === PLUGIN_CONFIG_ENVELOPE_KEY
+    && typeof record[PLUGIN_CONFIG_ENVELOPE_KEY] === "string";
+}
+
+/** Legacy envelope shape (still accepted on decrypt for one migration hop). */
+function isLegacyPluginConfigEnvelope(value: unknown): value is { __encryptedPluginConfig: string } {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return keys.length === 1
+    && keys[0] === LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY
+    && typeof record[LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY] === "string";
+}
+
 export async function encryptProviderSecrets(conn: ProviderConnection): Promise<ProviderConnection> {
   const out = { ...conn };
 
@@ -181,18 +212,14 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
       c.secretAccessKey = (await encryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await encryptField(c.sessionToken);
       out.config = c;
-    } else if (
-      !isBuiltin
-      && !(
-        typeof out.config === "object"
-        && out.config !== null
-        && "__encryptedPluginConfig" in out.config
-      )
-    ) {
-      // Seal any JSON shape (object, string, number, boolean, array) as one opaque blob.
+    } else if (!isBuiltin && !isPluginConfigEnvelope(out.config)) {
+      // Seal any JSON shape (including objects that happen to contain a key
+      // named like a legacy envelope marker) as one opaque blob.
       const sealed = await encryptField(JSON.stringify(out.config));
       if (sealed) {
-        out.config = { __encryptedPluginConfig: sealed } as ProviderConnection["config"];
+        out.config = {
+          [PLUGIN_CONFIG_ENVELOPE_KEY]: sealed,
+        } as ProviderConnection["config"];
       }
     }
   }
@@ -228,13 +255,10 @@ export async function decryptProviderSecrets(conn: ProviderConnection): Promise<
       c.secretAccessKey = (await decryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await decryptField(c.sessionToken);
       out.config = c;
-    } else if (
-      typeof out.config === "object"
-      && out.config !== null
-      && "__encryptedPluginConfig" in out.config
-      && typeof (out.config as { __encryptedPluginConfig?: unknown }).__encryptedPluginConfig === "string"
-    ) {
-      const sealed = (out.config as { __encryptedPluginConfig: string }).__encryptedPluginConfig;
+    } else if (isPluginConfigEnvelope(out.config) || isLegacyPluginConfigEnvelope(out.config)) {
+      const sealed = isPluginConfigEnvelope(out.config)
+        ? out.config[PLUGIN_CONFIG_ENVELOPE_KEY]
+        : out.config[LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY];
       const plain = await decryptField(sealed);
       // plain may be JSON "false"/"0"/'""' — treat empty decrypt as failure only.
       if (plain != null && plain !== "") {

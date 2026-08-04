@@ -218,13 +218,15 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = createConvergentSyncStateFromPayload(merged, options.deviceId, options.now);
-      // Union sidecars from local + every legacy provider so first publish
-      // does not drop unique plugin settings/baselines.
-      const migrationSidecars = mergeMigrationSidecars(
-        options.localPayload.pluginSidecars,
-        merged.pluginSidecars,
-        ...v1Inputs.map((input) => input.payload.pluginSidecars),
-      );
+      // Prefer the three-way merge result already on `merged` (preserves
+      // explicit sidecar deletions). Do not re-LWW raw provider bundles —
+      // that would resurrect entries three-way merge correctly removed.
+      const migrationSidecars = Object.prototype.hasOwnProperty.call(merged, 'pluginSidecars')
+        ? merged.pluginSidecars
+        : mergeMigrationSidecars(
+          options.localPayload.pluginSidecars,
+          ...v1Inputs.map((input) => input.payload.pluginSidecars),
+        );
       materialized = materializeSyncPayloadFromConvergentState(state, {
         syncedAt: options.now,
         syncMeta: merged.syncMeta,
@@ -288,15 +290,12 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = branches.reduce(mergeConvergentSyncStates, state);
-      const migrationSidecars = mergeMigrationSidecars(
-        joinedSidecars,
-        options.localPayload.pluginSidecars,
-        ...v1Inputs.map((input) => input.payload.pluginSidecars),
-        ...legacySources.map((source) => source.payload.pluginSidecars),
-      );
+      // joinedSidecars already unions local + all provider inputs. Re-LWW-ing
+      // raw sources again cannot add unique entries and can confuse future
+      // three-way paths that expect the joined set to be final.
       materialized = materializeSyncPayloadFromConvergentState(state, {
         syncedAt: options.now,
-        ...(migrationSidecars ? { pluginSidecars: migrationSidecars } : {}),
+        ...(joinedSidecars ? { pluginSidecars: joinedSidecars } : {}),
       });
     }
   }
