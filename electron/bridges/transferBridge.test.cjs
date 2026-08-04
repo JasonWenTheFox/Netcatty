@@ -12,6 +12,7 @@ const transferBridge = require("./transferBridge.cjs");
 const sftpBridge = require("./sftpBridge.cjs");
 const tempDirBridge = require("./tempDirBridge.cjs");
 const {
+  DOWNLOAD_TRANSFER_CONCURRENCY,
   TRANSFER_CHUNK_SIZE,
   UPLOAD_TRANSFER_CONCURRENCY,
 } = require("./transferLimits.cjs");
@@ -4127,6 +4128,95 @@ test("uploads prefer concurrent shared channel over serial WriteStream", async (
     maxInFlight <= UPLOAD_TRANSFER_CONCURRENCY,
     `expected concurrency <= ${UPLOAD_TRANSFER_CONCURRENCY}, got ${maxInFlight}`,
   );
+});
+
+test("sudo SFTP downloads prefer concurrent shared READ over serial createReadStream", async (t) => {
+  // Sudo cannot open an isolated channel, so downloads used to fall straight to
+  // createReadStream (1-in-flight READs → hundreds of KB/s). Uploads already
+  // keep pipelined WRITE fanout on the shared browse channel; downloads must
+  // mirror that for the elevated SFTP path (#2719).
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-sudo-download-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.alloc(DOWNLOAD_TRANSFER_CONCURRENCY * TRANSFER_CHUNK_SIZE, 47);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = index % 251;
+  const targetPath = path.join(tempDir, "download.bin");
+
+  let maxInFlight = 0;
+  let activeReads = 0;
+  let createReadStreamCalls = 0;
+  let endCalls = 0;
+  const sharedSftp = createFastSftp({
+    open(_remotePath, flags, callback) {
+      assert.equal(flags, "r");
+      callback(null, Buffer.from("shared-read-handle"));
+    },
+    read(_handle, buffer, offset, length, position, callback) {
+      activeReads += 1;
+      maxInFlight = Math.max(maxInFlight, activeReads);
+      const slice = payload.subarray(position, position + length);
+      slice.copy(buffer, offset);
+      setImmediate(() => {
+        activeReads -= 1;
+        callback(null, slice.length);
+      });
+    },
+    close(_handle, callback) {
+      callback(null);
+    },
+    createReadStream() {
+      createReadStreamCalls += 1;
+      throw new Error("serial createReadStream must not be used when concurrent READ works");
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat() {
+      return Promise.resolve({
+        size: payload.length,
+        mtimeMs: 1_000,
+        ctimeMs: 1_000,
+        mtime: 1,
+        ctime: 1,
+      });
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["source", client]]) });
+
+  const result = await transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "download-sudo-shared-concurrent",
+      sourcePath: "/root/download.bin",
+      targetPath,
+      sourceType: "sftp",
+      targetType: "local",
+      sourceSftpId: "source",
+      totalBytes: payload.length,
+      resumable: true,
+    },
+  );
+
+  assert.equal(result.error, undefined, result.error);
+  assert.equal(createReadStreamCalls, 0);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+  assert.ok(
+    maxInFlight >= 2,
+    `expected pipelined READ concurrency >= 2, got ${maxInFlight}`,
+  );
+  assert.ok(
+    maxInFlight <= DOWNLOAD_TRANSFER_CONCURRENCY,
+    `expected concurrency <= ${DOWNLOAD_TRANSFER_CONCURRENCY}, got ${maxInFlight}`,
+  );
+  const downloaded = await fs.promises.readFile(targetPath);
+  assert.deepEqual(downloaded, payload);
 });
 
 test("shared upload errors wait for all in-flight WRITEs before returning", async (t) => {

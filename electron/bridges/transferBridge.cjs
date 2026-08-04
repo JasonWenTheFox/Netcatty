@@ -2788,6 +2788,11 @@ async function uploadFileConcurrent(
  * durable byte; out-of-order range completion cannot advance past a hole.
  * Once pause is requested, no new ranges are scheduled and we wait for every
  * in-flight range before acknowledging it.
+ *
+ * @param {{ disposeChannel?: boolean }} [options]
+ *   disposeChannel — when true (isolated channel), cancel/abort may call
+ *   sftp.end(); the caller still returns healthy channels to the download pool.
+ *   When false (shared browse / sudo session), never call sftp.end().
  */
 async function downloadFileResumableFast(
   remotePath,
@@ -2796,18 +2801,25 @@ async function downloadFileResumableFast(
   fileSize,
   transfer,
   sendProgress,
+  options = {},
 ) {
+  const disposeChannel = options.disposeChannel !== false;
   const checkpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
   let channelError = null;
   const onChannelError = (error) => {
     channelError = channelError || error;
   };
   sftp.on?.("error", onChannelError);
-  // Install cancel before OPEN so a stalled remote open can still end the
+  // Install cancel before OPEN so a stalled remote open can still end an
   // isolated channel (runPausableConcurrentRanges would install this later).
+  const abortChannel = () => {
+    if (disposeChannel) {
+      try { sftp.end?.(); } catch { /* ignore */ }
+    }
+  };
   const abortEarly = () => {
     transfer.cancelled = true;
-    try { sftp.end?.(); } catch { }
+    abortChannel();
   };
   transfer.abort = abortEarly;
 
@@ -2834,9 +2846,9 @@ async function downloadFileResumableFast(
           await writeLocalRange(localHandle, buffer, position, length);
         },
         sendProgress,
-        abortChannel: () => sftp.end?.(),
+        abortChannel,
         sftp,
-        forceSettleOnError: true,
+        forceSettleOnError: disposeChannel,
       });
       if (channelError) throw channelError;
       await verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSize, transfer);
@@ -2861,11 +2873,19 @@ async function downloadFileResumableFast(
       }
     }
     let remoteCloseError = null;
-    if (remoteHandle && !failed && !transfer.cancelled) {
-      try {
-        await closeSftpHandle(sftp, remoteHandle);
-      } catch (error) {
-        remoteCloseError = error;
+    // Close remote handles while the channel is still live. On disposeChannel
+    // cancel/failure the channel is about to be ended (or already dead); a
+    // CLOSE request would hang forever with no callback from ssh2.
+    if (remoteHandle) {
+      const skipClose = disposeChannel && (failed || transfer.cancelled);
+      if (!skipClose) {
+        try {
+          await closeSftpHandle(sftp, remoteHandle);
+        } catch (error) {
+          if (!failed && !transfer.cancelled) {
+            remoteCloseError = error;
+          }
+        }
       }
     }
     if (!failed && !transfer.cancelled && !remoteCloseError && channelError) {
@@ -2878,9 +2898,12 @@ async function downloadFileResumableFast(
       throw error;
     }
     if (!failed && !transfer.cancelled && remoteCloseError) {
-      const error = new Error("The isolated SFTP channel failed while closing", { cause: remoteCloseError });
-      error.completedWithUnhealthyChannel = true;
-      throw error;
+      if (disposeChannel) {
+        const error = new Error("The isolated SFTP channel failed while closing", { cause: remoteCloseError });
+        error.completedWithUnhealthyChannel = true;
+        throw error;
+      }
+      throw remoteCloseError;
     }
   }
 }
@@ -3032,7 +3055,61 @@ async function downloadFile(
     }
   }
 
+  // Concurrent READs on the shared browse channel — still pipelined, does not
+  // end the session on cancel (sudo mode and isolated-open failures). Mirrors
+  // upload's concurrent-shared path so elevated SFTP downloads keep fanout (#2719).
+  if (typeof sftp.open === "function" && typeof sftp.read === "function") {
+    try {
+      transfer.downloadStrategy = "concurrent-shared";
+      logTransferDiag(transfer, "strategy", {
+        strategy: "concurrent-shared",
+        fields: {
+          chunk: formatDiagBytes(TRANSFER_CHUNK_SIZE),
+          concurrency: DOWNLOAD_TRANSFER_CONCURRENCY,
+        },
+      });
+      await downloadFileResumableFast(
+        remotePath,
+        localPath,
+        sftp,
+        fileSize,
+        transfer,
+        sendProgress,
+        { disposeChannel: false },
+      );
+      if (initialSource) {
+        const latestSource = await runCancelablePreflight(() => client.stat(remotePath));
+        await assertDownloadSourceAfterTransfer(initialSource, latestSource, fileSize, {
+          localPath,
+          client,
+          remotePath,
+          signal: transfer.signal,
+        });
+      }
+      return;
+    } catch (err) {
+      if (transfer.cancelled) throw err;
+      if (err?.noTransferFallback) throw err;
+      // Concurrent ranges may leave sparse tails past the contiguous
+      // checkpoint; truncate the actual local target before stream resume.
+      const sharedCheckpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
+      try {
+        await fs.promises.truncate(localPath, sharedCheckpoint);
+      } catch (truncateError) {
+        if (!(sharedCheckpoint === 0 && truncateError?.code === "ENOENT")) {
+          throw truncateError;
+        }
+      }
+      sendProgress(sharedCheckpoint, fileSize, { force: true, checkpointBytes: sharedCheckpoint });
+      console.warn(
+        "[transferBridge] concurrent shared download failed, falling back to a compatible stream:",
+        err?.message || String(err),
+      );
+    }
+  }
+
   // Fallback: sequential stream piping
+  transfer.downloadStrategy = transfer.downloadStrategy || "stream";
   const checkpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
   if (checkpoint >= fileSize) {
     // Planned snapshot is already fully staged (including zero-byte snapshots).
