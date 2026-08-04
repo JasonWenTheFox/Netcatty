@@ -106,6 +106,9 @@ class PluginSyncSidecarService {
     const remotePluginIds = new Set(
       remoteEntries.map((entry) => entry.pluginId).filter((id) => typeof id === "string"),
     );
+    const remoteKeys = new Set(
+      remoteEntries.map((entry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`),
+    );
     const preservedLocal = remoteIsAuthoritativeEmpty
       ? []
       : local.filter((entry) => {
