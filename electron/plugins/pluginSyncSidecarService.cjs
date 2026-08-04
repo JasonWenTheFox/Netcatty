@@ -98,16 +98,20 @@ class PluginSyncSidecarService {
     // (apply path only runs when the field is present).
     const remoteIsAuthoritativeEmpty = Array.isArray(remoteBundle?.entries)
       && remoteBundle.entries.length === 0;
-    // Remote is authoritative for installed plugins; missing-plugin local rows
-    // (and their baselines) are preserved when absent from a non-empty remote.
-    const remoteKeys = new Set(
-      remoteEntries.map((entry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`),
+    // Remote is authoritative for installed plugins. For missing plugins, if the
+    // remote bundle mentions the plugin at all, remote is authoritative for that
+    // plugin's entire sidecar set (do not resurrect local-only keys another
+    // device deleted). Only plugins completely absent from remote keep local
+    // retention so first-time missing-plugin baselines are not wiped.
+    const remotePluginIds = new Set(
+      remoteEntries.map((entry) => entry.pluginId).filter((id) => typeof id === "string"),
     );
     const preservedLocal = remoteIsAuthoritativeEmpty
       ? []
       : local.filter((entry) => {
         if (declared.has(entry.pluginId)) return false; // installed: remote wins
-        return !remoteKeys.has(`${entry.pluginId}\0${entry.kind}\0${entry.key}`);
+        if (remotePluginIds.has(entry.pluginId)) return false;
+        return true;
       });
     const merged = mergePluginSyncSidecars({
       local: preservedLocal,

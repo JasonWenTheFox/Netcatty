@@ -198,6 +198,8 @@ export function setAvailablePluginSyncProviderIdsImpl(
   this: any,
   providerIds: readonly string[],
 ): void {
+  const previous = listAvailablePluginSyncProviderIdsImpl.call(this);
+  const previousSet = new Set(previous);
   const next = [...new Set(
     providerIds.filter((id): id is string => typeof id === 'string' && isPluginCloudProviderId(id)),
   )].sort();
@@ -229,11 +231,11 @@ export function setAvailablePluginSyncProviderIdsImpl(
       }
       continue;
     }
-    // Still contributed: drop cached adapters so a restarted/replaced plugin
-    // runtime gets a fresh connect on the next sync. Contribution refresh is
-    // the host signal that runtimes may have been replaced; setting-only
-    // updates do not flow through this availability catalog.
-    if (this.adapters?.has?.(id)) {
+    // Provider is still contributed. Only drop the cached adapter when the
+    // provider newly re-entered the available set (install/enable/restart of
+    // the package). Setting-only contribution noise keeps membership stable
+    // and must not signOut mid-sync — plugin adapters rebind via rebindSession.
+    if (!previousSet.has(id) && this.adapters?.has?.(id)) {
       const adapter = this.adapters.get(id);
       try { adapter?.signOut?.(); } catch { /* ignore */ }
       this.adapters.delete(id);
@@ -533,14 +535,15 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
         }
 
         const tokenChanged =
-          (prev.tokens?.accessToken || null) !== (nextTokens?.accessToken || null) ||
-          (prev.tokens?.refreshToken || null) !== (nextTokens?.refreshToken || null) ||
-          (prev.tokens?.expiresAt || null) !== (nextTokens?.expiresAt || null) ||
-          (prev.tokens?.tokenType || null) !== (nextTokens?.tokenType || null) ||
-          (prev.tokens?.scope || null) !== (nextTokens?.scope || null);
+          (prev.tokens?.accessToken ?? null) !== (nextTokens?.accessToken ?? null) ||
+          (prev.tokens?.refreshToken ?? null) !== (nextTokens?.refreshToken ?? null) ||
+          (prev.tokens?.expiresAt ?? null) !== (nextTokens?.expiresAt ?? null) ||
+          (prev.tokens?.tokenType ?? null) !== (nextTokens?.tokenType ?? null) ||
+          (prev.tokens?.scope ?? null) !== (nextTokens?.scope ?? null);
 
+        // Config may be a valid falsy scalar (false, 0, "") — use nullish, not ||.
         const configChanged =
-          JSON.stringify(prev.config || null) !== JSON.stringify(nextConfig || null);
+          JSON.stringify(prev.config ?? null) !== JSON.stringify(nextConfig ?? null);
 
         const resourceChanged = (adapter?.resourceId || null) !== (next.resourceId || null);
 

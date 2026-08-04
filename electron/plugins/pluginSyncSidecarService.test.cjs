@@ -294,3 +294,43 @@ test("applyFromSync empty remote bundle wipes missing-plugin retained rows", asy
   await service.applyFromSync({ version: 1, entries: [] });
   assert.equal(database.listAllSyncSidecars().length, 0);
 });
+
+test("applyFromSync does not resurrect missing-plugin keys deleted on another device", async (context) => {
+  const database = tempDb(context);
+  // Local still has a setting that remote deleted, plus we keep another remote key.
+  database.setSyncSidecar(
+    "com.missing.plugin",
+    "settings",
+    "com.missing.plugin.deleted\0application\0application",
+    "stale",
+    1,
+  );
+  database.setSyncSidecar(
+    "com.missing.plugin",
+    "settings",
+    "com.missing.plugin.kept\0application\0application",
+    "local-old",
+    1,
+  );
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: { snapshot: () => ({ plugins: [] }) },
+  });
+  await service.applyFromSync({
+    version: 1,
+    entries: [{
+      pluginId: "com.missing.plugin",
+      kind: "settings",
+      key: "com.missing.plugin.kept\0application\0application",
+      value: "remote-new",
+      updatedAt: 5,
+    }],
+  });
+  const all = database.listAllSyncSidecars();
+  assert.equal(
+    all.some((entry) => String(entry.key).includes("deleted")),
+    false,
+    "must not resurrect remote-deleted missing-plugin setting",
+  );
+  assert.ok(all.some((entry) => entry.value === "remote-new"));
+});

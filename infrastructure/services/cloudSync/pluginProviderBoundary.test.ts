@@ -143,7 +143,7 @@ describe('plugin provider manager boundary', () => {
     assert.equal(manager.state.providers['com.example.backup.sync'].status, 'disconnected');
   });
 
-  it('setAvailablePluginSyncProviderIds drops cached adapters for still-contributed providers', () => {
+  it('setAvailablePluginSyncProviderIds keeps adapters when availability membership is unchanged', () => {
     const storage = memoryStorage();
     const manager = createManagerHarness(storage);
     const pluginId = 'com.example.backup.sync';
@@ -171,10 +171,59 @@ describe('plugin provider manager boundary', () => {
       }],
     ]);
     registerPluginProviderIdImpl.call(manager, pluginId);
-    // Same contribution still present (e.g. plugin runtime restarted).
+    // Same contribution still present (setting-updated noise).
     setAvailablePluginSyncProviderIdsImpl.call(manager, [pluginId]);
-    assert.equal(manager.adapters.has(pluginId), false, 'must drop cached adapter for rebind');
-    assert.equal(signedOut, 1);
+    assert.equal(manager.adapters.has(pluginId), true, 'must keep adapter on no-op membership refresh');
+    assert.equal(signedOut, 0);
+    assert.equal(manager.state.providers[pluginId].status, 'connected');
+  });
+
+  it('setAvailablePluginSyncProviderIds drops adapters when a provider re-enters the set', () => {
+    const storage = memoryStorage();
+    const manager = createManagerHarness(storage);
+    const pluginId = 'com.example.backup.sync';
+    let signedOut = 0;
+    manager.state = {
+      providers: {
+        [pluginId]: {
+          provider: pluginId,
+          status: 'disconnected',
+          config: { endpoint: 'https://example.test' },
+          error: 'Plugin sync provider is no longer installed or enabled',
+        },
+      },
+    };
+    manager.adapters = new Map([
+      [pluginId, {
+        isAuthenticated: true,
+        accountInfo: { id: 'acct' },
+        resourceId: null,
+        signOut() { signedOut += 1; },
+        async initializeSync() { return null; },
+        async upload() { return 'ok'; },
+        async download() { return null; },
+        async deleteSync() {},
+        getTokens() { return null; },
+      }],
+    ]);
+    // Not in available set yet.
+    setAvailablePluginSyncProviderIdsImpl.call(manager, []);
+    assert.equal(manager.adapters.has(pluginId), false);
+    // Stale adapter reattached (should not happen in prod) then re-enter.
+    manager.adapters.set(pluginId, {
+      isAuthenticated: true,
+      accountInfo: { id: 'acct' },
+      resourceId: null,
+      signOut() { signedOut += 1; },
+      async initializeSync() { return null; },
+      async upload() { return 'ok'; },
+      async download() { return null; },
+      async deleteSync() {},
+      getTokens() { return null; },
+    });
+    setAvailablePluginSyncProviderIdsImpl.call(manager, [pluginId]);
+    assert.equal(manager.adapters.has(pluginId), false, 'must drop adapter when provider re-enters');
+    assert.equal(signedOut >= 1, true);
     assert.equal(manager.state.providers[pluginId].status, 'connected');
   });
 

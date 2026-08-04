@@ -161,7 +161,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
     setPluginConfigDialog({ providerId, title, configurationSchema });
   };
 
-  const runPluginConnect = async (providerId: string, configuration: unknown) => {
+  const runPluginConnect = async (providerId: string, configuration: unknown): Promise<boolean> => {
     setPluginConnectBusy(providerId);
     try {
       if (disconnectOtherProviders) {
@@ -169,10 +169,11 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
       }
       await sync.connectPluginProvider(providerId, configuration);
       toast.success(t('cloudSync.connect.plugin.success'));
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       toast.error(message, t('cloudSync.connect.plugin.failedTitle'));
-      throw error;
+      return false;
     } finally {
       setPluginConnectBusy(null);
     }
@@ -216,10 +217,9 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
     setPluginConfigError(null);
     setPluginConfigSaving(true);
     try {
-      await runPluginConnect(pluginConfigDialog.providerId, configuration);
-      setPluginConfigDialog(null);
-    } catch {
-      // Toast already shown; keep dialog open for correction.
+      const ok = await runPluginConnect(pluginConfigDialog.providerId, configuration);
+      if (ok) setPluginConfigDialog(null);
+      // On failure toast already shown; keep dialog open for correction.
     } finally {
       setPluginConfigSaving(false);
     }
