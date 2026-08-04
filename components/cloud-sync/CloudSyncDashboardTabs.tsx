@@ -1,13 +1,16 @@
-import React, { type Dispatch, type RefObject, type SetStateAction } from 'react';
-import { Database, Github, History, Server, Trash2 } from 'lucide-react';
+import React, { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { Database, Github, History, Plug, Server, Trash2 } from 'lucide-react';
 import type {
   CloudProvider,
   ConvergentFieldConflict,
   ConvergentMigrationPreview,
   SyncPayload,
 } from '../../domain/sync';
+import { isBuiltinCloudProvider } from '../../domain/sync';
+import { isPluginCloudProviderId } from '../../domain/cloudProviderIds';
 import type { useCloudSync } from '../../application/state/useCloudSync';
 import { cleanOneDriveErrorMessage, isProviderReadyForSync } from '../../domain/sync';
+import { pluginExtensionBridge } from '../../application/state/pluginExtensionBridge';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '../ui/select';
@@ -78,7 +81,47 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
   onCancelConvergentMigration,
   onResolveConvergentConflict,
   onDowngradeConvergent,
-}) => (
+}) => {
+  const [pluginSyncProviders, setPluginSyncProviders] = useState<Array<{ id: string; title: string }>>([]);
+  const [pluginConnectBusy, setPluginConnectBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const listed = await pluginExtensionBridge.listProviders('sync');
+        if (cancelled) return;
+        setPluginSyncProviders(
+          (listed ?? []).map((entry) => ({
+            id: String((entry as { id?: string }).id ?? ''),
+            title: String(
+              (entry as { title?: string; label?: string; id?: string }).title
+              ?? (entry as { label?: string }).label
+              ?? (entry as { id?: string }).id
+              ?? 'Plugin sync',
+            ),
+          })).filter((entry) => entry.id.length > 0 && isPluginCloudProviderId(entry.id)),
+        );
+      } catch {
+        if (!cancelled) setPluginSyncProviders([]);
+      }
+    };
+    void refresh();
+    const unsubscribe = pluginExtensionBridge.onContributionsChanged(() => {
+      void refresh();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const pluginProviderIds = new Set<string>([
+    ...pluginSyncProviders.map((entry) => entry.id),
+    ...Object.keys(sync.providers).filter((id) => !isBuiltinCloudProvider(id)),
+  ]);
+
+  return (
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'providers' | 'status')} className="space-y-4">
                 <TabsList className="grid w-full grid-cols-2">
                     <TabsTrigger value="providers">{t('cloudSync.providers.title')}</TabsTrigger>
@@ -187,6 +230,41 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                         onDisconnect={() => sync.disconnectProvider('s3')}
                         onSync={() => handleSync('s3')}
                     />
+
+                    {[...pluginProviderIds].sort().map((providerId) => {
+                        const connection = sync.providers[providerId];
+                        const listed = pluginSyncProviders.find((entry) => entry.id === providerId);
+                        const title = listed?.title ?? providerId;
+                        const connected = connection ? isProviderReadyForSync(connection) : false;
+                        return (
+                            <ProviderCard
+                                key={providerId}
+                                provider={providerId as CloudProvider}
+                                name={title}
+                                icon={<Plug size={24} />}
+                                isConnected={connected}
+                                isSyncing={connection?.status === 'syncing'}
+                                isConnecting={
+                                    connection?.status === 'connecting'
+                                    || pluginConnectBusy === providerId
+                                }
+                                account={connection?.account}
+                                lastSync={connection?.lastSync}
+                                error={connection?.error}
+                                disabled={isConnectDisabled(providerId as CloudProvider)}
+                                onConnect={async () => {
+                                    setPluginConnectBusy(providerId);
+                                    try {
+                                        await sync.connectPluginProvider(providerId, {});
+                                    } finally {
+                                        setPluginConnectBusy(null);
+                                    }
+                                }}
+                                onDisconnect={() => sync.disconnectProvider(providerId as CloudProvider)}
+                                onSync={() => handleSync(providerId as CloudProvider)}
+                            />
+                        );
+                    })}
                 </TabsContent>
 
                 <TabsContent value="status" className="space-y-4">
@@ -371,4 +449,5 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                     </div>
                 </TabsContent>
             </Tabs>
-);
+  );
+};

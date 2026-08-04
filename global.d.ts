@@ -353,7 +353,7 @@ declare global {
     providePluginTerminal?(request: NetcattyTerminalProviderRequest): Promise<ReadonlyArray<NetcattyTerminalProviderResult>>;
     cancelPluginTerminalRequest?(requestId: string): Promise<boolean>;
     publishPluginTerminalSessionEvent?(event: NetcattyTerminalSessionEvent): Promise<ReadonlyArray<{ pluginId: string; delivered: boolean }>>;
-    listPluginExtensionProviders?(options: { kind: 'connection' | 'authentication' | 'importer'; locale?: string }): Promise<ReadonlyArray<NetcattyExtensionProviderContribution>>;
+    listPluginExtensionProviders?(options: { kind: 'connection' | 'authentication' | 'importer' | 'sync'; locale?: string }): Promise<ReadonlyArray<NetcattyExtensionProviderContribution>>;
     updatePluginCredentialCatalog?(entries: ReadonlyArray<{ id: string; ciphertext: string }>): Promise<number>;
     invokePluginExtensionProvider?(request: NetcattyExtensionProviderRequest): Promise<import("@netcatty/plugin-contract").JsonValue>;
     cancelPluginExtensionRequest?(requestId: string): Promise<boolean>;

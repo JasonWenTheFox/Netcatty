@@ -123,13 +123,17 @@ export const SyncStatusButton: React.FC<SyncStatusButtonProps> = ({
 
     // State is now automatically synced via useSyncExternalStore - no manual refresh needed
 
-    // Get connected provider (include syncing status as it's still connected)
+    // Get connected provider (built-ins first, then any namespaced plugin provider).
     const getConnectedProvider = (): CloudProvider | null => {
-        if (isProviderReadyForSync(sync.providers.github)) return 'github';
-        if (isProviderReadyForSync(sync.providers.google)) return 'google';
-        if (isProviderReadyForSync(sync.providers.onedrive)) return 'onedrive';
-        if (isProviderReadyForSync(sync.providers.webdav)) return 'webdav';
-        if (isProviderReadyForSync(sync.providers.s3)) return 's3';
+        const preferred: CloudProvider[] = ['github', 'google', 'onedrive', 'webdav', 's3'];
+        for (const id of preferred) {
+            const conn = sync.providers[id];
+            if (conn && isProviderReadyForSync(conn)) return id;
+        }
+        for (const [id, conn] of Object.entries(sync.providers)) {
+            if (preferred.includes(id as CloudProvider)) continue;
+            if (conn && isProviderReadyForSync(conn)) return id as CloudProvider;
+        }
         return null;
     };
 

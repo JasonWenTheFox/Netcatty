@@ -920,12 +920,16 @@ export class CloudSyncManager {
       payload: SyncPayload,
       commitReplica: () => Promise<void>,
     ) => Promise<void>,
+    options?: {
+      pluginSidecars?: SyncPayload['pluginSidecars'];
+    },
   ): Promise<{ payload: SyncPayload; results: Map<CloudProvider, SyncResult> }> {
     return resolveConvergentConflictAndSyncImpl.call(
       this,
       addressKey,
       candidateDot,
       applyPayload,
+      options,
     );
   }
 

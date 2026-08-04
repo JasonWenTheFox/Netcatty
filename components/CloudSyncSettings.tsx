@@ -136,10 +136,14 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
         }
         sync.cancelOAuthConnect();
         if (sync.convergentSyncConfig.initialized) return;
-        const providers: CloudProvider[] = ['github', 'google', 'onedrive', 'webdav', 's3'];
+        const providers = new Set<CloudProvider>(['github', 'google', 'onedrive', 'webdav', 's3']);
+        for (const id of Object.keys(sync.providers)) {
+            providers.add(id as CloudProvider);
+        }
         for (const provider of providers) {
             if (provider === current) continue;
-            if (isProviderReadyForSync(sync.providers[provider])) {
+            const conn = sync.providers[provider];
+            if (conn && isProviderReadyForSync(conn)) {
                 await sync.disconnectProvider(provider);
             }
         }

@@ -798,7 +798,19 @@ export const useCloudSync = (): CloudSyncHook => {
     ) => Promise<void>,
   ) => {
     await ensureUnlocked();
-    return manager.resolveConvergentConflict(addressKey, candidateDot, applyPayload);
+    // Collect live sidecars so conflict apply/upload does not revert plugin
+    // settings that changed after the last provider baseline.
+    let pluginSidecars: SyncPayload['pluginSidecars'] | undefined;
+    try {
+      const { collectPluginSyncSidecarsFromHost } = await import('../pluginSyncSidecarBridge');
+      const collected = await collectPluginSyncSidecarsFromHost();
+      if (collected) pluginSidecars = collected;
+    } catch {
+      // Host unavailable: omit field so apply preserves local sidecars.
+    }
+    return manager.resolveConvergentConflict(addressKey, candidateDot, applyPayload, {
+      pluginSidecars,
+    });
   }, [ensureUnlocked]);
 
   const refreshConvergentSyncConfig = useCallback(() => {

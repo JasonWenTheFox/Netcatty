@@ -847,29 +847,13 @@ async function prepareConvergentConflictResolutionImpl(
     this.state.deviceId,
     now,
   );
-  // Prefer caller-provided sidecars; otherwise keep any baseline-carried
-  // sidecars from the last verified provider materialization.
-  let sidecars = pluginSidecars;
-  if (!sidecars && typeof this.loadConvergentProviderBaseline === 'function') {
-    try {
-      const providers = connectedProviders(this);
-      for (const provider of providers) {
-        const baseline = await this.loadConvergentProviderBaseline(provider) as {
-          materializedPayload?: SyncPayload;
-        } | null;
-        const fromBase = sidecarBundleFromPayload(baseline?.materializedPayload);
-        if (fromBase) {
-          sidecars = fromBase;
-          break;
-        }
-      }
-    } catch {
-      // ignore missing baselines
-    }
-  }
+  // Prefer caller-provided current sidecars. Never fall back to a stale
+  // provider baseline — that would revert plugin settings changed after the
+  // last verified sync. When omitted, materialize without the field so apply
+  // preserves local sidecars (legacy missing-field semantics).
   return {
     state: resolved,
-    payload: materializedPayload(resolved, now, sidecars),
+    payload: materializedPayload(resolved, now, pluginSidecars),
     now,
   };
 }
@@ -882,12 +866,17 @@ export async function resolveConvergentConflictAndSyncImpl(
     payload: SyncPayload,
     commitReplica: () => Promise<void>,
   ) => Promise<void>,
+  options?: {
+    pluginSidecars?: SyncPayload['pluginSidecars'];
+  },
 ): Promise<{ payload: SyncPayload; results: Map<CloudProvider, SyncResult> }> {
   return withConvergentSyncWebLock(async () => {
     const prepared = await prepareConvergentConflictResolutionImpl.call(
       this,
       addressKey,
       candidateDot,
+      Date.now(),
+      options?.pluginSidecars,
     );
     let committed = false;
     await applyPayload(prepared.payload, async () => {
