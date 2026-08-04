@@ -188,6 +188,7 @@ function createBridgeRegistrar(context) {
       terminalProviderService: pluginHostService?.terminalProviderService,
       terminalDataPipelineService: pluginHostService?.terminalDataPipelineService,
       extensionProviderService: pluginHostService?.extensionProviderService,
+      syncSidecarService: pluginHostService?.syncSidecarService,
       credentialResolver: pluginHostService?.credentialResolver,
       getTerminalWorkerManager: () => terminalWorkerManager,
       selectImporterFile: async (event) => {

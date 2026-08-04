@@ -27,6 +27,15 @@ const CHANNELS = Object.freeze({
   extensionProviders: "netcatty:plugins:extension-providers",
   extensionInvoke: "netcatty:plugins:extension-invoke",
   extensionCancel: "netcatty:plugins:extension-cancel",
+  syncConnect: "netcatty:plugins:sync-connect",
+  syncDisconnect: "netcatty:plugins:sync-disconnect",
+  syncGetAccount: "netcatty:plugins:sync-get-account",
+  syncGetCapabilities: "netcatty:plugins:sync-get-capabilities",
+  syncReadObject: "netcatty:plugins:sync-read-object",
+  syncWriteObject: "netcatty:plugins:sync-write-object",
+  syncDeleteObject: "netcatty:plugins:sync-delete-object",
+  syncSidecarsCollect: "netcatty:plugins:sync-sidecars-collect",
+  syncSidecarsApply: "netcatty:plugins:sync-sidecars-apply",
   connectionStart: "netcatty:plugins:connection-start",
   connectionWrite: "netcatty:plugins:connection-write",
   connectionControl: "netcatty:plugins:connection-control",
@@ -173,6 +182,7 @@ function registerPluginBridge(ipcMain, options) {
   const terminalProviderService = options.terminalProviderService;
   const terminalDataPipelineService = options.terminalDataPipelineService;
   const extensionProviderService = options.extensionProviderService;
+  const syncSidecarService = options.syncSidecarService;
   const credentialResolver = options.credentialResolver;
   const connectionStatusPollMs = Number.isSafeInteger(options.connectionStatusPollMs)
     && options.connectionStatusPollMs >= 0
@@ -641,6 +651,58 @@ function registerPluginBridge(ipcMain, options) {
     if (!extensionProviderService) throw new Error("Plugin extension Providers are unavailable");
     return extensionProviderService.listProviders(payload ?? {});
   });
+
+  handlePassive(CHANNELS.syncSidecarsCollect, null, async () => {
+    if (!syncSidecarService) return { version: 1, entries: [] };
+    return syncSidecarService.collectForSync();
+  });
+
+  handlePassive(CHANNELS.syncSidecarsApply, null, async (_activeManager, payload) => {
+    if (!syncSidecarService) return { applied: false };
+    const entries = syncSidecarService.applyFromSync(payload ?? { version: 1, entries: [] });
+    return { applied: true, count: entries.length };
+  });
+
+  const runSyncProvider = (channel, methodName) => {
+    ipcMain.handle(channel, async (event, payload) => runExtensionRequest(event, payload, async (signal) => {
+      if (!extensionProviderService) throw new Error("Plugin sync Providers are unavailable");
+      const method = extensionProviderService[methodName];
+      if (typeof method !== "function") throw new Error(`Plugin sync method missing: ${methodName}`);
+      return method.call(extensionProviderService, payload ?? {}, { signal });
+    }));
+  };
+
+  runSyncProvider(CHANNELS.syncConnect, "connectSync");
+  runSyncProvider(CHANNELS.syncDisconnect, "disconnectSync");
+  runSyncProvider(CHANNELS.syncGetAccount, "getSyncAccount");
+  runSyncProvider(CHANNELS.syncGetCapabilities, "getSyncCapabilities");
+  runSyncProvider(CHANNELS.syncDeleteObject, "deleteSyncObject");
+
+  ipcMain.handle(CHANNELS.syncReadObject, async (event, payload) => runExtensionRequest(event, payload, async (signal) => {
+    if (!extensionProviderService) throw new Error("Plugin sync Providers are unavailable");
+    const result = await extensionProviderService.readSyncObject(payload ?? {}, { signal });
+    if (!result?.found || !result.bytes) {
+      return { found: false, key: payload?.key, dataBase64: null };
+    }
+    return {
+      found: true,
+      key: result.key,
+      dataBase64: Buffer.from(result.bytes).toString("base64"),
+      revision: result.revision,
+      contentType: result.contentType,
+    };
+  }));
+
+  ipcMain.handle(CHANNELS.syncWriteObject, async (event, payload) => runExtensionRequest(event, payload, async (signal) => {
+    if (!extensionProviderService) throw new Error("Plugin sync Providers are unavailable");
+    const dataBase64 = payload?.dataBase64;
+    if (typeof dataBase64 !== "string") throw new Error("Sync writeObject requires base64 ciphertext");
+    const bytes = Buffer.from(dataBase64, "base64");
+    return extensionProviderService.writeSyncObject({
+      ...payload,
+      bytes,
+    }, { signal });
+  }));
   handlePassive(CHANNELS.credentialCatalogUpdate, 0, async (_activeManager, payload) => {
     if (!credentialResolver || typeof credentialResolver.update !== "function") {
       throw new Error("Plugin Vault credential catalog is unavailable");

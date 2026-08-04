@@ -18,10 +18,15 @@ import type {
   SyncPayload,
   WebDAVConfig,
 } from '../../../domain/sync';
+import { isPluginCloudProviderId } from '../../../domain/cloudProviderIds';
 import type {
   ProviderSyncAnchor,
   StartProviderAuthResult,
 } from '../CloudSyncManager';
+import {
+  registerPluginProviderIdImpl,
+  unregisterPluginProviderIdImpl,
+} from './stateAndSecurityMethods';
 
 const SYNC_REMOTE_ANCHOR_STORAGE_KEY = 'netcatty_sync_remote_anchor_v1';
 
@@ -309,6 +314,77 @@ export async function connectConfigProviderImpl(this: any,
     }
   }
 
+/**
+ * Connect a namespaced plugin sync Provider. Configuration is opaque plugin-
+ * owned JSON; Netcatty still owns encryption and only forwards encrypted objects.
+ */
+export async function connectPluginProviderImpl(
+  this: any,
+  providerId: string,
+  configuration: unknown = {},
+): Promise<void> {
+  if (!isPluginCloudProviderId(providerId)) {
+    throw new Error(`Invalid plugin sync provider ID: ${providerId}`);
+  }
+  this.updateProviderStatus(providerId, 'connecting');
+  try {
+    const createPluginStorage = async (id: string) => {
+      if (typeof this.createPluginStorage === 'function') {
+        return this.createPluginStorage(id, {
+          provider: id,
+          status: 'connecting',
+          config: configuration as ProviderConnection['config'],
+        });
+      }
+      const { createPluginSyncIpcHost, isPluginSyncIpcAvailable } = await import(
+        '../adapters/pluginSyncIpcHost'
+      );
+      const { createPluginSyncObjectStorage } = await import('../adapters/pluginSyncObjectStorage');
+      if (!isPluginSyncIpcAvailable()) {
+        throw new Error(`Plugin sync provider ${id} is unavailable (plugin host not enabled)`);
+      }
+      return createPluginSyncObjectStorage({
+        providerId: id,
+        host: createPluginSyncIpcHost(),
+        configuration,
+      });
+    };
+    const adapter = await createAdapter(
+      providerId,
+      undefined,
+      undefined,
+      undefined,
+      { createPluginStorage },
+    );
+    this.adapters.set(providerId, adapter);
+    const resourceId = await adapter.initializeSync();
+    const account = adapter.accountInfo ?? { id: providerId };
+    if (this.providerDecryptSeq[providerId] == null) this.providerDecryptSeq[providerId] = 0;
+    if (this.providerWriteSeq[providerId] == null) this.providerWriteSeq[providerId] = 0;
+    if (this.providerDecrypted[providerId] == null) this.providerDecrypted[providerId] = true;
+    ++this.providerDecryptSeq[providerId];
+    this.state.providers[providerId] = {
+      provider: providerId,
+      status: 'connected',
+      config: configuration as ProviderConnection['config'],
+      account,
+      resourceId: resourceId || undefined,
+    };
+    registerPluginProviderIdImpl.call(this, providerId);
+    await this.saveProviderConnection(providerId, this.state.providers[providerId]);
+    clearProviderMergeStateImpl.call(this, providerId);
+    this.emit({
+      type: 'AUTH_COMPLETED',
+      provider: providerId,
+      account,
+    });
+    this.notifyStateChange();
+  } catch (error) {
+    this.updateProviderStatus(providerId, 'error', String(error));
+    throw error;
+  }
+}
+
 export function resetProviderStatusImpl(this: any,provider: CloudProvider, authAttemptId?: number): void {
     const restoreState = this.providerAuthRestoreState[provider];
     if (
@@ -390,6 +466,9 @@ export async function disconnectProviderImpl(this: any,provider: CloudProvider):
     };
 
     await this.saveProviderConnection(provider, this.state.providers[provider]);
+    // Explicit disconnect removes the dynamic provider from the restart registry.
+    // Missing plugins with preserved config remain registered and are not coerced away.
+    unregisterPluginProviderIdImpl.call(this, provider);
     // Clear all trusted merge state so a later account/resource cannot reuse
     // an unrelated snapshot or convergent baseline.
     clearProviderMergeStateImpl.call(this, provider);

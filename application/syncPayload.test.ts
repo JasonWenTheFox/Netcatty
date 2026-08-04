@@ -1364,3 +1364,53 @@ test("withPluginSyncSidecars attaches non-empty plugin sidecar bundles", () => {
   assert.equal(withData.pluginSidecars?.entries.length, 1);
   assert.equal(withData.pluginSidecars?.entries[0].value, "dark");
 });
+
+test("buildCloudSyncPayload includes plugin sidecars from the production collector hook", async () => {
+  const payload = await buildCloudSyncPayload(vault([]), [], {
+    collectPluginSidecars: async () => ({
+      version: 1,
+      entries: [{
+        pluginId: "com.example.sync",
+        kind: "account_baseline",
+        key: "account",
+        value: { id: "acct-1" },
+        updatedAt: 9,
+      }],
+    }),
+  });
+  assert.equal(payload.pluginSidecars?.entries.length, 1);
+  assert.equal(payload.pluginSidecars?.entries[0].kind, "account_baseline");
+  assert.deepEqual(payload.pluginSidecars?.entries[0].value, { id: "acct-1" });
+});
+
+test("applySyncPayload applies pluginSidecars through the production applier hook", async () => {
+  let applied: unknown = null;
+  const payload: SyncPayload = {
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    syncedAt: 1,
+    pluginSidecars: {
+      version: 1,
+      entries: [{
+        pluginId: "com.missing.plugin",
+        kind: "crdt_baseline",
+        key: "replica",
+        value: { clock: 3 },
+        updatedAt: 2,
+      }],
+    },
+  };
+
+  await applySyncPayload(payload, {
+    importVaultData: () => {},
+  }, {
+    applyPluginSidecars: async (sidecars) => {
+      applied = sidecars;
+    },
+  });
+
+  assert.equal((applied as SyncPayload["pluginSidecars"])?.entries[0].value.clock, 3);
+});

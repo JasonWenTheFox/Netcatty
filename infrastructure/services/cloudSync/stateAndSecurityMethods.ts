@@ -1,13 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
+  BUILTIN_CLOUD_PROVIDERS,
   SYNC_CONSTANTS,
   SYNC_STORAGE_KEYS,
   cleanOneDriveErrorMessage,
   generateDeviceId,
   getDefaultDeviceName,
+  isBuiltinCloudProvider,
   isOneDriveReauthRequiredMessage,
   providerConnectionStorageKey,
 } from '../../../domain/sync';
+import { isPluginCloudProviderId } from '../../../domain/cloudProviderIds';
+import { createPluginSyncObjectStorage } from '../adapters/pluginSyncObjectStorage';
+import {
+  createPluginSyncIpcHost,
+  isPluginSyncIpcAvailable,
+} from '../adapters/pluginSyncIpcHost';
+import type { EncryptedObjectStorage } from '../../../domain/encryptedObjectStorage';
 import {
   DEFAULT_CLOUD_SYNC_STRATEGY,
   normalizeCloudSyncStrategy,
@@ -59,7 +68,7 @@ export function loadInitialStateImpl(this: any): SyncManagerState {
     // Determine initial security state
     const securityState: SecurityState = masterKeyConfig ? 'LOCKED' : 'NO_KEY';
 
-    // Load provider connections
+    // Load provider connections (built-ins + registered plugin provider IDs)
     const providers: Record<CloudProvider, ProviderConnection> = {
       github: this.loadProviderConnection('github'),
       google: this.loadProviderConnection('google'),
@@ -67,6 +76,16 @@ export function loadInitialStateImpl(this: any): SyncManagerState {
       webdav: this.loadProviderConnection('webdav'),
       s3: this.loadProviderConnection('s3'),
     };
+    for (const pluginProviderId of listRegisteredPluginProviderIdsImpl.call(this)) {
+      providers[pluginProviderId] = this.loadProviderConnection(pluginProviderId);
+      if (this.providerWriteSeq[pluginProviderId] == null) this.providerWriteSeq[pluginProviderId] = 0;
+      if (this.providerDecryptSeq[pluginProviderId] == null) this.providerDecryptSeq[pluginProviderId] = 0;
+      if (this.providerDecrypted[pluginProviderId] == null) this.providerDecrypted[pluginProviderId] = false;
+      if (this.providerAuthAttemptSeq[pluginProviderId] == null) this.providerAuthAttemptSeq[pluginProviderId] = 0;
+      if (this.providerAuthRestoreState[pluginProviderId] === undefined) {
+        this.providerAuthRestoreState[pluginProviderId] = null;
+      }
+    }
 
     // Save device ID if new
     this.saveToStorage(SYNC_STORAGE_KEYS.DEVICE_ID, deviceId);
@@ -112,8 +131,36 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
     } as ProviderConnection;
   }
 
+export function listRegisteredPluginProviderIdsImpl(this: any): string[] {
+  const raw = this.loadFromStorage<unknown>(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((id: unknown): id is string => typeof id === 'string' && isPluginCloudProviderId(id))
+    .sort();
+}
+
+export function registerPluginProviderIdImpl(this: any, provider: CloudProvider): void {
+  if (!isPluginCloudProviderId(provider)) return;
+  const next = new Set(listRegisteredPluginProviderIdsImpl.call(this));
+  next.add(provider);
+  this.saveToStorage(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS, [...next].sort());
+}
+
+export function unregisterPluginProviderIdImpl(this: any, provider: CloudProvider): void {
+  if (!isPluginCloudProviderId(provider)) return;
+  const next = listRegisteredPluginProviderIdsImpl.call(this).filter((id) => id !== provider);
+  if (next.length === 0) {
+    this.removeFromStorage(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS);
+  } else {
+    this.saveToStorage(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS, next);
+  }
+}
+
 export async function initProviderDecryptionImpl(this: any): Promise<void> {
-    const providers: CloudProvider[] = ['github', 'google', 'onedrive', 'webdav', 's3'];
+    const providers: CloudProvider[] = [
+      ...BUILTIN_CLOUD_PROVIDERS,
+      ...listRegisteredPluginProviderIdsImpl.call(this),
+    ];
     for (const p of providers) {
       try {
         const conn = this.state.providers[p];
@@ -154,6 +201,14 @@ export async function saveProviderConnectionImpl(this: any,
       (authAttemptId == null || this.isActiveAuthAttempt(provider, authAttemptId))
     ) {
       this.saveToStorage(key, encrypted);
+      // Keep dynamic plugin providers in the restart registry while connected
+      // (or while credentials/config remain so a missing plugin cannot drop them).
+      if (isPluginCloudProviderId(provider)) {
+        const hasData = Boolean(encrypted.tokens || encrypted.config);
+        if (hasData || encrypted.status === 'connected' || encrypted.status === 'syncing') {
+          registerPluginProviderIdImpl.call(this, provider);
+        }
+      }
     }
   }
 
@@ -383,7 +438,30 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
       return existing;
     }
 
-    const adapter = await createAdapter(provider, tokens, connection.resourceId, config);
+    const createPluginStorage = async (providerId: string): Promise<EncryptedObjectStorage> => {
+      if (typeof this.createPluginStorage === 'function') {
+        return this.createPluginStorage(providerId, connection);
+      }
+      if (!isPluginSyncIpcAvailable()) {
+        throw new Error(
+          `Plugin sync provider ${providerId} is unavailable (plugin host not enabled)`,
+        );
+      }
+      const host = createPluginSyncIpcHost();
+      return createPluginSyncObjectStorage({
+        providerId,
+        host,
+        configuration: connection.config ?? {},
+      });
+    };
+
+    const adapter = await createAdapter(
+      provider,
+      tokens,
+      connection.resourceId,
+      config,
+      isBuiltinCloudProvider(provider) ? undefined : { createPluginStorage },
+    );
     attachTokenRefreshPersistence.call(this, provider, adapter);
     this.adapters.set(provider, adapter);
     return adapter;

@@ -877,26 +877,15 @@ export function buildSyncPayload(
   };
 }
 
-export async function buildCloudSyncPayload(
-  vault: SyncableVaultData,
-  portForwardingRules?: PortForwardingRule[],
-): Promise<SyncPayload> {
-  return {
-    hosts: vault.hosts,
-    keys: vault.keys,
-    identities: vault.identities,
-    proxyProfiles: vault.proxyProfiles,
-    snippets: vault.snippets,
-    customGroups: vault.customGroups,
-    snippetPackages: vault.snippetPackages,
-    notes: vault.notes,
-    noteGroups: vault.noteGroups,
-    groupConfigs: vault.groupConfigs,
-    portForwardingRules: sanitizePortForwardingRulesForSync(portForwardingRules),
-    settings: await collectCloudSyncableSettings(),
-    syncedAt: Date.now(),
-  };
-}
+export type PluginSyncSidecarCollector = () =>
+  | Promise<SyncPayload['pluginSidecars'] | null | undefined>
+  | SyncPayload['pluginSidecars']
+  | null
+  | undefined;
+
+export type PluginSyncSidecarApplier = (
+  sidecars: SyncPayload['pluginSidecars'] | null | undefined,
+) => Promise<void> | void;
 
 /**
  * Attach a host-collected plugin sidecar bundle to a cloud payload.
@@ -917,6 +906,53 @@ export function withPluginSyncSidecars(
       entries: sidecars.entries,
     },
   };
+}
+
+async function defaultCollectPluginSyncSidecars(): Promise<SyncPayload['pluginSidecars'] | null | undefined> {
+  try {
+    const { collectPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
+    return await collectPluginSyncSidecarsFromHost();
+  } catch {
+    return undefined;
+  }
+}
+
+async function defaultApplyPluginSyncSidecars(
+  sidecars: SyncPayload['pluginSidecars'] | null | undefined,
+): Promise<void> {
+  try {
+    const { applyPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
+    await applyPluginSyncSidecarsFromHost(sidecars);
+  } catch {
+    // Host unavailable — vault apply must still succeed.
+  }
+}
+
+export async function buildCloudSyncPayload(
+  vault: SyncableVaultData,
+  portForwardingRules?: PortForwardingRule[],
+  options?: {
+    collectPluginSidecars?: PluginSyncSidecarCollector;
+  },
+): Promise<SyncPayload> {
+  const base: SyncPayload = {
+    hosts: vault.hosts,
+    keys: vault.keys,
+    identities: vault.identities,
+    proxyProfiles: vault.proxyProfiles,
+    snippets: vault.snippets,
+    customGroups: vault.customGroups,
+    snippetPackages: vault.snippetPackages,
+    notes: vault.notes,
+    noteGroups: vault.noteGroups,
+    groupConfigs: vault.groupConfigs,
+    portForwardingRules: sanitizePortForwardingRulesForSync(portForwardingRules),
+    settings: await collectCloudSyncableSettings(),
+    syncedAt: Date.now(),
+  };
+  const collect = options?.collectPluginSidecars ?? defaultCollectPluginSyncSidecars;
+  const sidecars = await collect();
+  return withPluginSyncSidecars(base, sidecars);
 }
 
 /** Build a local backup/restore payload, including local-only trust records. */
@@ -940,7 +976,10 @@ export function buildLocalVaultPayload(
 function applyPayload(
   payload: SyncPayload,
   importers: SyncPayloadImporters,
-  options: { includeLocalOnlyData: boolean },
+  options: {
+    includeLocalOnlyData: boolean;
+    applyPluginSidecars?: PluginSyncSidecarApplier;
+  },
 ): Promise<void> {
   const legacyLineTimestampsEnabled = payload.settings?.terminalSettings?.showLineTimestamps === true;
   // Build the vault import object. Cloud sync intentionally ignores
@@ -985,14 +1024,25 @@ function applyPayload(
       if (payload.settings.sftpGlobalBookmarks != null) rehydrateGlobalSftpBookmarks();
       importers.onSettingsApplied?.();
     }
+
+    // Plugin encrypted sidecars (settings + baselines). Missing plugins keep
+    // non-cascade rows; secrets never enter the collector on the host side.
+    const applySidecars = options.applyPluginSidecars ?? defaultApplyPluginSyncSidecars;
+    await applySidecars(payload.pluginSidecars);
   });
 }
 
 export function applySyncPayload(
   payload: SyncPayload,
   importers: SyncPayloadImporters,
+  options?: {
+    applyPluginSidecars?: PluginSyncSidecarApplier;
+  },
 ): Promise<void> {
-  return applyPayload(payload, importers, { includeLocalOnlyData: false });
+  return applyPayload(payload, importers, {
+    includeLocalOnlyData: false,
+    applyPluginSidecars: options?.applyPluginSidecars,
+  });
 }
 
 export async function prepareLocalVaultPayloadApply(

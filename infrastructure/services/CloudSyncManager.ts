@@ -50,6 +50,7 @@ import {
   completeGitHubAuthImpl,
   completePKCEAuthImpl,
   connectConfigProviderImpl,
+  connectPluginProviderImpl,
   resetProviderStatusImpl,
   setProviderErrorImpl,
   clearConnectingStatusImpl,
@@ -343,15 +344,13 @@ export class CloudSyncManager {
    */
   private notifyStateChange(): void {
     // Deep clone the state to ensure all nested objects are new references
+    const providers: Record<CloudProvider, ProviderConnection> = {};
+    for (const [providerId, connection] of Object.entries(this.state.providers)) {
+      providers[providerId] = { ...connection };
+    }
     this.stateSnapshot = {
       ...this.state,
-      providers: {
-        github: { ...this.state.providers.github },
-        google: { ...this.state.providers.google },
-        onedrive: { ...this.state.providers.onedrive },
-        webdav: { ...this.state.providers.webdav },
-        s3: { ...this.state.providers.s3 },
-      },
+      providers,
       syncHistory: [...this.state.syncHistory],
       convergentConflicts: [...this.state.convergentConflicts],
       currentConflict: this.state.currentConflict ? { ...this.state.currentConflict } : null,
@@ -506,6 +505,16 @@ export class CloudSyncManager {
     config: WebDAVConfig | S3Config
   ): Promise<void> {
     return connectConfigProviderImpl.call(this, provider, config);
+  }
+
+  /**
+   * Connect a namespaced plugin sync Provider (encrypted-object storage only).
+   */
+  async connectPluginProvider(
+    providerId: string,
+    configuration: unknown = {},
+  ): Promise<void> {
+    return connectPluginProviderImpl.call(this, providerId, configuration);
   }
 
   /**

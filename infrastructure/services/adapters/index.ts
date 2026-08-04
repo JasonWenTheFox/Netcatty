@@ -66,7 +66,15 @@ export const createAdapter = async (
     }
     case 'webdav': {
       const { WebDAVAdapter } = await import('./WebDAVAdapter');
-      return new WebDAVAdapter(config as WebDAVConfig | undefined, resourceId);
+      // Production WebDAV path runs through EncryptedObjectStorage so plugin
+      // providers and WebDAV share one encrypt→write / read→decrypt surface.
+      const raw = new WebDAVAdapter(config as WebDAVConfig | undefined, resourceId);
+      const storage = cloudAdapterAsEncryptedObjectStorage(raw, 'webdav', {
+        capabilities: webdavEncryptedObjectCapabilities(),
+      });
+      return encryptedObjectStorageAsCloudAdapter(storage, {
+        account: raw.accountInfo,
+      });
     }
     case 's3': {
       const { S3Adapter } = await import('./S3Adapter');
