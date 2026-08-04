@@ -433,13 +433,10 @@ export async function syncConvergentProvidersUnlockedImpl(
   await persistReplica(this, durableBeforeVerification, now());
   updateConflictState(this, durableBeforeVerification);
 
-  // Capture pre-cycle sidecar baselines once. markProviderVerified overwrites
-  // provider baselines mid-cycle; three-way merge needs the prior common base
-  // so concurrent remote edits are not treated as already-acked.
-  const {
-    mergePluginSyncSidecars: mergeSidecarsForBase,
-  } = await import('../../../domain/pluginSyncSidecar');
-  let cycleBaseSidecarEntries: NonNullable<SyncPayload['pluginSidecars']>['entries'] = [];
+  // Capture pre-cycle sidecar baselines per provider (never union across
+  // providers). Cross-provider union invents a shared base that can treat one
+  // provider's empty remote as deleting another provider's retained settings.
+  const cycleBaseByProvider = new Map<CloudProvider, NonNullable<SyncPayload['pluginSidecars']>['entries']>();
   if (typeof this.loadConvergentProviderBaseline === 'function') {
     for (const runtime of usable) {
       try {
@@ -447,11 +444,8 @@ export async function syncConvergentProvidersUnlockedImpl(
           materializedPayload?: SyncPayload;
         } | null;
         const baseBundle = baseline?.materializedPayload?.pluginSidecars;
-        if (!baseBundle) continue;
-        cycleBaseSidecarEntries = mergeSidecarsForBase({
-          local: cycleBaseSidecarEntries,
-          remote: baseBundle,
-        });
+        if (!baseBundle || !Array.isArray(baseBundle.entries)) continue;
+        cycleBaseByProvider.set(runtime.provider, baseBundle.entries);
       } catch {
         // First cycle or missing baseline is fine.
       }
@@ -493,35 +487,29 @@ export async function syncConvergentProvidersUnlockedImpl(
         runtime.error = errorMessage(error);
       }
     }));
-    // Merge plugin sidecars with three-way semantics so local resets (absent
-    // from local, present in base/remote) propagate instead of resurrecting
-    // from a LWW union. Base is the pre-cycle provider baseline snapshot.
+    // Merge plugin sidecars per successful provider with that provider's own
+    // pre-cycle baseline. Failed providers are skipped so their baselines
+    // cannot invent deletions against another provider's empty remote.
     const {
-      mergePluginSyncSidecars,
       mergePluginSyncSidecarsThreeWay,
     } = await import('../../../domain/pluginSyncSidecar');
     const localSidecarEntries = Array.isArray(inputPayload.pluginSidecars?.entries)
       ? inputPayload.pluginSidecars.entries
       : [];
-    let remoteSidecarUnionEntries: typeof localSidecarEntries = [];
-    // Collect sidecars from every successful download (not only preflight-
-    // dominating providers) so behind remotes still contribute unique data.
+    let mergedSidecars = [...localSidecarEntries];
     for (const runtime of usable) {
       if (runtime.error) continue;
       const fromPreflight = preflightVerified.get(runtime.provider)?.payload?.pluginSidecars;
       const fromLatest = runtime.latestRemotePayload?.pluginSidecars;
       const remoteBundle = fromPreflight ?? fromLatest;
       if (!remoteBundle) continue;
-      remoteSidecarUnionEntries = mergePluginSyncSidecars({
-        local: remoteSidecarUnionEntries,
-        remote: remoteBundle,
+      const baseForProvider = cycleBaseByProvider.get(runtime.provider) ?? [];
+      mergedSidecars = mergePluginSyncSidecarsThreeWay({
+        base: baseForProvider,
+        local: mergedSidecars,
+        remote: Array.isArray(remoteBundle.entries) ? remoteBundle.entries : [],
       });
     }
-    const mergedSidecars = mergePluginSyncSidecarsThreeWay({
-      base: cycleBaseSidecarEntries,
-      local: localSidecarEntries,
-      remote: remoteSidecarUnionEntries,
-    });
     const pluginSidecars = mergedSidecars.length > 0
       || Object.prototype.hasOwnProperty.call(inputPayload, 'pluginSidecars')
       ? { version: 1 as const, entries: mergedSidecars }
@@ -610,27 +598,23 @@ export async function syncConvergentProvidersUnlockedImpl(
   ));
   const hasSuccess = successfulRuntimes.length > 0;
   const {
-    mergePluginSyncSidecars: mergeSidecarsFinal,
     mergePluginSyncSidecarsThreeWay: mergeSidecarsThreeWayFinal,
   } = await import('../../../domain/pluginSyncSidecar');
   const finalLocalSidecars = Array.isArray(inputPayload.pluginSidecars?.entries)
     ? [...inputPayload.pluginSidecars.entries]
     : [];
-  let finalRemoteSidecars: typeof finalLocalSidecars = [];
+  let finalSidecarEntries = [...finalLocalSidecars];
   for (const runtime of successfulRuntimes) {
     const remoteBundle = runtime.verifiedPayload?.pluginSidecars
       ?? runtime.latestRemotePayload?.pluginSidecars;
     if (!remoteBundle) continue;
-    finalRemoteSidecars = mergeSidecarsFinal({
-      local: finalRemoteSidecars,
-      remote: remoteBundle,
+    const baseForProvider = cycleBaseByProvider.get(runtime.provider) ?? [];
+    finalSidecarEntries = mergeSidecarsThreeWayFinal({
+      base: baseForProvider,
+      local: finalSidecarEntries,
+      remote: Array.isArray(remoteBundle.entries) ? remoteBundle.entries : [],
     });
   }
-  const finalSidecarEntries = mergeSidecarsThreeWayFinal({
-    base: cycleBaseSidecarEntries,
-    local: finalLocalSidecars,
-    remote: finalRemoteSidecars,
-  });
   const finalPluginSidecars = finalSidecarEntries.length > 0
     || Object.prototype.hasOwnProperty.call(inputPayload, 'pluginSidecars')
     ? { version: 1 as const, entries: finalSidecarEntries }

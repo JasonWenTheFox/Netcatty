@@ -43,52 +43,28 @@ class PluginSyncSidecarService {
    */
   collectForSync() {
     const declared = this.#declaredSettingsByPlugin();
-    let storedSettings = typeof this.database.listAllSettings === "function"
+    const storedSettings = typeof this.database.listAllSettings === "function"
       ? this.database.listAllSettings()
       : [];
     const existingSidecars = typeof this.database.listAllSyncSidecars === "function"
       ? this.database.listAllSyncSidecars()
       : [];
-    // Hydrate retained settings sidecars into plugin_settings for installed
-    // plugins that were absent when the sidecar was applied. User resets must
-    // clear both plugin_settings and the matching sidecar row (resetSetting).
-    const storedKeys = new Set(
-      storedSettings.map((row) => `${row.pluginId}\0${row.settingId}\0${row.scope}\0${row.scopeId}`),
-    );
-    for (const entry of existingSidecars) {
-      if (entry.kind !== "settings") continue;
-      const fields = declared.get(entry.pluginId);
-      if (!fields) continue;
-      const parsed = parseSettingsSidecarKey(entry.key);
-      if (!parsed) continue;
-      const storeKey = `${entry.pluginId}\0${parsed.settingId}\0${parsed.scope}\0${parsed.scopeId}`;
-      if (storedKeys.has(storeKey)) continue;
-      const field = fields.find((item) => item.id === parsed.settingId);
-      if (!field || !isCloudSyncablePluginSetting(field)) continue;
-      this.database.setSetting(
-        entry.pluginId,
-        parsed.settingId,
-        parsed.scope,
-        parsed.scopeId,
-        entry.value,
-        entry.updatedAt,
-      );
-      storedKeys.add(storeKey);
-    }
-    if (typeof this.database.listAllSettings === "function") {
-      storedSettings = this.database.listAllSettings();
-    }
-    // After hydrate, drop settings sidecars for installed plugins that still
-    // have no stored value (true local reset that cleared both layers).
-    const refreshedKeys = new Set(
-      storedSettings.map((row) => `${row.pluginId}\0${row.settingId}\0${row.scope}\0${row.scopeId}`),
-    );
+    // Keep retained settings sidecars for installed plugins even when
+    // plugin_settings has no row yet (downloaded while plugin was missing).
+    // Do not write them into plugin_settings here — that would bypass the
+    // contribution service's schema validation. applyFromSync / enable paths
+    // rehydrate through updateSetting. User resets clear the sidecar row via
+    // contributionService.resetSetting so deliberate deletions stay deleted.
     const filteredExisting = existingSidecars.filter((entry) => {
       if (entry.kind !== "settings") return true;
       if (!declared.has(entry.pluginId)) return true; // missing plugin — preserve
       const parsed = parseSettingsSidecarKey(entry.key);
       if (!parsed) return false;
-      return refreshedKeys.has(`${entry.pluginId}\0${parsed.settingId}\0${parsed.scope}\0${parsed.scopeId}`);
+      const fields = declared.get(entry.pluginId) ?? [];
+      const field = fields.find((item) => item.id === parsed.settingId);
+      // Drop secret / non-sync declarations; unknown fields stay for schema lag.
+      if (field && !isCloudSyncablePluginSetting(field)) return false;
+      return true;
     });
     const bundle = collectPluginSyncSidecars({
       declaredSettingsByPlugin: declared,

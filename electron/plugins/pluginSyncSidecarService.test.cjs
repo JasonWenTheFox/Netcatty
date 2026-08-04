@@ -77,7 +77,7 @@ test("collectForSync excludes secrets and preserves missing-plugin baselines", (
   assert.ok(persisted.some((entry) => entry.kind === "crdt_baseline"));
 });
 
-test("collectForSync hydrates retained sidecars into settings after plugin reinstall", (context) => {
+test("collectForSync re-emits retained sidecars after plugin reinstall without writing settings", (context) => {
   const database = tempDb(context);
   // Sidecar applied while plugin was missing (no plugin_settings row).
   database.setSyncSidecar(
@@ -104,9 +104,10 @@ test("collectForSync hydrates retained sidecars into settings after plugin reins
   });
   const bundle = service.collectForSync();
   assert.ok(bundle.entries.some((e) => e.value === "from-cloud"));
+  // Collect must not bypass schema validation by writing plugin_settings.
   assert.equal(
     database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
-    "from-cloud",
+    undefined,
   );
 });
 

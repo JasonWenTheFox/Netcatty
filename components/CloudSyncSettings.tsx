@@ -180,18 +180,21 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
     );
 
     const isConnectDisabled = (provider: CloudProvider): boolean => {
+        const connection = sync.providers[provider];
         if (pendingConnectProvider && pendingConnectProvider !== provider) {
             return true;
         }
         if (pendingConnectProvider === provider) {
             return true;
         }
-        if (hasConnectingProvider && sync.providers[provider].status !== 'connecting') {
+        if (hasConnectingProvider && connection?.status !== 'connecting') {
             return true;
         }
+        // Unlisted / never-connected plugin providers have no connection record.
+        if (!connection) return false;
         return !sync.convergentSyncConfig.initialized
             && sync.hasAnyConnectedProvider
-            && !isProviderReadyForSync(sync.providers[provider]);
+            && !isProviderReadyForSync(connection);
     };
 
     const beginPendingConnect = (provider: CloudProvider): boolean => {
