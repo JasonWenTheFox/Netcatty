@@ -303,7 +303,8 @@ export async function saveProviderConnectionImpl(this: any,
       // Keep dynamic plugin providers in the restart registry while connected
       // (or while credentials/config remain so a missing plugin cannot drop them).
       if (isPluginCloudProviderId(provider)) {
-        const hasData = Boolean(encrypted.tokens || encrypted.config);
+        // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
+        const hasData = encrypted.tokens != null || encrypted.config != null;
         if (hasData || encrypted.status === 'connected' || encrypted.status === 'syncing') {
           registerPluginProviderIdImpl.call(this, provider);
         }
@@ -534,7 +535,8 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
     // startup (IPC handler not registered yet), retry now.
     if (!this.providerDecrypted[provider]) {
       const conn = this.state.providers[provider];
-      if (conn.tokens || conn.config) {
+      // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
+      if (conn.tokens != null || conn.config != null) {
         try {
           const seq = ++this.providerDecryptSeq[provider];
           const decrypted = await decryptProviderSecrets(conn);
@@ -559,7 +561,8 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
     const connection = this.state.providers[provider];
     const tokens = connection?.tokens;
     const config = connection?.config;
-    if (!tokens && !config) {
+    // Config may be a valid falsy scalar (false, 0, "") — only null/undefined means absent.
+    if (tokens == null && config == null) {
       throw new Error('Provider not connected');
     }
 

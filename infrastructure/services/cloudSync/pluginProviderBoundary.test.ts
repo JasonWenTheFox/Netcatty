@@ -236,6 +236,74 @@ describe('plugin provider manager boundary', () => {
     assert.equal(downloaded?.meta.version, 7);
     assert.ok(objectStore.has(DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY));
   });
+
+  it('getConnectedAdapter accepts falsy scalar plugin configs as present', async () => {
+    for (const scalar of [false, 0, ''] as const) {
+      const storage = memoryStorage();
+      const manager = createManagerHarness(storage);
+      const pluginId = 'com.example.scalar.sync';
+      let factoryCalls = 0;
+      manager.state = {
+        providers: {
+          [pluginId]: {
+            provider: pluginId,
+            status: 'connected',
+            config: scalar as never,
+          },
+        },
+      };
+      manager.providerDecrypted[pluginId] = true;
+      manager.createPluginStorage = async (id: string): Promise<EncryptedObjectStorage> => {
+        factoryCalls += 1;
+        assert.equal(id, pluginId);
+        return {
+          providerId: id,
+          async connect() {
+            return { account: { id: 'scalar-acct' } };
+          },
+          async disconnect() {},
+          async getAccount() {
+            return { account: { id: 'scalar-acct' } };
+          },
+          async getCapabilities() {
+            return {
+              revisions: false,
+              conditionalWrites: false,
+              atomicReplacement: true,
+            };
+          },
+          async readObject() {
+            return { found: false, key: 'x', bytes: null };
+          },
+          async writeObject() {
+            return { created: true, revision: '1' };
+          },
+          async deleteObject() {
+            return { deleted: false };
+          },
+        };
+      };
+
+      const adapter = await getConnectedAdapterImpl.call(manager, pluginId);
+      assert.equal(factoryCalls, 1);
+      assert.equal(adapter.isAuthenticated, true);
+    }
+
+    const empty = createManagerHarness(memoryStorage());
+    empty.state = {
+      providers: {
+        'com.example.empty.sync': {
+          provider: 'com.example.empty.sync',
+          status: 'connected',
+        },
+      },
+    };
+    empty.providerDecrypted['com.example.empty.sync'] = true;
+    await assert.rejects(
+      () => getConnectedAdapterImpl.call(empty, 'com.example.empty.sync'),
+      /Provider not connected/,
+    );
+  });
 });
 
 describe('createAdapter WebDAV production path', () => {
