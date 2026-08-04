@@ -107,12 +107,26 @@ class PluginSyncSidecarService {
       this.database.replaceAllSyncSidecars(safe);
     }
     // Drop installed-plugin settings that remote no longer carries.
+    // Prefer contributionService.resetSetting so plugins and the renderer
+    // receive change events; fall back to direct DB delete when unavailable.
     for (const entry of local) {
       if (entry.kind !== "settings") continue;
       if (!declared.has(entry.pluginId)) continue;
       if (remoteKeys.has(`${entry.pluginId}\0${entry.kind}\0${entry.key}`)) continue;
       const parsed = parseSettingsSidecarKey(entry.key);
       if (!parsed) continue;
+      if (typeof this.contributionService?.resetSetting === "function") {
+        try {
+          await this.contributionService.resetSetting(
+            entry.pluginId,
+            parsed.settingId,
+            parsed.scopeId,
+          );
+          continue;
+        } catch {
+          // Fall through to direct delete if reset rejects.
+        }
+      }
       this.database.deleteSetting(entry.pluginId, parsed.settingId, parsed.scope, parsed.scopeId);
     }
     for (const entry of safe) {

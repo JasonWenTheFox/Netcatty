@@ -8,7 +8,14 @@
 import type { PluginSyncSidecarBundle } from '../domain/pluginSyncSidecar';
 import { localStorageAdapter } from '../infrastructure/persistence/localStorageAdapter';
 
+/** Ordinary upload fallback when collect cannot reach the host. */
 const LAST_KNOWN_SIDECARS_KEY = 'netcatty_plugin_sidecars_last_known_v1';
+/**
+ * Remote apply that could not reach the host DB. Distinct from last-known so
+ * a later collect does not re-apply a stale post-collect snapshot over newer
+ * local plugin settings.
+ */
+const PENDING_REMOTE_SIDECARS_KEY = 'netcatty_plugin_sidecars_pending_remote_v1';
 const HOST_UNAVAILABLE_MARKER = 'PLUGIN_SIDECAR_HOST_UNAVAILABLE';
 
 export class PluginSidecarHostUnavailableError extends Error {
@@ -42,21 +49,48 @@ function getSidecarApi(): ElectronSidecarApi | null {
   return electron ?? null;
 }
 
-function readLastKnownSidecars(): PluginSyncSidecarBundle | null {
-  const raw = localStorageAdapter.read<PluginSyncSidecarBundle>(LAST_KNOWN_SIDECARS_KEY);
+function readBundle(key: string): PluginSyncSidecarBundle | null {
+  const raw = localStorageAdapter.read<PluginSyncSidecarBundle>(key);
   if (!raw || !Array.isArray(raw.entries)) return null;
   return { version: 1, entries: raw.entries };
 }
 
-function writeLastKnownSidecars(bundle: PluginSyncSidecarBundle | null | undefined): void {
+function writeBundle(key: string, bundle: PluginSyncSidecarBundle | null | undefined): void {
   if (!bundle || !Array.isArray(bundle.entries)) {
-    localStorageAdapter.remove(LAST_KNOWN_SIDECARS_KEY);
+    localStorageAdapter.remove(key);
     return;
   }
-  localStorageAdapter.write(LAST_KNOWN_SIDECARS_KEY, {
+  localStorageAdapter.write(key, {
     version: 1,
     entries: bundle.entries,
   });
+}
+
+function readLastKnownSidecars(): PluginSyncSidecarBundle | null {
+  return readBundle(LAST_KNOWN_SIDECARS_KEY);
+}
+
+function writeLastKnownSidecars(bundle: PluginSyncSidecarBundle | null | undefined): void {
+  writeBundle(LAST_KNOWN_SIDECARS_KEY, bundle);
+}
+
+/** null means no pending remote apply. Empty entries is a valid pending reset. */
+function readPendingRemoteSidecars(): PluginSyncSidecarBundle | null {
+  const raw = localStorageAdapter.read<PluginSyncSidecarBundle | null>(PENDING_REMOTE_SIDECARS_KEY);
+  if (raw == null) return null;
+  if (!Array.isArray(raw.entries)) return null;
+  return { version: 1, entries: raw.entries };
+}
+
+function writePendingRemoteSidecars(bundle: PluginSyncSidecarBundle): void {
+  localStorageAdapter.write(PENDING_REMOTE_SIDECARS_KEY, {
+    version: 1,
+    entries: bundle.entries,
+  });
+}
+
+function clearPendingRemoteSidecars(): void {
+  localStorageAdapter.remove(PENDING_REMOTE_SIDECARS_KEY);
 }
 
 function isAuthoritativeBundle(
@@ -69,46 +103,47 @@ function isAuthoritativeBundle(
   );
 }
 
+function isSuccessfulApplyResult(result: unknown): boolean {
+  if (result == null) return false;
+  if (
+    typeof result === 'object'
+    && result !== null
+    && 'applied' in result
+    && (result as { applied?: unknown }).applied === false
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Returns:
  * - a real bundle (possibly empty entries) when the host collected successfully
  * - last-known bundle when the host is unavailable (protect remote from wipe)
  * Throws on operational host failure (DB/runtime error) so sync aborts.
  *
- * When the host is available, any last-known cache from a prior host-offline
- * download is replayed into the main-process store before collection so a
- * later collect cannot erase cloud-downloaded sidecars that never reached DB.
+ * Pending remote applies (host was offline during download) are replayed into
+ * the DB before collection. Ordinary last-known collect snapshots are never
+ * re-applied, so local settings edits made after the last collect are kept.
  */
 export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSidecarBundle | null> {
   const api = getSidecarApi();
   if (typeof api?.collectPluginSyncSidecars !== 'function') {
     return readLastKnownSidecars();
   }
-  // Replay offline-applied cache into the host DB before authoritative collect.
-  const lastKnown = readLastKnownSidecars();
-  if (
-    lastKnown
-    && lastKnown.entries.length > 0
-    && typeof api.applyPluginSyncSidecars === 'function'
-  ) {
+
+  const pendingRemote = readPendingRemoteSidecars();
+  if (pendingRemote && typeof api.applyPluginSyncSidecars === 'function') {
     try {
-      const replayResult = await api.applyPluginSyncSidecars(lastKnown);
-      if (
-        replayResult != null
-        && !(
-          typeof replayResult === 'object'
-          && replayResult !== null
-          && 'applied' in replayResult
-          && (replayResult as { applied?: unknown }).applied === false
-        )
-      ) {
-        // Host accepted the replay; continue to collect for the merged truth.
+      const replayResult = await api.applyPluginSyncSidecars(pendingRemote);
+      if (isSuccessfulApplyResult(replayResult)) {
+        clearPendingRemoteSidecars();
       }
     } catch {
-      // Operational replay failures are ignored here — collect still runs and
-      // will surface DB errors if the host is truly broken.
+      // Leave pending for a later collect; still attempt live collect below.
     }
   }
+
   const bundle = await api.collectPluginSyncSidecars();
   // Passive/null means the plugin host is gated off or manager resolution failed.
   // Do not treat that as an authoritative empty bundle (would wipe last-known).
@@ -133,8 +168,9 @@ export async function applyPluginSyncSidecarsFromHost(
   };
   const api = getSidecarApi();
   if (typeof api?.applyPluginSyncSidecars !== 'function') {
-    // Host offline: cache for later upload protection, but surface failure so
-    // callers know the DB was not updated.
+    // Host offline: queue remote apply for later DB replay, and keep last-known
+    // for upload protection so cloud is not wiped with empty collect.
+    writePendingRemoteSidecars(normalized);
     writeLastKnownSidecars(normalized);
     throw new PluginSidecarHostUnavailableError(
       'Plugin sidecar host is unavailable; cannot apply downloaded sidecars',
@@ -143,17 +179,13 @@ export async function applyPluginSyncSidecarsFromHost(
   const result = await api.applyPluginSyncSidecars(normalized);
   // Passive IPC returns null when the manager is unavailable, or
   // { applied: false } when the sidecar service was not wired.
-  if (
-    result == null
-    || (typeof result === 'object'
-      && result !== null
-      && 'applied' in result
-      && (result as { applied?: unknown }).applied === false)
-  ) {
+  if (!isSuccessfulApplyResult(result)) {
+    writePendingRemoteSidecars(normalized);
     writeLastKnownSidecars(normalized);
     throw new PluginSidecarHostUnavailableError(
       'Plugin sidecar host is unavailable; cannot apply downloaded sidecars',
     );
   }
+  clearPendingRemoteSidecars();
   writeLastKnownSidecars(normalized.entries.length > 0 ? normalized : null);
 }

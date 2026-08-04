@@ -88,9 +88,24 @@ function base64ToBytes(data: string): Uint8Array {
 
 export function isPluginSyncIpcAvailable(): boolean {
   const api = getPluginSyncApi();
-  return typeof api?.pluginSyncConnect === 'function'
-    && typeof api?.pluginSyncReadObject === 'function'
-    && typeof api?.pluginSyncWriteObject === 'function';
+  if (
+    typeof api?.pluginSyncConnect !== 'function'
+    || typeof api?.pluginSyncReadObject !== 'function'
+    || typeof api?.pluginSyncWriteObject !== 'function'
+  ) {
+    return false;
+  }
+  // Preload always exposes the IPC methods; the host is only ready when the
+  // main process has a live plugin host (sync sidecar service wired).
+  const ready = (api as { pluginHostReady?: () => boolean }).pluginHostReady;
+  if (typeof ready === 'function') {
+    try {
+      return ready() === true;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

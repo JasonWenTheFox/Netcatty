@@ -27,6 +27,7 @@ import type {
   SyncPayload,
   SyncResult,
 } from '../../../domain/sync';
+// CloudProvider used when clearing dynamic plugin-provider bases/anchors.
 import {
   decryptLocalStorageValue,
   encryptLocalStorageValue,
@@ -780,7 +781,18 @@ export function clearSyncBaseImpl(this: any): void {
     if (typeof this.syncSnapshotsKey === 'function') {
       this.removeFromStorage(this.syncSnapshotsKey());
     }
-    for (const p of ['github', 'google', 'onedrive', 'webdav', 's3'] as const) {
+    const providers = new Set<CloudProvider>([
+      'github', 'google', 'onedrive', 'webdav', 's3',
+    ]);
+    for (const id of Object.keys(this.state?.providers ?? {})) {
+      providers.add(id as CloudProvider);
+    }
+    if (typeof this.listRegisteredPluginProviderIds === 'function') {
+      for (const id of this.listRegisteredPluginProviderIds()) {
+        providers.add(id as CloudProvider);
+      }
+    }
+    for (const p of providers) {
       this.removeFromStorage(this.syncBaseKey(p));
       this.removeFromStorage(this.convergentProviderBaselineKey(p));
       if (typeof this.syncSnapshotsKey === 'function') {

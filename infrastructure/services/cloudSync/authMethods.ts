@@ -545,7 +545,18 @@ export function clearSyncAnchorImpl(this: any,provider?: CloudProvider): void {
       this.removeFromStorage(this.syncAnchorKey(provider));
       return;
     }
-    for (const p of ['github', 'google', 'onedrive', 'webdav', 's3'] as const) {
+    const providers = new Set<CloudProvider>([
+      'github', 'google', 'onedrive', 'webdav', 's3',
+    ]);
+    for (const id of Object.keys(this.state?.providers ?? {})) {
+      providers.add(id as CloudProvider);
+    }
+    if (typeof this.listRegisteredPluginProviderIds === 'function') {
+      for (const id of this.listRegisteredPluginProviderIds()) {
+        providers.add(id as CloudProvider);
+      }
+    }
+    for (const p of providers) {
       this.removeFromStorage(this.syncAnchorKey(p));
     }
   }

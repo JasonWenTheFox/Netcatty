@@ -332,6 +332,35 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
       return;
     }
 
+    // Plugin provider registry changes (connect/disconnect of dynamic IDs).
+    if (key === SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS) {
+      const registered = listRegisteredPluginProviderIdsImpl.call(this);
+      const nextProviders = { ...this.state.providers } as Record<CloudProvider, ProviderConnection>;
+      for (const id of registered) {
+        if (!nextProviders[id]) {
+          nextProviders[id] = this.loadProviderConnection(id);
+          if (this.providerWriteSeq[id] == null) this.providerWriteSeq[id] = 0;
+          if (this.providerDecryptSeq[id] == null) this.providerDecryptSeq[id] = 0;
+          if (this.providerDecrypted[id] == null) this.providerDecrypted[id] = false;
+          if (this.providerAuthAttemptSeq[id] == null) this.providerAuthAttemptSeq[id] = 0;
+        }
+      }
+      for (const id of Object.keys(nextProviders)) {
+        if (isBuiltinCloudProvider(id)) continue;
+        if (!registered.includes(id)) {
+          const adapter = this.adapters.get(id);
+          if (adapter) {
+            adapter.signOut();
+            this.adapters.delete(id);
+          }
+          delete nextProviders[id];
+        }
+      }
+      this.state.providers = nextProviders;
+      this.notifyStateChange();
+      return;
+    }
+
     // Sync provider connections (connect/disconnect, account, tokens, last sync)
     const providerByKey: Partial<Record<string, CloudProvider>> = {
       [SYNC_STORAGE_KEYS.PROVIDER_GITHUB]: 'github',
@@ -340,7 +369,10 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
       [SYNC_STORAGE_KEYS.PROVIDER_WEBDAV]: 'webdav',
       [SYNC_STORAGE_KEYS.PROVIDER_S3]: 's3',
     };
-    const provider = providerByKey[key];
+    let provider = providerByKey[key] as CloudProvider | undefined;
+    if (!provider && key.startsWith('netcatty_provider_plugin_v1:')) {
+      provider = key.slice('netcatty_provider_plugin_v1:'.length) as CloudProvider;
+    }
     if (provider) {
       const rawNext = this.loadProviderConnection(provider);
       const seq = ++this.providerDecryptSeq[provider];

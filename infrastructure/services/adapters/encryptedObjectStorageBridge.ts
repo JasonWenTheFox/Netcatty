@@ -221,7 +221,9 @@ export function encryptedObjectStorageAsCloudAdapter(
       // Fire-and-forget is intentional for CloudAdapter.signOut sync API;
       // disconnectProvider should call initializeSync/connect after a full await
       // path when a future async signOut is added to CloudAdapter.
-      void storage.disconnect();
+      void Promise.resolve(storage.disconnect()).catch(() => {
+        // Plugin runtime may already be gone; local sign-out still succeeds.
+      });
     },
     async initializeSync(): Promise<string | null> {
       await ensureConnected();

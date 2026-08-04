@@ -36,6 +36,7 @@ const CHANNELS = Object.freeze({
   syncDeleteObject: "netcatty:plugins:sync-delete-object",
   syncSidecarsCollect: "netcatty:plugins:sync-sidecars-collect",
   syncSidecarsApply: "netcatty:plugins:sync-sidecars-apply",
+  hostAvailableSync: "netcatty:plugins:host-available-sync",
   connectionStart: "netcatty:plugins:connection-start",
   connectionWrite: "netcatty:plugins:connection-write",
   connectionControl: "netcatty:plugins:connection-control",
@@ -650,6 +651,11 @@ function registerPluginBridge(ipcMain, options) {
   handlePassive(CHANNELS.extensionProviders, [], async (_activeManager, payload) => {
     if (!extensionProviderService) throw new Error("Plugin extension Providers are unavailable");
     return extensionProviderService.listProviders(payload ?? {});
+  });
+
+  // Synchronous readiness probe for renderer restore paths (no await).
+  ipcMain.on(CHANNELS.hostAvailableSync, (event) => {
+    event.returnValue = Boolean(syncSidecarService);
   });
 
   // Fallback null = host gated off / manager unavailable. Renderer must treat

@@ -160,6 +160,14 @@ function createPreloadApi(ctx) {
   }),
   collectPluginSyncSidecars: () => ipcRenderer.invoke("netcatty:plugins:sync-sidecars-collect", {}),
   applyPluginSyncSidecars: (bundle) => ipcRenderer.invoke("netcatty:plugins:sync-sidecars-apply", bundle ?? { version: 1, entries: [] }),
+  /** True only when the main-process plugin host wired a sidecar service. */
+  pluginHostReady: () => {
+    try {
+      return ipcRenderer.sendSync("netcatty:plugins:host-available-sync") === true;
+    } catch {
+      return false;
+    }
+  },
   startPluginConnection: async (request) => {
     markRequestedTerminalDataSessionOpen(request);
     const result = await ipcRenderer.invoke("netcatty:plugins:connection-start", {
