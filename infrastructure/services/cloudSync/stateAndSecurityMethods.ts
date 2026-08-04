@@ -37,6 +37,7 @@ import type {
   SyncHistoryEntry,
 } from '../../../domain/sync';
 import type { SyncManagerState } from '../CloudSyncManager';
+import { getConvergentSyncLocalConfig } from '../convergentSyncConfig';
 
 const SYNC_HISTORY_STORAGE_KEY = 'netcatty_sync_history_v1';
 
@@ -247,10 +248,12 @@ export function setAvailablePluginSyncProviderIdsImpl(
     const hasRetainedConfig = conn.tokens != null
       || (Object.prototype.hasOwnProperty.call(conn, 'config') && conn.config != null);
     if (hasRetainedConfig && conn.status === 'disconnected') {
-      const convergentActive = this.state?.convergentSyncConfig?.initialized === true
-        || this.convergentSyncConfig?.initialized === true
-        || (typeof this.getConvergentSyncConfig === 'function'
-          && this.getConvergentSyncConfig()?.initialized === true);
+      let convergentActive = false;
+      try {
+        convergentActive = getConvergentSyncLocalConfig().initialized === true;
+      } catch {
+        convergentActive = false;
+      }
       const anotherReady = Object.entries(this.state.providers as Record<string, ProviderConnection>)
         .some(([otherId, other]) => (
           otherId !== id

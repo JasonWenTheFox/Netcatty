@@ -97,13 +97,12 @@ export const createAdapter = async (
       const storage = await options.createPluginStorage(provider);
       // Credentials/config already validated by getConnectedAdapter; report
       // authenticated so the manager reuses this instance across sync calls.
-      // rebindSession: plugin runtimes may be replaced without leaving the
-      // available-provider set (setting-only contribution noise must not
-      // signOut mid-sync); re-issue connect() on each ensureConnected path.
+      // connect() once per adapter instance (sessionConnected). Runtime
+      // replacement drops the cached adapter via availability re-entry rather
+      // than re-connecting on every ensureConnected call.
       return encryptedObjectStorageAsCloudAdapter(storage, {
         initiallyAuthenticated: true,
         resourceId: resourceId ?? null,
-        rebindSession: true,
       });
     }
   }

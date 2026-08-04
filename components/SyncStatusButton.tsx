@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useCloudSync } from '../application/state/useCloudSync';
 import { isProviderReadyForSync, type CloudProvider, formatSyncDateTime } from '../domain/sync';
+import { isPluginCloudProviderId } from '../domain/cloudProviderIds';
 import { useI18n } from '../application/i18n/I18nProvider';
 import { cn } from '../lib/utils';
 import { Button } from './ui/button';
@@ -305,7 +306,9 @@ export const SyncStatusButton: React.FC<SyncStatusButtonProps> = ({
                                             <StatusIndicator status={overallStatus} />
                                         </div>
                                         <div className="flex items-center gap-2 mt-0.5">
-                                            {providerConnection.account?.avatarUrl && (
+                                            {providerConnection.account?.avatarUrl
+                                              && connectedProvider
+                                              && !isPluginCloudProviderId(connectedProvider) && (
                                                 <img
                                                     src={providerConnection.account.avatarUrl}
                                                     alt=""
