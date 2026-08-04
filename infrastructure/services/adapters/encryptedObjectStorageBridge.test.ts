@@ -149,6 +149,60 @@ describe('encryptedObjectStorageBridge', () => {
     assert.equal(downloaded?.meta.version, 9);
   });
 
+  it('lazy-connects before first I/O and passes revisions for conditional writes', async () => {
+    const ops: string[] = [];
+    let revision: string | undefined = 'rev-1';
+    const storage = {
+      providerId: 'com.example.sync',
+      async connect() {
+        ops.push('connect');
+        return { account: { id: 'a1' } };
+      },
+      async disconnect() {
+        ops.push('disconnect');
+      },
+      async getAccount() {
+        return { id: 'a1' };
+      },
+      async getCapabilities() {
+        return { revisions: true, conditionalWrites: true, atomicReplacement: true };
+      },
+      async readObject(key: string) {
+        ops.push(`read:${key}:${revision ?? ''}`);
+        return {
+          found: true as const,
+          key,
+          bytes: new TextEncoder().encode(JSON.stringify(makeSyncedFile(1, 'c'))),
+          revision,
+        };
+      },
+      async writeObject(key: string, _bytes: Uint8Array, options?: { expectedRevision?: string | null }) {
+        ops.push(`write:${key}:${options?.expectedRevision ?? ''}`);
+        revision = 'rev-2';
+        return { created: false, revision };
+      },
+      async deleteObject() {
+        return { deleted: true };
+      },
+    };
+
+    const adapter = encryptedObjectStorageAsCloudAdapter(storage, {
+      initiallyAuthenticated: true,
+    });
+    // Restored session: authenticated for cache reuse, but not yet connected.
+    assert.equal(adapter.isAuthenticated, true);
+    const downloaded = await adapter.download();
+    assert.equal(downloaded?.payload, 'c');
+    assert.deepEqual(ops[0], 'connect');
+    assert.ok(ops.some((op) => op.startsWith('read:')));
+
+    await adapter.upload(makeSyncedFile(2, 'next'));
+    assert.ok(
+      ops.some((op) => op === 'write:netcatty-vault.json:rev-1'),
+      `expected conditional write with rev-1, got ${JSON.stringify(ops)}`,
+    );
+  });
+
   it('plugin sync object storage only forwards encrypted bytes to the host', async () => {
     const calls: string[] = [];
     const host = {

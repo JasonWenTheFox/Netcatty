@@ -49,10 +49,22 @@ class PluginSyncSidecarService {
     const existingSidecars = typeof this.database.listAllSyncSidecars === "function"
       ? this.database.listAllSyncSidecars()
       : [];
+    // For installed plugins, drop settings sidecar rows that no longer have a
+    // stored value (user reset/deleted). Missing plugins keep their rows.
+    const storedKeys = new Set(
+      storedSettings.map((row) => `${row.pluginId}\0${row.settingId}\0${row.scope}\0${row.scopeId}`),
+    );
+    const filteredExisting = existingSidecars.filter((entry) => {
+      if (entry.kind !== "settings") return true;
+      if (!declared.has(entry.pluginId)) return true; // missing plugin — preserve
+      const parsed = parseSettingsSidecarKey(entry.key);
+      if (!parsed) return false;
+      return storedKeys.has(`${entry.pluginId}\0${parsed.settingId}\0${parsed.scope}\0${parsed.scopeId}`);
+    });
     const bundle = collectPluginSyncSidecars({
       declaredSettingsByPlugin: declared,
       storedSettings,
-      existingSidecars,
+      existingSidecars: filteredExisting,
     });
     bundle.entries = excludeSecretPluginSettingsFromSidecars(bundle.entries, declared);
     return bundle;
@@ -92,6 +104,7 @@ class PluginSyncSidecarService {
         parsed.scope,
         parsed.scopeId,
         entry.value,
+        entry.updatedAt,
       );
     }
     return safe;

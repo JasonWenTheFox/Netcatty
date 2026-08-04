@@ -418,6 +418,50 @@ test("mergeSyncPayloads keeps local settings conflict policy when a base exists"
   });
 });
 
+test("mergeSyncPayloads carries plugin sidecars through without dropping remote baselines", () => {
+  const local: SyncPayload = {
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    syncedAt: 1,
+    pluginSidecars: {
+      version: 1,
+      entries: [{
+        pluginId: "com.local.plugin",
+        kind: "settings",
+        key: "com.local.plugin.theme\0application\0application",
+        value: "dark",
+        updatedAt: 5,
+      }],
+    },
+  };
+  const remote: SyncPayload = {
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    syncedAt: 2,
+    pluginSidecars: {
+      version: 1,
+      entries: [{
+        pluginId: "com.remote.plugin",
+        kind: "account_baseline",
+        key: "account",
+        value: { id: "acct-r" },
+        updatedAt: 9,
+      }],
+    },
+  };
+  const result = mergeSyncPayloads(null, local, remote);
+  assert.ok(result.payload.pluginSidecars);
+  assert.equal(result.payload.pluginSidecars!.entries.length, 2);
+  assert.ok(result.payload.pluginSidecars!.entries.some((e) => e.pluginId === "com.local.plugin"));
+  assert.ok(result.payload.pluginSidecars!.entries.some((e) => e.kind === "account_baseline"));
+});
+
 test("mergeSyncPayloads treats missing optional arrays as legacy payloads, not deletions", () => {
   const identity = {
     id: "identity-1",

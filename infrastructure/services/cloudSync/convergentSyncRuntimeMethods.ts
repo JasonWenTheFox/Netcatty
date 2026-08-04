@@ -436,7 +436,12 @@ export async function syncConvergentProvidersUnlockedImpl(
       !runtime.error && !preflightVerified.has(runtime.provider)
     ));
     const outgoingPayload = needsUpload
-      ? withConvergentSyncEnvelope(expected, { syncedAt: now() })
+      ? withConvergentSyncEnvelope(expected, {
+        syncedAt: now(),
+        // Plugin sidecars are not CRDT fields; reattach the caller's collected
+        // bundle so convergent uploads do not strip previously synced data.
+        pluginSidecars: inputPayload.pluginSidecars,
+      })
       : null;
     await Promise.all(usable.map(async (runtime) => {
       if (runtime.error || preflightVerified.has(runtime.provider)) return;

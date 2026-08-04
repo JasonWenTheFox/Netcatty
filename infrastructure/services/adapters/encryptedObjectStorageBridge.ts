@@ -157,6 +157,10 @@ export function encryptedObjectStorageAsCloudAdapter(
   let account: ProviderAccount | null = options.account ?? null;
   let resourceId: string | null = options.resourceId ?? null;
   let authenticated = options.initiallyAuthenticated === true;
+  /** Distinct from credential presence: plugin providers need an explicit connect. */
+  let sessionConnected = false;
+  /** Last observed remote revision for conditional writes when the backend supports them. */
+  let lastRevision: string | undefined;
 
   const refreshResourceId = (fallback?: string | null): string | null => {
     const resolved = options.resolveResourceId?.();
@@ -171,6 +175,15 @@ export function encryptedObjectStorageAsCloudAdapter(
     return resourceId;
   };
 
+  const ensureConnected = async (): Promise<void> => {
+    if (sessionConnected) return;
+    const result = await storage.connect();
+    account = result.account;
+    authenticated = true;
+    sessionConnected = true;
+    refreshResourceId(objectKey);
+  };
+
   return {
     get isAuthenticated() {
       return authenticated;
@@ -183,29 +196,46 @@ export function encryptedObjectStorageAsCloudAdapter(
     },
     signOut() {
       authenticated = false;
+      sessionConnected = false;
+      lastRevision = undefined;
       account = null;
       resourceId = null;
       void storage.disconnect();
     },
     async initializeSync(): Promise<string | null> {
-      const result = await storage.connect();
-      account = result.account;
-      authenticated = true;
+      await ensureConnected();
       return refreshResourceId(objectKey);
     },
     async upload(syncedFile: SyncedFile): Promise<string> {
+      await ensureConnected();
       const bytes = syncedFileToBytes(syncedFile);
-      await storage.writeObject(objectKey, bytes);
+      const writeResult = await storage.writeObject(objectKey, bytes, {
+        ...(lastRevision !== undefined ? { expectedRevision: lastRevision } : {}),
+      });
+      if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
+        lastRevision = writeResult.revision;
+      }
       authenticated = true;
       return refreshResourceId(objectKey) ?? objectKey;
     },
     async download(): Promise<SyncedFile | null> {
+      await ensureConnected();
       const result = await storage.readObject(objectKey);
-      if (!result.found || !result.bytes) return null;
+      if (!result.found || !result.bytes) {
+        lastRevision = undefined;
+        return null;
+      }
+      if (typeof result.revision === 'string' && result.revision.length > 0) {
+        lastRevision = result.revision;
+      }
       return bytesToSyncedFile(result.bytes);
     },
     async deleteSync(): Promise<void> {
-      await storage.deleteObject(objectKey);
+      await ensureConnected();
+      await storage.deleteObject(objectKey, {
+        ...(lastRevision !== undefined ? { expectedRevision: lastRevision } : {}),
+      });
+      lastRevision = undefined;
     },
     getTokens(): OAuthTokens | null {
       return null;

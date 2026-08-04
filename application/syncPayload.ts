@@ -909,12 +909,10 @@ export function withPluginSyncSidecars(
 }
 
 async function defaultCollectPluginSyncSidecars(): Promise<SyncPayload['pluginSidecars'] | null | undefined> {
-  try {
-    const { collectPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
-    return await collectPluginSyncSidecarsFromHost();
-  } catch {
-    return undefined;
-  }
+  const { collectPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
+  // Let operational failures (DB/runtime) propagate so cloud upload does not
+  // silently strip previously synced sidecars from the remote snapshot.
+  return collectPluginSyncSidecarsFromHost();
 }
 
 async function defaultApplyPluginSyncSidecars(

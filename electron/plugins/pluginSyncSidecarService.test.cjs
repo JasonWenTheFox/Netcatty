@@ -73,6 +73,75 @@ test("collectForSync excludes secrets and preserves missing-plugin baselines", (
   assert.equal(bundle.entries.some((entry) => entry.value === "secret"), false);
 });
 
+test("collectForSync omits deleted settings for installed plugins but keeps missing-plugin rows", (context) => {
+  const database = tempDb(context);
+  // Previously synced setting row still in sidecars, but plugin_settings was reset.
+  database.setSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
+    "stale",
+    5,
+  );
+  database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "keep", 5);
+  // Only store a different setting for the installed plugin.
+  database.setSetting("com.example.sync", "com.example.sync.other", "application", "application", "ok");
+
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+              { id: "com.example.sync.other", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+    },
+  });
+  const bundle = service.collectForSync();
+  assert.equal(bundle.entries.some((e) => e.value === "stale"), false);
+  assert.ok(bundle.entries.some((e) => e.value === "ok"));
+  assert.ok(bundle.entries.some((e) => e.pluginId === "com.missing.plugin" && e.value === "keep"));
+});
+
+test("applyFromSync preserves remote updatedAt when writing settings", (context) => {
+  const database = tempDb(context);
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+    },
+  });
+  service.applyFromSync({
+    version: 1,
+    entries: [{
+      pluginId: "com.example.sync",
+      kind: "settings",
+      key: "com.example.sync.theme\0application\0application",
+      value: "dark",
+      updatedAt: 42,
+    }],
+  });
+  const rows = database.listAllSettings();
+  const theme = rows.find((r) => r.settingId === "com.example.sync.theme");
+  assert.equal(theme?.value, "dark");
+  assert.equal(theme?.updatedAt, 42);
+});
+
 test("applyFromSync does not drop local baselines for plugins absent remotely", (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.local.only", "account_baseline", "account", { id: "local" }, 1);

@@ -676,6 +676,17 @@ export const useCloudSync = (): CloudSyncHook => {
   const connectS3 = useCallback(async (config: S3Config): Promise<void> => {
     await manager.connectConfigProvider('s3', config);
   }, []);
+
+  /**
+   * Connect a namespaced plugin sync Provider (encrypted-object storage only).
+   * Configuration is opaque plugin-owned JSON; encryption stays host-owned.
+   */
+  const connectPluginProvider = useCallback(async (
+    providerId: string,
+    configuration: unknown = {},
+  ): Promise<void> => {
+    await manager.connectPluginProvider(providerId, configuration);
+  }, []);
   
   const cancelOAuthConnect = useCallback(() => {
     const githubAbort = activeGitHubAuthAbortRef.current;
@@ -854,6 +865,7 @@ export const useCloudSync = (): CloudSyncHook => {
     connectOneDrive,
     connectWebDAV,
     connectS3,
+    connectPluginProvider,
     completePKCEAuth,
     cancelOAuthConnect,
     disconnectProvider,

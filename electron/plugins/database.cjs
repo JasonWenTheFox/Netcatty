@@ -467,16 +467,17 @@ class PluginDatabase {
     return row ? parseJson(row.value_json, "setting value") : undefined;
   }
 
-  setSetting(pluginId, settingId, scope, scopeId, value) {
+  setSetting(pluginId, settingId, scope, scopeId, value, updatedAt = this.clock()) {
     const serialized = JSON.stringify(value);
     if (serialized === undefined) throw new TypeError("Plugin setting value must be JSON serializable");
+    const stamp = Number.isFinite(Number(updatedAt)) ? Number(updatedAt) : this.clock();
     this.db.prepare(`
       INSERT INTO plugin_settings(plugin_id, setting_id, scope, scope_id, value_json, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(plugin_id, setting_id, scope, scope_id) DO UPDATE SET
         value_json = excluded.value_json,
         updated_at = excluded.updated_at
-    `).run(pluginId, settingId, scope, scopeId, serialized, this.clock());
+    `).run(pluginId, settingId, scope, scopeId, serialized, stamp);
   }
 
   deleteSetting(pluginId, settingId, scope, scopeId) {

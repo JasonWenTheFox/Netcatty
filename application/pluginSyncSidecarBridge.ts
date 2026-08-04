@@ -23,13 +23,9 @@ export async function collectPluginSyncSidecarsFromHost(): Promise<
   PluginSyncSidecarBundle | null | undefined
 > {
   const api = getSidecarApi();
+  // Host not present (plugin gate off) → omit sidecars; operational failure must not.
   if (typeof api?.collectPluginSyncSidecars !== 'function') return undefined;
-  try {
-    return await api.collectPluginSyncSidecars();
-  } catch {
-    // Plugin host disabled / unavailable — cloud sync continues without sidecars.
-    return undefined;
-  }
+  return api.collectPluginSyncSidecars();
 }
 
 export async function applyPluginSyncSidecarsFromHost(
