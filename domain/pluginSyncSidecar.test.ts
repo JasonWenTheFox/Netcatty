@@ -160,6 +160,31 @@ describe('pluginSyncSidecar', () => {
     assert.equal(filtered[0].value, 'dark');
   });
 
+  it('collect prefers newer retained sidecars over older stored settings', () => {
+    const bundle = collectPluginSyncSidecars({
+      declaredSettingsByPlugin: declared,
+      storedSettings: [{
+        pluginId,
+        settingId: `${pluginId}.theme`,
+        scope: 'application',
+        scopeId: 'application',
+        value: 'local-old',
+        updatedAt: 100,
+      }],
+      existingSidecars: [{
+        pluginId,
+        kind: 'settings',
+        key: `${pluginId}.theme\0application\0application`,
+        value: 'remote-new',
+        updatedAt: 200,
+      }],
+      now: 300,
+    });
+    assert.equal(bundle.entries.length, 1);
+    assert.equal(bundle.entries[0].value, 'remote-new');
+    assert.equal(bundle.entries[0].updatedAt, 200);
+  });
+
   it('three-way merge propagates local settings deletions against an unchanged remote', () => {
     const entry: PluginSyncSidecarEntry = {
       pluginId,

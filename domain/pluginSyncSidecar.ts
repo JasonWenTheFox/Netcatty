@@ -126,7 +126,13 @@ export function collectPluginSyncSidecars(
       value: stored.value,
       updatedAt: Number(stored.updatedAt) || now,
     };
-    settingsIndex.set(`${entry.pluginId}\0${entry.key}`, entry);
+    const mapKey = `${entry.pluginId}\0${entry.key}`;
+    const previous = settingsIndex.get(mapKey);
+    // Keep a retained sidecar when it is strictly newer than the stored row
+    // (e.g. schema-rejected remote apply left sidecar only).
+    if (!previous || entry.updatedAt >= previous.updatedAt) {
+      settingsIndex.set(mapKey, entry);
+    }
   }
 
   entries.push(...settingsIndex.values());
