@@ -11,6 +11,7 @@ import type {
   EncryptedObjectStorageCapabilities,
   EncryptedObjectWriteResult,
 } from '../../../domain/encryptedObjectStorage';
+// EncryptedObjectStorageCapabilities used for session capability gating.
 import {
   DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY,
 } from '../../../domain/encryptedObjectStorage';
@@ -180,10 +181,17 @@ export function encryptedObjectStorageAsCloudAdapter(
     return resourceId;
   };
 
+  let capabilities: EncryptedObjectStorageCapabilities | null = null;
+
   const ensureConnected = async (): Promise<void> => {
     if (sessionConnected) return;
     const result = await storage.connect();
     account = result.account;
+    try {
+      capabilities = await storage.getCapabilities();
+    } catch {
+      capabilities = null;
+    }
     authenticated = true;
     sessionConnected = true;
     refreshResourceId(objectKey);
@@ -203,8 +211,12 @@ export function encryptedObjectStorageAsCloudAdapter(
       authenticated = false;
       sessionConnected = false;
       lastRevision = undefined;
+      capabilities = null;
       account = null;
       resourceId = null;
+      // Fire-and-forget is intentional for CloudAdapter.signOut sync API;
+      // disconnectProvider should call initializeSync/connect after a full await
+      // path when a future async signOut is added to CloudAdapter.
       void storage.disconnect();
     },
     async initializeSync(): Promise<string | null> {
@@ -214,11 +226,37 @@ export function encryptedObjectStorageAsCloudAdapter(
     async upload(syncedFile: SyncedFile): Promise<string> {
       await ensureConnected();
       const bytes = syncedFileToBytes(syncedFile);
+      if (
+        capabilities?.maxObjectBytes != null
+        && bytes.byteLength > capabilities.maxObjectBytes
+      ) {
+        throw new Error(
+          `Encrypted object exceeds provider maxObjectBytes (${capabilities.maxObjectBytes})`,
+        );
+      }
+      const conditional = capabilities?.conditionalWrites === true;
       const writeResult = await storage.writeObject(objectKey, bytes, {
-        ...(lastRevision !== undefined ? { expectedRevision: lastRevision } : {}),
+        ...(conditional && lastRevision !== undefined
+          ? { expectedRevision: lastRevision }
+          : {}),
       });
+      // Host-owned write verification: re-read and compare ciphertext bytes.
+      const verified = await storage.readObject(objectKey);
+      if (!verified.found || !verified.bytes) {
+        throw new Error('Encrypted object write verification failed: object missing after write');
+      }
+      if (verified.bytes.byteLength !== bytes.byteLength) {
+        throw new Error('Encrypted object write verification failed: size mismatch');
+      }
+      for (let i = 0; i < bytes.byteLength; i += 1) {
+        if (verified.bytes[i] !== bytes[i]) {
+          throw new Error('Encrypted object write verification failed: content mismatch');
+        }
+      }
       if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
         lastRevision = writeResult.revision;
+      } else if (typeof verified.revision === 'string' && verified.revision.length > 0) {
+        lastRevision = verified.revision;
       } else {
         lastRevision = undefined;
       }

@@ -76,6 +76,21 @@ interface AutoSyncConfig {
 // Get manager singleton for direct state access
 const manager = getCloudSyncManager();
 const AUTO_SYNC_PROVIDER_ORDER: CloudProvider[] = ['github', 'google', 'onedrive', 'webdav', 's3'];
+
+/** Prefer built-in order, then any connected namespaced plugin provider. */
+function pickConnectedAutoSyncProvider(
+  providers: Record<string, { status?: string; tokens?: unknown; config?: unknown }>,
+): CloudProvider | undefined {
+  for (const id of AUTO_SYNC_PROVIDER_ORDER) {
+    const conn = providers[id];
+    if (conn && isProviderReadyForSync(conn as never)) return id;
+  }
+  for (const [id, conn] of Object.entries(providers)) {
+    if (AUTO_SYNC_PROVIDER_ORDER.includes(id as CloudProvider)) continue;
+    if (conn && isProviderReadyForSync(conn as never)) return id as CloudProvider;
+  }
+  return undefined;
+}
 const SYNCABLE_SETTING_STORAGE_KEY_SET = new Set<string>(SYNCABLE_SETTING_STORAGE_KEYS);
 
 // Cross-window restore barrier: stored as an epoch-ms deadline. Any value
@@ -567,9 +582,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     // "nothing to check" early return doesn't leak the lock and wedge
     // the retry timer. Any path that takes the lock MUST reach the
     // finally-release below.
-    const connectedProvider = AUTO_SYNC_PROVIDER_ORDER.find((provider) =>
-      isProviderReadyForSync(state.providers[provider]),
-    ) ?? null;
+    const connectedProvider = pickConnectedAutoSyncProvider(state.providers) ?? null;
 
     if (!connectedProvider) {
       // Nothing to check — mark as done so the auto-sync gate opens.

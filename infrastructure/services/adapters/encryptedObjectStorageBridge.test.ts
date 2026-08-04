@@ -149,9 +149,12 @@ describe('encryptedObjectStorageBridge', () => {
     assert.equal(downloaded?.meta.version, 9);
   });
 
+  // note: upload() re-reads for verification; memory map above is sufficient
+
   it('lazy-connects before first I/O and passes revisions for conditional writes', async () => {
     const ops: string[] = [];
     let revision: string | undefined = 'rev-1';
+    let stored: Uint8Array | null = new TextEncoder().encode(JSON.stringify(makeSyncedFile(1, 'c')));
     const storage = {
       providerId: 'com.example.sync',
       async connect() {
@@ -169,17 +172,19 @@ describe('encryptedObjectStorageBridge', () => {
       },
       async readObject(key: string) {
         ops.push(`read:${key}:${revision ?? ''}`);
+        if (!stored) return { found: false as const, key, bytes: null };
         return {
           found: true as const,
           key,
-          bytes: new TextEncoder().encode(JSON.stringify(makeSyncedFile(1, 'c'))),
+          bytes: stored,
           revision,
         };
       },
-      async writeObject(key: string, _bytes: Uint8Array, options?: { expectedRevision?: string | null }) {
-        ops.push(`write:${key}:${options?.expectedRevision ?? ''}`);
-        revision = 'rev-2';
-        return { created: false, revision };
+      async writeObject(key: string, bytes: Uint8Array, options?: { expectedRevision?: string | null }) {
+        ops.push(`write:${key}:${options?.expectedRevision === null ? 'null' : (options?.expectedRevision ?? '')}`);
+        stored = bytes;
+        revision = revision ? 'rev-2' : 'rev-new';
+        return { created: !revision || revision === 'rev-new', revision };
       },
       async deleteObject() {
         return { deleted: true };
@@ -203,25 +208,15 @@ describe('encryptedObjectStorageBridge', () => {
     );
 
     // Confirmed absence → must-not-exist (expectedRevision null)
+    stored = null;
     revision = undefined;
-    const storageAbsent = {
-      ...storage,
-      async readObject(key: string) {
-        ops.push(`read-absent:${key}`);
-        return { found: false as const, key, bytes: null };
-      },
-      async writeObject(key: string, _bytes: Uint8Array, options?: { expectedRevision?: string | null }) {
-        ops.push(`write-absent:${key}:${options?.expectedRevision === null ? 'null' : String(options?.expectedRevision)}`);
-        return { created: true, revision: 'rev-new' };
-      },
-    };
-    const adapter2 = encryptedObjectStorageAsCloudAdapter(storageAbsent, {
+    const adapter2 = encryptedObjectStorageAsCloudAdapter(storage, {
       initiallyAuthenticated: true,
     });
     assert.equal(await adapter2.download(), null);
     await adapter2.upload(makeSyncedFile(3, 'fresh'));
     assert.ok(
-      ops.some((op) => op === 'write-absent:netcatty-vault.json:null'),
+      ops.some((op) => op === 'write:netcatty-vault.json:null'),
       `expected must-not-exist write, got ${JSON.stringify(ops)}`,
     );
   });

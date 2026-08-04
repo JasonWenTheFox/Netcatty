@@ -432,9 +432,6 @@ export async function syncConvergentProvidersUnlockedImpl(
         runtime.error = errorMessage(error);
       }
     }));
-    const needsUpload = usable.some((runtime) => (
-      !runtime.error && !preflightVerified.has(runtime.provider)
-    ));
     // Merge plugin sidecars from local input and any decoded remote payloads so
     // remote-only baselines/settings are not dropped on the next upload.
     const { mergePluginSyncSidecars } = await import('../../../domain/pluginSyncSidecar');
@@ -455,6 +452,22 @@ export async function syncConvergentProvidersUnlockedImpl(
     const pluginSidecars = mergedSidecars.length > 0
       ? { version: 1 as const, entries: mergedSidecars }
       : inputPayload.pluginSidecars;
+    const sidecarFingerprint = (bundle: typeof pluginSidecars) =>
+      JSON.stringify(
+        (bundle?.entries ?? [])
+          .map((e) => [e.pluginId, e.kind, e.key, e.updatedAt, e.value])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      );
+    const localSidecarFp = sidecarFingerprint(pluginSidecars);
+    const remoteSidecarMismatch = usable.some((runtime) => {
+      if (runtime.error) return false;
+      const decoded = preflightVerified.get(runtime.provider);
+      if (!decoded) return true; // no preflight match → need upload
+      return sidecarFingerprint(decoded.payload?.pluginSidecars) !== localSidecarFp;
+    });
+    const needsUpload = usable.some((runtime) => (
+      !runtime.error && !preflightVerified.has(runtime.provider)
+    )) || remoteSidecarMismatch;
     const outgoingPayload = needsUpload
       ? withConvergentSyncEnvelope(expected, {
         syncedAt: now(),
@@ -462,7 +475,10 @@ export async function syncConvergentProvidersUnlockedImpl(
       })
       : null;
     await Promise.all(usable.map(async (runtime) => {
-      if (runtime.error || preflightVerified.has(runtime.provider)) return;
+      // Upload when CRDT preflight missed OR sidecars diverge for this provider.
+      if (runtime.error) return;
+      if (preflightVerified.has(runtime.provider) && !remoteSidecarMismatch) return;
+      if (!outgoingPayload) return;
       try {
         const remoteVersion = runtime.latestRemote?.meta.version ?? this.state.localVersion;
         const file = await EncryptionService.encryptPayload(

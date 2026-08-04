@@ -81,14 +81,33 @@ class PluginSyncSidecarService {
     const local = typeof this.database.listAllSyncSidecars === "function"
       ? this.database.listAllSyncSidecars()
       : [];
+    const remoteEntries = Array.isArray(remoteBundle?.entries) ? remoteBundle.entries : [];
+    // Remote is authoritative for installed plugins; missing-plugin local rows
+    // (and their baselines) are preserved when absent from remote.
+    const remoteKeys = new Set(
+      remoteEntries.map((entry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`),
+    );
+    const preservedLocal = local.filter((entry) => {
+      if (declared.has(entry.pluginId)) return false; // installed: remote wins
+      return !remoteKeys.has(`${entry.pluginId}\0${entry.kind}\0${entry.key}`);
+    });
     const merged = mergePluginSyncSidecars({
-      local,
-      remote: remoteBundle,
+      local: preservedLocal,
+      remote: { version: 1, entries: remoteEntries },
       declaredSettingsByPlugin: declared,
     });
     const safe = excludeSecretPluginSettingsFromSidecars(merged, declared);
     if (typeof this.database.replaceAllSyncSidecars === "function") {
       this.database.replaceAllSyncSidecars(safe);
+    }
+    // Drop installed-plugin settings that remote no longer carries.
+    for (const entry of local) {
+      if (entry.kind !== "settings") continue;
+      if (!declared.has(entry.pluginId)) continue;
+      if (remoteKeys.has(`${entry.pluginId}\0${entry.kind}\0${entry.key}`)) continue;
+      const parsed = parseSettingsSidecarKey(entry.key);
+      if (!parsed) continue;
+      this.database.deleteSetting(entry.pluginId, parsed.settingId, parsed.scope, parsed.scopeId);
     }
     for (const entry of safe) {
       if (entry.kind !== "settings") continue;

@@ -895,7 +895,12 @@ export function withPluginSyncSidecars(
   payload: SyncPayload,
   sidecars: SyncPayload['pluginSidecars'] | null | undefined,
 ): SyncPayload {
-  if (!sidecars || !Array.isArray(sidecars.entries) || sidecars.entries.length === 0) {
+  // Explicit empty array is authoritative (no sidecars). null/undefined means
+  // "leave payload unchanged" so callers can skip when collection was skipped.
+  if (sidecars == null) {
+    return payload;
+  }
+  if (!Array.isArray(sidecars.entries) || sidecars.entries.length === 0) {
     const { pluginSidecars: _omit, ...rest } = payload;
     return rest;
   }
