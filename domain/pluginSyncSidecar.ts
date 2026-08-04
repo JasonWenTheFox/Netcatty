@@ -159,7 +159,13 @@ export function mergePluginSyncSidecarsThreeWay(params: {
   base: readonly PluginSyncSidecarEntry[];
   local: readonly PluginSyncSidecarEntry[];
   remote: readonly PluginSyncSidecarEntry[];
+  /**
+   * When set, honor cloud/local conflict policy for settings instead of pure
+   * timestamp LWW (preferCloud / preferLocal). Default is smart three-way.
+   */
+  strategy?: 'smart' | 'preferCloud' | 'preferLocal';
 }): PluginSyncSidecarEntry[] {
+  const strategy = params.strategy ?? 'smart';
   const keyOf = (entry: PluginSyncSidecarEntry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`;
   const toMap = (entries: readonly PluginSyncSidecarEntry[]) => {
     const map = new Map<string, PluginSyncSidecarEntry>();
@@ -190,20 +196,27 @@ export function mergePluginSyncSidecarsThreeWay(params: {
 
     if (kind !== 'settings') {
       // Baselines: LWW between local and remote; preserve orphans.
-      const winner = !l ? r : !r ? l : (l.updatedAt >= r.updatedAt ? l : r);
-      if (winner) out.push(winner);
+      // preferCloud / preferLocal still apply when both sides present.
+      if (l && r) {
+        if (strategy === 'preferCloud') out.push(r);
+        else if (strategy === 'preferLocal') out.push(l);
+        else out.push(l.updatedAt >= r.updatedAt ? l : r);
+      } else if (l) out.push(l);
+      else if (r) out.push(r);
       continue;
     }
 
-    // Settings three-way:
-    // base+remote, not local → local deleted (keep remote only if newer than base)
+    // Settings three-way with optional conflict policy:
+    // base+remote, not local → local deleted
     if (b && !l && r) {
-      if (r.updatedAt > b.updatedAt) out.push(r);
+      if (strategy === 'preferLocal') continue; // honor local deletion
+      if (strategy === 'preferCloud' || r.updatedAt > b.updatedAt) out.push(r);
       continue;
     }
-    // base+local, not remote → remote deleted (keep local only if newer than base)
+    // base+local, not remote → remote deleted
     if (b && l && !r) {
-      if (l.updatedAt > b.updatedAt) out.push(l);
+      if (strategy === 'preferCloud') continue; // honor remote deletion
+      if (strategy === 'preferLocal' || l.updatedAt > b.updatedAt) out.push(l);
       continue;
     }
     // both deleted
@@ -219,7 +232,11 @@ export function mergePluginSyncSidecarsThreeWay(params: {
     }
     // both sides present (with or without base)
     if (l && r) {
-      if (l.updatedAt !== r.updatedAt) {
+      if (strategy === 'preferCloud') {
+        out.push(r);
+      } else if (strategy === 'preferLocal') {
+        out.push(l);
+      } else if (l.updatedAt !== r.updatedAt) {
         out.push(l.updatedAt > r.updatedAt ? l : r);
       } else {
         // Equal timestamps: stable secondary key so devices converge.

@@ -157,19 +157,22 @@ class PluginSyncSidecarService {
       if (!parsed) continue;
       const field = fields.find((item) => item.id === parsed.settingId);
       if (!field || !isCloudSyncablePluginSetting(field)) continue;
-      // Always write under the currently declared scope. Older sidecars may
-      // encode an obsolete scope after a plugin update; recreating that scope
-      // would leave duplicate rows that collection republishes.
+      // Always write under the currently declared scope/key coordinates.
+      // Older sidecars may encode an obsolete scope after a plugin update;
+      // recreating that scope would leave duplicate rows that collection
+      // republishes. Application scope always uses the fixed "application" id.
       const targetScope = typeof field.scope === "string" && field.scope.length > 0
         ? field.scope
         : parsed.scope;
+      const targetScopeId = targetScope === "application" ? "application" : parsed.scopeId;
+      const nextKey = `${parsed.settingId}\0${targetScope}\0${targetScopeId}`;
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(
             entry.pluginId,
             parsed.settingId,
             entry.value,
-            parsed.scopeId,
+            targetScopeId,
             { source: "host" },
           );
           // Preserve remote LWW timestamp after validated write (updateSetting uses clock).
@@ -177,11 +180,11 @@ class PluginSyncSidecarService {
             entry.pluginId,
             parsed.settingId,
             targetScope,
-            parsed.scopeId,
+            targetScopeId,
             entry.value,
             entry.updatedAt,
           );
-          if (targetScope !== parsed.scope) {
+          if (targetScope !== parsed.scope || targetScopeId !== parsed.scopeId) {
             try {
               this.database.deleteSetting(
                 entry.pluginId,
@@ -191,6 +194,22 @@ class PluginSyncSidecarService {
               );
             } catch {
               // Best-effort cleanup of the obsolete scope row.
+            }
+            if (typeof this.database.setSyncSidecar === "function") {
+              try {
+                this.database.setSyncSidecar(
+                  entry.pluginId,
+                  "settings",
+                  nextKey,
+                  entry.value,
+                  entry.updatedAt,
+                );
+                if (nextKey !== entry.key && typeof this.database.deleteSyncSidecar === "function") {
+                  this.database.deleteSyncSidecar(entry.pluginId, "settings", entry.key);
+                }
+              } catch {
+                // Sidecar re-key is best-effort after settings write.
+              }
             }
           }
         } catch {
@@ -202,11 +221,11 @@ class PluginSyncSidecarService {
         entry.pluginId,
         parsed.settingId,
         targetScope,
-        parsed.scopeId,
+        targetScopeId,
         entry.value,
         entry.updatedAt,
       );
-      if (targetScope !== parsed.scope) {
+      if (targetScope !== parsed.scope || targetScopeId !== parsed.scopeId) {
         try {
           this.database.deleteSetting(
             entry.pluginId,
@@ -216,6 +235,22 @@ class PluginSyncSidecarService {
           );
         } catch {
           // Best-effort cleanup of the obsolete scope row.
+        }
+        if (typeof this.database.setSyncSidecar === "function") {
+          try {
+            this.database.setSyncSidecar(
+              entry.pluginId,
+              "settings",
+              nextKey,
+              entry.value,
+              entry.updatedAt,
+            );
+            if (nextKey !== entry.key && typeof this.database.deleteSyncSidecar === "function") {
+              this.database.deleteSyncSidecar(entry.pluginId, "settings", entry.key);
+            }
+          } catch {
+            // Sidecar re-key is best-effort after settings write.
+          }
         }
       }
     }
@@ -242,24 +277,26 @@ class PluginSyncSidecarService {
       const targetScope = typeof field.scope === "string" && field.scope.length > 0
         ? field.scope
         : parsed.scope;
+      const targetScopeId = targetScope === "application" ? "application" : parsed.scopeId;
+      const nextKey = `${parsed.settingId}\0${targetScope}\0${targetScopeId}`;
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(
             pluginId,
             parsed.settingId,
             entry.value,
-            parsed.scopeId,
+            targetScopeId,
             { source: "host" },
           );
           this.database.setSetting(
             pluginId,
             parsed.settingId,
             targetScope,
-            parsed.scopeId,
+            targetScopeId,
             entry.value,
             entry.updatedAt,
           );
-          if (targetScope !== parsed.scope) {
+          if (targetScope !== parsed.scope || targetScopeId !== parsed.scopeId) {
             try {
               this.database.deleteSetting(
                 pluginId,
@@ -269,6 +306,22 @@ class PluginSyncSidecarService {
               );
             } catch {
               // Best-effort cleanup of the obsolete scope row.
+            }
+            if (typeof this.database.setSyncSidecar === "function") {
+              try {
+                this.database.setSyncSidecar(
+                  pluginId,
+                  "settings",
+                  nextKey,
+                  entry.value,
+                  entry.updatedAt,
+                );
+                if (nextKey !== entry.key && typeof this.database.deleteSyncSidecar === "function") {
+                  this.database.deleteSyncSidecar(pluginId, "settings", entry.key);
+                }
+              } catch {
+                // Sidecar re-key is best-effort after settings write.
+              }
             }
           }
         } catch {

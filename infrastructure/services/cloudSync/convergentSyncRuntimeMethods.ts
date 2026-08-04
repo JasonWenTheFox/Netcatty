@@ -504,10 +504,13 @@ export async function syncConvergentProvidersUnlockedImpl(
       const remoteBundle = fromPreflight ?? fromLatest;
       if (!remoteBundle) continue;
       const baseForProvider = cycleBaseByProvider.get(runtime.provider) ?? [];
+      const sidecarStrategy =
+        strategy === 'preferCloud' || strategy === 'preferLocal' ? strategy : 'smart';
       mergedSidecars = mergePluginSyncSidecarsThreeWay({
         base: baseForProvider,
         local: mergedSidecars,
         remote: Array.isArray(remoteBundle.entries) ? remoteBundle.entries : [],
+        strategy: sidecarStrategy,
       });
     }
     const pluginSidecars = mergedSidecars.length > 0
@@ -944,11 +947,12 @@ export async function downgradeConvergentSyncImpl(
     // vault change made since the last persisted replica into causal local
     // writes before joining provider states; otherwise downgrade would
     // materialize the stale replica and overwrite those paused edits.
-    // Prefer local sidecars, then LWW-union every successfully decoded remote
-    // bundle so multi-provider downgrade does not drop disjoint settings.
+    // Prefer local sidecars, then three-way-merge each remote against that
+    // provider's trusted baseline so explicit local resets are not resurrected
+    // by a stale remote entry during downgrade.
     let downgradeSidecars = localSidecars;
     {
-      const { mergePluginSyncSidecars } = await import('../../../domain/pluginSyncSidecar');
+      const { mergePluginSyncSidecarsThreeWay } = await import('../../../domain/pluginSyncSidecar');
       let entries = Array.isArray(downgradeSidecars?.entries) ? [...downgradeSidecars.entries] : [];
       let sawRemote = false;
       for (const runtime of runtimes) {
@@ -957,7 +961,25 @@ export async function downgradeConvergentSyncImpl(
         );
         if (!remoteBundle) continue;
         sawRemote = true;
-        entries = mergePluginSyncSidecars({ local: entries, remote: remoteBundle });
+        let baseForProvider: NonNullable<SyncPayload['pluginSidecars']>['entries'] = [];
+        if (typeof this.loadConvergentProviderBaseline === 'function') {
+          try {
+            const baseline = await this.loadConvergentProviderBaseline(runtime.provider) as {
+              materializedPayload?: SyncPayload;
+            } | null;
+            const baseBundle = baseline?.materializedPayload?.pluginSidecars;
+            if (baseBundle && Array.isArray(baseBundle.entries)) {
+              baseForProvider = baseBundle.entries;
+            }
+          } catch {
+            // First cycle or missing baseline is fine.
+          }
+        }
+        entries = mergePluginSyncSidecarsThreeWay({
+          base: baseForProvider,
+          local: entries,
+          remote: Array.isArray(remoteBundle.entries) ? remoteBundle.entries : [],
+        });
       }
       if (sawRemote || entries.length > 0) {
         downgradeSidecars = { version: 1, entries };
