@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { CloudProvider, ProviderConnection, SyncedFile } from '../../../domain/sync';
 import { SYNC_STORAGE_KEYS } from '../../../domain/sync';
-import { createAdapter } from '../adapters';
 import type { EncryptedObjectStorage } from '../../../domain/encryptedObjectStorage';
 import { DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY } from '../../../domain/encryptedObjectStorage';
 import {
@@ -37,8 +36,26 @@ function memoryStorage(): Map<string, unknown> {
   return new Map();
 }
 
-function createManagerHarness(storage: Map<string, unknown>) {
-  const manager: any = {
+type ManagerHarness = {
+  adapters: Map<string, unknown>;
+  providerWriteSeq: Record<string, number>;
+  providerDecryptSeq: Record<string, number>;
+  providerDecrypted: Record<string, boolean>;
+  providerAuthAttemptSeq: Record<string, number>;
+  providerAuthRestoreState: Record<string, unknown>;
+  decryptionReady: Promise<void>;
+  state: { providers: Record<string, ProviderConnection> } | null;
+  createPluginStorage?: (id: string) => Promise<EncryptedObjectStorage>;
+  loadFromStorage: <T>(key: string) => T | null;
+  saveToStorage: (key: string, value: unknown) => boolean;
+  removeFromStorage: (key: string) => void;
+  loadProviderConnection: (provider: CloudProvider) => ProviderConnection;
+  notifyStateChange: () => void;
+  isActiveAuthAttempt: () => boolean;
+};
+
+function createManagerHarness(storage: Map<string, unknown>): ManagerHarness {
+  const manager: ManagerHarness = {
     adapters: new Map(),
     providerWriteSeq: {
       github: 0, google: 0, onedrive: 0, webdav: 0, s3: 0,
@@ -56,7 +73,7 @@ function createManagerHarness(storage: Map<string, unknown>) {
       github: null, google: null, onedrive: null, webdav: null, s3: null,
     },
     decryptionReady: Promise.resolve(),
-    state: null as any,
+    state: null,
     loadFromStorage<T>(key: string): T | null {
       return (storage.has(key) ? storage.get(key) : null) as T | null;
     },

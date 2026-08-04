@@ -213,7 +213,14 @@ export function mergePluginSyncSidecarsThreeWay(params: {
     }
     // both sides present (with or without base)
     if (l && r) {
-      out.push(l.updatedAt >= r.updatedAt ? l : r);
+      if (l.updatedAt !== r.updatedAt) {
+        out.push(l.updatedAt > r.updatedAt ? l : r);
+      } else {
+        // Equal timestamps: stable secondary key so devices converge.
+        const lTie = JSON.stringify(l.value);
+        const rTie = JSON.stringify(r.value);
+        out.push(lTie >= rTie ? l : r);
+      }
       continue;
     }
     if (l) out.push(l);

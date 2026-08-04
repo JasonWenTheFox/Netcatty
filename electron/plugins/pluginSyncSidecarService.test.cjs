@@ -246,3 +246,14 @@ test("applyFromSync does not drop local baselines for plugins absent remotely", 
   assert.ok(all.some((entry) => entry.pluginId === "com.local.only"));
   assert.ok(all.some((entry) => entry.pluginId === "com.remote.plugin" && entry.value === "light"));
 });
+
+test("applyFromSync empty remote bundle wipes missing-plugin retained rows", async (context) => {
+  const database = tempDb(context);
+  database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: { snapshot: () => ({ plugins: [] }) },
+  });
+  await service.applyFromSync({ version: 1, entries: [] });
+  assert.equal(database.listAllSyncSidecars().length, 0);
+});

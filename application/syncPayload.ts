@@ -1020,12 +1020,20 @@ export async function buildLocalVaultPayloadAsync(
   portForwardingRules?: PortForwardingRule[],
 ): Promise<SyncPayload> {
   const base = buildLocalVaultPayload(vault, portForwardingRules);
+  const {
+    collectPluginSyncSidecarsFromHost,
+    isPluginSidecarHostUnavailableError,
+  } = await import('./pluginSyncSidecarBridge');
   try {
-    const { collectPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
     const live = await collectPluginSyncSidecarsFromHost();
     if (live) return withPluginSyncSidecars(base, live);
-  } catch {
-    // Host offline or operational failure: keep sync cache from buildLocalVaultPayload.
+  } catch (error) {
+    // Only fall back to last-known when the host is gated off. Operational
+    // failures must abort protective backups so we never apply over data that
+    // was not captured in the safety snapshot.
+    if (!isPluginSidecarHostUnavailableError(error)) {
+      throw error;
+    }
   }
   return base;
 }
