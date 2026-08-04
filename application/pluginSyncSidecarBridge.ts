@@ -222,5 +222,7 @@ export async function applyPluginSyncSidecarsFromHost(
       // Fall through to cache the applied remote bundle.
     }
   }
-  writeLastKnownSidecars(normalized.entries.length > 0 ? normalized : null);
+  // Keep explicit empty resets as { entries: [] } so later offline collects
+  // do not omit the field and resurrect deleted sidecars.
+  writeLastKnownSidecars(normalized);
 }

@@ -15,9 +15,16 @@ const {
 
 function createIpcMain() {
   const handlers = new Map();
+  const listeners = new Map();
   return {
     handlers,
+    listeners,
     handle(channel, handler) { handlers.set(channel, handler); },
+    on(channel, listener) {
+      const list = listeners.get(channel) ?? [];
+      list.push(listener);
+      listeners.set(channel, list);
+    },
   };
 }
 

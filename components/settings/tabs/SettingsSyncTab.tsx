@@ -42,7 +42,7 @@ export default function SettingsSyncTab(props: {
 
   const onBuildLocalPayload = useCallback(async (): Promise<SyncPayload> => {
     const effectiveKnownHosts = getEffectiveKnownHosts(vault.knownHosts);
-    const { buildLocalVaultPayloadAsync } = await import('../../syncPayload');
+    const { buildLocalVaultPayloadAsync } = await import('../../../application/syncPayload');
     return buildLocalVaultPayloadAsync(
       { ...vault, knownHosts: effectiveKnownHosts ?? [] },
       getEffectivePortForwardingRules(),

@@ -944,18 +944,23 @@ export async function downgradeConvergentSyncImpl(
     // vault change made since the last persisted replica into causal local
     // writes before joining provider states; otherwise downgrade would
     // materialize the stale replica and overwrite those paused edits.
-    // Prefer local sidecars, else any remote-decoded bundle so downgrade does
-    // not upload a sidecar-free vault that erases plugin settings/baselines.
+    // Prefer local sidecars, then LWW-union every successfully decoded remote
+    // bundle so multi-provider downgrade does not drop disjoint settings.
     let downgradeSidecars = localSidecars;
-    if (!downgradeSidecars) {
+    {
+      const { mergePluginSyncSidecars } = await import('../../../domain/pluginSyncSidecar');
+      let entries = Array.isArray(downgradeSidecars?.entries) ? [...downgradeSidecars.entries] : [];
+      let sawRemote = false;
       for (const runtime of runtimes) {
         const remoteBundle = sidecarBundleFromPayload(
           runtime.verifiedPayload ?? runtime.latestRemotePayload,
         );
-        if (remoteBundle) {
-          downgradeSidecars = remoteBundle;
-          break;
-        }
+        if (!remoteBundle) continue;
+        sawRemote = true;
+        entries = mergePluginSyncSidecars({ local: entries, remote: remoteBundle });
+      }
+      if (sawRemote || entries.length > 0) {
+        downgradeSidecars = { version: 1, entries };
       }
     }
     const withLocalWrites = applyLegacySyncPayload(

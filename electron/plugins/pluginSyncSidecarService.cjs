@@ -127,10 +127,11 @@ class PluginSyncSidecarService {
             parsed.settingId,
             parsed.scopeId,
           );
-          continue;
         } catch {
-          // Fall through to direct delete if reset rejects.
+          // Validation rejected the reset (e.g. required setting) — keep the
+          // local value rather than force-deleting through the database.
         }
+        continue;
       }
       this.database.deleteSetting(entry.pluginId, parsed.settingId, parsed.scope, parsed.scopeId);
     }
