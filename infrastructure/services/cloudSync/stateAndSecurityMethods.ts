@@ -197,18 +197,43 @@ export function setAvailablePluginSyncProviderIdsImpl(
     if (!isPluginCloudProviderId(id)) continue;
     const conn = this.state.providers[id];
     if (!conn) continue;
-    if (!next.includes(id) && conn.status === 'connected') {
-      this.state.providers[id] = {
-        ...conn,
-        status: 'disconnected',
-        error: 'Plugin sync provider is no longer installed or enabled',
-      };
-      changed = true;
+    if (!next.includes(id)) {
+      // Disabled/uninstalled: leave config, force offline ready-state.
+      if (conn.status !== 'disconnected') {
+        this.state.providers[id] = {
+          ...conn,
+          status: 'disconnected',
+          error: 'Plugin sync provider is no longer installed or enabled',
+        };
+        changed = true;
+      }
       const adapter = this.adapters?.get?.(id);
       if (adapter) {
         try { adapter.signOut(); } catch { /* ignore */ }
         this.adapters.delete(id);
       }
+      continue;
+    }
+    // Still contributed: drop cached adapters so a restarted plugin runtime
+    // gets a fresh connect on the next sync instead of reusing sessionConnected.
+    if (this.adapters?.has?.(id)) {
+      const adapter = this.adapters.get(id);
+      try { adapter?.signOut?.(); } catch { /* ignore */ }
+      this.adapters.delete(id);
+    }
+    // Re-enable retained configs that were only offline due to prior unavailability.
+    if (
+      (conn.config || conn.tokens)
+      && conn.status === 'disconnected'
+      && typeof conn.error === 'string'
+      && conn.error.includes('no longer installed')
+    ) {
+      this.state.providers[id] = {
+        ...conn,
+        status: 'connected',
+        error: undefined,
+      };
+      changed = true;
     }
   }
   if (changed && typeof this.notifyStateChange === 'function') {

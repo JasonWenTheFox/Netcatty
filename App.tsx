@@ -574,9 +574,11 @@ function App({ settings }: { settings: SettingsState }) {
         const payload = await buildCurrentSyncPayloadRef.current();
         if (cancelled) return;
         if (!hasMeaningfulSyncData(payload)) return;
-        versionBackupAttemptedRef.current = true;
         const info = await netcattyBridge.get()?.getAppInfo?.();
         if (cancelled) return;
+        // Latch only once we are about to write, so a cancelled in-flight
+        // attempt cannot suppress a later retry after vault hydration.
+        versionBackupAttemptedRef.current = true;
         await ensureVersionChangeBackup(payload, info?.version ?? null);
       } catch (error) {
         if (!cancelled) {
