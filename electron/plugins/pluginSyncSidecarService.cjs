@@ -150,6 +150,12 @@ class PluginSyncSidecarService {
       if (!parsed) continue;
       const field = fields.find((item) => item.id === parsed.settingId);
       if (!field || !isCloudSyncablePluginSetting(field)) continue;
+      // Always write under the currently declared scope. Older sidecars may
+      // encode an obsolete scope after a plugin update; recreating that scope
+      // would leave duplicate rows that collection republishes.
+      const targetScope = typeof field.scope === "string" && field.scope.length > 0
+        ? field.scope
+        : parsed.scope;
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(
@@ -163,11 +169,23 @@ class PluginSyncSidecarService {
           this.database.setSetting(
             entry.pluginId,
             parsed.settingId,
-            parsed.scope,
+            targetScope,
             parsed.scopeId,
             entry.value,
             entry.updatedAt,
           );
+          if (targetScope !== parsed.scope) {
+            try {
+              this.database.deleteSetting(
+                entry.pluginId,
+                parsed.settingId,
+                parsed.scope,
+                parsed.scopeId,
+              );
+            } catch {
+              // Best-effort cleanup of the obsolete scope row.
+            }
+          }
         } catch {
           // Invalid against current schema — keep sidecar row only.
         }
@@ -176,11 +194,23 @@ class PluginSyncSidecarService {
       this.database.setSetting(
         entry.pluginId,
         parsed.settingId,
-        parsed.scope,
+        targetScope,
         parsed.scopeId,
         entry.value,
         entry.updatedAt,
       );
+      if (targetScope !== parsed.scope) {
+        try {
+          this.database.deleteSetting(
+            entry.pluginId,
+            parsed.settingId,
+            parsed.scope,
+            parsed.scopeId,
+          );
+        } catch {
+          // Best-effort cleanup of the obsolete scope row.
+        }
+      }
     }
     return safe;
   }
@@ -202,6 +232,9 @@ class PluginSyncSidecarService {
       if (!parsed) continue;
       const field = declared.find((item) => item.id === parsed.settingId);
       if (!field || !isCloudSyncablePluginSetting(field)) continue;
+      const targetScope = typeof field.scope === "string" && field.scope.length > 0
+        ? field.scope
+        : parsed.scope;
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(
@@ -214,11 +247,23 @@ class PluginSyncSidecarService {
           this.database.setSetting(
             pluginId,
             parsed.settingId,
-            parsed.scope,
+            targetScope,
             parsed.scopeId,
             entry.value,
             entry.updatedAt,
           );
+          if (targetScope !== parsed.scope) {
+            try {
+              this.database.deleteSetting(
+                pluginId,
+                parsed.settingId,
+                parsed.scope,
+                parsed.scopeId,
+              );
+            } catch {
+              // Best-effort cleanup of the obsolete scope row.
+            }
+          }
         } catch {
           // Invalid against current schema — keep sidecar only.
         }
