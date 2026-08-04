@@ -1098,7 +1098,9 @@ class PluginExtensionProviderService {
     });
     void outputDone.catch(() => {});
 
+    let acceptedStream = null;
     const expected = this.expectIncoming(activation.identity, outputStreamId, async (stream) => {
+      acceptedStream = stream;
       stream.bind({
         onChunk: (chunk, release) => {
           try {
@@ -1141,6 +1143,16 @@ class PluginExtensionProviderService {
       deadlineMs,
     }, { ...options, activation });
 
+    const cancelAcceptedStream = (error) => {
+      try {
+        if (acceptedStream && typeof acceptedStream.cancel === "function") {
+          acceptedStream.cancel(error);
+        }
+      } catch {
+        // Best-effort containment after timeout/failure.
+      }
+    };
+
     try {
       const result = await waitUntilDeadline(
         request,
@@ -1153,6 +1165,7 @@ class PluginExtensionProviderService {
         // do not consume the pre-opened output stream.
         void expected.promise.catch(() => {});
         expected.cancel(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object not found"));
+        cancelAcceptedStream(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object not found"));
         return Object.freeze({ found: false, key, bytes: null, revision: undefined });
       }
       if (result.streamed === true) {
@@ -1183,6 +1196,7 @@ class PluginExtensionProviderService {
       // Inline base64 path — cancel unused stream expectation.
       void expected.promise.catch(() => {});
       expected.cancel(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object returned inline"));
+      cancelAcceptedStream(new PluginRpcError(RPC_ERRORS.cancelled, "Sync object returned inline"));
       const bytes = decodeBase64Bytes(result.data, result.byteLength, "Sync readObject");
       return Object.freeze({
         found: true,
@@ -1194,6 +1208,7 @@ class PluginExtensionProviderService {
     } catch (error) {
       void expected?.promise?.catch?.(() => {});
       expected?.cancel?.(error);
+      cancelAcceptedStream(error);
       throw error;
     }
   }

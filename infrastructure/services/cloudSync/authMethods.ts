@@ -375,6 +375,12 @@ export async function connectPluginProviderImpl(
     if (this.providerWriteSeq[providerId] == null) this.providerWriteSeq[providerId] = 0;
     if (this.providerDecrypted[providerId] == null) this.providerDecrypted[providerId] = true;
     ++this.providerDecryptSeq[providerId];
+    // Capture pre-connect identity before overwriting state.
+    const previous = this.state.providers[providerId];
+    const previousAccountId = previous?.account?.id ?? null;
+    const previousResource = previous?.resourceId ?? null;
+    const nextAccountId = account?.id ?? null;
+    const nextResource = resourceId || null;
     this.state.providers[providerId] = {
       provider: providerId,
       status: 'connected',
@@ -384,7 +390,11 @@ export async function connectPluginProviderImpl(
     };
     registerPluginProviderIdImpl.call(this, providerId);
     await this.saveProviderConnection(providerId, this.state.providers[providerId]);
-    clearProviderMergeStateImpl.call(this, providerId);
+    // Preserve merge base / anchors when reconnecting the same account+resource
+    // after a temporary disable; only clear when identity of the remote changes.
+    if (previousAccountId !== nextAccountId || previousResource !== nextResource) {
+      clearProviderMergeStateImpl.call(this, providerId);
+    }
     this.emit({
       type: 'AUTH_COMPLETED',
       provider: providerId,
