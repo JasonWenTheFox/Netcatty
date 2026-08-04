@@ -50,7 +50,7 @@ import { TERMINAL_THEMES } from './infrastructure/config/terminalThemes';
 import { useThemeRuntime, useTerminalAppearanceInjection } from './application/state/useThemeRuntime';
 import { useCustomThemes } from './application/state/customThemeStore';
 import type { SyncPayload } from './domain/sync';
-import { applySyncPayload, buildLocalVaultPayload, hasMeaningfulSyncData } from './application/syncPayload';
+import { applySyncPayload, buildLocalVaultPayloadAsync, hasMeaningfulSyncData } from './application/syncPayload';
 import {
   applyProtectedSyncPayload,
   ensureVersionChangeBackup,
@@ -489,7 +489,7 @@ function App({ settings }: { settings: SettingsState }) {
     [portForwardingRules],
   );
 
-  const buildCurrentSyncPayload = useCallback(() => {
+  const buildCurrentSyncPayload = useCallback(async () => {
     let effectivePortForwardingRules = portForwardingRulesForSync;
     if (effectivePortForwardingRules.length === 0) {
       const stored = localStorageAdapter.read<typeof portForwardingRulesForSync>(
@@ -505,7 +505,7 @@ function App({ settings }: { settings: SettingsState }) {
       }
     }
 
-    return buildLocalVaultPayload(
+    return buildLocalVaultPayloadAsync(
       {
         hosts,
         keys,
@@ -567,14 +567,16 @@ function App({ settings }: { settings: SettingsState }) {
   // in which case the effect continues to no-op).
   useEffect(() => {
     if (isPeerSessionWindow || !isVaultInitialized || versionBackupAttemptedRef.current) return;
-    const payload = buildCurrentSyncPayloadRef.current();
-    if (!hasMeaningfulSyncData(payload)) return;
-    versionBackupAttemptedRef.current = true;
 
     let cancelled = false;
     void (async () => {
       try {
+        const payload = await buildCurrentSyncPayloadRef.current();
+        if (cancelled) return;
+        if (!hasMeaningfulSyncData(payload)) return;
+        versionBackupAttemptedRef.current = true;
         const info = await netcattyBridge.get()?.getAppInfo?.();
+        if (cancelled) return;
         await ensureVersionChangeBackup(payload, info?.version ?? null);
       } catch (error) {
         if (!cancelled) {

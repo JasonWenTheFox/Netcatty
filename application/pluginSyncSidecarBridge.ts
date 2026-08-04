@@ -209,5 +209,18 @@ export async function applyPluginSyncSidecarsFromHost(
     );
   }
   clearPendingRemoteSidecars();
+  // Prefer a fresh host collect so last-known reflects merged host state
+  // (applyFromSync preserves missing-plugin local rows that the remote omits).
+  if (typeof api.collectPluginSyncSidecars === 'function') {
+    try {
+      const collected = await api.collectPluginSyncSidecars();
+      if (isAuthoritativeBundle(collected)) {
+        writeLastKnownSidecars({ version: 1, entries: collected.entries });
+        return;
+      }
+    } catch {
+      // Fall through to cache the applied remote bundle.
+    }
+  }
   writeLastKnownSidecars(normalized.entries.length > 0 ? normalized : null);
 }

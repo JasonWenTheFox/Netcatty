@@ -994,7 +994,7 @@ export function buildLocalVaultPayload(
   };
   // Protective backups must capture plugin sidecars so restore can recover
   // plugin settings/baselines. Prefer the last successful host collect cache
-  // (sync); live main-process collect is async and used on the cloud path.
+  // (sync). Callers that can await should use buildLocalVaultPayloadAsync.
   try {
     const raw = localStorageAdapter.read<{ version?: number; entries?: unknown }>(
       'netcatty_plugin_sidecars_last_known_v1',
@@ -1007,6 +1007,25 @@ export function buildLocalVaultPayload(
     }
   } catch {
     // ignore cache read failures; backup still carries vault entities
+  }
+  return base;
+}
+
+/**
+ * Async local backup payload that prefers a live host collect when available,
+ * then falls back to last-known cache. Use for protective/version-change backups.
+ */
+export async function buildLocalVaultPayloadAsync(
+  vault: SyncableVaultData,
+  portForwardingRules?: PortForwardingRule[],
+): Promise<SyncPayload> {
+  const base = buildLocalVaultPayload(vault, portForwardingRules);
+  try {
+    const { collectPluginSyncSidecarsFromHost } = await import('./pluginSyncSidecarBridge');
+    const live = await collectPluginSyncSidecarsFromHost();
+    if (live) return withPluginSyncSidecars(base, live);
+  } catch {
+    // Host offline or operational failure: keep sync cache from buildLocalVaultPayload.
   }
   return base;
 }

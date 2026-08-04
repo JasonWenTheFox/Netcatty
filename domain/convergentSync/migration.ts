@@ -25,6 +25,21 @@ import {
   materializeSyncPayloadFromConvergentState,
   withConvergentSyncEnvelope,
 } from './payload';
+import { mergePluginSyncSidecars } from '../pluginSyncSidecar';
+
+/** LWW-union plugin sidecars from every migration input that carries them. */
+function mergeMigrationSidecars(
+  ...bundles: Array<SyncPayload['pluginSidecars'] | null | undefined>
+): SyncPayload['pluginSidecars'] | undefined {
+  let entries: NonNullable<SyncPayload['pluginSidecars']>['entries'] = [];
+  let sawAny = false;
+  for (const bundle of bundles) {
+    if (!bundle || !Array.isArray(bundle.entries)) continue;
+    sawAny = true;
+    entries = mergePluginSyncSidecars({ local: entries, remote: bundle });
+  }
+  return sawAny ? { version: 1, entries } : undefined;
+}
 
 /*
  * A local snapshot with no cloud entities and no trusted base is a fresh
@@ -203,29 +218,29 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = createConvergentSyncStateFromPayload(merged, options.deviceId, options.now);
-      // Carry plugin sidecars from the merged legacy payload so first publish
-      // does not strip local plugin settings/baselines.
-      const migrationSidecars = merged.pluginSidecars
-        ?? options.localPayload.pluginSidecars;
+      // Union sidecars from local + every legacy provider so first publish
+      // does not drop unique plugin settings/baselines.
+      const migrationSidecars = mergeMigrationSidecars(
+        options.localPayload.pluginSidecars,
+        merged.pluginSidecars,
+        ...v1Inputs.map((input) => input.payload.pluginSidecars),
+      );
       materialized = materializeSyncPayloadFromConvergentState(state, {
         syncedAt: options.now,
         syncMeta: merged.syncMeta,
-        ...(migrationSidecars && Array.isArray(migrationSidecars.entries)
-          ? { pluginSidecars: migrationSidecars }
-          : {}),
+        ...(migrationSidecars ? { pluginSidecars: migrationSidecars } : {}),
       });
     }
   } else if (blockedReasons.length === 0) {
     state = v2Inputs.map((input) => input.state).reduce(mergeConvergentSyncStates);
-    const joinedSidecars = options.localPayload.pluginSidecars
-      ?? v2Inputs.map((input) => input.payload.pluginSidecars).find((bundle) => (
-        bundle && Array.isArray(bundle.entries)
-      ));
+    const joinedSidecars = mergeMigrationSidecars(
+      options.localPayload.pluginSidecars,
+      ...v2Inputs.map((input) => input.payload.pluginSidecars),
+      ...v1Inputs.map((input) => input.payload.pluginSidecars),
+    );
     const joinedPayload = materializeSyncPayloadFromConvergentState(state, {
       syncedAt: options.now,
-      ...(joinedSidecars && Array.isArray(joinedSidecars.entries)
-        ? { pluginSidecars: joinedSidecars }
-        : {}),
+      ...(joinedSidecars ? { pluginSidecars: joinedSidecars } : {}),
     });
     const legacySources: Array<{
       id: string;
@@ -273,16 +288,15 @@ export function planConvergentSyncMigration(options: {
     }
     if (blockedReasons.length === 0) {
       state = branches.reduce(mergeConvergentSyncStates, state);
-      const migrationSidecars = options.localPayload.pluginSidecars
-        ?? v1Inputs.map((input) => input.payload.pluginSidecars).find((bundle) => (
-          bundle && Array.isArray(bundle.entries)
-        ))
-        ?? joinedSidecars;
+      const migrationSidecars = mergeMigrationSidecars(
+        joinedSidecars,
+        options.localPayload.pluginSidecars,
+        ...v1Inputs.map((input) => input.payload.pluginSidecars),
+        ...legacySources.map((source) => source.payload.pluginSidecars),
+      );
       materialized = materializeSyncPayloadFromConvergentState(state, {
         syncedAt: options.now,
-        ...(migrationSidecars && Array.isArray(migrationSidecars.entries)
-          ? { pluginSidecars: migrationSidecars }
-          : {}),
+        ...(migrationSidecars ? { pluginSidecars: migrationSidecars } : {}),
       });
     }
   }
