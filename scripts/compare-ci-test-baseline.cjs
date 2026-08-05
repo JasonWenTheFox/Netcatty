@@ -258,7 +258,7 @@ function compareTapResults(baseline, candidate) {
 
   if (candidate.exitCode === 0) {
     // Require every baseline failure title to reappear as a same-named success
-    // before accepting a red→green transition. Aggregate counts alone would allow
+    // before accepting a red-to-green transition. Aggregate counts alone would allow
     // deleting the failing test and adding an unrelated passer.
     const baselineFailCounts = countFailures(baseline.failures);
     const baselineSuccessCountsForFix = countFailures(baseline.successes);
