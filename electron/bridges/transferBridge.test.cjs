@@ -4245,11 +4245,93 @@ test("cancel during stalled shared upload OPEN drains before remote cleanup", as
   );
 });
 
+test("shared upload OPEN drain force-completes when cancel has no OPEN callback", async (t) => {
+  // Codex P2 on cd57d960: cancel settle without force-complete left
+  // sharedWriteOpenDrain pending forever when OPEN never arrived and no
+  // channel error fired, hanging the transfer and SFTP lease.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-cancel-no-callback-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 51));
+
+  let endCalls = 0;
+  let openCalls = 0;
+  const sharedSftp = createFastSftp({
+    open(_remotePath, flags, _callback) {
+      assert.equal(flags, "w");
+      openCalls += 1;
+      // Never invoke the OPEN callback (stalled shared channel, no error).
+    },
+    write() {
+      throw new Error("WRITE must not run after cancel during OPEN");
+    },
+    close() {
+      throw new Error("CLOSE must not run without an OPEN handle");
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat() {
+      const error = new Error("ENOENT");
+      error.code = 2;
+      return Promise.reject(error);
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete() {},
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "upload-shared-open-cancel-no-callback";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath: "/tmp/upload-cancel-hang.bin",
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: true,
+      skipAdmission: true,
+    },
+  );
+
+  const ready = await waitUntil(() => openCalls >= 1, 2000);
+  assert.ok(ready, "expected shared write OPEN to stall");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("transfer hung awaiting shared write OPEN drain after cancel")),
+        5500,
+      );
+    }),
+  ]);
+
+  assert.match(result.error || "", /cancel/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
+});
+
 test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
-  // Codex P2 on af9cef2e / 0cda4a39: 2s settle timeout unblocks cancel UX, but
-  // cleanup must still wait for the OPEN callback (including past any channel-
-  // error drain force-complete window). Cancel must not arm drain force-
-  // complete — that would let stage delete race a late truncating OPEN.
+  // Codex P2 on af9cef2e / 0cda4a39 / cd57d960: cancel settle + drain
+  // force-complete must not hang, and a late truncating OPEN after that must
+  // close + unlink so stage cleanup cannot leave a recreate orphan.
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-drain-timeout-"));
   t.after(async () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -4277,6 +4359,12 @@ test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
     },
     close(_handle, callback) {
       eventLog.push("close");
+      callback(null);
+    },
+    unlink(remotePath, callback) {
+      const key = String(remotePath);
+      eventLog.push(`unlink:${key}`);
+      remoteFiles.delete(key);
       callback(null);
     },
     end() {
@@ -4329,29 +4417,24 @@ test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
 
   await transferBridge.cancelTransfer(null, { transferId });
 
-  // Past cancel settle (2s) and the channel-error drain force-complete window
-  // (another 2s). Cleanup must still be gated on the OPEN callback.
-  await new Promise((resolve) => setTimeout(resolve, 4500));
-  assert.ok(typeof releaseOpen === "function", "OPEN must still be pending after settle timeout");
-  assert.equal(eventLog.some((entry) => entry.startsWith("delete:")), false,
-    "cleanup must not run before late OPEN drain");
-
-  // Late OPEN after settle timeout — must close then delete, no orphan.
-  releaseOpen?.();
+  // Past cancel settle (2s) + drain force-complete (2s): transfer must settle
+  // without an OPEN callback so lease/admission cannot hang.
   const result = await Promise.race([
     running,
     new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("transfer did not settle after late shared write OPEN")), 5000);
+      setTimeout(() => reject(new Error("transfer hung after cancel OPEN drain force-complete")), 5500);
     }),
   ]);
-
   assert.match(result.error || "", /cancel/i);
   assert.equal(endCalls, 0, "shared sudo channel must not be ended");
-  const closeIdx = eventLog.indexOf("close");
-  const deleteIdx = eventLog.findIndex((entry) => entry.startsWith("delete:"));
-  assert.ok(closeIdx >= 0, `expected CLOSE after late OPEN, log=${eventLog.join(",")}`);
-  assert.ok(deleteIdx >= 0, `expected stage delete after drain, log=${eventLog.join(",")}`);
-  assert.ok(closeIdx < deleteIdx, `CLOSE must precede cleanup delete, log=${eventLog.join(",")}`);
+
+  // Late OPEN after force-complete — must close + unlink, no orphan stage.
+  releaseOpen?.();
+  const lateCleanup = await waitUntil(
+    () => eventLog.includes("close") && eventLog.some((entry) => entry.startsWith("unlink:")),
+    2000,
+  );
+  assert.ok(lateCleanup, `expected late OPEN close+unlink, log=${eventLog.join(",")}`);
   assert.equal(
     [...remoteFiles.keys()].some((key) => key.includes(".netcatty-upload-")),
     false,
