@@ -4142,6 +4142,7 @@ test('shouldSkipExternalCodexRerequest matches trusted head sha marker only', ()
 test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and plain requests', () => {
   const sha = 'deadbeefcafebabe000000000000000000000001';
   const short = sha.slice(0, 12);
+  // Simulate PR.updated_at after synchronize (push time), not commit author date.
   const headPushedAt = '2026-08-05T14:00:00Z';
   // Automation request with head pin but no external marker still dedupes.
   assert.equal(

@@ -3831,21 +3831,13 @@ jobs:
               issue_number: pull_number,
               per_page: 100,
             });
-            let notBefore = null;
-            try {
-              const { data: headCommit } = await github.rest.repos.getCommit({
-                ...context.repo,
-                ref: headSha,
-              });
-              notBefore =
-                headCommit.commit?.committer?.date ||
-                headCommit.commit?.author?.date ||
-                null;
-            } catch (err) {
-              core.warning(
-                `Could not load head commit time for ${headSha}: ${err.message || err}`,
-              );
-            }
+            // Use PR head-change time (updated_at), never commit author/committer
+            // dates — cherry-picks/rebases predate the push and would let a plain
+            // @codex for the previous head suppress re-request for this one.
+            const notBefore =
+              pr.updated_at ||
+              context.payload.pull_request?.updated_at ||
+              null;
             if (auto.shouldSkipExternalCodexRerequest({
               existingComments,
               headSha,
@@ -5226,21 +5218,13 @@ jobs:
                 per_page: 100,
               },
             );
-            let notBefore = null;
-            try {
-              const { data: headCommit } = await github.rest.repos.getCommit({
-                ...context.repo,
-                ref: pr.head.sha,
-              });
-              notBefore =
-                headCommit.commit?.committer?.date ||
-                headCommit.commit?.author?.date ||
-                null;
-            } catch (err) {
-              core.warning(
-                `Could not load head commit time for ${pr.head.sha}: ${err.message || err}`,
-              );
-            }
+            // Prefer PR updated_at (moves with synchronize) over commit author
+            // dates so cherry-picked/rebased SHAs cannot inherit pre-push plain
+            // @codex comments as a false same-head request.
+            const notBefore =
+              pr.updated_at ||
+              context.payload.pull_request?.updated_at ||
+              null;
             if (
               auto.shouldSkipExternalCodexRerequest({
                 existingComments: comments,
@@ -5393,22 +5377,10 @@ jobs:
               },
             );
             const forceRetry =
-              process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
-            let notBefore = null;
-            try {
-              const { data: headCommit } = await github.rest.repos.getCommit({
-                ...context.repo,
-                ref: pr.head.sha,
-              });
-              notBefore =
-                headCommit.commit?.committer?.date ||
-                headCommit.commit?.author?.date ||
-                null;
-            } catch (err) {
-              core.warning(
-                `Could not load head commit time for ${pr.head.sha}: ${err.message || err}`,
-              );
-            }
+              process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';            const notBefore =
+              pr.updated_at ||
+              context.payload.pull_request?.updated_at ||
+              null;
             if (
               !forceRetry &&
               auto.shouldSkipExternalCodexRerequest({

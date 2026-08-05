@@ -1842,18 +1842,18 @@ function isCodexRequestDedupeAuthor(login, { ownActors } = {}) {
  * - external marker, or
  * - cursor-codex-head pin matching headSha, or
  * - plain @codex review with no head pin, but only if the comment is known to
- *   be at/after the current head was pushed (`notBefore` / head commit time).
- *   Age-only plain matching is intentionally not used: a plain request from
- *   the previous head must not suppress re-request for a new synchronize.
+ *   be at/after this head became the PR tip (`notBefore` = PR updated_at /
+ *   push time, NOT commit author/committer dates — those predate cherry-picks).
  */
 function shouldSkipExternalCodexRerequest({
   existingComments = [],
   headSha,
   ownActors,
   /**
-   * ISO timestamp (or ms) of when the current head became current — typically
-   * the head commit author/committer date from the GitHub API. Required for
-   * plain unpinned @codex comments to count toward dedupe.
+   * ISO timestamp (or ms) of when the current head became the PR tip —
+   * typically pull_request.updated_at on synchronize. Required for plain
+   * unpinned @codex comments to count toward dedupe. Do not pass commit
+   * author/committer dates.
    */
   notBefore = null,
   /** Optional clock skew slack when comparing plain request created_at. */
