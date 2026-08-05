@@ -2111,12 +2111,13 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // Match sftpBridge.runFastPutOnChannel: only unlink planner-generated stages.
   const generatedStagePath = options.generatedStagePath === true;
   // flags may be a getter so afterPathGate can shrink the resume checkpoint and
-  // switch r+ → w before the actual OPEN (Codex P2).
+  // switch r+ → w before the actual OPEN (Codex P2). Resolve at OPEN/unlink time
+  // so a post-gate shrink from r+ → w still unlinks generated stages.
   const resolveFlags = () => (typeof flags === "function" ? flags() : flags);
   // ssh2 string flags: "r" is read-only; anything else can create/truncate.
   // Treat function flags as write opens (caller only uses r+/w for transfers).
   const isWriteOpen = typeof flags === "function" || String(flags ?? "r") !== "r";
-  const isTruncatingOpen = typeof flags !== "function" && String(flags ?? "r") === "w";
+  const isTruncatingOpenNow = () => String(resolveFlags() ?? "r") === "w";
   const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
   // Path-gate EVERY write open (shared and isolated, "w" and "r+"). An isolated
   // recovery OPEN must still wait for a stale shared truncating OPEN on the same
@@ -2124,10 +2125,6 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   const pathGate = isWriteOpen
     ? beginTruncatingSharedWriteOpen(filePath, sharedWriteOpenSessionKey(sftp, transfer))
     : null;
-  // Late truncating OPEN after settle (cancel or channel-error force-complete)
-  // must unlink generated stages so cleanup cannot leave a recreate orphan.
-  // In-place finals never unlink.
-  const shouldUnlinkLateGeneratedStage = generatedStagePath && isTruncatingOpen;
   // Re-check ownership at unlink time: a same-id retry may already own
   // activeTransfers. Only suppress unlink when the retry's *actual* staged
   // remote path matches this OPEN path. Do not infer ownership from
@@ -2136,8 +2133,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // destinations), and a stale late OPEN on a leftover .part must still unlink.
   // Compare in the same representation: OPEN filePath may be a session-encoded
   // Buffer while stagedRemote.path is the logical string.
+  // Truncating is re-resolved so getter flags that collapse to "w" still unlink.
   const canUnlinkLateGeneratedStageNow = () => {
-    if (!shouldUnlinkLateGeneratedStage) return false;
+    if (!generatedStagePath || !isTruncatingOpenNow()) return false;
     const transferId = transfer?.transferId;
     if (transferId == null || transferId === "") return true;
     const active = activeTransfers.get(transferId);
@@ -2151,33 +2149,45 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   };
 
   /**
-   * When a late truncating OPEN lands after a same-id retry already opened the
-   * same stage, the server may have wiped retry bytes. Fail the live attempt
-   * rather than allow a sparse promote (Codex P1 on 42a27ef7).
+   * When a late truncating OPEN lands after another attempt already opened the
+   * same stage/in-place path, the server may have wiped those bytes. Fail the
+   * live attempt rather than allow a sparse promote (Codex P1 on 42a27ef7 /
+   * cross-id same-path P1 on 2165).
    */
   const invalidateRetryStageIfStaleOpen = () => {
     // Truncating OPEN on either a generated stage or an in-place final can wipe
-    // a same-id retry that already accepted its own OPEN (Codex P1 on 709b27a1).
-    if (!isTruncatingOpen) return;
-    const transferId = transfer?.transferId;
-    if (transferId == null || transferId === "") return;
-    const active = activeTransfers.get(transferId);
-    if (!active || active === transfer) return;
-    const matchesStage = remoteOpenPathMatchesStaged(filePath, active.stagedRemote);
-    const matchesInPlace = !active.stagedRemote && (
-      remoteOpenPathMatchesStaged(filePath, {
-        path: active.targetPath,
-        sftpId: active.targetSftpId,
-        encoding: active.targetEncoding,
-      })
-      || String(filePath ?? "") === String(active.targetPath ?? "")
-    );
-    if (!matchesStage && !matchesInPlace) return;
-    // Only abort once the retry has accepted its own OPEN; otherwise the path
-    // gate is about to let the retry open cleanly after this late callback.
-    if (active.sharedWriteOpenAccepted !== true) return;
-    active.staleOpenTruncatedStage = true;
-    try { active.abort?.(); } catch { /* ignore */ }
+    // a concurrent same-path writer — same-id retry or a new transferId.
+    if (!isTruncatingOpenNow()) return;
+    const openHost = transfer?.targetHostId || transfer?.hostId || transfer?.sourceHostId;
+    for (const active of activeTransfers.values()) {
+      if (!active || active === transfer) continue;
+      const matchesStage = remoteOpenPathMatchesStaged(filePath, active.stagedRemote);
+      const matchesInPlace = !active.stagedRemote && (
+        remoteOpenPathMatchesStaged(filePath, {
+          path: active.targetPath,
+          sftpId: active.targetSftpId,
+          encoding: active.targetEncoding,
+        })
+        || String(filePath ?? "") === String(active.targetPath ?? "")
+      );
+      if (!matchesStage && !matchesInPlace) continue;
+      const activeHost = active.targetHostId || active.hostId || active.sourceHostId;
+      if (
+        openHost != null && String(openHost).length > 0
+        && activeHost != null && String(activeHost).length > 0
+        && String(openHost) !== String(activeHost)
+      ) {
+        continue;
+      }
+      active.staleOpenTruncatedStage = true;
+      // Not yet accepted OPEN: shrink checkpoint so afterPathGate / r+ restart
+      // from zero instead of writing a sparse prefix into a wiped stage.
+      if (active.sharedWriteOpenAccepted !== true) {
+        try { active.checkpointBytes = 0; } catch { /* ignore */ }
+        continue;
+      }
+      try { active.abort?.(); } catch { /* ignore */ }
+    }
   };
 
   let resolveSharedWriteDrain = null;
@@ -2218,8 +2228,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // timeout). Force-complete the drain so cleanup/lease cannot hang, but
     // NEVER release the path gate here: a still-in-flight truncating OPEN can
     // land later and wipe a same-path retry that already wrote (Codex P1 on
-    // a0b2ce01). Gate is only released from the OPEN callback paths
-    // (success, error, late finishLateSharedWriteOpen).
+    // a0b2ce01 / late-unlink-retry). Gate is only released from the OPEN
+    // callback paths (success, error, late finishLateSharedWriteOpen).
     const armSharedWriteDrainForceComplete = () => {
       if (!trackSharedWriteDrain || !resolveSharedWriteDrain || drainForceTimer) return;
       drainForceTimer = setTimeout(() => {
@@ -2231,14 +2241,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }, 2000);
     };
 
-    // Best-effort remote unlink with a hard bound. A dead shared channel that
-    // never invokes the unlink callback must not pin finishCancel / drain
-    // settle forever (lease + admission slot hang). Same 2s grace as the
-    // shared-write drain force-complete.
-    // Unlink without a local timeout so the path gate stays held until the
-    // server callback (or sync throw). A 2s force-resolve let retries write a
-    // deterministic stage while a delayed unlink could still delete it
-    // (Codex P2 on 0ee64386).
+    // Best-effort remote unlink. A dead shared channel that never invokes the
+    // unlink callback is bounded by boundUnlinkThen so finishCancel / gate
+    // release cannot hang the transfer or same-path waiters (Codex P2 hang).
     const unlinkSharedWritePathBestEffort = () => new Promise((resolveUnlink) => {
       let settledUnlink = false;
       const finishUnlink = () => {
@@ -2262,6 +2267,20 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }
     });
 
+    /** Unlink with 2s bound so a dead channel cannot pin settle/gate forever. */
+    const boundUnlinkThen = (thenFn) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        thenFn();
+      };
+      const timer = setTimeout(finish, 2000);
+      unlinkSharedWritePathBestEffort().then(
+        () => { clearTimeout(timer); finish(); },
+        () => { clearTimeout(timer); finish(); },
+      );
+    };
 
     /** Close with 2s bound so a dead channel cannot pin the path gate. */
     const boundCloseSftpHandle = (handle, thenFn) => {
@@ -2284,8 +2303,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // (Codex P2 on 0cda4a39 / cd57d960 / bd42c51c). Never unlink in-place
     // final targets (Codex P1 on a9f748c8). Skip unlink only when a same-id
     // retry owns a reusable resume stage at this path (Codex P2 on d19ecb88).
-    // Bound close so a dead channel that never invokes CLOSE cannot pin the
-    // path gate forever after drain force-complete (Codex P2 on 1a8cac20).
+    // Bound close/unlink so a dead channel cannot pin the path gate forever
+    // after drain force-complete (Codex P2 on 1a8cac20).
     const finishLateSharedWriteOpen = (handle) => {
       invalidateRetryStageIfStaleOpen();
       const afterClose = () => {
@@ -2294,7 +2313,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           releasePathGate();
         };
         if (canUnlinkLateGeneratedStageNow()) {
-          unlinkSharedWritePathBestEffort().then(finish, finish);
+          boundUnlinkThen(finish);
           return;
         }
         finish();
@@ -2423,10 +2442,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             // already raced. In-place finals are close-only. Same-id retries
             // that re-own activeTransfers skip unlink (resume stage reuse).
             if (canUnlinkLateGeneratedStageNow()) {
-              // Bound close so a dead channel cannot pin the path gate forever
-              // when cancel wins before settle (Codex P2 on e6dfdc9e).
+              // Bound close + unlink so a dead channel cannot pin settle/gate
+              // when cancel wins before settle (Codex P2 on e6dfdc9e / hang).
               boundCloseSftpHandle(handle, () => {
-                unlinkSharedWritePathBestEffort().then(finishCancel, finishCancel);
+                boundUnlinkThen(finishCancel);
               });
               return;
             }
@@ -3401,8 +3420,18 @@ async function uploadFileConcurrent(
         abortChannel,
         generatedStagePath,
         afterPathGate: async () => {
+          // A late stale OPEN may have zeroed the stage while we waited; force
+          // a full rewrite rather than sparse r+ from an obsolete offset.
+          if (transfer.staleOpenTruncatedStage) {
+            checkpoint = 0;
+            transfer.checkpointBytes = 0;
+            try {
+              sendProgress(0, fileSize, { force: true, checkpointBytes: 0 });
+            } catch { /* best-effort */ }
+            return;
+          }
           // Re-read durable stage size after waiting; a prior OPEN "w" may have
-          // truncated the file while we were queued (Codex P2).
+          // truncated the file while we were queued (Codex P2 / P1 on 2178).
           if (checkpoint <= 0 || !transfer.stagedRemote) return;
           try {
             const staged = transfer.stagedRemote;
