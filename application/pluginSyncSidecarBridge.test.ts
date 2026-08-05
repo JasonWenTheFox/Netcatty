@@ -38,7 +38,7 @@ test.beforeEach(() => {
   delete (globalThis as { window?: unknown }).window;
 });
 
-test('collect defers empty last-known so empty-vault guard still sees a reset', async () => {
+test('collect defers empty last-known until commit (empty-vault guard ignores last-known alone)', async () => {
   localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, {
     version: 1,
     entries: [{
@@ -60,7 +60,8 @@ test('collect defers empty last-known so empty-vault guard still sees a reset', 
   const collected = await collectPluginSyncSidecarsFromHost();
   assert.deepEqual(collected, { version: 1, entries: [] });
 
-  // Last-known must still hold prior entries for the guard.
+  // Last-known still holds prior entries until commit, but that alone must not
+  // bypass the empty-vault upload guard.
   const lastKnown = localStorageAdapter.read<{ entries: unknown[] }>(
     SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
   );
@@ -76,7 +77,7 @@ test('collect defers empty last-known so empty-vault guard still sees a reset', 
       syncedAt: 1,
       pluginSidecars: { version: 1, entries: [] },
     }),
-    true,
+    false,
   );
 
   commitPluginSidecarsLastKnown({ version: 1, entries: [] });
@@ -84,16 +85,102 @@ test('collect defers empty last-known so empty-vault guard still sees a reset', 
     SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
   );
   assert.deepEqual(committed?.entries, []);
-  assert.equal(
-    hasMeaningfulCloudSyncData({
-      hosts: [],
-      keys: [],
-      identities: [],
-      snippets: [],
-      customGroups: [],
-      syncedAt: 1,
-      pluginSidecars: { version: 1, entries: [] },
-    }),
-    false,
+});
+
+test('liveOnly collect returns null instead of last-known when host is gated off', async () => {
+  localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, {
+    version: 1,
+    entries: [{
+      pluginId: 'com.example.p',
+      kind: 'settings',
+      key: 'k',
+      value: 1,
+      updatedAt: 1,
+    }],
+  });
+  (globalThis as { window: unknown }).window = {
+    netcatty: {
+      async collectPluginSyncSidecars() {
+        return null;
+      },
+    },
+  };
+
+  assert.equal(await collectPluginSyncSidecarsFromHost({ liveOnly: true }), null);
+  const fallback = await collectPluginSyncSidecarsFromHost();
+  assert.equal(fallback?.entries?.length, 1);
+});
+
+test('liveOnly collect omits pending remote when replay cannot apply', async () => {
+  localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_PENDING_REMOTE, {
+    version: 1,
+    entries: [{
+      pluginId: 'com.example.remote',
+      kind: 'settings',
+      key: 'k',
+      value: 'remote',
+      updatedAt: 2,
+    }],
+  });
+  (globalThis as { window: unknown }).window = {
+    netcatty: {
+      async collectPluginSyncSidecars() {
+        return { version: 1, entries: [] };
+      },
+      // no applyPluginSyncSidecars → pending cannot replay
+    },
+  };
+
+  assert.equal(await collectPluginSyncSidecarsFromHost({ liveOnly: true }), null);
+  const uploadPath = await collectPluginSyncSidecarsFromHost();
+  assert.equal(uploadPath?.entries?.[0]?.value, 'remote');
+});
+
+test('commitPluginSidecarsAfterSuccessfulSync prefers merged payload sidecars', async () => {
+  const { commitPluginSidecarsAfterSuccessfulSync } = await import('./pluginSyncSidecarBridge.ts');
+  localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, {
+    version: 1,
+    entries: [{
+      pluginId: 'com.example.old',
+      kind: 'settings',
+      key: 'k',
+      value: 'old',
+      updatedAt: 1,
+    }],
+  });
+
+  commitPluginSidecarsAfterSuccessfulSync(
+    {
+      pluginSidecars: {
+        version: 1,
+        entries: [{
+          pluginId: 'com.example.local',
+          kind: 'settings',
+          key: 'k',
+          value: 'local',
+          updatedAt: 2,
+        }],
+      },
+    },
+    [{
+      success: true,
+      mergedPayload: {
+        pluginSidecars: {
+          version: 1,
+          entries: [{
+            pluginId: 'com.example.merged',
+            kind: 'settings',
+            key: 'k',
+            value: 'merged',
+            updatedAt: 3,
+          }],
+        },
+      },
+    }],
   );
+
+  const committed = localStorageAdapter.read<{ entries: Array<{ value: string }> }>(
+    SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
+  );
+  assert.equal(committed?.entries?.[0]?.value, 'merged');
 });

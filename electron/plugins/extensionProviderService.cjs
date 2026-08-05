@@ -38,19 +38,26 @@ const MAX_IMPORT_BYTES = importerLimits.maxInputBytes;
 const MAX_IMPORT_OUTPUT_BYTES = importerLimits.maxOutputBytes;
 const MAX_IMPORT_RECORDS = importerLimits.maxRecords;
 const MAX_IMPORT_RECORD_BYTES = importerLimits.maxRecordBytes;
+const SYNC_SECRET_CONFIG_KEYS = new Set(["password", "token", "secret", "apiKey", "accessToken"]);
+
+/** Drop known secret field names from required[] so stripped sync configs still validate. */
+function schemaWithoutSyncSecretRequirements(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  if (!Array.isArray(schema.required)) return schema;
+  const required = schema.required.filter((name) => !SYNC_SECRET_CONFIG_KEYS.has(name));
+  if (required.length === schema.required.length) return schema;
+  return { ...schema, required };
+}
 const syncLimits = pluginContractSchema.$defs.SyncLimits.const;
 const MAX_SYNC_OBJECT_BYTES = syncLimits.maxObjectBytes;
 const MAX_SYNC_OBJECT_KEY_LENGTH = syncLimits.maxObjectKeyLength;
 const MAX_SYNC_REVISION_LENGTH = syncLimits.maxRevisionLength;
 const INLINE_SYNC_OBJECT_BYTES = syncLimits.inlineObjectBytes;
-// Base64 expands ~4/3 and the invoke envelope still needs headroom under the
-// 128 KiB provider JSON budget. Prefer streaming below the contract max; the
-// public inlineObjectBytes remains the schema authority for stream decisions,
-// while this safe cutoff prevents control-plane overflow on base64 inline reads.
-const INLINE_SYNC_OBJECT_SAFE_BYTES = Math.min(
-  INLINE_SYNC_OBJECT_BYTES,
-  Math.floor((120 * 1024 * 3) / 4),
-);
+// inlineObjectBytes is sized to fit under the 128 KiB provider JSON budget after
+// base64 expansion (~4/3) with envelope headroom. Keep the runtime cutoff equal
+// to the public SyncLimits constant so plugins that honor the schema are not
+// rejected with dataLoss in the 90–96 KiB window.
+const INLINE_SYNC_OBJECT_SAFE_BYTES = INLINE_SYNC_OBJECT_BYTES;
 const definitionValidators = Object.freeze({
   AuthenticationResult: createDefinitionValidator("AuthenticationResult"),
   ConnectionOpenResult: createDefinitionValidator("ConnectionOpenResult"),
@@ -494,7 +501,10 @@ class PluginExtensionProviderService {
     const configuration = request.payload?.configuration;
     if (activation.provider.configurationSchema !== undefined && configuration !== undefined) {
       try {
-        compileRestrictedJsonSchema(activation.provider.configurationSchema)(configuration);
+        const schema = kind === "sync"
+          ? schemaWithoutSyncSecretRequirements(activation.provider.configurationSchema)
+          : activation.provider.configurationSchema;
+        compileRestrictedJsonSchema(schema)(configuration);
       } catch (error) {
         throw invalidArgument(`Provider configuration failed host schema validation: ${error?.message ?? error}`);
       }
@@ -1335,6 +1345,7 @@ module.exports = {
   DEFAULT_DEADLINE_MS,
   EXTENSION_PROVIDER_KINDS,
   INLINE_SYNC_OBJECT_BYTES,
+  INLINE_SYNC_OBJECT_SAFE_BYTES,
   MAX_IMPORT_BYTES,
   MAX_IMPORT_RECORDS,
   MAX_SYNC_OBJECT_BYTES,

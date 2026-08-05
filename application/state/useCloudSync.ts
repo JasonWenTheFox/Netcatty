@@ -59,6 +59,7 @@ interface CloudSyncRunOptions {
   overrideShrink?: boolean;
   conflictActionOverride?: CloudSyncConflictAction;
   applyConvergentPayload?: ConvergentPayloadApplier;
+  signal?: AbortSignal;
 }
 
 export interface CloudSyncHook {
@@ -130,7 +131,7 @@ export interface CloudSyncHook {
   syncToProvider: (
     provider: CloudProvider,
     payload: SyncPayload,
-    opts?: Pick<CloudSyncRunOptions, 'overrideShrink' | 'applyConvergentPayload'>,
+    opts?: Pick<CloudSyncRunOptions, 'overrideShrink' | 'applyConvergentPayload' | 'signal'>,
   ) => Promise<SyncResult>;
   downloadFromProvider: (provider: CloudProvider) => Promise<RemoteSyncPayload | null>;
   commitRemoteInspection: (provider: CloudProvider, remoteFile: SyncedFile, payload: SyncPayload, opts?: { recordDownload?: boolean }) => Promise<void>;
@@ -785,16 +786,48 @@ export const useCloudSync = (): CloudSyncHook => {
 
   const syncNowWithUnlock = useCallback(async (payload: SyncPayload, opts?: CloudSyncRunOptions) => {
     await ensureUnlocked();
-    return await manager.syncAllProviders(payload, opts);
+    const controller = new AbortController();
+    let onAbort: (() => void) | undefined;
+    if (opts?.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else {
+        onAbort = () => controller.abort();
+        opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+    try {
+      const results = await manager.syncAllProviders(payload, { ...opts, signal: controller.signal });
+      const { commitPluginSidecarsAfterSuccessfulSync } = await import('../pluginSyncSidecarBridge');
+      commitPluginSidecarsAfterSuccessfulSync(payload, results.values());
+      return results;
+    } finally {
+      if (opts?.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
+    }
   }, [ensureUnlocked]);
 
   const syncToProviderWithUnlock = useCallback(async (
     provider: CloudProvider,
     payload: SyncPayload,
-    opts?: Pick<CloudSyncRunOptions, 'overrideShrink' | 'applyConvergentPayload'>,
+    opts?: Pick<CloudSyncRunOptions, 'overrideShrink' | 'applyConvergentPayload' | 'signal'>,
   ) => {
     await ensureUnlocked();
-    return await manager.syncToProvider(provider, payload, opts);
+    const controller = new AbortController();
+    let onAbort: (() => void) | undefined;
+    if (opts?.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else {
+        onAbort = () => controller.abort();
+        opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+    try {
+      const result = await manager.syncToProvider(provider, payload, { ...opts, signal: controller.signal });
+      const { commitPluginSidecarsAfterSuccessfulSync } = await import('../pluginSyncSidecarBridge');
+      commitPluginSidecarsAfterSuccessfulSync(payload, [result]);
+      return result;
+    } finally {
+      if (opts?.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
+    }
   }, [ensureUnlocked]);
 
   const downloadFromProviderWithUnlock = useCallback(async (provider: CloudProvider) => {
@@ -838,14 +871,16 @@ export const useCloudSync = (): CloudSyncHook => {
     await ensureUnlocked();
     // Collect live sidecars so conflict apply/upload does not revert plugin
     // settings that changed after the last provider baseline. Operational
-    // collection failures must abort (not proceed as empty).
+    // collection failures must abort (not proceed as empty). Host gated off /
+    // non-authoritative collect must omit the field (not last-known cache) so
+    // apply preserves local DB sidecars.
     const {
       collectPluginSyncSidecarsFromHost,
       isPluginSidecarHostUnavailableError,
     } = await import('../pluginSyncSidecarBridge');
     let pluginSidecars: SyncPayload['pluginSidecars'] | undefined;
     try {
-      const collected = await collectPluginSyncSidecarsFromHost();
+      const collected = await collectPluginSyncSidecarsFromHost({ liveOnly: true });
       if (collected) pluginSidecars = collected;
     } catch (error) {
       if (isPluginSidecarHostUnavailableError(error)) {

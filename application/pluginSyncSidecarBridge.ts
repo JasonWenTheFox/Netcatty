@@ -144,10 +144,18 @@ function isSuccessfulApplyResult(result: unknown): boolean {
  * the DB before collection. Ordinary last-known collect snapshots are never
  * re-applied, so local settings edits made after the last collect are kept.
  */
-export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSidecarBundle | null> {
+export async function collectPluginSyncSidecarsFromHost(options?: {
+  /**
+   * When true, never fall back to last-known cache. Returns null if the host is
+   * gated off / non-authoritative so callers can omit `pluginSidecars` instead
+   * of applying a stale cache snapshot (e.g. convergent conflict materialize).
+   */
+  liveOnly?: boolean;
+} = {}): Promise<PluginSyncSidecarBundle | null> {
+  const liveOnly = options.liveOnly === true;
   const api = getSidecarApi();
   if (typeof api?.collectPluginSyncSidecars !== 'function') {
-    return readLastKnownSidecars();
+    return liveOnly ? null : readLastKnownSidecars();
   }
 
   const pendingRemote = readPendingRemoteSidecars();
@@ -155,28 +163,29 @@ export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSid
     try {
       const replayResult = await api.applyPluginSyncSidecars(pendingRemote);
       if (!isSuccessfulApplyResult(replayResult)) {
-        // Do not collect a live (stale) local bundle that could overwrite the
-        // authoritative remote state still waiting to be applied.
-        return pendingRemote;
+        // Upload path: keep returning pending so we do not push stale local
+        // over an authoritative remote still waiting to apply.
+        // liveOnly (conflict materialize): omit instead of attaching the queue.
+        return liveOnly ? null : pendingRemote;
       }
       clearPendingRemoteSidecars();
     } catch (error) {
       // Operational failure: keep pending and surface so upload aborts.
-      // Host-unavailable during replay: return pending as the safest payload.
+      // Host-unavailable during replay: upload keeps pending; liveOnly omits.
       if (isPluginSidecarHostUnavailableError(error)) {
-        return pendingRemote;
+        return liveOnly ? null : pendingRemote;
       }
       throw error;
     }
   } else if (pendingRemote && typeof api.applyPluginSyncSidecars !== 'function') {
-    return pendingRemote;
+    return liveOnly ? null : pendingRemote;
   }
 
   const bundle = await api.collectPluginSyncSidecars();
   // Passive/null means the plugin host is gated off or manager resolution failed.
   // Do not treat that as an authoritative empty bundle (would wipe last-known).
   if (bundle == null || !isAuthoritativeBundle(bundle)) {
-    return readLastKnownSidecars();
+    return liveOnly ? null : readLastKnownSidecars();
   }
   const normalized: PluginSyncSidecarBundle = {
     version: 1,
@@ -207,6 +216,45 @@ export function commitPluginSidecarsLastKnown(
     return;
   }
   writeLastKnownSidecars({ version: 1, entries: bundle.entries });
+}
+
+/**
+ * After a successful cloud upload/download round-trip, finalize the deferred
+ * last-known sidecar cache. Prefer merged/downloaded payload sidecars when
+ * present so we do not overwrite a remote apply with the pre-sync local collect.
+ */
+export function commitPluginSidecarsAfterSuccessfulSync(
+  payload: { pluginSidecars?: PluginSyncSidecarBundle | null },
+  results: Iterable<{
+    success?: boolean;
+    mergedPayload?: { pluginSidecars?: PluginSyncSidecarBundle | null } | null;
+  }>,
+): void {
+  const resultList = Array.from(results);
+  if (!resultList.some((result) => result.success === true)) return;
+
+  let commitSidecars: PluginSyncSidecarBundle | undefined;
+  if (Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
+    commitSidecars = {
+      version: 1,
+      entries: Array.isArray(payload.pluginSidecars?.entries) ? payload.pluginSidecars.entries : [],
+    };
+  }
+  for (const result of resultList) {
+    if (
+      result.mergedPayload
+      && Object.prototype.hasOwnProperty.call(result.mergedPayload, 'pluginSidecars')
+    ) {
+      commitSidecars = {
+        version: 1,
+        entries: Array.isArray(result.mergedPayload.pluginSidecars?.entries)
+          ? result.mergedPayload.pluginSidecars.entries
+          : [],
+      };
+      break;
+    }
+  }
+  if (commitSidecars) commitPluginSidecarsLastKnown(commitSidecars);
 }
 
 export async function applyPluginSyncSidecarsFromHost(

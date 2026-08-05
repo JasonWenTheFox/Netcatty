@@ -123,33 +123,16 @@ export interface SyncableVaultData {
 }
 
 /**
- * Returns true when the payload carries plugin sidecar data worth syncing.
- * Non-empty entries always count. An explicit empty bundle is only meaningful
- * when last-known previously held entries (a real reset to push) — otherwise
- * ordinary `{entries:[]}` collects from an empty plugin host would bypass the
- * empty-vault upload guard.
+ * Returns true when the payload carries non-empty plugin sidecar entries.
  *
- * Collect deliberately keeps a prior non-empty last-known when returning an
- * empty bundle, so this check still sees the reset evidence before upload;
- * commitPluginSidecarsLastKnown() clears it after a successful sync.
+ * An explicit empty `{entries:[]}` bundle is intentionally NOT treated as
+ * meaningful by itself — last-known cache alone must not authorize pushing a
+ * wiped hosts/keys vault to cloud (empty-vault upload guard). Sidecar-only
+ * wipes still sync when the vault also has entities/settings, or via Force Push.
  */
 function hasMeaningfulPluginSidecars(payload: SyncPayload): boolean {
-  if (
-    !payload.pluginSidecars
-    || !Array.isArray(payload.pluginSidecars.entries)
-  ) {
-    return false;
-  }
-  if (payload.pluginSidecars.entries.length > 0) return true;
-  if (!Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) return false;
-  try {
-    const lastKnown = localStorageAdapter.read<{ entries?: unknown[] }>(
-      SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
-    );
-    return Array.isArray(lastKnown?.entries) && lastKnown.entries.length > 0;
-  } catch {
-    return false;
-  }
+  return Array.isArray(payload.pluginSidecars?.entries)
+    && payload.pluginSidecars.entries.length > 0;
 }
 
 /**
@@ -1050,7 +1033,18 @@ export async function buildLocalVaultPayloadAsync(
   } = await import('./pluginSyncSidecarBridge');
   try {
     const live = await collectPluginSyncSidecarsFromHost();
-    if (live) return withPluginSyncSidecars(base, live);
+    if (live) {
+      // Live collect may return authoritative-empty while still deferring the
+      // last-known cache wipe until a successful sync commit. Protective
+      // backups must keep the non-empty last-known already attached to `base`.
+      const liveEmpty = !Array.isArray(live.entries) || live.entries.length === 0;
+      const baseHasEntries = Array.isArray(base.pluginSidecars?.entries)
+        && base.pluginSidecars.entries.length > 0;
+      if (liveEmpty && baseHasEntries) {
+        return base;
+      }
+      return withPluginSyncSidecars(base, live);
+    }
   } catch (error) {
     // Only fall back to last-known when the host is gated off. Operational
     // failures must abort protective backups so we never apply over data that

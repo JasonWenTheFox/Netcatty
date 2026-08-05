@@ -169,7 +169,9 @@ export async function uploadToProviderImpl(this: any,
 ): Promise<SyncResult> {
     try {
       assertSyncSecurityGeneration(this, syncSecurityGeneration);
-      const resourceId = await adapter.upload(syncedFile);
+      const resourceId = await adapter.upload(syncedFile, {
+        signal: this.activeSyncAbortSignal,
+      });
       assertSyncSecurityGeneration(this, syncSecurityGeneration);
       this.state.lastError = null;
 
@@ -581,7 +583,9 @@ export async function downloadFromProviderImpl(this: any,provider: CloudProvider
     try {
       let remoteFile: SyncedFile | null;
       try {
-        remoteFile = await adapter.download();
+        remoteFile = await adapter.download({
+          signal: this.activeSyncAbortSignal,
+        });
       } catch (downloadError) {
         throw new Error(`Download failed: ${downloadError instanceof Error ? downloadError.message : String(downloadError)}`);
       }

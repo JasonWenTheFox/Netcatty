@@ -98,10 +98,11 @@ export function cloudAdapterAsEncryptedObjectStorage(
         throw new Error(`Cloud adapter ${providerId} only supports object key ${objectKey}`);
       }
       const syncedFile = bytesToSyncedFile(bytes);
-      const created = !(await adapter.download());
+      // Skip a pre-upload GET for `created`. The single-object vault path does not
+      // consume that flag, and WebDAV already pays for pad+verify inside upload.
       await adapter.upload(syncedFile);
       return {
-        created,
+        created: false,
         revision: syncedFile.meta?.version != null ? String(syncedFile.meta.version) : undefined,
       };
     },
@@ -148,6 +149,12 @@ export function encryptedObjectStorageAsCloudAdapter(
      * restart/replace while the CloudAdapter cache stays alive.
      */
     rebindSession?: boolean;
+    /**
+     * When true, skip the host full-byte re-read after writeObject. Use only when
+     * the backing storage already performs Netcatty-grade write verification
+     * (WebDAV pad+verify). Plugin providers keep host-owned verify.
+     */
+    assumeVerifiedWrites?: boolean;
   } = {},
 ): CloudAdapter {
   const objectKey = options.objectKey ?? DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY;
@@ -229,7 +236,7 @@ export function encryptedObjectStorageAsCloudAdapter(
         throw error;
       }
     },
-    async upload(syncedFile: SyncedFile): Promise<string> {
+    async upload(syncedFile: SyncedFile, uploadOptions?: { signal?: AbortSignal }): Promise<string> {
       try {
         await ensureConnected();
         const bytes = syncedFileToBytes(syncedFile);
@@ -241,31 +248,48 @@ export function encryptedObjectStorageAsCloudAdapter(
             `Encrypted object exceeds provider maxObjectBytes (${capabilities.maxObjectBytes})`,
           );
         }
+        if (
+          capabilities?.maxObjects != null
+          && capabilities.maxObjects < 1
+        ) {
+          throw new Error(
+            `Encrypted object provider reports maxObjects < 1 (${capabilities.maxObjects})`,
+          );
+        }
         const conditional = capabilities?.conditionalWrites === true;
         const writeResult = await storage.writeObject(objectKey, bytes, {
           ...(conditional && lastRevision !== undefined
             ? { expectedRevision: lastRevision }
             : {}),
+          signal: uploadOptions?.signal,
         });
-        // Host-owned write verification: re-read and compare ciphertext bytes.
-        const verified = await storage.readObject(objectKey);
-        if (!verified.found || !verified.bytes) {
-          throw new Error('Encrypted object write verification failed: object missing after write');
-        }
-        if (verified.bytes.byteLength !== bytes.byteLength) {
-          throw new Error('Encrypted object write verification failed: size mismatch');
-        }
-        for (let i = 0; i < bytes.byteLength; i += 1) {
-          if (verified.bytes[i] !== bytes[i]) {
-            throw new Error('Encrypted object write verification failed: content mismatch');
+        if (options.assumeVerifiedWrites === true) {
+          // Backing adapter already verified (e.g. WebDAV pad+verify). Still honor
+          // maxObjectBytes above and refresh revision from the write result.
+          if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
+            lastRevision = writeResult.revision;
           }
-        }
-        if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
-          lastRevision = writeResult.revision;
-        } else if (typeof verified.revision === 'string' && verified.revision.length > 0) {
-          lastRevision = verified.revision;
         } else {
-          lastRevision = undefined;
+          // Host-owned write verification: re-read and compare ciphertext bytes.
+          const verified = await storage.readObject(objectKey, { signal: uploadOptions?.signal });
+          if (!verified.found || !verified.bytes) {
+            throw new Error('Encrypted object write verification failed: object missing after write');
+          }
+          if (verified.bytes.byteLength !== bytes.byteLength) {
+            throw new Error('Encrypted object write verification failed: size mismatch');
+          }
+          for (let i = 0; i < bytes.byteLength; i += 1) {
+            if (verified.bytes[i] !== bytes[i]) {
+              throw new Error('Encrypted object write verification failed: content mismatch');
+            }
+          }
+          if (typeof writeResult.revision === 'string' && writeResult.revision.length > 0) {
+            lastRevision = writeResult.revision;
+          } else if (typeof verified.revision === 'string' && verified.revision.length > 0) {
+            lastRevision = verified.revision;
+          } else {
+            lastRevision = undefined;
+          }
         }
         authenticated = true;
         return refreshResourceId(objectKey) ?? objectKey;
@@ -274,10 +298,10 @@ export function encryptedObjectStorageAsCloudAdapter(
         throw error;
       }
     },
-    async download(): Promise<SyncedFile | null> {
+    async download(downloadOptions?: { signal?: AbortSignal }): Promise<SyncedFile | null> {
       try {
         await ensureConnected();
-        const result = await storage.readObject(objectKey);
+        const result = await storage.readObject(objectKey, { signal: downloadOptions?.signal });
         if (!result.found || !result.bytes) {
           // Confirmed absence: next conditional write must use expectedRevision null.
           lastRevision = null;
@@ -294,11 +318,12 @@ export function encryptedObjectStorageAsCloudAdapter(
         throw error;
       }
     },
-    async deleteSync(): Promise<void> {
+    async deleteSync(deleteOptions?: { signal?: AbortSignal }): Promise<void> {
       try {
         await ensureConnected();
         await storage.deleteObject(objectKey, {
           ...(typeof lastRevision === 'string' ? { expectedRevision: lastRevision } : {}),
+          signal: deleteOptions?.signal,
         });
         lastRevision = null;
       } catch (error) {

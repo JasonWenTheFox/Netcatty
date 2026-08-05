@@ -28,9 +28,9 @@ export interface CloudAdapter {
   
   signOut(): void;
   initializeSync(): Promise<string | null>;
-  upload(syncedFile: SyncedFile): Promise<string>;
-  download(): Promise<SyncedFile | null>;
-  deleteSync(): Promise<void>;
+  upload(syncedFile: SyncedFile, options?: { signal?: AbortSignal }): Promise<string>;
+  download(options?: { signal?: AbortSignal }): Promise<SyncedFile | null>;
+  deleteSync(options?: { signal?: AbortSignal }): Promise<void>;
   getTokens(): OAuthTokens | null;
 }
 
@@ -79,6 +79,9 @@ export const createAdapter = async (
         // Preserve constructor/persisted resourceId; refresh from raw after connect.
         resourceId: raw.resourceId ?? resourceId ?? null,
         resolveResourceId: () => raw.resourceId,
+        // WebDAVAdapter.upload already performs pad + strict body verify; skip the
+        // shared bridge's second full re-read to avoid write amplification.
+        assumeVerifiedWrites: true,
       });
     }
     case 's3': {

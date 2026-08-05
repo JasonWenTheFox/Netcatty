@@ -234,6 +234,8 @@ export class CloudSyncManager {
   private providerWriteSeq: Record<CloudProvider, number> = {
     github: 0, google: 0, onedrive: 0, webdav: 0, s3: 0,
   };
+  /** Optional abort signal for the in-flight syncNow / convergent upload path. */
+  activeSyncAbortSignal: AbortSignal | undefined;
 
   constructor() {
     this.state = this.loadInitialState();
@@ -715,9 +717,16 @@ export class CloudSyncManager {
         payload: SyncPayload,
         commitReplica: () => Promise<void>,
       ) => Promise<void>;
+      signal?: AbortSignal;
     } = {},
   ): Promise<SyncResult> {
-    return syncToProviderImpl.call(this, provider, payload, opts);
+    const previous = this.activeSyncAbortSignal;
+    this.activeSyncAbortSignal = opts.signal;
+    try {
+      return await syncToProviderImpl.call(this, provider, payload, opts);
+    } finally {
+      this.activeSyncAbortSignal = previous;
+    }
   }
 
   /**
@@ -813,9 +822,16 @@ export class CloudSyncManager {
         payload: SyncPayload,
         commitReplica: () => Promise<void>,
       ) => Promise<void>;
+      signal?: AbortSignal;
     } = {},
   ): Promise<Map<CloudProvider, SyncResult>> {
-    return syncAllProvidersImpl.call(this, inputPayload, opts);
+    const previous = this.activeSyncAbortSignal;
+    this.activeSyncAbortSignal = opts.signal;
+    try {
+      return await syncAllProvidersImpl.call(this, inputPayload, opts);
+    } finally {
+      this.activeSyncAbortSignal = previous;
+    }
   }
 
   // ==========================================================================

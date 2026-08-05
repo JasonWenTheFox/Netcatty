@@ -111,13 +111,18 @@ class PluginSyncSidecarService {
     const remoteKeys = new Set(
       remoteEntries.map((entry) => `${entry.pluginId}\0${entry.kind}\0${entry.key}`),
     );
-    const preservedLocal = remoteIsAuthoritativeEmpty
-      ? []
-      : local.filter((entry) => {
-        if (declared.has(entry.pluginId)) return false; // installed: remote wins
-        if (remotePluginIds.has(entry.pluginId)) return false;
+    // Settings: remote is authoritative for installed plugins and for missing
+    // plugins mentioned in the remote bundle. Baselines (account/crdt) always
+    // enter merge so domain LWW can compare local vs remote; orphans survive.
+    const preservedLocal = local.filter((entry) => {
+      if (entry.kind !== "settings") {
         return true;
-      });
+      }
+      if (remoteIsAuthoritativeEmpty) return false;
+      if (declared.has(entry.pluginId)) return false; // installed: remote wins
+      if (remotePluginIds.has(entry.pluginId)) return false;
+      return true;
+    });
     const merged = mergePluginSyncSidecars({
       local: preservedLocal,
       remote: { version: 1, entries: remoteEntries },

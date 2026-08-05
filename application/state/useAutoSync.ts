@@ -31,7 +31,7 @@ import {
   sanitizePortForwardingRulesForSync,
   shouldPromptCloudVaultRecovery,
 } from '../syncPayload';
-import { commitPluginSidecarsLastKnown } from '../pluginSyncSidecarBridge';
+import { commitPluginSidecarsAfterSuccessfulSync } from '../pluginSyncSidecarBridge';
 import { readInterruptedVaultApply } from '../localVaultBackups';
 import {
   STORAGE_KEY_VAULT_RESTORE_IN_PROGRESS_UNTIL,
@@ -383,8 +383,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         throw new Error(t('sync.autoSync.vaultLocked'));
       }
 
-      const dataHash = await getDataHash();
       const payload = await buildPayload();
+      const dataHash = getSyncPayloadDataHash(payload);
       const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(payload);
       if (
         encryptedCredentialPaths.length > 0
@@ -458,33 +458,9 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         }
       }
 
-      // Commit sidecar last-known after a successful sync. Prefer the applied
-      // merged/downloaded payload when present so we do not overwrite a remote
-      // apply cache with the pre-sync local collect.
-      let commitSidecars: { version: 1; entries: NonNullable<SyncPayload['pluginSidecars']>['entries'] } | undefined;
-      if (Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
-        commitSidecars = {
-          version: 1,
-          entries: Array.isArray(payload.pluginSidecars?.entries) ? payload.pluginSidecars.entries : [],
-        };
-      }
-      for (const result of resultList) {
-        if (
-          result.mergedPayload
-          && Object.prototype.hasOwnProperty.call(result.mergedPayload, 'pluginSidecars')
-        ) {
-          commitSidecars = {
-            version: 1,
-            entries: Array.isArray(result.mergedPayload.pluginSidecars?.entries)
-              ? result.mergedPayload.pluginSidecars.entries
-              : [],
-          };
-          break;
-        }
-      }
-      if (commitSidecars) {
-        commitPluginSidecarsLastKnown(commitSidecars);
-      }
+      // Commit sidecar last-known after a successful sync (also done inside
+      // useCloudSync.syncNow; keep here as defense for this path's merge logic).
+      commitPluginSidecarsAfterSuccessfulSync(payload, resultList);
 
       lastSyncedDataRef.current = dataHash;
       manager.setPendingLocalSync(false);
@@ -778,6 +754,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
           conflictActionOverride: 'upload-local',
         });
         const roundTripResultList = Array.from(roundTripResults.values());
+        commitPluginSidecarsAfterSuccessfulSync(remotePayload, roundTripResultList);
         const wasShrinkBlocked = roundTripResultList.some((result) => result.shrinkBlocked === true);
         const roundTripFullySynced = roundTripResultList.length > 0
           && roundTripResultList.every((result) => result.success);
@@ -797,6 +774,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       if (conflictAction === 'upload-local') {
         const pushResults = await manager.syncAllProviders(localPayload);
         const results = Array.from(pushResults.values());
+        commitPluginSidecarsAfterSuccessfulSync(localPayload, results);
         const allProvidersSynced = results.length > 0
           && results.every((result) => result.success);
         const wasShrinkBlocked = results.some((result) => result.shrinkBlocked === true);
@@ -844,6 +822,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         try {
           const roundTripResults = await manager.syncAllProviders(mergeResult.payload);
           const roundTripResultList = Array.from(roundTripResults.values());
+          commitPluginSidecarsAfterSuccessfulSync(mergeResult.payload, roundTripResultList);
           const wasShrinkBlocked = roundTripResultList.some((r) => r.shrinkBlocked === true);
           const roundTripFullySynced = roundTripResultList.length > 0
             && roundTripResultList.every((result) => result.success);

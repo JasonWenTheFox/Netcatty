@@ -464,3 +464,49 @@ test("applyFromSync does not resurrect missing-plugin keys deleted on another de
   );
   assert.ok(all.some((entry) => entry.value === "remote-new"));
 });
+
+test("applyFromSync empty remote bundle preserves local baselines", async (context) => {
+  const database = tempDb(context);
+  database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);
+  database.setSyncSidecar("com.missing.plugin", "account_baseline", "account", { id: "a1" }, 2);
+  database.setSyncSidecar("com.missing.plugin", "crdt_baseline", "crdt", { clock: 9 }, 3);
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: { snapshot: () => ({ plugins: [] }) },
+  });
+  await service.applyFromSync({ version: 1, entries: [] });
+  const all = database.listAllSyncSidecars();
+  assert.equal(all.some((entry) => entry.kind === "settings"), false);
+  assert.equal(all.some((entry) => entry.kind === "account_baseline"), true);
+  assert.equal(all.some((entry) => entry.kind === "crdt_baseline"), true);
+});
+
+test("applyFromSync keeps newer local baseline over older remote (LWW)", async (context) => {
+  const database = tempDb(context);
+  database.setSyncSidecar("com.example.plugin", "crdt_baseline", "crdt", { clock: 100 }, 100);
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot: () => ({
+        plugins: [{
+          id: "com.example.plugin",
+          settings: [],
+        }],
+      }),
+    },
+  });
+  await service.applyFromSync({
+    version: 1,
+    entries: [{
+      pluginId: "com.example.plugin",
+      kind: "crdt_baseline",
+      key: "crdt",
+      value: { clock: 50 },
+      updatedAt: 50,
+    }],
+  });
+  const row = database.listAllSyncSidecars().find((entry) => entry.kind === "crdt_baseline");
+  assert.ok(row);
+  assert.equal(row.updatedAt, 100);
+  assert.deepEqual(row.value, { clock: 100 });
+});

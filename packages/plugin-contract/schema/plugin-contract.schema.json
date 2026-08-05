@@ -80,12 +80,12 @@
       }
     },
     "SyncLimits": {
-      "description": "Host-enforced byte and identifier limits for one encrypted sync-object operation.",
+      "description": "Host-enforced byte and identifier limits for one encrypted sync-object operation. inlineObjectBytes is the maximum ciphertext size that may travel inline on the control plane (below the 128 KiB provider JSON budget after base64 expansion).",
       "const": {
         "maxObjectBytes": 67108864,
         "maxObjectKeyLength": 1024,
         "maxRevisionLength": 256,
-        "inlineObjectBytes": 98304
+        "inlineObjectBytes": 92160
       }
     },
     "StreamId": {

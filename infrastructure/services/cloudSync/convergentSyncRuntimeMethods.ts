@@ -193,7 +193,9 @@ async function downloadProviderState(
   runtime: ProviderRuntime,
   syncSecurityGeneration?: number,
 ): Promise<DecodedRemote | null> {
-  const file = await runtime.adapter.download();
+  const file = await runtime.adapter.download({
+    signal: manager.activeSyncAbortSignal,
+  });
   assertSyncSecurityGeneration(manager, syncSecurityGeneration);
   runtime.latestRemote = file;
   if (!file) {
@@ -582,7 +584,9 @@ export async function syncConvergentProvidersUnlockedImpl(
           remoteVersion,
         );
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
-        runtime.resourceId = await runtime.adapter.upload(file);
+        runtime.resourceId = await runtime.adapter.upload(file, {
+          signal: this.activeSyncAbortSignal,
+        });
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
         runtime.latestRemote = file;
         // Sidecar-only (or any) upload invalidates preflight verification so the
@@ -1080,9 +1084,13 @@ export async function downgradeConvergentSyncImpl(
           before?.meta.version ?? this.state.localVersion,
         );
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
-        await adapter.upload(file);
+        await adapter.upload(file, {
+          signal: this.activeSyncAbortSignal,
+        });
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
-        const verifiedFile = await adapter.download();
+        const verifiedFile = await adapter.download({
+          signal: this.activeSyncAbortSignal,
+        });
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
         if (!verifiedFile) throw new Error('Provider returned no file after downgrade');
         const verifiedPayload = await EncryptionService.decryptPayload(verifiedFile, this.masterPassword);

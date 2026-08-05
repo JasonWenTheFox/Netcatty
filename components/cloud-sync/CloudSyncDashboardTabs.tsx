@@ -9,6 +9,7 @@ import type {
 import { isBuiltinCloudProvider } from '../../domain/sync';
 import { isPluginCloudProviderId } from '../../domain/cloudProviderIds';
 import { planPluginSyncConnect, hasPluginProviderStoredConfig } from '../../domain/pluginSyncConnect';
+import { planPluginSyncCredential, syncConfigurationSchemaWithoutSecretRequirements } from '../../domain/pluginSyncCredential';
 import { pluginConfigurationMatchesSchema } from '../../domain/pluginConfigurationSchema';
 import type { useCloudSync } from '../../application/state/useCloudSync';
 import { cleanOneDriveErrorMessage, isProviderReadyForSync } from '../../domain/sync';
@@ -166,7 +167,33 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
       if (disconnectOtherProviders) {
         await disconnectOtherProviders(providerId as CloudProvider);
       }
-      await sync.connectPluginProvider(providerId, configuration);
+      const credentialPlan = planPluginSyncCredential(configuration);
+      let credential: { kind: 'secret'; id: string; key: string } | undefined;
+      if (credentialPlan.secrets.length > 0) {
+        const { putPluginSyncSecret } = await import(
+          '../../infrastructure/services/adapters/pluginSyncIpcHost'
+        );
+        for (const secret of credentialPlan.secrets) {
+          const ref = await putPluginSyncSecret({
+            providerId,
+            key: secret.secretKey,
+            value: secret.value,
+          });
+          // SyncConnectPayload.credential carries the primary (first) secret;
+          // additional secrets remain addressable via secrets.get(key).
+          if (!credential) credential = ref;
+        }
+      } else {
+        const stored = sync.providers[providerId]?.credential;
+        if (stored && typeof stored === 'object' && stored.kind === 'secret' && typeof stored.id === 'string') {
+          credential = stored as { kind: 'secret'; id: string; key: string };
+        }
+      }
+      await sync.connectPluginProvider(
+        providerId,
+        credentialPlan.configuration,
+        credential,
+      );
       toast.success(t('cloudSync.connect.plugin.success'));
       return true;
     } catch (error) {
@@ -208,10 +235,20 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
       setPluginConfigError(t('cloudSync.pluginConfig.invalidJson'));
       return;
     }
-    if (pluginConfigDialog.configurationSchema !== undefined
-      && !pluginConfigurationMatchesSchema(pluginConfigDialog.configurationSchema, configuration)) {
-      setPluginConfigError(t('cloudSync.pluginConfig.schemaInvalid'));
-      return;
+    if (pluginConfigDialog.configurationSchema !== undefined) {
+      const connection = sync.providers[pluginConfigDialog.providerId];
+      const hasStoredSecret = connection?.credential != null
+        && typeof connection.credential === 'object'
+        && (connection.credential as { kind?: string }).kind === 'secret';
+      // Edit seeds stripped config; required secret fields stay satisfied by the
+      // durable SecretRef until the user re-enters plaintext secrets.
+      const schema = hasStoredSecret
+        ? syncConfigurationSchemaWithoutSecretRequirements(pluginConfigDialog.configurationSchema)
+        : pluginConfigDialog.configurationSchema;
+      if (!pluginConfigurationMatchesSchema(schema, configuration)) {
+        setPluginConfigError(t('cloudSync.pluginConfig.schemaInvalid'));
+        return;
+      }
     }
     setPluginConfigError(null);
     setPluginConfigSaving(true);

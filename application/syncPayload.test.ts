@@ -819,6 +819,45 @@ test("buildLocalVaultPayload includes last-known plugin sidecars for protective 
   }
 });
 
+test("buildLocalVaultPayloadAsync keeps last-known when live collect is empty", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  Object.defineProperty(globalThis, "window", {
+    value: {
+      netcatty: {
+        collectPluginSyncSidecars: async () => ({ version: 1, entries: [] }),
+        pluginHostReady: () => true,
+      },
+      dispatchEvent: () => true,
+    },
+    configurable: true,
+  });
+  localStorage.setItem(
+    "netcatty_plugin_sidecars_last_known_v1",
+    JSON.stringify({
+      version: 1,
+      entries: [{
+        pluginId: "com.example.p",
+        kind: "settings",
+        key: "com.example.p.theme\0application\0application",
+        value: "dark",
+        updatedAt: 1,
+      }],
+    }),
+  );
+  try {
+    const { buildLocalVaultPayloadAsync } = await import("./syncPayload.ts");
+    const payload = await buildLocalVaultPayloadAsync(vault([]));
+    assert.equal(payload.pluginSidecars?.entries?.length, 1);
+    assert.equal(payload.pluginSidecars?.entries?.[0].value, "dark");
+  } finally {
+    localStorage.removeItem("netcatty_plugin_sidecars_last_known_v1");
+    Object.defineProperty(globalThis, "window", {
+      value: previousWindow,
+      configurable: true,
+    });
+  }
+});
+
 test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful", () => {
   assert.equal(
     hasMeaningfulCloudSyncData({
@@ -867,7 +906,7 @@ test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful"
   );
 });
 
-test("hasMeaningfulCloudSyncData treats empty sidecars as meaningful only after a prior non-empty last-known", () => {
+test("hasMeaningfulCloudSyncData does not treat last-known-only empty sidecars as meaningful", () => {
   const previous = localStorageAdapter.read(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN);
   try {
     localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, {
@@ -880,6 +919,8 @@ test("hasMeaningfulCloudSyncData treats empty sidecars as meaningful only after 
         updatedAt: 1,
       }],
     });
+    // Empty vault + empty sidecar entries must stay blocked even when last-known
+    // still remembers prior plugin settings (empty-vault upload guard).
     assert.equal(
       hasMeaningfulCloudSyncData({
         hosts: [],
@@ -890,7 +931,7 @@ test("hasMeaningfulCloudSyncData treats empty sidecars as meaningful only after 
         syncedAt: 1,
         pluginSidecars: { version: 1, entries: [] },
       }),
-      true,
+      false,
     );
   } finally {
     if (previous == null) localStorageAdapter.remove(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN);

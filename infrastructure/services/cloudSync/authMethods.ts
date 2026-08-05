@@ -538,6 +538,15 @@ export async function disconnectProviderImpl(this: any,provider: CloudProvider):
     // an unrelated snapshot or convergent baseline.
     clearProviderMergeStateImpl.call(this, provider);
     this.removeFromStorage(this.providerAccountIdKey(provider));
+    // Drop OS-backed sync secrets so disconnect does not leave reusable passwords.
+    if (isPluginCloudProviderId(provider)) {
+      try {
+        const { deletePluginSyncSecrets } = await import('../adapters/pluginSyncIpcHost');
+        await deletePluginSyncSecrets({ providerId: provider });
+      } catch {
+        /* best-effort; disconnect still succeeds */
+      }
+    }
     // Reset BLOCKED state if it was present — disconnect implicitly resolves
     // any pending shrink-block warning since there's no provider to push to.
     this.exitBlockedState();

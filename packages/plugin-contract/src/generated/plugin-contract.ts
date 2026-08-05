@@ -800,7 +800,7 @@ export type SyncGetCapabilitiesPayload = {
   operationId?: string;
 };
 
-export type SyncLimits = {"maxObjectBytes":67108864,"maxObjectKeyLength":1024,"maxRevisionLength":256,"inlineObjectBytes":98304};
+export type SyncLimits = {"maxObjectBytes":67108864,"maxObjectKeyLength":1024,"maxRevisionLength":256,"inlineObjectBytes":92160};
 
 export type SyncObjectKey = string;
 

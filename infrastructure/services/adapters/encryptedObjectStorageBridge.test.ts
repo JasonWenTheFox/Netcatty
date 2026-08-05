@@ -370,4 +370,48 @@ describe('encryptedObjectStorageBridge', () => {
       'disconnect',
     ]);
   });
+
+  it('skips host re-read when assumeVerifiedWrites is set (WebDAV path)', async () => {
+    const ops: string[] = [];
+    let stored: Uint8Array | null = null;
+    const storage = {
+      providerId: 'webdav',
+      async connect() {
+        ops.push('connect');
+        return { account: { id: 'w1' } };
+      },
+      async disconnect() {},
+      async getAccount() {
+        return { id: 'w1' };
+      },
+      async getCapabilities() {
+        return webdavEncryptedObjectCapabilities();
+      },
+      async readObject(key: string) {
+        ops.push(`read:${key}`);
+        if (!stored) return { found: false as const, key, bytes: null };
+        return { found: true as const, key, bytes: stored, revision: '1' };
+      },
+      async writeObject(key: string, bytes: Uint8Array) {
+        ops.push(`write:${key}`);
+        stored = bytes;
+        return { created: true as const, revision: '1' };
+      },
+      async deleteObject() {
+        return { deleted: true as const };
+      },
+    };
+
+    const adapter = encryptedObjectStorageAsCloudAdapter(storage, {
+      initiallyAuthenticated: true,
+      assumeVerifiedWrites: true,
+    });
+    await adapter.upload(makeSyncedFile(1, 'body'));
+    assert.deepEqual(
+      ops.filter((op) => op.startsWith('read:')),
+      [],
+      'assumeVerifiedWrites must not re-read after write',
+    );
+    assert.ok(ops.includes('write:netcatty-vault.json'));
+  });
 });

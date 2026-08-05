@@ -22,4 +22,4 @@ export const PLUGIN_IMPORTER_MAX_RECORDS = 10000 as const;
 export const PLUGIN_SYNC_MAX_OBJECT_BYTES = 67108864 as const;
 export const PLUGIN_SYNC_MAX_OBJECT_KEY_LENGTH = 1024 as const;
 export const PLUGIN_SYNC_MAX_REVISION_LENGTH = 256 as const;
-export const PLUGIN_SYNC_INLINE_OBJECT_BYTES = 98304 as const;
+export const PLUGIN_SYNC_INLINE_OBJECT_BYTES = 92160 as const;
