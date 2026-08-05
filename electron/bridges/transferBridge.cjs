@@ -2257,6 +2257,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // (Codex P2 on 0cda4a39 / cd57d960 / bd42c51c). Never unlink in-place
     // final targets (Codex P1 on a9f748c8). Skip unlink only when a same-id
     // retry owns a reusable resume stage at this path (Codex P2 on d19ecb88).
+    // Bound close so a dead channel that never invokes CLOSE cannot pin the
+    // path gate forever after drain force-complete (Codex P2 on 1a8cac20).
     const finishLateSharedWriteOpen = (handle) => {
       invalidateRetryStageIfStaleOpen();
       const afterClose = () => {
@@ -2271,7 +2273,17 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         finish();
       };
       if (handle) {
-        closeSftpHandle(sftp, handle).then(afterClose, afterClose);
+        let closed = false;
+        const finishClose = () => {
+          if (closed) return;
+          closed = true;
+          afterClose();
+        };
+        const closeTimer = setTimeout(finishClose, 2000);
+        closeSftpHandle(sftp, handle).then(
+          () => { clearTimeout(closeTimer); finishClose(); },
+          () => { clearTimeout(closeTimer); finishClose(); },
+        );
         return;
       }
       afterClose();
