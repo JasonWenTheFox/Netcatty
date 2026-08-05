@@ -2350,9 +2350,12 @@ function decideIssuesEventRoute({
       reason: 'human reopen of auto-closed triage',
     };
   }
+  // Merged-fix / bug-ready / feature reopens must re-enter classify so a
+  // failed fix can spawn another implementation. Bot reopen is already skipped
+  // above, which covers follow-up reopen side effects.
   return {
-    kind: 'skip',
-    reason: 'reopen of already-admitted issue',
+    kind: 'issue_classify',
+    reason: 'issues:reopened admitted non-auto-close',
   };
 }
 

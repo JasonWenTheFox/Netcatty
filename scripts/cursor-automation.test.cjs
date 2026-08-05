@@ -711,7 +711,21 @@ test('decideIssuesEventRoute skips bot reopen and hands auto-closed reopen to hu
       labels: ['triage:admitted', 'ready-for-human', 'triage'],
       actorLogin: 'binaricat',
     }),
-    { kind: 'skip', reason: 'reopen of already-admitted issue' },
+    {
+      kind: 'issue_classify',
+      reason: 'issues:reopened admitted non-auto-close',
+    },
+  );
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({
+      action: 'reopened',
+      labels: ['triage:admitted', 'triage:bug-ready', 'bug'],
+      actorLogin: 'alice',
+    }),
+    {
+      kind: 'issue_classify',
+      reason: 'issues:reopened admitted non-auto-close',
+    },
   );
   const handoff = auto.labelsForReadyForHumanHandoff([
     'bug',
