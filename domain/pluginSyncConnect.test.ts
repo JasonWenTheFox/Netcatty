@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { planPluginSyncConnect } from './pluginSyncConnect';
+import { planPluginSyncConnect, hasPluginProviderStoredConfig } from './pluginSyncConnect';
 
 const requiredSchema = {
   type: 'object',
@@ -33,6 +33,17 @@ test('planPluginSyncConnect reuses stored config including falsy scalars', () =>
     planPluginSyncConnect({ hasStoredConfig: true, storedConfig: '', configurationSchema: requiredSchema }),
     { action: 'connect', configuration: '' },
   );
+  assert.deepEqual(
+    planPluginSyncConnect({ hasStoredConfig: true, storedConfig: null, configurationSchema: { type: 'null' } }),
+    { action: 'connect', configuration: null },
+  );
+});
+
+test('hasPluginProviderStoredConfig uses property presence including null', () => {
+  assert.equal(hasPluginProviderStoredConfig({ config: null }), true);
+  assert.equal(hasPluginProviderStoredConfig({ config: false }), true);
+  assert.equal(hasPluginProviderStoredConfig({}), false);
+  assert.equal(hasPluginProviderStoredConfig(undefined), false);
 });
 
 test('planPluginSyncConnect prompts when schema rejects empty config', () => {

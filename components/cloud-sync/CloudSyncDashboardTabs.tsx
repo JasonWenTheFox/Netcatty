@@ -8,7 +8,7 @@ import type {
 } from '../../domain/sync';
 import { isBuiltinCloudProvider } from '../../domain/sync';
 import { isPluginCloudProviderId } from '../../domain/cloudProviderIds';
-import { planPluginSyncConnect } from '../../domain/pluginSyncConnect';
+import { planPluginSyncConnect, hasPluginProviderStoredConfig } from '../../domain/pluginSyncConnect';
 import { pluginConfigurationMatchesSchema } from '../../domain/pluginConfigurationSchema';
 import type { useCloudSync } from '../../application/state/useCloudSync';
 import { cleanOneDriveErrorMessage, isProviderReadyForSync } from '../../domain/sync';
@@ -153,9 +153,8 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
     configurationSchema: unknown | undefined,
   ) => {
     const connection = sync.providers[providerId];
-    const stored = connection?.config;
-    // Include falsy scalars (false/0/"") so Edit can re-save them.
-    const seed = stored != null ? stored : {};
+    // Include falsy scalars and JSON null so Edit can re-save them.
+    const seed = hasPluginProviderStoredConfig(connection) ? connection!.config : {};
     setPluginConfigText(JSON.stringify(seed, null, 2));
     setPluginConfigError(null);
     setPluginConfigDialog({ providerId, title, configurationSchema });
@@ -182,8 +181,8 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
   const handlePluginConnect = async (providerId: string) => {
     const listed = pluginSyncProviders.find((entry) => entry.id === providerId);
     const connection = sync.providers[providerId];
-    // Config may be a valid falsy scalar — only null/undefined means absent.
-    const hasStoredConfig = connection?.config != null;
+    // Config may be a valid falsy scalar or JSON null — property presence, not truthiness.
+    const hasStoredConfig = hasPluginProviderStoredConfig(connection);
     const plan = planPluginSyncConnect({
       configurationSchema: listed?.configurationSchema,
       storedConfig: connection?.config,
@@ -345,7 +344,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                         const listed = pluginSyncProviders.find((entry) => entry.id === providerId);
                         const title = listed?.title ?? providerId;
                         const connected = connection ? isProviderReadyForSync(connection) : false;
-                        const hasStoredConfig = connection?.config != null;
+                        const hasStoredConfig = hasPluginProviderStoredConfig(connection);
                         const needsConfig = planPluginSyncConnect({
                           configurationSchema: listed?.configurationSchema,
                           storedConfig: connection?.config,
