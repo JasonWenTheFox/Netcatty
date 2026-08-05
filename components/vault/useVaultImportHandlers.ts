@@ -28,6 +28,8 @@ import { sanitizeHost } from "../../domain/host";
 import {
   applyVaultImportDestination,
   applyVaultHostImport,
+  buildVaultHostEndpointKey,
+  buildVaultHostMergeKey,
   filterVaultImportKeyPassphrasesAgainstExisting,
   mergeVaultImportIssues,
   resolveVaultImportKeyPassphraseConflicts,
@@ -308,15 +310,16 @@ export function useVaultImportHandlers({
             }
           }
   
-          const makeKey = (h: Host) =>
-            `${(h.protocol ?? "ssh").toLowerCase()}|${h.hostname.toLowerCase()}|${h.port}|${(h.username ?? "").toLowerCase()}`;
-  
+          // Managed ssh_config rematch is endpoint-only; CSV/other imports treat
+          // group as part of session identity so direct vs proxy copies can coexist.
+          const makeKey = isManaged ? buildVaultHostEndpointKey : buildVaultHostMergeKey;
+
           const existingKeys = new Set(currentHosts.map(makeKey));
           // Filter out duplicates for both managed and non-managed imports
           let newHosts = format === "securecrt"
             ? result.hosts
             : result.hosts.filter((h) => !existingKeys.has(makeKey(h)));
-  
+
           // For managed imports, also update existing hosts to be managed
           let updatedExistingHosts: Host[] = [];
           if (isManaged) {

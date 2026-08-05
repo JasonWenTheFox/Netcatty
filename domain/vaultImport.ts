@@ -9,7 +9,10 @@ import {
   type VaultHostDraftProtocol,
 } from "./vaultHostCreate";
 
-export { buildVaultHostMergeKey } from "./vaultHostCreate";
+export {
+  buildVaultHostEndpointKey,
+  buildVaultHostMergeKey,
+} from "./vaultHostCreate";
 import { parseQuickConnectInput } from "./quickConnect";
 import { findExactHeaderIndex, findHeaderIndex, parseCsv } from "./vaultImport/csvUtils";
 import { decodeCsvKeyPath, decodeCsvPassphrase } from "./vaultImport/csvCredentialFields";

@@ -614,6 +614,69 @@ test("applyVaultHostImport skips duplicates by default", () => {
   assert.equal(merged.hosts.length, 2);
 });
 
+test("CSV import keeps same-endpoint rows that use different groups", () => {
+  const result = importVaultHostsFromText(
+    "csv",
+    [
+      "Groups,Label,Hostname,Port,Username",
+      "lan,direct,10.10.10.10,22,root",
+      "lan-proxy,via-socks,10.10.10.10,22,root",
+    ].join("\n"),
+  );
+
+  assert.equal(result.hosts.length, 2);
+  assert.equal(result.stats.duplicates, 0);
+  assert.deepEqual(
+    result.hosts.map((host) => host.group).sort(),
+    ["lan", "lan-proxy"],
+  );
+});
+
+test("applyVaultHostImport keeps same-endpoint hosts when the group differs", () => {
+  const existing: Host = {
+    id: "existing-1",
+    label: "direct",
+    hostname: "10.10.10.10",
+    username: "root",
+    port: 22,
+    group: "lan",
+  };
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "lan-proxy,via-socks,10.10.10.10,22,root",
+  ].join("\n"));
+  const targeted = applyVaultImportDestination(imported, {
+    mode: "group",
+    group: "lan-proxy",
+  });
+
+  const merged = applyVaultHostImport([existing], ["lan"], targeted);
+  assert.equal(merged.addedCount, 1);
+  assert.equal(merged.skippedExistingCount, 0);
+  assert.equal(merged.hosts.length, 2);
+  assert.equal(merged.addedHosts[0]?.group, "lan-proxy");
+});
+
+test("applyVaultHostImport still skips same-endpoint hosts in the same group", () => {
+  const existing: Host = {
+    id: "existing-1",
+    label: "direct",
+    hostname: "10.10.10.10",
+    username: "root",
+    port: 22,
+    group: "lan",
+  };
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "lan,copy,10.10.10.10,22,root",
+  ].join("\n"));
+
+  const merged = applyVaultHostImport([existing], ["lan"], imported);
+  assert.equal(merged.addedCount, 0);
+  assert.equal(merged.skippedExistingCount, 1);
+  assert.equal(merged.hosts.length, 1);
+});
+
 test("applyVaultHostImport can preserve distinct sessions with the same endpoint", () => {
   const existing: Host = {
     id: "existing-1",
