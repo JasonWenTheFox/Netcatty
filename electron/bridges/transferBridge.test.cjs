@@ -5337,9 +5337,10 @@ test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
   assert.match(firstResult.error, /shared SFTP channel died before first OPEN callback/i);
   assert.equal(endCalls, 0, "shared sudo channel must not be ended");
 
-  // Same-id retry reuses the deterministic stage. Drain force-complete released
-  // the path gate so the retry can OPEN; hold its WRITEs until after the stale
-  // OPEN lands.
+  // Same-id retry reuses the deterministic stage. Generated-stage drain
+  // force-complete holds the path gate for another 10s (2s + 10s) unless the
+  // stale OPEN settles first. Wait past that hold so the retry can OPEN while
+  // the first OPEN callback is still held for the late-truncation race below.
   transferBridge.clearPendingCancel(transferId);
   const retrySender = createSender();
   const retryRunning = transferBridge.startTransfer(
@@ -5359,7 +5360,7 @@ test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
 
   const retryOpenReady = await waitUntil(
     () => eventLog.some((entry) => entry.startsWith("open-created-2:")),
-    3000,
+    15000,
   );
   assert.ok(retryOpenReady, `expected retry OPEN after path gate force-release, log=${eventLog.join(",")}`);
   assert.ok(
