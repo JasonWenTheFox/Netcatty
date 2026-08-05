@@ -3201,6 +3201,17 @@ async function applyReadyForHumanHandoff({
     issue_number: Number(issueNumber),
   });
   const names = normalizeIssueLabelNames(issue.labels);
+  // Reopen already left the issue open. If a maintainer re-closed it while this
+  // handoff was queued, do not force it open again.
+  if (String(issue.state || '').toLowerCase() === 'closed') {
+    return {
+      issue,
+      labels: names,
+      commented: false,
+      skipped: true,
+      reason: 'issue already closed',
+    };
+  }
   // Revalidate at apply time: a queued handoff must not undo a maintainer who
   // already cleared the auto-close outcome and moved the issue elsewhere.
   if (!names.some((name) => ISSUE_AUTO_CLOSE_HANDOFF_LABELS.has(name))) {
@@ -3220,7 +3231,7 @@ async function applyReadyForHumanHandoff({
     dedupeMarker,
     trustedCommentAuthors,
     labels: labelsForReadyForHumanHandoff(issue.labels),
-    ensureOpen: true,
+    ensureOpen: false,
   });
 }
 

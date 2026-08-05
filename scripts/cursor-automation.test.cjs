@@ -1099,7 +1099,7 @@ test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', a
   assert.equal(created, 1);
 });
 
-test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', async () => {
+test('applyReadyForHumanHandoff hands open auto-closed issues to humans', async () => {
   let update = null;
   let commentBody = '';
   const github = {
@@ -1108,7 +1108,7 @@ test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', a
         get: async () => ({
           data: {
             number: 2673,
-            state: 'closed',
+            state: 'open',
             title: '[Bug] 不能连接本地网络',
             body: '本地网络权限',
             labels: [
@@ -1137,7 +1137,7 @@ test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', a
     issueNumber: 2673,
   });
   assert.equal(result.commented, true);
-  assert.equal(update.state, 'open');
+  assert.equal(update.state, undefined);
   assert.ok(update.labels.includes('ready-for-human'));
   assert.ok(update.labels.includes('triage:already-available'));
   assert.match(commentBody, /cursor-reopen-handoff/);
@@ -1178,6 +1178,45 @@ test('applyReadyForHumanHandoff skips when auto-close labels were cleared', asyn
     issueNumber: 2673,
   });
   assert.equal(result.skipped, true);
+  assert.equal(result.commented, false);
+  assert.equal(updated, false);
+});
+
+test('applyReadyForHumanHandoff skips when maintainer already re-closed', async () => {
+  let updated = false;
+  const github = {
+    rest: {
+      issues: {
+        get: async () => ({
+          data: {
+            number: 2673,
+            state: 'closed',
+            title: '[Bug] 不能连接本地网络',
+            body: '本地网络权限',
+            labels: [
+              { name: 'triage' },
+              { name: 'triage:admitted' },
+              { name: 'triage:already-available' },
+            ],
+          },
+        }),
+        update: async () => {
+          updated = true;
+          return { data: {} };
+        },
+        listComments: Symbol('listComments'),
+        createComment: async () => ({ data: {} }),
+      },
+    },
+    paginate: async () => [],
+  };
+  const result = await auto.applyReadyForHumanHandoff({
+    github,
+    context: { repo: { owner: 'binaricat', repo: 'Netcatty' } },
+    issueNumber: 2673,
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'issue already closed');
   assert.equal(result.commented, false);
   assert.equal(updated, false);
 });
