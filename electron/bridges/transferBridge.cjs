@@ -2176,20 +2176,35 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }, 2000);
     };
 
+    // Best-effort remote unlink with a hard bound. A dead shared channel that
+    // never invokes the unlink callback must not pin finishCancel / drain
+    // settle forever (lease + admission slot hang). Same 2s grace as the
+    // shared-write drain force-complete.
     const unlinkSharedWritePathBestEffort = () => new Promise((resolveUnlink) => {
+      let settledUnlink = false;
+      const finishUnlink = () => {
+        if (settledUnlink) return;
+        settledUnlink = true;
+        if (unlinkTimer) {
+          clearTimeout(unlinkTimer);
+          unlinkTimer = null;
+        }
+        resolveUnlink();
+      };
+      let unlinkTimer = setTimeout(finishUnlink, 2000);
       // Ownership can change between close and unlink (retry start).
       if (!canUnlinkLateGeneratedStageNow()) {
-        resolveUnlink();
+        finishUnlink();
         return;
       }
       if (typeof sftp.unlink !== "function") {
-        resolveUnlink();
+        finishUnlink();
         return;
       }
       try {
-        sftp.unlink(filePath, () => resolveUnlink());
+        sftp.unlink(filePath, () => finishUnlink());
       } catch {
-        resolveUnlink();
+        finishUnlink();
       }
     });
 

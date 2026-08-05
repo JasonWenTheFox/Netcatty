@@ -4328,6 +4328,96 @@ test("shared upload OPEN drain force-completes when cancel has no OPEN callback"
   assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
 });
 
+test("shared upload cancel settle does not hang when best-effort unlink never callbacks", async (t) => {
+  // Codex P2 on 3f0f4608: cancel + OPEN "w" waited for unlink before finishCancel.
+  // A dead shared channel that never invokes unlink left the transfer/lease active.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-unlink-hang-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 61));
+
+  let openCalls = 0;
+  let unlinkCalls = 0;
+  let endCalls = 0;
+  let openCallback = null;
+  const sharedSftp = createFastSftp({
+    open(_remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      openCalls += 1;
+      openCallback = callback;
+    },
+    unlink(_remotePath, _callback) {
+      unlinkCalls += 1;
+      // Never invoke unlink callback (stalled shared channel).
+    },
+    write() {
+      throw new Error("WRITE must not run after cancel during OPEN");
+    },
+    close(_handle, callback) {
+      callback?.(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat() {
+      const error = new Error("ENOENT");
+      error.code = 2;
+      return Promise.reject(error);
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete() {},
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "upload-shared-open-cancel-unlink-hang";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath: "/tmp/upload-cancel-unlink-hang.bin",
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: true,
+      skipAdmission: true,
+    },
+  );
+
+  const ready = await waitUntil(() => openCalls >= 1 && openCallback, 2000);
+  assert.ok(ready, "expected shared write OPEN to stall with callback held");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+  // OPEN returns after cancel — triggers close + best-effort unlink path.
+  openCallback(null, Buffer.from("handle:hang-unlink"));
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("transfer hung awaiting best-effort unlink after cancel")),
+        5500,
+      );
+    }),
+  ]);
+
+  assert.match(result.error || "", /cancel/i);
+  assert.ok(unlinkCalls >= 1, "expected best-effort unlink after cancel OPEN");
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+});
+
 test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
   // Codex P2 on af9cef2e / 0cda4a39 / cd57d960: cancel settle + drain
   // force-complete must not hang, and a late truncating OPEN on a generated
