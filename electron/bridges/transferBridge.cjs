@@ -4198,12 +4198,16 @@ async function startTransferNow(event, payload, onProgress) {
   };
 
   let leasesReleased = false;
-  const cleanupTransfer = () => {
+  const cleanupTransfer = (options = {}) => {
     // A stale completion must never unregister a newer transfer that reused the
     // same id after this one became terminal.
     if (activeTransfers.get(transferId) === transfer) {
       activeTransfers.delete(transferId);
     }
+    // Superseded attempts share the lease Set entry with a same-id retry —
+    // releasing here would drop the only lease and hard-close SFTP under the
+    // live retry (Codex P2 on 5f3e3e2a).
+    if (options.releaseLeases === false) return;
     if (!leasesReleased) {
       leasesReleased = true;
       releaseTransferSessionLeases(transferId, transfer.leasedSftpIds || leasedSftpIds);
@@ -4548,10 +4552,12 @@ async function startTransferNow(event, payload, onProgress) {
     // Superseded always means this attempt lost ownership. Suppress terminal
     // events even after the retry has finished and left activeTransfers, or
     // the completed retry is rewritten as cancelled (Codex P2 on 52f0248c).
-    cleanupTransfer();
+    // Do not release SFTP leases — a live same-id retry may still hold them.
     if (superseded) {
+      cleanupTransfer({ releaseLeases: false });
       return;
     }
+    cleanupTransfer();
     const cancelled = /cancel/i.test(message);
     if (cancelled) {
       sender.send("netcatty:transfer:cancelled", { transferId, error: message });
