@@ -4529,13 +4529,27 @@ async function startTransferNow(event, payload, onProgress) {
   const sendError = (error) => {
     cleanupTransfer();
     const message = error?.message || String(error);
-    // Same-id retries supersede the previous attempt's late OPEN path. Do not
-    // broadcast a terminal "failed" for that transferId or the live retry task
-    // is marked failed in the transfer center (Codex P2 on 5d8e232).
+    // Same-id retries supersede the previous attempt's late OPEN path. Worker
+    // fan-out maps transfer:error as cancelled only for /cancel/ messages; emit
+    // cancelled channel for superseded so the live retry is not marked failed
+    // (Codex P2 on d777a66a).
     const cancelled = /cancel/i.test(message) || /superseded/i.test(message);
+    if (cancelled) {
+      sender.send("netcatty:transfer:cancelled", { transferId, error: message });
+      broadcastGlobalTransferEvent({
+        type: "cancelled",
+        transferId,
+        endedAt: Date.now(),
+        error: message,
+        parentTaskId: transfer.parentTaskId,
+        directoryEntryIndex: transfer.directoryEntryIndex,
+        directoryEntryIdentity: transfer.directoryEntryIdentity,
+      });
+      return;
+    }
     sender.send("netcatty:transfer:error", { transferId, error: message });
     broadcastGlobalTransferEvent({
-      type: cancelled ? "cancelled" : "failed",
+      type: "failed",
       transferId,
       endedAt: Date.now(),
       error: message,
