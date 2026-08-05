@@ -468,16 +468,20 @@ test("live provider backfill seeds bindings for v2 credential-only upgrades", (c
   });
   // Real schema-2 path: credentials exist, binding table empty, no map rows.
   store.set("com.example", "sync-credential", "pw");
+  store.set("com.disabled", "sync-credential", "pw2");
   assert.equal(database.getSyncProviderBinding("com.example.sync"), null);
+  // Host should pass installed manifests including disabled plugins.
   const promoted = store.backfillSyncProviderBindingsFromLiveProviders([
     { pluginId: "com.example", provider: { id: "com.example.sync" } },
+    { pluginId: "com.disabled", provider: { id: "com.disabled.sync" } },
     // No credentials under this plugin — skip.
     { pluginId: "com.other", provider: { id: "com.other.cloud" } },
     // Wrong namespace — skip without clobbering.
     { pluginId: "com.example", provider: { id: "com.evil.sync" } },
   ]);
-  assert.equal(promoted, 1);
+  assert.equal(promoted, 2);
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  assert.equal(store.resolveSyncProviderPlugin("com.disabled.sync"), "com.disabled");
   assert.equal(store.resolveSyncProviderPlugin("com.other.cloud"), undefined);
   // Idempotent when binding already exists.
   assert.equal(

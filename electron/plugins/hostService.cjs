@@ -252,13 +252,25 @@ function createPluginHostService(options) {
         }
       }
       const result = await originalInitialize();
-      // Schema upgrades leave bindings empty until the next put. Seed from live
-      // contribution metadata when the plugin still has sync-credential* rows.
+      // Schema upgrades leave bindings empty until the next put. Seed from
+      // installed plugin manifests (including disabled/quarantined) when those
+      // plugins still hold sync-credential* rows. listProviders() alone skips
+      // disabled plugins and would miss the upgrade path Codex flagged.
       try {
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
-          secretStore.backfillSyncProviderBindingsFromLiveProviders(
-            contributionService.listProviders({ kind: "sync" }),
-          );
+          const installedSyncProviders = [];
+          for (const plugin of database.listPlugins()) {
+            if (typeof plugin?.id !== "string" || !plugin.manifest) continue;
+            for (const provider of plugin.manifest.contributes?.providers ?? []) {
+              if (provider?.kind !== "sync") continue;
+              if (typeof provider.id !== "string" || provider.id.length < 1) continue;
+              installedSyncProviders.push({
+                pluginId: plugin.id,
+                provider: { id: provider.id },
+              });
+            }
+          }
+          secretStore.backfillSyncProviderBindingsFromLiveProviders(installedSyncProviders);
         }
       } catch {
         // Best-effort; startup must continue.
