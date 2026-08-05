@@ -3831,18 +3831,10 @@ jobs:
               issue_number: pull_number,
               per_page: 100,
             });
-            // Use PR head-change time (updated_at), never commit author/committer
-            // dates — cherry-picks/rebases predate the push and would let a plain
-            // @codex for the previous head suppress re-request for this one.
-            const notBefore =
-              pr.updated_at ||
-              context.payload.pull_request?.updated_at ||
-              null;
             if (auto.shouldSkipExternalCodexRerequest({
               existingComments,
               headSha,
               ownActors: process.env.OWN_ACTORS,
-              notBefore,
             })) {
               core.notice(`@codex review was already requested for ${headSha}; skip duplicate.`);
               return;
@@ -5218,19 +5210,11 @@ jobs:
                 per_page: 100,
               },
             );
-            // Prefer PR updated_at (moves with synchronize) over commit author
-            // dates so cherry-picked/rebased SHAs cannot inherit pre-push plain
-            // @codex comments as a false same-head request.
-            const notBefore =
-              pr.updated_at ||
-              context.payload.pull_request?.updated_at ||
-              null;
             if (
               auto.shouldSkipExternalCodexRerequest({
                 existingComments: comments,
                 headSha: pr.head.sha,
                 ownActors: process.env.OWN_ACTORS,
-                notBefore,
               })
             ) {
               core.info(`Already re-requested Codex for ${pr.head.sha}`);
@@ -5377,17 +5361,12 @@ jobs:
               },
             );
             const forceRetry =
-              process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';            const notBefore =
-              pr.updated_at ||
-              context.payload.pull_request?.updated_at ||
-              null;
-            if (
+              process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';            if (
               !forceRetry &&
               auto.shouldSkipExternalCodexRerequest({
                 existingComments: comments,
                 headSha: pr.head.sha,
                 ownActors: process.env.OWN_ACTORS,
-                notBefore,
               })
             ) {
               core.info(`Already re-requested Codex for ${pr.head.sha}`);

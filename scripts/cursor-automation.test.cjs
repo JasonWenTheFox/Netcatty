@@ -4139,11 +4139,9 @@ test('shouldSkipExternalCodexRerequest matches trusted head sha marker only', ()
   );
 });
 
-test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and plain requests', () => {
+test('shouldSkipExternalCodexRerequest honors head pins; ignores plain unpinned @codex', () => {
   const sha = 'deadbeefcafebabe000000000000000000000001';
   const short = sha.slice(0, 12);
-  // Simulate PR.updated_at after synchronize (push time), not commit author date.
-  const headPushedAt = '2026-08-05T14:00:00Z';
   // Automation request with head pin but no external marker still dedupes.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
@@ -4172,63 +4170,30 @@ test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and pla
     }),
     true,
   );
-  // Cursor bot plain @codex after the head was pushed blocks own_rerequest.
+  // Plain unpinned @codex never suppresses — cannot know which SHA it meant.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      notBefore: headPushedAt,
+      notBefore: '2026-08-05T14:00:00Z',
       existingComments: [
         {
           user: { login: 'cursor[bot]' },
           created_at: '2026-08-05T14:00:30Z',
-          body: '@codex review',
-        },
-      ],
-    }),
-    true,
-  );
-  // Maintainer manual plain @codex after push also counts.
-  assert.equal(
-    auto.shouldSkipExternalCodexRerequest({
-      headSha: sha,
-      ownActors: 'binaricat',
-      notBefore: headPushedAt,
-      existingComments: [
-        {
-          user: { login: 'binaricat' },
-          created_at: '2026-08-05T14:00:10Z',
-          body: '@codex review',
-        },
-      ],
-    }),
-    true,
-  );
-  // Plain request from before this head was pushed must not block re-request.
-  assert.equal(
-    auto.shouldSkipExternalCodexRerequest({
-      headSha: sha,
-      ownActors: 'binaricat',
-      notBefore: headPushedAt,
-      existingComments: [
-        {
-          user: { login: 'binaricat' },
-          created_at: '2026-08-05T13:59:00Z',
           body: '@codex review',
         },
       ],
     }),
     false,
   );
-  // Without notBefore, plain requests never suppress (need head pin/marker).
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
       existingComments: [
         {
-          user: { login: 'cursor[bot]' },
-          created_at: '2026-08-05T14:00:30Z',
+          user: { login: 'binaricat' },
+          created_at: '2026-08-05T14:00:10Z',
           body: '@codex review',
         },
       ],
@@ -4240,7 +4205,6 @@ test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and pla
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      notBefore: headPushedAt,
       existingComments: [
         {
           user: { login: 'chatgpt-codex-connector[bot]' },

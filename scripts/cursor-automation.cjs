@@ -1833,43 +1833,36 @@ function isCodexRequestDedupeAuthor(login, { ownActors } = {}) {
 /**
  * Skip posting another @codex review when this head was already requested.
  *
- * Historical bug: only `cursor-external-codex:SHA` counted. Plain maintainer /
- * Cursor-bot `@codex review` (or automation comments with only cursor-codex-head)
- * did not, so synchronize re-request double-fired Codex on the same SHA — clean
- * issue comment from job A, findings review from job B minutes later.
+ * Historical bug: only `cursor-external-codex:SHA` counted. Automation
+ * comments that pin `cursor-codex-head:SHA` (and maintainer requests built the
+ * same way) did not, so a second synchronize-path request could fire for the
+ * same SHA while an earlier job was still in flight — clean issue comment from
+ * one job, findings review from the other.
  *
- * Now skip when a trusted/dedupe author already requested this head via:
- * - external marker, or
- * - cursor-codex-head pin matching headSha, or
- * - plain @codex review with no head pin, but only if the comment is known to
- *   be at/after this head became the PR tip (`notBefore` = PR updated_at /
- *   push time, NOT commit author/committer dates — those predate cherry-picks).
+ * Skip when a trusted/dedupe author already requested this head via:
+ * - `cursor-external-codex:SHA`, or
+ * - `cursor-codex-head:SHA` pin matching headSha.
+ *
+ * Plain unpinned "@codex review" is intentionally ignored: without a head pin
+ * we cannot tell which SHA it targeted, and timestamp heuristics (age, commit
+ * date, PR.updated_at) all have false-positive races. Prefer always planting
+ * a head pin (buildCodexReviewRequestComment) so re-request is safe.
+ *
+ * `notBefore` is accepted but unused (kept so older workflow callers do not
+ * throw if they still pass it).
  */
 function shouldSkipExternalCodexRerequest({
   existingComments = [],
   headSha,
   ownActors,
-  /**
-   * ISO timestamp (or ms) of when the current head became the PR tip —
-   * typically pull_request.updated_at on synchronize. Required for plain
-   * unpinned @codex comments to count toward dedupe. Do not pass commit
-   * author/committer dates.
-   */
-  notBefore = null,
-  /** Optional clock skew slack when comparing plain request created_at. */
-  notBeforeSlackMs = 5_000,
+  notBefore: _notBefore = null,
+  notBeforeSlackMs: _notBeforeSlackMs = 5_000,
 } = {}) {
   const want = String(headSha || '')
     .trim()
     .toLowerCase();
   if (!want) return false;
   const externalMarker = `<!-- cursor-external-codex:${sanitizeUntrustedText(want, 64)} -->`;
-  const notBeforeMs = notBefore == null
-    ? null
-    : typeof notBefore === 'number'
-      ? notBefore
-      : Date.parse(String(notBefore));
-  const slack = Math.max(0, Number(notBeforeSlackMs) || 0);
 
   return existingComments.some((c) => {
     const login = c?.user?.login || c?.login;
@@ -1884,12 +1877,6 @@ function shouldSkipExternalCodexRerequest({
     const pinned = extractRequestedHeadSha(body);
     if (pinned && commitShasMatch(want, pinned)) return true;
 
-    // Plain "@codex review" with no head pin — only when the caller proves the
-    // comment is not from a previous head (notBefore = head commit time).
-    if (!pinned && notBeforeMs != null && Number.isFinite(notBeforeMs)) {
-      const created = Date.parse(c?.created_at || '') || 0;
-      if (created > 0 && created + slack >= notBeforeMs) return true;
-    }
     return false;
   });
 }
