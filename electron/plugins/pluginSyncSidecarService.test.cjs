@@ -367,6 +367,53 @@ test("applyFromSync empty remote clears installed settings without sidecar rows"
   );
 });
 
+test("applyFromSync deletes stale-scope settings under stored coordinates", async (context) => {
+  const database = tempDb(context);
+  // Sidecar/key still encodes application scope, but declaration moved to device.
+  database.setSetting(
+    "com.example.sync",
+    "com.example.sync.theme",
+    "application",
+    "application",
+    "stale-scope",
+    3,
+  );
+  database.setSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
+    "stale-scope",
+    3,
+  );
+  const resets = [];
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "device" },
+            ],
+          }],
+        };
+      },
+      async resetSetting(pluginId, settingId, scopeId) {
+        // Simulates normalizeScopeId against the *current* device scope.
+        resets.push({ pluginId, settingId, scopeId });
+        database.deleteSetting(pluginId, settingId, "device", scopeId === "application" ? "device" : scopeId);
+      },
+    },
+  });
+  await service.applyFromSync({ version: 1, entries: [] });
+  assert.equal(
+    database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
+    undefined,
+    "stale application-scope row must be deleted by stored-coordinate fallback",
+  );
+});
+
 test("applyFromSync empty remote bundle wipes missing-plugin retained rows", async (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);

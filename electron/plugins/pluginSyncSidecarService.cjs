@@ -175,8 +175,21 @@ class PluginSyncSidecarService {
             parsed.scopeId,
           );
         } catch {
-          // Validation rejected the reset (e.g. required setting) — keep the
-          // local value rather than force-deleting through the database.
+          // Validation rejected the reset (e.g. required setting) — still try
+          // the stored-coordinate delete below for stale-scope rows.
+        }
+        // resetSetting normalizes against the *current* declared scope. After a
+        // scope migration (application → device), that may miss the stale row
+        // still stored under the old coordinates; always delete those too.
+        try {
+          this.database.deleteSetting(
+            entry.pluginId,
+            parsed.settingId,
+            parsed.scope,
+            parsed.scopeId,
+          );
+        } catch {
+          // Best-effort cleanup of the stored-coordinate row.
         }
         continue;
       }
