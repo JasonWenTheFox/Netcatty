@@ -519,6 +519,38 @@ test("schema upgrade backfills bindings from legacy sync-provider-map secrets", 
   database.close();
 });
 
+test("legacy map backfill does not overwrite an existing host binding", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // Correct owner already bound.
+  database.upsertSyncProviderBinding("com.example.sync.foo", "com.example.sync");
+  // Stale parent leftover map secret that would steal ownership if upserted.
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-provider-map:com.example.sync.foo",
+    "ref-stale-parent-map",
+    Buffer.from("sealed"),
+    now,
+    now,
+  );
+  const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
+  assert.equal(promoted, 0, "must not promote over an existing binding");
+  assert.equal(
+    database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
+    "com.example.sync",
+    "existing binding must be preserved",
+  );
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
+    null,
+    "stale legacy map secret is still cleaned up",
+  );
+  database.close();
+});
+
 test("inferPluginIdForSyncProvider never guesses from credential key prefixes", (context) => {
   const database = createDatabase(context);
   const now = Date.now();

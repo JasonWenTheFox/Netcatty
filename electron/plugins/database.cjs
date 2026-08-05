@@ -861,6 +861,15 @@ class PluginDatabase {
       if (!providerId.startsWith(`${pluginId}.`)) {
         continue;
       }
+      // Never overwrite a host binding that already exists. A leftover parent
+      // map row (e.g. com.example has sync-provider-map:com.example.sync.foo
+      // while com.example.sync already owns that provider) would otherwise
+      // steal ownership on every open.
+      const existing = this.getSyncProviderBinding(providerId);
+      if (existing && typeof existing.pluginId === "string" && existing.pluginId.length > 0) {
+        this.deleteSecret(pluginId, key);
+        continue;
+      }
       this.upsertSyncProviderBinding(providerId, pluginId);
       this.deleteSecret(pluginId, key);
       promoted += 1;
