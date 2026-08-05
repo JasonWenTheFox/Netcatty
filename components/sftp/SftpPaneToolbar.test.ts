@@ -294,6 +294,15 @@ test("SFTP filter input guards CJK IME composition instead of deferring controll
   );
 });
 
+test("SFTP filter commit path clears the IME composing guard so clears/commits can't leave it stuck", () => {
+  // commitFilterValue backs composition end, Escape, inline clear and close; it must
+  // drop the guard so a programmatic clear mid-composition isn't blocked or undone.
+  assert.match(
+    toolbarSource,
+    /const commitFilterValue = useCallback\(\(value: string\) => \{[\s\S]*?filterComposingRef\.current = false;/,
+  );
+});
+
 test("SFTP filter clears the IME composing guard and resyncs the draft when the filter bar closes", () => {
   // If the input unmounts mid-composition, compositionend never fires; the guard
   // must be reset (or every later onSetFilter is blocked) and the draft resynced to

@@ -375,6 +375,10 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   }, [showFilterBar, pane.filter]);
 
   const commitFilterValue = useCallback((value: string) => {
+    // Committing/clearing finalizes any IME session, so drop the guard here. This
+    // covers every commit path (composition end, Escape, inline clear, close) so a
+    // stale composing flag can't block later commits or resurrect a pre-clear value.
+    filterComposingRef.current = false;
     setFilterDraft(value);
     // Keep parent filter in lockstep with the input. Deferred updates against a
     // controlled value fight CJK IME composition and can echo/drop candidates.
@@ -1035,7 +1039,6 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 filterComposingRef.current = true;
               }}
               onCompositionEnd={(e) => {
-                filterComposingRef.current = false;
                 commitFilterValue(e.currentTarget.value);
               }}
               placeholder={t("sftp.filter.placeholder")}
