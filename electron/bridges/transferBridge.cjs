@@ -2517,10 +2517,11 @@ async function runPausableConcurrentRanges({
         if (settled) return;
         if (error) terminalError = terminalError || error;
         if (active > 0) {
-          // Only an isolated channel may force-settle after aborting the
-          // subsystem. A shared channel cannot discard outstanding WRITE
-          // callbacks safely because the caller may clean up or reuse the
-          // same remote path while those requests are still in flight.
+          // forceSettleOnError callers may abandon in-flight ranges after a
+          // short grace: isolated channels (after sftp.end), and shared
+          // downloads (READ-only — no remote WRITEs to drain). Shared uploads
+          // must keep forceSettleOnError false so outstanding WRITEs finish
+          // before the caller reuses or cleans up the remote path.
           if (terminalError && forceSettleOnError) {
             if (!forceFinishTimer) {
               forceFinishTimer = setTimeout(() => {
@@ -2920,7 +2921,10 @@ async function downloadFileResumableFast(
         sendProgress,
         abortChannel,
         sftp,
-        forceSettleOnError: disposeChannel,
+        // Always force-settle on cancel/error: downloads have no remote WRITEs
+        // to drain. Shared/sudo paths cannot sftp.end() a stuck READ, so without
+        // this a hung read callback would hold the transfer and SFTP lease forever.
+        forceSettleOnError: true,
       });
       if (channelError) throw channelError;
       await verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSize, transfer);
