@@ -432,6 +432,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
             args={request.args}
             isInterrupted={false}
             approvalStatus="pending"
+            approvalId={approvalId}
             onApproveOnce={() => handleApproveOnce(approvalId)}
             onAlwaysAllow={request.allowSession === false
               ? undefined
@@ -463,6 +464,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
           isInterrupted={options.historical ? !isPending : undefined}
           isLoading={options.historical ? undefined : Boolean(options.isToolRunning && !isPending)}
           approvalStatus={approvalStatus}
+          approvalId={isPending ? toolCall.id : undefined}
           onApproveOnce={() => handleApproveOnce(toolCall.id)}
           onAlwaysAllow={() => handleAlwaysAllow(toolCall.id, pendingRequest ?? {
             toolCallId: toolCall.id,
@@ -762,6 +764,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     isLoading={false}
                     isInterrupted={false}
                     approvalStatus={'pending'}
+                    approvalId={id}
                     onApproveOnce={() => handleApproveOnce(id)}
                     onAlwaysAllow={() => handleAlwaysAllow(id, req)}
                     onReject={() => handleReject(id)}
@@ -781,6 +784,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   isLoading={false}
                   isInterrupted={false}
                   approvalStatus="pending"
+                  approvalId={approvalId}
                   onApproveOnce={() => handleApproveOnce(approvalId)}
                   onAlwaysAllow={request.allowSession === false
                     ? undefined

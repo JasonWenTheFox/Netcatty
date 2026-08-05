@@ -200,8 +200,9 @@ function requestApprovalFromRenderer(toolName, args, chatSessionId) {
     }
     const approvalId = `mcp_approval_${++approvalIdCounter}_${Date.now()}`;
 
-    // Auto-deny after timeout so SDK/MCP tool calls don't hang indefinitely
-    const timerId = setTimeout(() => {
+    // Auto-deny after timeout so SDK/MCP tool calls don't hang indefinitely.
+    // Cleared when the user starts reviewing the approval card (never auto-approves).
+    let timerId = setTimeout(() => {
       if (pendingApprovals.has(approvalId)) {
         pendingApprovals.delete(approvalId);
         resolve(false);
@@ -210,11 +211,19 @@ function requestApprovalFromRenderer(toolName, args, chatSessionId) {
       }
     }, APPROVAL_TIMEOUT_MS);
 
+    const clearTimer = () => {
+      if (timerId != null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    };
+
     pendingApprovals.set(approvalId, {
       resolve: (approved) => {
-        clearTimeout(timerId);
+        clearTimer();
         resolve(approved);
       },
+      cancelTimeout: clearTimer,
       chatSessionId: chatSessionId || null,
     });
     broadcastApprovalEvent('netcatty:ai:mcp:approval-request', {
@@ -235,6 +244,18 @@ function resolveApprovalFromRenderer(approvalId, approved) {
     // Main + settings both receive approval requests; clear the sibling card.
     notifyRendererApprovalCleared([approvalId]);
   }
+}
+
+/**
+ * Drop the auto-deny timer after the user starts reviewing an approval card.
+ * Leaves the approval pending until an explicit approve/reject.
+ */
+function cancelApprovalTimeoutFromRenderer(approvalId) {
+  const entry = pendingApprovals.get(approvalId);
+  if (!entry?.cancelTimeout) return false;
+  entry.cancelTimeout();
+  entry.cancelTimeout = undefined;
+  return true;
 }
 
 function notifyRendererApprovalCleared(approvalIds) {
@@ -2000,6 +2021,7 @@ module.exports = {
   getExternalMcpAuthToken,
   syncLiveSessionsToExternalScope,
   resolveApprovalFromRenderer,
+  cancelApprovalTimeoutFromRenderer,
   clearPendingApprovals,
   reserveSessionExecution,
   releaseSessionExecution,

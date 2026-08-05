@@ -96,6 +96,8 @@ export function registerGrantPersister(persister: GrantPersister): () => void {
 const pendingApprovals = new Map<string, {
   resolve: (resolution: ApprovalResolution) => void;
   request: ApprovalRequest;
+  /** Clears the auto-deny timer without resolving the approval. */
+  cancelTimeout?: () => void;
 }>();
 
 // Subscribers for approval request events (UI listens here)
@@ -191,31 +193,63 @@ export function requestApproval(
   return new Promise<boolean>((resolve) => {
     let timerId: ReturnType<typeof setTimeout> | null = null;
 
+    const clearTimer = () => {
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    };
+
     const wrappedResolve = (resolution: ApprovalResolution) => {
-      if (timerId) { clearTimeout(timerId); timerId = null; }
+      clearTimer();
       resolve(resolution.approved);
     };
 
-    pendingApprovals.set(toolCallId, { resolve: wrappedResolve, request });
-
-    // Auto-deny after timeout so the session doesn't hang indefinitely
+    // Auto-deny after timeout so the session doesn't hang indefinitely.
+    // Cleared when the user starts reviewing the approval card.
     timerId = setTimeout(() => {
-      if (pendingApprovals.has(toolCallId)) {
-        pendingApprovals.delete(toolCallId);
-        wrappedResolve({ approved: false, scope: 'once', cancelled: false });
-        emitApprovalEvent('approval_resolved', request, { outcome: 'timeout' });
-        // Notify UI to remove the stale card
-        for (const cl of clearedListeners) {
-          try { cl([toolCallId]); } catch { /* ignore */ }
-        }
+      const entry = pendingApprovals.get(toolCallId);
+      if (!entry) return;
+      pendingApprovals.delete(toolCallId);
+      wrappedResolve({ approved: false, scope: 'once', cancelled: false });
+      emitApprovalEvent('approval_resolved', request, { outcome: 'timeout' });
+      for (const cl of clearedListeners) {
+        try { cl([toolCallId]); } catch { /* ignore */ }
       }
     }, timeoutMs);
+
+    pendingApprovals.set(toolCallId, {
+      resolve: wrappedResolve,
+      request,
+      cancelTimeout: clearTimer,
+    });
 
     // Notify all UI listeners
     for (const listener of listeners) {
       try { listener(request); } catch { /* ignore listener errors */ }
     }
   });
+}
+
+/**
+ * Cancel the auto-deny timer for a pending approval after the user starts
+ * reviewing or interacting with the card. The approval remains pending until
+ * an explicit approve/reject (timeout never auto-approves).
+ */
+export function cancelApprovalTimeout(toolCallId: string): void {
+  const entry = pendingApprovals.get(toolCallId);
+  if (entry?.cancelTimeout) {
+    entry.cancelTimeout();
+    entry.cancelTimeout = undefined;
+  }
+
+  // MCP approvals are timed in the main process; ask it to drop its timer too.
+  if (toolCallId.startsWith('mcp_approval_')) {
+    const bridge = (window as unknown as {
+      netcatty?: { cancelMcpApprovalTimeout?: (id: string) => Promise<unknown> };
+    }).netcatty;
+    void bridge?.cancelMcpApprovalTimeout?.(toolCallId);
+  }
 }
 
 /**

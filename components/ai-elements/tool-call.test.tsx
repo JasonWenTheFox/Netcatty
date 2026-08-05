@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  extractApprovalExecutionContext,
   extractDisplayCommand,
   MAX_TOOL_COMMAND_TOOLTIP_CHARS,
   truncateToolCommandTooltip,
@@ -69,4 +70,22 @@ test('limits long command tooltips to a compact single-line preview', () => {
 test('empty / missing args -> null', () => {
   assert.equal(extractDisplayCommand(undefined), null);
   assert.equal(extractDisplayCommand({ command: '' }), null);
+});
+
+test('extractApprovalExecutionContext surfaces session/cwd/shell without rewriting command', () => {
+  assert.deepEqual(
+    extractApprovalExecutionContext({
+      sessionId: 'term-1',
+      cwd: '/var/log',
+      command: ['zsh', '-lc', 'df -h | sort'],
+    }),
+    { sessionId: 'term-1', cwd: '/var/log', shell: 'zsh' },
+  );
+  assert.deepEqual(
+    extractApprovalExecutionContext({
+      command: `/bin/bash -lc 'uptime'`,
+    }),
+    { sessionId: undefined, cwd: undefined, shell: 'bash' },
+  );
+  assert.equal(extractApprovalExecutionContext({ path: '/tmp' }), null);
 });

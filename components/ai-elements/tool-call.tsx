@@ -1,13 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { HTMLAttributes } from 'react';
 import { cn } from '../../lib/utils';
-import { Check, ChevronDown, ChevronRight, CheckCircle2, Loader2, ShieldAlert, X, XCircle, Slash } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CheckCircle2, Copy, Loader2, ShieldAlert, X, XCircle, Slash } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useI18n } from '../../application/i18n/I18nProvider';
+import { cancelApprovalTimeout } from '../../infrastructure/ai/shared/approvalGate';
 
 export const MAX_TOOL_COMMAND_TOOLTIP_CHARS = 240;
+/** Collapsed approval command block max height (px). Full text remains scrollable. */
+export const APPROVAL_COMMAND_COLLAPSED_MAX_HEIGHT_PX = 144;
+/** Expanded approval command block max height (px). */
+export const APPROVAL_COMMAND_EXPANDED_MAX_HEIGHT_PX = 384;
+/** Prefer expand control when the raw command exceeds this many characters. */
+export const APPROVAL_COMMAND_EXPAND_CHAR_THRESHOLD = 180;
 
 export function truncateToolCommandTooltip(
   command: string,
@@ -106,6 +113,49 @@ export function extractDisplayCommand(args: Record<string, unknown> | undefined)
   return cmdString;
 }
 
+export interface ApprovalExecutionContext {
+  sessionId?: string;
+  cwd?: string;
+  shell?: string;
+}
+
+/**
+ * Best-effort execution context for approval review (session / cwd / shell).
+ * Never invents host names; only surfaces fields already present on tool args.
+ */
+export function extractApprovalExecutionContext(
+  args: Record<string, unknown> | undefined,
+): ApprovalExecutionContext | null {
+  if (!args) return null;
+
+  const sessionId = typeof args.sessionId === 'string' && args.sessionId.trim()
+    ? args.sessionId.trim()
+    : undefined;
+
+  const cwdCandidate = [args.cwd, args.working_directory, args.workdir, args.workingDirectory]
+    .find((value) => typeof value === 'string' && value.trim());
+  const cwd = typeof cwdCandidate === 'string' ? cwdCandidate.trim() : undefined;
+
+  let shell = typeof args.shell === 'string' && args.shell.trim()
+    ? args.shell.trim()
+    : undefined;
+
+  if (!shell) {
+    const raw = (args as { command?: unknown }).command;
+    if (Array.isArray(raw) && raw.length >= 2) {
+      const first = String(raw[0] ?? '');
+      const shellMatch = first.match(/(?:^|\/)(sh|bash|zsh|fish|ash|dash)$/);
+      if (shellMatch) shell = shellMatch[1];
+    } else if (typeof raw === 'string') {
+      const shellMatch = raw.match(/^(?:\S*\/)?(sh|bash|zsh|fish|ash|dash)\s+-l?c\s+/);
+      if (shellMatch) shell = shellMatch[1];
+    }
+  }
+
+  if (!sessionId && !cwd && !shell) return null;
+  return { sessionId, cwd, shell };
+}
+
 /**
  * Format tool result for display. Extracts stdout/stderr from structured
  * command results for terminal-like output.
@@ -149,6 +199,8 @@ export interface ToolCallProps extends HTMLAttributes<HTMLDivElement> {
   isInterrupted?: boolean;
   /** Approval state for this tool call (from the approval gate). */
   approvalStatus?: 'pending' | 'approved' | 'denied';
+  /** Pending approval id used to cancel the auto-deny timer on review. */
+  approvalId?: string;
   /** Called when user approves this tool call. */
   onApprove?: () => void;
   /** Called when user rejects this tool call. */
@@ -161,18 +213,65 @@ export interface ToolCallProps extends HTMLAttributes<HTMLDivElement> {
   alwaysAllowLabel?: string;
 }
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof document === 'undefined') return false;
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.setAttribute('readonly', '');
+    el.style.position = 'fixed';
+    el.style.left = '-9999px';
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(el);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export const ToolCall = ({
   name, args, result, isError, isLoading, isInterrupted,
-  approvalStatus, onApprove, onReject, onApproveOnce, onAlwaysAllow, alwaysAllowLabel,
+  approvalStatus, approvalId, onApprove, onReject, onApproveOnce, onAlwaysAllow, alwaysAllowLabel,
   className, ...props
 }: ToolCallProps) => {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  const [commandExpanded, setCommandExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [frozenCommand, setFrozenCommand] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const approveBtnRef = useRef<HTMLButtonElement>(null);
   const [responded, setResponded] = useState(false);
+  const timeoutCancelledRef = useRef(false);
 
   const isPendingApproval = approvalStatus === 'pending' && !responded;
+  const liveDisplayCommand = extractDisplayCommand(args);
+  const reviewCommand = isPendingApproval
+    ? (frozenCommand ?? liveDisplayCommand)
+    : liveDisplayCommand;
+  const executionContext = extractApprovalExecutionContext(args);
+  const showApprovalCommand = Boolean(isPendingApproval && reviewCommand);
+  const commandNeedsExpand = Boolean(
+    reviewCommand
+    && (reviewCommand.length > APPROVAL_COMMAND_EXPAND_CHAR_THRESHOLD
+      || reviewCommand.includes('\n')),
+  );
+
+  const markReviewing = useCallback(() => {
+    if (!isPendingApproval || !approvalId || timeoutCancelledRef.current) return;
+    timeoutCancelledRef.current = true;
+    cancelApprovalTimeout(approvalId);
+  }, [approvalId, isPendingApproval]);
 
   const handleApproveOnce = useCallback(() => {
     if (!isPendingApproval) return;
@@ -192,27 +291,59 @@ export const ToolCall = ({
     onReject?.();
   }, [isPendingApproval, onReject]);
 
+  const handleCopyCommand = useCallback(async () => {
+    if (!reviewCommand) return;
+    markReviewing();
+    const ok = await copyTextToClipboard(reviewCommand);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [markReviewing, reviewCommand]);
+
   // Keyboard: Enter = approve, Escape = reject (when pending)
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!isPendingApproval) return;
     if (e.key === 'Enter') { e.preventDefault(); handleApproveOnce(); }
     else if (e.key === 'Escape') { e.preventDefault(); handleReject(); }
-  }, [isPendingApproval, handleApproveOnce, handleReject]);
+    else {
+      // Typing / navigation while reviewing cancels the idle auto-deny timer.
+      markReviewing();
+    }
+  }, [isPendingApproval, handleApproveOnce, handleReject, markReviewing]);
 
-  // Auto-focus and auto-scroll when approval is pending
+  // Auto-focus and auto-scroll when approval is pending.
+  // Do not treat this programmatic expand/focus as user review (timeout stays armed).
   useEffect(() => {
     if (!isPendingApproval || !cardRef.current) return;
     cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    // Small delay to let the UI render, then expand and focus
     setExpanded(true);
     const focusTimer = setTimeout(() => approveBtnRef.current?.focus(), 100);
     return () => clearTimeout(focusTimer);
   }, [isPendingApproval]);
 
-  // Reset responded state when approvalStatus changes (e.g. new approval)
+  // Freeze the reviewable command for the life of this pending approval.
+  // Do not reset review/timeout state when args identity churns while still pending.
   useEffect(() => {
-    if (approvalStatus === 'pending') setResponded(false);
+    if (approvalStatus === 'pending') {
+      setResponded(false);
+      timeoutCancelledRef.current = false;
+      setCommandExpanded(false);
+      setFrozenCommand(extractDisplayCommand(args));
+      return;
+    }
+    setFrozenCommand(null);
+    setCommandExpanded(false);
+    // Intentionally depend only on approvalStatus so late arg patches cannot
+    // replace the command the user is already reviewing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- freeze on pending enter
   }, [approvalStatus]);
+
+  // If the first pending paint had no command yet, accept the first non-empty one.
+  useEffect(() => {
+    if (!isPendingApproval || frozenCommand) return;
+    const next = extractDisplayCommand(args);
+    if (next) setFrozenCommand(next);
+  }, [args, frozenCommand, isPendingApproval]);
 
   // Border/bg color based on approval status
   const borderClass = approvalStatus === 'pending'
@@ -236,46 +367,48 @@ export const ToolCall = ({
     <CheckCircle2 size={12} className={cn('text-green-400/70', statusIconClass)} />
   ) : null;
 
+  const headerCommand = reviewCommand ?? liveDisplayCommand;
+
   return (
     <div
       ref={cardRef}
       tabIndex={isPendingApproval ? 0 : undefined}
       onKeyDown={isPendingApproval ? handleKeyDown : undefined}
+      onPointerDownCapture={isPendingApproval ? markReviewing : undefined}
       className={cn('min-w-0 rounded-md border overflow-hidden text-[12px] outline-none', borderClass, className)}
       {...props}
     >
       <button
         type="button"
-        onClick={() => setExpanded(e => !e)}
+        onClick={() => {
+          if (isPendingApproval) markReviewing();
+          setExpanded((e) => !e);
+        }}
         className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-muted/20 transition-colors cursor-pointer"
       >
         {expanded
           ? <ChevronDown size={12} className="text-muted-foreground/40 shrink-0" />
           : <ChevronRight size={12} className="text-muted-foreground/40 shrink-0" />
         }
-        {(() => {
-          const displayCmd = extractDisplayCommand(args);
-          if (displayCmd) {
-            return (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="font-mono text-muted-foreground/70 truncate cursor-default">
-                    <span className="text-muted-foreground/40">$ </span>{displayCmd}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="top"
-                  align="start"
-                  collisionPadding={12}
-                  className="w-[calc(100vw-24px)] max-w-[420px] whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed [overflow-wrap:anywhere]"
-                >
-                  {truncateToolCommandTooltip(displayCmd)}
-                </TooltipContent>
-              </Tooltip>
-            );
-          }
-          return <span className="font-mono text-muted-foreground/70 truncate">{name}</span>;
-        })()}
+        {headerCommand ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="font-mono text-muted-foreground/70 truncate cursor-default">
+                <span className="text-muted-foreground/40">$ </span>{headerCommand}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              align="start"
+              collisionPadding={12}
+              className="w-[calc(100vw-24px)] max-w-[420px] whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+            >
+              {truncateToolCommandTooltip(headerCommand)}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="font-mono text-muted-foreground/70 truncate">{name}</span>
+        )}
         <span className="flex-1" />
         {/* Approval badge for resolved approvals */}
         {approvalStatus === 'approved' && (
@@ -293,7 +426,77 @@ export const ToolCall = ({
 
       {expanded && (
         <div className="border-t border-border/20">
-          {args && Object.keys(args).length > 0 && (
+          {showApprovalCommand && reviewCommand && (
+            <div className="px-3 py-2 space-y-1.5">
+              {executionContext && (
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground/45">
+                  <span className="font-medium uppercase tracking-wider text-muted-foreground/30">
+                    {t('ai.chat.targetLabel')}
+                  </span>
+                  {executionContext.sessionId && (
+                    <span className="font-mono truncate" title={executionContext.sessionId}>
+                      {t('ai.chat.approvalSession')}: {executionContext.sessionId}
+                    </span>
+                  )}
+                  {executionContext.shell && (
+                    <span className="font-mono">
+                      {t('ai.chat.approvalShell')}: {executionContext.shell}
+                    </span>
+                  )}
+                  {executionContext.cwd && (
+                    <span className="font-mono truncate" title={executionContext.cwd}>
+                      {t('ai.chat.approvalCwd')}: {executionContext.cwd}
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/30">
+                  {t('ai.chat.rawCommand')}
+                </div>
+                <div className="flex items-center gap-1">
+                  {commandNeedsExpand && (
+                    <button
+                      type="button"
+                      className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground px-1.5 py-0.5 rounded hover:bg-muted/30"
+                      onClick={() => {
+                        markReviewing();
+                        setCommandExpanded((v) => !v);
+                      }}
+                    >
+                      {commandExpanded ? t('ai.chat.collapse') : t('ai.chat.expand')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground px-1.5 py-0.5 rounded hover:bg-muted/30"
+                    onClick={() => { void handleCopyCommand(); }}
+                  >
+                    <Copy size={10} className="shrink-0" />
+                    {copied ? t('ai.chat.commandCopied') : t('ai.chat.copyCommand')}
+                  </button>
+                </div>
+              </div>
+              <pre
+                className={cn(
+                  'overflow-auto rounded-md border border-border/25 bg-muted/20 px-2.5 py-2',
+                  'text-[11px] font-mono leading-relaxed text-foreground/80',
+                  'whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
+                )}
+                style={{
+                  maxHeight: commandExpanded
+                    ? APPROVAL_COMMAND_EXPANDED_MAX_HEIGHT_PX
+                    : APPROVAL_COMMAND_COLLAPSED_MAX_HEIGHT_PX,
+                }}
+                onScroll={markReviewing}
+                onWheel={markReviewing}
+              >
+                {reviewCommand}
+              </pre>
+            </div>
+          )}
+
+          {args && Object.keys(args).length > 0 && !showApprovalCommand && (
             <div className="px-3 py-2">
               <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/30 mb-1">Arguments</div>
               <pre className="max-h-64 overflow-auto text-[11px] font-mono text-muted-foreground/50 whitespace-pre [overflow-wrap:normal]">

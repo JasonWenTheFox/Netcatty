@@ -1558,6 +1558,9 @@ function createPreloadApi(ctx) {
   respondMcpApproval: async (approvalId, approved) => {
     return ipcRenderer.invoke("netcatty:ai:mcp:approval-response", { approvalId, approved });
   },
+  cancelMcpApprovalTimeout: async (approvalId) => {
+    return ipcRenderer.invoke("netcatty:ai:mcp:approval-cancel-timeout", { approvalId });
+  },
   // MCP approval cleared: main process timed out or cancelled an approval
   onMcpApprovalCleared: (cb) => {
     const handler = (_event, payload) => cb(payload);
