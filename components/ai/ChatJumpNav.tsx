@@ -13,17 +13,23 @@ export interface ChatJumpNavProps {
   entries: ChatJumpEntry[];
   activeMessageId: string | null;
   onSelect: (messageId: string) => void;
+  /** Fired after the user leaves the jump target and returns to the bottom. */
+  onReleasePin?: () => void;
 }
 
 const ChatJumpNav: React.FC<ChatJumpNavProps> = ({
   entries,
   activeMessageId,
   onSelect,
+  onReleasePin,
 }) => {
   const { t } = useI18n();
-  const { stopScroll } = useStickToBottomContext();
+  const { stopScroll, isAtBottom } = useStickToBottomContext();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Only release after the viewport has left the bottom; avoids clearing a pin
+  // on the same tick as select while isAtBottom is still true.
+  const leftBottomWhilePinnedRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -36,6 +42,20 @@ const ChatJumpNav: React.FC<ChatJumpNavProps> = ({
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
+
+  useEffect(() => {
+    if (!activeMessageId) {
+      leftBottomWhilePinnedRef.current = false;
+      return;
+    }
+    if (!isAtBottom) {
+      leftBottomWhilePinnedRef.current = true;
+      return;
+    }
+    if (!leftBottomWhilePinnedRef.current) return;
+    leftBottomWhilePinnedRef.current = false;
+    onReleasePin?.();
+  }, [activeMessageId, isAtBottom, onReleasePin]);
 
   const handleSelect = useCallback((messageId: string) => {
     stopScroll();

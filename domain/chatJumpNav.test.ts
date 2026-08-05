@@ -11,7 +11,7 @@ test('truncateChatJumpLabel collapses whitespace and ellipsizes', () => {
   assert.equal(truncateChatJumpLabel('  hello   world  '), 'hello world');
   assert.equal(
     truncateChatJumpLabel('a'.repeat(40), 10),
-    `${'a'.repeat(9)}…`,
+    `${'a'.repeat(7)}...`,
   );
   assert.equal(truncateChatJumpLabel('   '), '');
 });

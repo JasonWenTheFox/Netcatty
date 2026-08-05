@@ -399,6 +399,12 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
     setPendingJumpMessageId(messageId);
   }, [visibleMessages]);
 
+  const handleReleaseJumpPin = useCallback(() => {
+    setActiveJumpMessageId(null);
+    setPendingJumpMessageId(null);
+    setRenderedTailCount(MESSAGE_RENDER_BATCH);
+  }, []);
+
   useEffect(() => {
     if (!pendingJumpMessageId) return;
     const target = document.getElementById(chatMessageDomId(pendingJumpMessageId));
@@ -879,6 +885,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
         entries={jumpEntries}
         activeMessageId={activeJumpMessageId}
         onSelect={handleJumpToMessage}
+        onReleasePin={handleReleaseJumpPin}
       />
       <ConversationScrollButton />
     </Conversation>

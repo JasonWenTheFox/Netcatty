@@ -26,7 +26,8 @@ export function truncateChatJumpLabel(text: string, maxLen = CHAT_JUMP_LABEL_MAX
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
   if (normalized.length <= maxLen) return normalized;
-  return `${normalized.slice(0, Math.max(1, maxLen - 1)).trimEnd()}…`;
+  const ellipsis = '...';
+  return `${normalized.slice(0, Math.max(1, maxLen - ellipsis.length)).trimEnd()}${ellipsis}`;
 }
 
 export function buildChatJumpEntries(
@@ -39,7 +40,7 @@ export function buildChatJumpEntries(
 ): ChatJumpEntry[] {
   const minEntries = options?.minEntries ?? CHAT_JUMP_MIN_ENTRIES;
   const maxLabelLen = options?.maxLabelLen ?? CHAT_JUMP_LABEL_MAX;
-  const emptyLabel = options?.emptyLabel ?? '…';
+  const emptyLabel = options?.emptyLabel ?? '...';
   const entries: ChatJumpEntry[] = [];
   for (const message of messages) {
     if (message.role !== 'user') continue;
