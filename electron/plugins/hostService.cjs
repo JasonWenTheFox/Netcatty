@@ -277,15 +277,29 @@ function createPluginHostService(options) {
     // manager.initialize() and before secret IPC can serve syncDeleteSecrets.
     // hostBootstrap starts initialize() in the background; an early disconnect
     // must already see retained bindings (Codex P2 on 0633d190).
+    const seedSyncBindings = () => {
+      if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders !== "function") return;
+      secretStore.backfillSyncProviderBindingsFromLiveProviders(
+        collectInstalledSyncProviderCatalog(database),
+      );
+    };
     try {
-      if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
-        secretStore.backfillSyncProviderBindingsFromLiveProviders(
-          collectInstalledSyncProviderCatalog(database),
-        );
-      }
+      seedSyncBindings();
     } catch {
       // Best-effort; host construction must continue.
     }
+    // PackageStore.recover() can add missing plugin_versions after construction
+    // seed; re-run after package initialize so recovered manifests count.
+    const originalPackageInitialize = packageStore.initialize.bind(packageStore);
+    packageStore.initialize = async () => {
+      const result = await originalPackageInitialize();
+      try {
+        seedSyncBindings();
+      } catch {
+        // Best-effort
+      }
+      return result;
+    };
     // Startup activation goes through contributionService.initialize() → #startPlugin
     // without onPluginEnabled. Hydrate every enabled plugin before that path runs.
     const originalInitialize = contributionService.initialize.bind(contributionService);
