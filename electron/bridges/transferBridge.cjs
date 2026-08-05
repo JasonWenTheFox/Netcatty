@@ -2107,9 +2107,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   const isWriteOpen = String(flags ?? "r") !== "r";
   const isTruncatingOpen = String(flags ?? "r") === "w";
   const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
-  // Path gate only for truncating shared writes — non-truncating "r+" resume
-  // opens do not wipe peer bytes if ordered loosely.
-  const pathGate = trackSharedWriteDrain && isTruncatingOpen
+  // Path-gate all shared writes (including "r+" resume). A pending truncating
+  // OPEN "w" can still zero the stage after an "r+" retry has started writing
+  // (Codex P1 on 30308203).
+  const pathGate = trackSharedWriteDrain
     ? beginTruncatingSharedWriteOpen(filePath, sharedWriteOpenSessionKey(sftp, transfer))
     : null;
   // Late truncating OPEN after settle (cancel or channel-error force-complete)
@@ -4559,8 +4560,18 @@ async function startTransferNow(event, payload, onProgress) {
     // Superseded always means this attempt lost ownership. Suppress terminal
     // events even after the retry has finished and left activeTransfers, or
     // the completed retry is rewritten as cancelled (Codex P2 on 52f0248c).
-    // Do not release SFTP leases — a live same-id retry may still hold them.
+    // Release only leases the live same-id retry did not also acquire (Codex P2).
     if (superseded) {
+      const liveOwner = activeTransfers.get(transferId);
+      const liveLeaseIds = new Set(
+        Array.isArray(liveOwner?.leasedSftpIds) ? liveOwner.leasedSftpIds : [],
+      );
+      const oldLeaseIds = (transfer.leasedSftpIds || leasedSftpIds || []).filter(
+        (id) => id != null && !liveLeaseIds.has(id),
+      );
+      if (oldLeaseIds.length > 0) {
+        releaseTransferSessionLeases(transferId, oldLeaseIds);
+      }
       cleanupTransfer({ releaseLeases: false });
       return;
     }
