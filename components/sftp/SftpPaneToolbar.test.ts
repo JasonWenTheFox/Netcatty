@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -17,6 +20,11 @@ import {
 } from "./SftpPaneToolbar.tsx";
 import type { SftpPane } from "../../application/state/sftp/types.ts";
 import { TooltipProvider } from "../ui/tooltip.tsx";
+
+const toolbarSource = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "SftpPaneToolbar.tsx"),
+  "utf8",
+);
 
 test("single SFTP view-mode button toggles to the other mode", () => {
   assert.equal(getNextSftpViewMode("list"), "tree");
@@ -275,6 +283,17 @@ test("copy-current-path action reports clipboard failures", async () => {
   });
 
   assert.equal(errorMessage, "Could not copy current path");
+});
+
+test("SFTP filter input guards CJK IME composition instead of deferring controlled value writes", () => {
+  assert.match(toolbarSource, /onCompositionStart=\{/);
+  assert.match(toolbarSource, /onCompositionEnd=\{/);
+  assert.match(toolbarSource, /shouldCommitImeControlledChange/);
+  assert.match(toolbarSource, /value=\{filterDraft\}/);
+  assert.doesNotMatch(
+    toolbarSource,
+    /onChange=\{\(e\) => startTransition\(\(\) => onSetFilter\(e\.target\.value\)\)\}/,
+  );
 });
 
 test("toolbar display path keeps the previous confirmed path while loading the same connection", () => {

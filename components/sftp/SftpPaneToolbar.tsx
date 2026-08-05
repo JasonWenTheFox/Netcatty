@@ -18,6 +18,10 @@ import type { SftpFilenameEncoding } from "../../types";
 import type { SftpPane } from "../../application/state/sftp/types";
 import type { SftpBookmark } from "../../domain/models";
 import { isWindowsPath } from "../../application/state/sftp/utils";
+import {
+  shouldAdoptExternalImeControlledValue,
+  shouldCommitImeControlledChange,
+} from "../../domain/imeControlledInput";
 import { toast } from "../ui/toast";
 
 export const SFTP_TOOLBAR_ITEM_IDS = [
@@ -327,6 +331,8 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   onListDrives,
 }) => {
   const [displayPath, setDisplayPath] = useState(pane.connection?.currentPath ?? "");
+  const [filterDraft, setFilterDraft] = useState(pane.filter);
+  const filterComposingRef = useRef(false);
   const prevDisplayConnectionIdRef = useRef(pane.connection?.id);
   const toolbarLayout = useToolbarItemLayout(
     STORAGE_KEY_SFTP_TOOLBAR_LAYOUT,
@@ -346,6 +352,25 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
       }),
     );
   }, [pane.connection?.currentPath, pane.connection?.id, pane.loading]);
+
+  useEffect(() => {
+    setFilterDraft((draftValue) =>
+      shouldAdoptExternalImeControlledValue({
+        isComposingSession: filterComposingRef.current,
+        draftValue,
+        externalValue: pane.filter,
+      })
+        ? pane.filter
+        : draftValue,
+    );
+  }, [pane.filter]);
+
+  const commitFilterValue = useCallback((value: string) => {
+    setFilterDraft(value);
+    // Keep parent filter in lockstep with the input. Deferred updates against a
+    // controlled value fight CJK IME composition and can echo/drop candidates.
+    onSetFilter(value);
+  }, [onSetFilter]);
 
   const handleNewFolder = useCallback(() => {
     setNewFolderName("");
@@ -984,23 +1009,42 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
             />
             <Input
               ref={filterInputRef}
-              value={pane.filter}
-              onChange={(e) => startTransition(() => onSetFilter(e.target.value))}
+              value={filterDraft}
+              onChange={(e) => {
+                const next = e.target.value;
+                setFilterDraft(next);
+                if (
+                  shouldCommitImeControlledChange({
+                    isComposingSession: filterComposingRef.current,
+                    nativeEventIsComposing: e.nativeEvent.isComposing,
+                  })
+                ) {
+                  onSetFilter(next);
+                }
+              }}
+              onCompositionStart={() => {
+                filterComposingRef.current = true;
+              }}
+              onCompositionEnd={(e) => {
+                filterComposingRef.current = false;
+                commitFilterValue(e.currentTarget.value);
+              }}
               placeholder={t("sftp.filter.placeholder")}
               className="h-6 w-full pl-7 pr-7 text-xs bg-background"
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
-                  if (pane.filter) {
-                    startTransition(() => onSetFilter(""));
+                  if (filterComposingRef.current || e.nativeEvent.isComposing) return;
+                  if (filterDraft || pane.filter) {
+                    commitFilterValue("");
                   } else {
                     setShowFilterBar(false);
                   }
                 }
               }}
             />
-            {pane.filter && (
+            {filterDraft && (
               <button
-                onClick={() => startTransition(() => onSetFilter(""))}
+                onClick={() => commitFilterValue("")}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 <X size={12} />
@@ -1014,7 +1058,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 size="icon"
                 className="h-6 w-6 shrink-0"
                 onClick={() => {
-                  startTransition(() => onSetFilter(""));
+                  commitFilterValue("");
                   setShowFilterBar(false);
                 }}
               >
