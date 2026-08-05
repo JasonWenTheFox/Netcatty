@@ -4246,9 +4246,10 @@ test("cancel during stalled shared upload OPEN drains before remote cleanup", as
 });
 
 test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
-  // Codex P2 on af9cef2e: 2s settle timeout unblocked cancel, but cleanup could
-  // still race a later truncating OPEN. sharedWriteOpenDrain must outlive the
-  // settle timeout so finally awaits close before stage delete.
+  // Codex P2 on af9cef2e / 0cda4a39: 2s settle timeout unblocks cancel UX, but
+  // cleanup must still wait for the OPEN callback (including past any channel-
+  // error drain force-complete window). Cancel must not arm drain force-
+  // complete — that would let stage delete race a late truncating OPEN.
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-drain-timeout-"));
   t.after(async () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -4328,8 +4329,9 @@ test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
 
   await transferBridge.cancelTransfer(null, { transferId });
 
-  // Let the 2s OPEN cancel settle timeout fire while OPEN is still pending.
-  await new Promise((resolve) => setTimeout(resolve, 2100));
+  // Past cancel settle (2s) and the channel-error drain force-complete window
+  // (another 2s). Cleanup must still be gated on the OPEN callback.
+  await new Promise((resolve) => setTimeout(resolve, 4500));
   assert.ok(typeof releaseOpen === "function", "OPEN must still be pending after settle timeout");
   assert.equal(eventLog.some((entry) => entry.startsWith("delete:")), false,
     "cleanup must not run before late OPEN drain");

@@ -1933,9 +1933,10 @@ async function uploadFile(
  * Shared write opens ("w" / "r+" / …) publish transfer.sharedWriteOpenDrain and
  * keep it pending until the OPEN callback finishes (including late opens after
  * a cancel settle timeout), so upload cleanup awaits the drain before deleting
- * the remote stage. Channel-error / cancel-settle paths that never receive an
- * OPEN callback arm a short drain force-complete so a dead channel cannot hold
- * the transfer and SFTP lease forever.
+ * the remote stage. Channel-error paths that never receive an OPEN callback arm
+ * a short drain force-complete so a dead channel cannot hold the transfer and
+ * SFTP lease forever. Cancel keeps the drain gated on the OPEN callback — a
+ * healthy shared channel may still deliver a late truncating OPEN.
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
  */
@@ -1974,9 +1975,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       resolveDrain();
     };
 
-    // When OPEN wait settles without an OPEN callback (channel error, or cancel
-    // settle timeout), keep drain pending for a late truncating OPEN — but force
-    // complete if the callback never arrives so cleanup/lease cannot hang.
+    // Channel error may never invoke the OPEN callback. Keep drain pending for
+    // a late truncating OPEN, but force-complete if the callback never arrives
+    // so cleanup/lease cannot hang. Cancel must NOT arm this — a healthy shared
+    // channel can still deliver a late OPEN after the settle timeout.
     const armSharedWriteDrainForceComplete = () => {
       if (!trackSharedWriteDrain || !resolveSharedWriteDrain || drainForceTimer) return;
       drainForceTimer = setTimeout(() => {
@@ -2003,14 +2005,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       transfer.cancelled = true;
       // Shared write OPEN can truncate/create the remote path. A settle timeout
       // unblocks the transfer UX, but sharedWriteOpenDrain stays pending until
-      // the OPEN callback finishes (or the drain force-complete) so cleanup
-      // cannot race a late truncating OPEN.
+      // the OPEN callback finishes so cleanup cannot race a late truncating OPEN.
       if (!disposeChannel && isWriteOpen && !settled) {
         try { abortChannel?.(); } catch { /* ignore */ }
         if (!openDrainTimer) {
           openDrainTimer = setTimeout(() => {
             settle(reject, new Error("Transfer cancelled"));
-            armSharedWriteDrainForceComplete();
           }, 2000);
         }
         return;
@@ -2993,9 +2993,9 @@ async function uploadFileConcurrent(
     // Shared write OPEN may still be in flight after a cancel settle timeout or
     // channel error. Await the drain barrier before returning so
     // runRemoteUploadTransaction cannot clean up the stage before a late
-    // truncating OPEN finishes (Codex P2 on 747847e7). openSftpHandleForTransfer
-    // force-completes the drain if the OPEN callback never arrives on a dead
-    // channel, so this await cannot hang forever.
+    // truncating OPEN finishes (Codex P2 on 747847e7). On channel error,
+    // openSftpHandleForTransfer force-completes the drain if the OPEN callback
+    // never arrives; cancel keeps the drain gated on the callback.
     const sharedWriteOpenDrain = transfer.sharedWriteOpenDrain;
     if (sharedWriteOpenDrain) {
       await sharedWriteOpenDrain.catch(() => {});
