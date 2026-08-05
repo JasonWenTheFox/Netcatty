@@ -2144,12 +2144,23 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
    * rather than allow a sparse promote (Codex P1 on 42a27ef7).
    */
   const invalidateRetryStageIfStaleOpen = () => {
-    if (!shouldUnlinkLateGeneratedStage) return;
+    // Truncating OPEN on either a generated stage or an in-place final can wipe
+    // a same-id retry that already accepted its own OPEN (Codex P1 on 709b27a1).
+    if (!isTruncatingOpen) return;
     const transferId = transfer?.transferId;
     if (transferId == null || transferId === "") return;
     const active = activeTransfers.get(transferId);
     if (!active || active === transfer) return;
-    if (!remoteOpenPathMatchesStaged(filePath, active.stagedRemote)) return;
+    const matchesStage = remoteOpenPathMatchesStaged(filePath, active.stagedRemote);
+    const matchesInPlace = !active.stagedRemote && (
+      remoteOpenPathMatchesStaged(filePath, {
+        path: active.targetPath,
+        sftpId: active.targetSftpId,
+        encoding: active.targetEncoding,
+      })
+      || String(filePath ?? "") === String(active.targetPath ?? "")
+    );
+    if (!matchesStage && !matchesInPlace) return;
     // Only abort once the retry has accepted its own OPEN; otherwise the path
     // gate is about to let the retry open cleanly after this late callback.
     if (active.sharedWriteOpenAccepted !== true) return;
@@ -2202,15 +2213,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       drainForceTimer = setTimeout(() => {
         drainForceTimer = null;
         completeSharedWriteDrain();
-        // In-place opens can free the path gate immediately. Generated/reusable
-        // stages must keep the gate held until a late OPEN callback settles
-        // (finishLateSharedWriteOpen / cancel path) so a same-id retry cannot
-        // promote while the server still processes the stale OPEN "w". Cap the
-        // hold so a permanently dead channel cannot block forever (Codex P1).
-        if (!generatedStagePath) {
-          releasePathGate();
-          return;
-        }
+        // Keep the path gate held until a late OPEN callback settles (or a 10s
+        // hard cap). Releasing immediately — even for in-place finals — lets a
+        // same-id retry open/write the same target while the old OPEN "w" is
+        // still pending and can still truncate it (Codex P1 on 709b27a1).
         setTimeout(() => releasePathGate(), 10000);
       }, 2000);
     };
