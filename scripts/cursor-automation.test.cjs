@@ -1144,6 +1144,44 @@ test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', a
   assert.match(commentBody, /重新打开/);
 });
 
+test('applyReadyForHumanHandoff skips when auto-close labels were cleared', async () => {
+  let updated = false;
+  const github = {
+    rest: {
+      issues: {
+        get: async () => ({
+          data: {
+            number: 2673,
+            state: 'open',
+            title: '[Bug] 不能连接本地网络',
+            body: '本地网络权限',
+            labels: [
+              { name: 'triage' },
+              { name: 'triage:admitted' },
+              { name: 'ready-for-agent' },
+            ],
+          },
+        }),
+        update: async () => {
+          updated = true;
+          return { data: {} };
+        },
+        listComments: Symbol('listComments'),
+        createComment: async () => ({ data: {} }),
+      },
+    },
+    paginate: async () => [],
+  };
+  const result = await auto.applyReadyForHumanHandoff({
+    github,
+    context: { repo: { owner: 'binaricat', repo: 'Netcatty' } },
+    issueNumber: 2673,
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(result.commented, false);
+  assert.equal(updated, false);
+});
+
 test('workflow cleans source labels after eligible PR close and dedupes clean notices', () => {
   const workflow = fs.readFileSync(
     path.join(__dirname, '..', '.github', 'workflows', 'cursor-automation.yml'),
