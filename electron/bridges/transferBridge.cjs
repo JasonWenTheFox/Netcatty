@@ -2362,11 +2362,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         }
         // Ownership moved to a same-id retry before this OPEN applied: treat as
         // late so we never hand the stale truncating handle to the old attempt.
+        // Mark noTransferFallback so uploadFile does not run
+        // prepareUploadFallbackCheckpoint and truncate the retry's shared stage
+        // (Codex P1 on 6834bed1).
         const activeOwner = transfer?.transferId != null
           ? activeTransfers.get(transfer.transferId)
           : null;
         if (activeOwner && activeOwner !== transfer) {
-          settle(reject, new Error("Transfer superseded"));
+          const supersededErr = new Error("Transfer superseded");
+          supersededErr.noTransferFallback = true;
+          settle(reject, supersededErr);
           if (handle && !disposeChannel) {
             finishLateSharedWriteOpen(handle);
             return;
