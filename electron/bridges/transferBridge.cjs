@@ -5261,6 +5261,12 @@ async function startTransferNow(event, payload, onProgress) {
       }
       sendError(err);
     }
+    // Superseded attempts lost ownership to a same-id retry. Do not return
+    // result.error — renderer directory ops treat any error as task failure
+    // and would mark the live retry failed (Codex P2 on f4a92074).
+    if (/superseded/i.test(err?.message || String(err))) {
+      return { transferId, superseded: true };
+    }
     return { transferId, error: err.message };
   }
 }
