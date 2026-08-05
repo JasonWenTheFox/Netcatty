@@ -978,6 +978,9 @@ function takePendingCancel(transferId) {
 const admittedActiveByResource = new Map();
 let admittedTransferLimit = 2;
 const isolatedDownloadChannelPools = new WeakMap();
+// Sudo downloads share the browse channel; cap concurrent 64-READ fanout the
+// same way isolated channels use FAST_DOWNLOAD_CHANNELS_PER_SESSION (#1507).
+const sharedFastDownloadSlots = new WeakMap();
 // Cache live SFTP clients where remote cp is known to be unavailable, so we
 // skip repeated failed exec attempts without retaining closed session ids.
 const cpUnavailableSet = new WeakSet();
@@ -1363,6 +1366,22 @@ function releaseIsolatedDownloadChannel(client, sftp, options = {}) {
 
   pool.idle.push(sftp);
   scheduleIdleIsolatedDownloadChannel(client, sftp);
+}
+
+function tryAcquireSharedFastDownloadSlot(client) {
+  const inFlight = sharedFastDownloadSlots.get(client) || 0;
+  if (inFlight >= FAST_DOWNLOAD_CHANNELS_PER_SESSION) return false;
+  sharedFastDownloadSlots.set(client, inFlight + 1);
+  return true;
+}
+
+function releaseSharedFastDownloadSlot(client) {
+  const inFlight = sharedFastDownloadSlots.get(client) || 0;
+  if (inFlight <= 1) {
+    sharedFastDownloadSlots.delete(client);
+    return;
+  }
+  sharedFastDownloadSlots.set(client, inFlight - 1);
 }
 
 async function acquireIsolatedDownloadChannel(client, transfer) {
@@ -1906,8 +1925,11 @@ async function uploadFile(
  * Open a remote SFTP handle while transfer.abort can reject the wait without
  * depending on sftp.end(). Isolated channels still pass abortChannel that ends
  * the subsystem; shared/sudo channels pass a no-op end path and only reject.
- * A late OPEN handle after cancel is closed best-effort when disposeChannel is
- * false so the shared session does not leak handles.
+ * A late OPEN handle after cancel / channel error is closed best-effort when
+ * disposeChannel is false so the shared session does not leak handles.
+ * Channel `error` while OPEN is pending must reject here: callers only check
+ * recorded channelError after this await returns, so a dead channel that never
+ * invokes the OPEN callback would otherwise hang the transfer and SFTP lease.
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
  */
@@ -1927,6 +1949,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (transfer.abort === abortDuringOpen) {
         transfer.abort = previousAbort;
       }
+      try { sftp.removeListener?.("error", onOpenChannelError); } catch { /* ignore */ }
       fn(value);
     };
 
@@ -1938,34 +1961,46 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       try { abortChannel?.(); } catch { /* ignore */ }
     };
 
+    const onOpenChannelError = (error) => {
+      settle(reject, error || new Error("SFTP channel error"));
+    };
+
     if (transfer.cancelled) {
       reject(new Error("Transfer cancelled"));
       return;
     }
 
     transfer.abort = abortDuringOpen;
+    sftp.on?.("error", onOpenChannelError);
 
-    sftp.open(filePath, flags, (error, handle) => {
-      if (settled) {
-        // Cancel already rejected the wait; close a late handle on shared sessions.
-        if (!error && handle && !disposeChannel) {
-          closeSftpHandle(sftp, handle).catch(() => {});
+    try {
+      sftp.open(filePath, flags, (error, handle) => {
+        if (settled) {
+          // Cancel / channel error already rejected the wait; close a late handle
+          // on shared sessions so the browse channel does not leak handles.
+          if (!error && handle && !disposeChannel) {
+            closeSftpHandle(sftp, handle).catch(() => {});
+          }
+          return;
         }
-        return;
-      }
-      if (error) {
-        settle(reject, error);
-        return;
-      }
-      if (transfer.cancelled) {
-        if (handle && !disposeChannel) {
-          closeSftpHandle(sftp, handle).catch(() => {});
+        if (error) {
+          settle(reject, error);
+          return;
         }
-        settle(reject, new Error("Transfer cancelled"));
-        return;
-      }
-      settle(resolve, handle);
-    });
+        if (transfer.cancelled) {
+          if (handle && !disposeChannel) {
+            closeSftpHandle(sftp, handle).catch(() => {});
+          }
+          settle(reject, new Error("Transfer cancelled"));
+          return;
+        }
+        settle(resolve, handle);
+      });
+    } catch (error) {
+      // Sync throw (destroyed channel / bad state) must still settle and drop
+      // the error listener; otherwise the shared browse channel leaks listeners.
+      settle(reject, error);
+    }
   });
 }
 
@@ -2581,6 +2616,9 @@ async function runPausableConcurrentRanges({
 
           void copyRange(position, length)
             .then(() => {
+              // After force-settle, abandoned ranges must not publish progress
+              // or advance checkpoints into the caller's truncate/fallback window.
+              if (settled) return;
               transferred += length;
               completedRanges.set(position, position + length);
               while (completedRanges.has(contiguousCheckpoint)) {
@@ -2590,8 +2628,12 @@ async function runPausableConcurrentRanges({
               }
               publishContiguousCheckpoint(false);
             })
-            .catch((error) => abort(error))
+            .catch((error) => {
+              if (settled) return;
+              abort(error);
+            })
             .finally(() => {
+              if (settled) return;
               active -= 1;
               settlePauseWaiters();
               if (terminalError || transfer.cancelled) {
@@ -2955,22 +2997,38 @@ async function downloadFileResumableFast(
     if (remoteHandle) {
       const skipClose = disposeChannel && (failed || transfer.cancelled);
       if (!skipClose) {
-        // Shared/sudo channels stay alive after failure; bound CLOSE so a dead
-        // channel cannot hang before truncate/fallback and lease release.
-        let closeTimeout = null;
-        try {
-          await Promise.race([
-            closeSftpHandle(sftp, remoteHandle),
-            new Promise((_, reject) => {
-              closeTimeout = setTimeout(() => reject(new Error("SFTP close timed out")), 2000);
-            }),
-          ]);
-        } catch (error) {
-          if (!failed && !transfer.cancelled && !/timed out/i.test(error?.message || "")) {
-            remoteCloseError = error;
+        if (failed || transfer.cancelled) {
+          // Shared cancel/failure already settled the transfer; do not await
+          // CLOSE (adds up to 2s on a dead channel). Best-effort close only.
+          closeSftpHandle(sftp, remoteHandle).catch(() => {});
+        } else {
+          // Success path on a shared channel: bound CLOSE so a hung callback
+          // cannot block lease release. Tag the watchdog so real server
+          // "timed out" CLOSE errors are not swallowed by message matching.
+          let closeTimeout = null;
+          try {
+            await Promise.race([
+              closeSftpHandle(sftp, remoteHandle),
+              new Promise((_, reject) => {
+                closeTimeout = setTimeout(() => {
+                  const timeoutError = new Error("SFTP close timed out");
+                  timeoutError.sftpCloseTimedOut = true;
+                  reject(timeoutError);
+                }, 2000);
+              }),
+            ]);
+          } catch (error) {
+            if (error?.sftpCloseTimedOut) {
+              console.warn(
+                "[transferBridge] shared SFTP CLOSE timed out; abandoning remote handle",
+                transfer.transferId || "",
+              );
+            } else {
+              remoteCloseError = error;
+            }
+          } finally {
+            if (closeTimeout) clearTimeout(closeTimeout);
           }
-        } finally {
-          if (closeTimeout) clearTimeout(closeTimeout);
         }
       }
     }
@@ -3141,56 +3199,68 @@ async function downloadFile(
     }
   }
 
-  // Concurrent READs on the shared browse channel — still pipelined, does not
-  // end the session on cancel (sudo mode and isolated-open failures). Mirrors
-  // upload's concurrent-shared path so elevated SFTP downloads keep fanout (#2719).
-  if (typeof sftp.open === "function" && typeof sftp.read === "function") {
+  // Sudo cannot open an isolated secondary channel, so elevated downloads must
+  // pipeline READs on the shared browse session (#2719). Cap concurrent shared
+  // fanout with the same per-session budget as isolated fast downloads (#1507).
+  // Non-sudo isolated misses stay on serial createReadStream below.
+  if (
+    client.__netcattySudoMode
+    && typeof sftp.open === "function"
+    && typeof sftp.read === "function"
+    && tryAcquireSharedFastDownloadSlot(client)
+  ) {
     try {
-      transfer.downloadStrategy = "concurrent-shared";
-      logTransferDiag(transfer, "strategy", {
-        strategy: "concurrent-shared",
-        fields: {
-          chunk: formatDiagBytes(TRANSFER_CHUNK_SIZE),
-          concurrency: DOWNLOAD_TRANSFER_CONCURRENCY,
-        },
-      });
-      await downloadFileResumableFast(
-        remotePath,
-        localPath,
-        sftp,
-        fileSize,
-        transfer,
-        sendProgress,
-        { disposeChannel: false },
-      );
-      if (initialSource) {
-        const latestSource = await runCancelablePreflight(() => client.stat(remotePath));
-        await assertDownloadSourceAfterTransfer(initialSource, latestSource, fileSize, {
-          localPath,
-          client,
-          remotePath,
-          signal: transfer.signal,
-        });
-      }
-      return;
-    } catch (err) {
-      if (transfer.cancelled) throw err;
-      if (err?.noTransferFallback) throw err;
-      // Concurrent ranges may leave sparse tails past the contiguous
-      // checkpoint; truncate the actual local target before stream resume.
-      const sharedCheckpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
       try {
-        await fs.promises.truncate(localPath, sharedCheckpoint);
-      } catch (truncateError) {
-        if (!(sharedCheckpoint === 0 && truncateError?.code === "ENOENT")) {
-          throw truncateError;
+        transfer.downloadStrategy = "concurrent-shared";
+        logTransferDiag(transfer, "strategy", {
+          strategy: "concurrent-shared",
+          fields: {
+            chunk: formatDiagBytes(TRANSFER_CHUNK_SIZE),
+            concurrency: DOWNLOAD_TRANSFER_CONCURRENCY,
+          },
+        });
+        await downloadFileResumableFast(
+          remotePath,
+          localPath,
+          sftp,
+          fileSize,
+          transfer,
+          sendProgress,
+          { disposeChannel: false },
+        );
+        if (initialSource) {
+          const latestSource = await runCancelablePreflight(() => client.stat(remotePath));
+          await assertDownloadSourceAfterTransfer(initialSource, latestSource, fileSize, {
+            localPath,
+            client,
+            remotePath,
+            signal: transfer.signal,
+          });
         }
+        return;
+      } catch (err) {
+        if (transfer.cancelled) throw err;
+        if (err?.noTransferFallback) throw err;
+        // Concurrent ranges may leave sparse tails past the contiguous
+        // checkpoint; truncate the actual local target before stream resume.
+        const sharedCheckpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
+        try {
+          await fs.promises.truncate(localPath, sharedCheckpoint);
+        } catch (truncateError) {
+          if (!(sharedCheckpoint === 0 && truncateError?.code === "ENOENT")) {
+            throw truncateError;
+          }
+        }
+        sendProgress(sharedCheckpoint, fileSize, { force: true, checkpointBytes: sharedCheckpoint });
+        // Clear so the stream fallback below reports the strategy that actually ran.
+        transfer.downloadStrategy = null;
+        console.warn(
+          "[transferBridge] concurrent shared download failed, falling back to a compatible stream:",
+          err?.message || String(err),
+        );
       }
-      sendProgress(sharedCheckpoint, fileSize, { force: true, checkpointBytes: sharedCheckpoint });
-      console.warn(
-        "[transferBridge] concurrent shared download failed, falling back to a compatible stream:",
-        err?.message || String(err),
-      );
+    } finally {
+      releaseSharedFastDownloadSlot(client);
     }
   }
 
