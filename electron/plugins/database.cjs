@@ -860,10 +860,13 @@ class PluginDatabase {
    * build (pluginId-namespaced provider ids only). After a successful promote,
    * those map rows are deleted so constructor-time backfill cannot resurrect a
    * binding after the user disconnects/unbinds. Multiple plugins may hold map
-   * rows for the same provider (parent + real owner): group by provider, never
+   * rows for the same provider (parent + nested id): group by provider, never
    * overwrite an existing host binding (including empty-plugin_id unbind
-   * tombstones), and when unbound pick the longest pluginId namespace match so a
-   * shorter parent cannot win just because SQLite returned it first.
+   * tombstones). Among candidates, only plugins that still hold sync-credential*
+   * secrets are eligible; pick the longest pluginId among those. Skip when none
+   * have credentials or when multiple distinct winners share the same length -
+   * longest map alone must not override a shorter true owner (validation only
+   * requires providerId.startsWith(pluginId + ".")).
    */
   backfillSyncProviderBindingsFromLegacySecrets() {
     const legacyPrefix = "sync-provider-map:";
@@ -889,6 +892,13 @@ class PluginDatabase {
       list.push({ pluginId, key });
       byProvider.set(providerId, list);
     }
+    // Credential presence is the signal for real ownership. A longer nested map
+    // row without credentials must not steal bind from a parent that still owns
+    // sync-credential* secrets for the provider namespace.
+    const credentialOwners = new Set(
+      this.listPluginIdsWithSecretKeyPrefix("sync-credential")
+        .filter((id) => typeof id === "string" && id.length > 0),
+    );
     let promoted = 0;
     for (const [providerId, candidates] of byProvider) {
       // Any host row means a prior decision: active bind or explicit unbind
@@ -896,8 +906,14 @@ class PluginDatabase {
       if (this.getSyncProviderBinding(providerId)) {
         continue;
       }
-      // Strongest owner = longest pluginId namespace prefix.
-      const ranked = [...candidates].sort((a, b) => b.pluginId.length - a.pluginId.length);
+      // Only credential-backed map candidates may win; map-only leftovers stay
+      // unbound rather than inventing ownership from namespace length alone.
+      const withCredentials = candidates.filter((c) => credentialOwners.has(c.pluginId));
+      if (withCredentials.length === 0) {
+        continue;
+      }
+      // Among credential owners, strongest = longest pluginId namespace prefix.
+      const ranked = [...withCredentials].sort((a, b) => b.pluginId.length - a.pluginId.length);
       const winner = ranked[0];
       const winnerLength = winner.pluginId.length;
       const tied = ranked.filter((c) => c.pluginId.length === winnerLength);
@@ -909,7 +925,9 @@ class PluginDatabase {
       this.upsertSyncProviderBinding(providerId, uniqueWinners[0]);
       // Consume legacy map markers for this provider so a later unbind + reopen
       // cannot re-promote from leftover secrets. Only delete namespaced map keys
-      // we accepted as candidates (not arbitrary plugin secrets).
+      // we accepted as candidates (not arbitrary plugin secrets). Consume all
+      // candidate maps (including map-only losers) once a credential-backed
+      // owner is bound, so orphans cannot re-run later.
       for (const candidate of candidates) {
         this.deleteSecret(candidate.pluginId, candidate.key);
       }

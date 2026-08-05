@@ -399,7 +399,9 @@ test("unbind deletes owner map markers and blocks legacy re-promotion", (context
     database,
     safeStorage: fakeSafeStorage(),
   });
-  // Simulate intermediate-build map row that backfill would otherwise promote.
+  // Credential evidence is required for map promote; simulate a real owner plus
+  // an intermediate-build map row that backfill would otherwise promote.
+  store.set("com.example", "sync-credential", "secret");
   store.set("com.example", "sync-provider-map:com.example.sync", "com.example");
   assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
@@ -409,6 +411,7 @@ test("unbind deletes owner map markers and blocks legacy re-promotion", (context
     "promote consumes the map marker",
   );
   // User disconnects; reintroduce a map row as if something wrote it back.
+  // Tombstone still blocks re-promotion even with credentials + map present.
   store.unbindSyncProviderPlugin("com.example", "com.example.sync");
   store.set("com.example", "sync-provider-map:com.example.sync", "com.example");
   assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);

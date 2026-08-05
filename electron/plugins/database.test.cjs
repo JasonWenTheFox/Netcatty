@@ -552,10 +552,11 @@ test("legacy map backfill does not overwrite an existing host binding", (context
   database.close();
 });
 
-test("legacy map backfill prefers the longest plugin owner when maps conflict", (context) => {
+test("legacy map backfill skips when no candidate holds sync credentials", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
-  // Insert parent first so row order would favor the shorter owner if ungrouped.
+  // Map-only leftovers: longest namespace must not invent ownership without
+  // sync-credential* evidence (parent may be the true owner later).
   for (const [pluginId, key] of [
     ["com.example", "sync-provider-map:com.example.sync.foo"],
     ["com.example.sync", "sync-provider-map:com.example.sync.foo"],
@@ -566,15 +567,110 @@ test("legacy map backfill prefers the longest plugin owner when maps conflict", 
     `).run(pluginId, key, `ref-${pluginId}`, Buffer.from("sealed"), now, now);
   }
   const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
+  assert.equal(promoted, 0, "map-only candidates must not bind without credentials");
+  assert.equal(database.getSyncProviderBinding("com.example.sync.foo"), null);
+  // Unbound maps stay so a later credential-backed promote or live put can resolve.
+  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"));
+  assert.ok(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"));
+  database.close();
+});
+
+test("legacy map backfill prefers longest credential-backed owner when maps conflict", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // Parent has leftover map only; nested owner still holds credentials.
+  for (const [pluginId, key, ciphertext] of [
+    ["com.example", "sync-provider-map:com.example.sync.foo", "map-parent"],
+    ["com.example.sync", "sync-provider-map:com.example.sync.foo", "map-nested"],
+    ["com.example.sync", "sync-credential", "real-secret"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(pluginId, key, `ref-${pluginId}-${key}`, Buffer.from(ciphertext), now, now);
+  }
+  const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
   assert.equal(promoted, 1);
   assert.equal(
     database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
     "com.example.sync",
-    "longest namespace owner must win over parent map row",
+    "longest credential-backed owner must win over map-only parent",
   );
   // All candidate map markers for the promoted provider are consumed.
   assert.equal(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"), null);
   assert.equal(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"), null);
+  assert.ok(database.getSecretByKey("com.example.sync", "sync-credential"));
+  database.close();
+});
+
+test("legacy map backfill does not let longest map override credential-backed parent", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // True owner is the shorter parent (still has credentials). Nested plugin has
+  // only a stale map row - longest map alone must not steal the binding.
+  for (const [pluginId, key, ciphertext] of [
+    ["com.example", "sync-provider-map:com.example.sync.foo", "map-parent"],
+    ["com.example", "sync-credential", "parent-secret"],
+    ["com.example.sync", "sync-provider-map:com.example.sync.foo", "map-nested"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(pluginId, key, `ref-${pluginId}-${key}`, Buffer.from(ciphertext), now, now);
+  }
+  const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
+  assert.equal(promoted, 1);
+  assert.equal(
+    database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
+    "com.example",
+    "credential-backed parent must win over longer map-only nested id",
+  );
+  assert.equal(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"), null);
+  assert.equal(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"), null);
+  assert.ok(database.getSecretByKey("com.example", "sync-credential"));
+  database.close();
+});
+
+test("legacy map backfill still consumes maps after unbind tombstone blocks promote", (context) => {
+  // Verify prior fix: explicit unbind tombstone blocks re-promote; maps may remain
+  // until unbind/delete paths consume them (backfill itself skips and does not
+  // delete when promote is blocked).
+  const database = createDatabase(context);
+  const now = Date.now();
+  database.upsertSyncProviderBinding("com.example.sync.foo", "");
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-provider-map:com.example.sync.foo",
+    "ref-tombstone-map",
+    Buffer.from("sealed"),
+    now,
+    now,
+  );
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-credential",
+    "ref-cred",
+    Buffer.from("secret"),
+    now,
+    now,
+  );
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
+  assert.equal(
+    database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
+    "",
+    "unbind tombstone must block credential-backed map promote",
+  );
+  // Map row stays; disconnect/unbind consumption is responsible for cleanup.
+  assert.ok(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
+    "skipped promote leaves map markers for unbind to consume",
+  );
   database.close();
 });
 
@@ -592,14 +688,7 @@ test("legacy map backfill deletes promoted map markers so unbind cannot resurrec
     now,
     now,
   );
-  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
-  assert.equal(database.getSyncProviderBinding("com.example.custom")?.pluginId, "com.example");
-  assert.equal(
-    database.getSecretByKey("com.example", "sync-provider-map:com.example.custom"),
-    null,
-    "promoted map markers must be deleted to stop post-unbind resurrection",
-  );
-  // Non-map secrets under the same plugin are untouched.
+  // Credential evidence required to promote; non-map secrets must survive map consume.
   database.db.prepare(`
     INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -610,6 +699,13 @@ test("legacy map backfill deletes promoted map markers so unbind cannot resurrec
     Buffer.from("cred"),
     now,
     now,
+  );
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
+  assert.equal(database.getSyncProviderBinding("com.example.custom")?.pluginId, "com.example");
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.custom"),
+    null,
+    "promoted map markers must be deleted to stop post-unbind resurrection",
   );
   assert.ok(database.getSecretByKey("com.example", "sync-credential"));
   database.close();
