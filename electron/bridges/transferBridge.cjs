@@ -2416,7 +2416,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (transfer.abort === wrappedAbort) {
         transfer.abort = previousAbort;
       }
-      pathGate.release();
+      // Do not release this waiter immediately: beginTruncatingSharedWriteOpen
+      // already replaced the map entry with us. Releasing now would leave later
+      // same-path attempts with no barrier while the prior OPEN is still in
+      // flight (stale truncating OPEN race). Chain our release to the prior.
+      pathGate.waitForPrior.then(
+        () => pathGate.release(),
+        () => pathGate.release(),
+      );
       if (resolveSharedWriteDrain) {
         const resolveDrain = resolveSharedWriteDrain;
         resolveSharedWriteDrain = null;
@@ -2444,6 +2451,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         transfer.abort = previousAbort;
       }
       if (transfer.cancelled) {
+        // Prior has resolved (or never existed); safe to release our gate now.
         pathGate.release();
         if (resolveSharedWriteDrain) {
           const resolveDrain = resolveSharedWriteDrain;
