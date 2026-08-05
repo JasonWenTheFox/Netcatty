@@ -2424,9 +2424,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     let waiting = true;
     const previousAbort = transfer.abort;
 
+    const detachChannelErrorWhileWaiting = () => {
+      try { sftp.removeListener?.("error", onChannelErrorWhileWaiting); } catch { /* ignore */ }
+    };
+
     const abandonGateWait = (error) => {
       if (!waiting) return;
       waiting = false;
+      detachChannelErrorWhileWaiting();
       if (transfer.abort === wrappedAbort) {
         transfer.abort = previousAbort;
       }
@@ -2446,6 +2451,13 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       reject(error);
     };
 
+    const onChannelErrorWhileWaiting = (error) => {
+      // Prior OPEN may never settle after a dead channel; reject this waiter so
+      // lease/admission are not held until manual cancel (Codex P2 on 1f08f82c).
+      const err = error instanceof Error ? error : new Error(String(error?.message || error || "SFTP channel error"));
+      abandonGateWait(err);
+    };
+
     const wrappedAbort = () => {
       try { previousAbort?.(); } catch { /* ignore */ }
       transfer.cancelled = true;
@@ -2458,9 +2470,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       return;
     }
 
+    try { sftp.on?.("error", onChannelErrorWhileWaiting); } catch { /* ignore */ }
+
     const startOpen = () => {
       if (!waiting) return;
       waiting = false;
+      detachChannelErrorWhileWaiting();
       if (transfer.abort === wrappedAbort) {
         transfer.abort = previousAbort;
       }
