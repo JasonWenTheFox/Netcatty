@@ -358,6 +358,13 @@ function sharedWriteOpenPathKey(filePath) {
  * @param {object | null | undefined} transfer
  */
 function sharedWriteOpenSessionKey(sftp, transfer) {
+  // Prefer host identity so an isolated-channel retry still waits for a stale
+  // shared OPEN on the same host path (Codex P1 on 294b7a4b). Fall back to
+  // sftp/session ids when host is unknown.
+  const hostKey = transfer?.targetHostId || transfer?.hostId || transfer?.sourceHostId;
+  if (hostKey != null && String(hostKey).length > 0) {
+    return `host:${String(hostKey)}`;
+  }
   const fromTransfer = transfer?.targetSftpId
     || transfer?.sourceSftpId
     || transfer?.sftpId
