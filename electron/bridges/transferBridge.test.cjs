@@ -5133,6 +5133,109 @@ test("cancel during stalled shared sudo READ settles without sftp.end()", async 
   await new Promise((resolve) => setImmediate(resolve));
 });
 
+test("cancel during stalled shared verification READ settles without sftp.end()", async (t) => {
+  // Codex P2 on cba714f3: after ranged READs finish, verifyFastDownloadSamples still
+  // awaits bare sftp.read outside forceSettleOnError. Shared cancel cannot
+  // sftp.end(), so a hung verification READ would hold the transfer and lease.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-sudo-verify-stall-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.alloc(3 * TRANSFER_CHUNK_SIZE, 61);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = index % 251;
+  const targetPath = path.join(tempDir, "download.bin");
+  let endCalls = 0;
+  let createReadStreamCalls = 0;
+  let transferredBytes = 0;
+  const pendingVerifyCallbacks = [];
+  const sharedSftp = createFastSftp({
+    open(_remotePath, flags, callback) {
+      assert.equal(flags, "r");
+      callback(null, Buffer.from("shared-verify-handle"));
+    },
+    read(_handle, buffer, offset, length, position, callback) {
+      // Complete the concurrent download first; stall only verification samples.
+      if (transferredBytes < payload.length) {
+        const slice = payload.subarray(position, position + length);
+        slice.copy(buffer, offset);
+        transferredBytes += slice.length;
+        setImmediate(() => callback(null, slice.length));
+        return;
+      }
+      pendingVerifyCallbacks.push(() => {
+        callback(new Error("late verification READ after cancel"));
+      });
+    },
+    close(_handle, callback) {
+      callback(null);
+    },
+    createReadStream() {
+      createReadStreamCalls += 1;
+      throw new Error("serial createReadStream must not run after cancel");
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat() {
+      return Promise.resolve({
+        size: payload.length,
+        mtimeMs: 1_000,
+        ctimeMs: 1_000,
+        mtime: 1,
+        ctime: 1,
+      });
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["source", client]]) });
+
+  const sender = createSender();
+  const transferId = "download-sudo-verify-stall-cancel";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: "/root/download.bin",
+      targetPath,
+      sourceType: "sftp",
+      targetType: "local",
+      sourceSftpId: "source",
+      totalBytes: payload.length,
+      resumable: true,
+    },
+  );
+
+  const ready = await waitUntil(() => pendingVerifyCallbacks.length >= 1, 3000);
+  assert.ok(ready, "expected verification READ to stall after ranged download");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("transfer did not settle after cancel during stalled verification READ")),
+        5000,
+      );
+    }),
+  ]);
+
+  assert.match(result.error || "", /cancel/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended during verification cancel");
+  assert.equal(createReadStreamCalls, 0, "cancel must not fall through to serial stream");
+  assert.ok(sender.sent.some((entry) => entry.channel === "netcatty:transfer:cancelled"));
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:error"), false);
+
+  for (const release of pendingVerifyCallbacks.splice(0)) {
+    try { release(); } catch { /* ignore */ }
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("shared upload errors wait for all in-flight WRITEs before returning", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-error-drain-"));
   t.after(async () => {

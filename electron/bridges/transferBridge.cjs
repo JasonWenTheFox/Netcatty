@@ -2135,19 +2135,66 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
     Math.max(0, Math.floor((fileSize - sampleSize) / 2)),
     Math.max(0, fileSize - sampleSize),
   ])];
-  for (const position of offsets) {
-    if (transfer.cancelled) throw new Error("Transfer cancelled");
-    const length = Math.min(sampleSize, fileSize - position);
-    const remoteBuffer = Buffer.allocUnsafe(length);
-    const localBuffer = Buffer.allocUnsafe(length);
-    await readSftpRange(sftp, remoteHandle, remoteBuffer, position, length);
-    await readLocalRange(localHandle, localBuffer, position, length);
-    if (!remoteBuffer.equals(localBuffer)) {
-      const error = new Error("Transfer source content changed during transfer");
-      error.noTransferFallback = true;
-      error.sourceChanged = true;
-      throw error;
+
+  // Verification READs sit outside runPausableConcurrentRanges. After ranges
+  // settle, the prior abort hook is a no-op, so shared/sudo cancel (or a
+  // channel error without a READ callback) would hang forever without a local
+  // force-settle — same 2s grace as forceSettleOnError for download READs.
+  let rejectPending = null;
+  let forceSettleTimer = null;
+  let verifyDone = false;
+  const previousAbort = transfer.abort;
+  const cancelError = () => new Error("Transfer cancelled");
+  const abortDuringVerify = () => {
+    transfer.cancelled = true;
+    try { previousAbort?.(); } catch { /* ignore */ }
+    if (verifyDone || forceSettleTimer) return;
+    forceSettleTimer = setTimeout(() => {
+      forceSettleTimer = null;
+      rejectPending?.(cancelError());
+    }, 2000);
+  };
+  const onVerifyChannelError = (error) => {
+    rejectPending?.(error || new Error("SFTP channel error"));
+  };
+  transfer.abort = abortDuringVerify;
+  sftp.on?.("error", onVerifyChannelError);
+
+  try {
+    if (transfer.cancelled) throw cancelError();
+    for (const position of offsets) {
+      if (transfer.cancelled) throw cancelError();
+      const length = Math.min(sampleSize, fileSize - position);
+      const remoteBuffer = Buffer.allocUnsafe(length);
+      const localBuffer = Buffer.allocUnsafe(length);
+      await Promise.race([
+        (async () => {
+          await readSftpRange(sftp, remoteHandle, remoteBuffer, position, length);
+          await readLocalRange(localHandle, localBuffer, position, length);
+          if (!remoteBuffer.equals(localBuffer)) {
+            const error = new Error("Transfer source content changed during transfer");
+            error.noTransferFallback = true;
+            error.sourceChanged = true;
+            throw error;
+          }
+        })(),
+        new Promise((_, reject) => {
+          rejectPending = reject;
+          if (transfer.cancelled) abortDuringVerify();
+        }),
+      ]);
     }
+  } finally {
+    verifyDone = true;
+    if (forceSettleTimer) {
+      clearTimeout(forceSettleTimer);
+      forceSettleTimer = null;
+    }
+    rejectPending = null;
+    if (transfer.abort === abortDuringVerify) {
+      transfer.abort = previousAbort;
+    }
+    try { sftp.removeListener?.("error", onVerifyChannelError); } catch { /* ignore */ }
   }
 }
 
