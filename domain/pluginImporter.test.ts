@@ -553,6 +553,50 @@ test('plugin importer destination keeps distinct plugin hosts that share an endp
   assert.equal(targeted.addedCount, merged.addedCount - 2 + 1); // replace 2 source groups with Chosen
 });
 
+test('plugin importer destination skips imports that collide with existing hosts after rewrite', () => {
+  const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
+    kind: 'host',
+    value: {
+      label: 'Existing',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'Chosen',
+    },
+  } }]);
+  const importedDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
+    kind: 'host',
+    value: {
+      label: 'Imported copy',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'lan',
+    },
+  } }]);
+  const merged = mergePluginImporterDrafts({
+    hosts: existingDrafts.hosts,
+    identities: [],
+    keys: [],
+    snippets: [],
+    customGroups: ['Chosen'],
+  }, importedDrafts);
+
+  assert.equal(merged.hosts.length, 2);
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    existingDrafts.hosts.length,
+    { mode: 'group', group: 'Chosen' },
+    ['Chosen'],
+  );
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.equal(targeted.hosts[0]?.label, 'Existing');
+  assert.equal(targeted.duplicateCount, merged.duplicateCount + 1);
+  assert.equal(targeted.addedCount, 0);
+});
+
 test('plugin importer does not count a host-owned destination group as newly added', () => {
   const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
     kind: 'host',

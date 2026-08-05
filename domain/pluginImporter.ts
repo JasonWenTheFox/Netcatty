@@ -494,6 +494,16 @@ export function applyPluginImporterDestination(
     // shared destination group; classic vault hosts still collapse by endpoint.
     isCollapsible: (host) => !host.pluginConnection,
   });
+  // Destination rewrite can make an imported vault host collide with an existing
+  // one (same endpoint, now same group). Re-check like the CSV import path.
+  const existingFingerprints = new Set(existingHosts.map(hostFingerprint));
+  const retainedImported: Host[] = [];
+  for (const host of targeted.hosts) {
+    const fingerprint = hostFingerprint(host);
+    if (existingFingerprints.has(fingerprint)) continue;
+    existingFingerprints.add(fingerprint);
+    retainedImported.push(host);
+  }
   const existingGroupSet = new Set([
     ...existingCustomGroups,
     ...existingHosts.flatMap((host) => host.group ? [host.group] : []),
@@ -507,10 +517,10 @@ export function applyPluginImporterDestination(
   ).length;
   // Destination rewriting can collapse same-endpoint hosts into one group;
   // keep added/duplicate counts aligned with the hosts actually retained.
-  const collapsedHostCount = Math.max(0, importedHosts.length - targeted.hosts.length);
+  const collapsedHostCount = Math.max(0, importedHosts.length - retainedImported.length);
   return {
     ...merged,
-    hosts: [...existingHosts, ...targeted.hosts],
+    hosts: [...existingHosts, ...retainedImported],
     customGroups,
     duplicateCount: merged.duplicateCount + collapsedHostCount,
     addedCount: merged.addedCount
