@@ -44,7 +44,7 @@ test("narrow SFTP toolbar spills non-pinned show items into overflow without cha
   assert.ok(!narrow.inlineIds.includes("newFolder"));
   assert.ok(narrow.overflowIds.includes("newFolder"));
   assert.ok(narrow.overflowIds.includes("encoding"));
-  // hide is already excluded from shown/collapsed by partition — not reintroduced here
+  // hide is already excluded from shown/collapsed by partition - not reintroduced here
   assert.ok(!narrow.inlineIds.includes("encoding"));
 });
 
@@ -322,7 +322,7 @@ test("SFTP filter adopts external navigation-cleared filters during an open IME 
 
 test("SFTP filter supersedes IME draft on path navigation even when committed filter was already empty", () => {
   // When the filter was already "" at compose start, navigation sets filter to ""
-  // again — pane.filter does not change — so path-at-compose-start must drive
+  // again - pane.filter does not change - so path-at-compose-start must drive
   // supersede; otherwise compositionend commits the stale draft.
   assert.match(toolbarSource, /filterPathAtComposeStartRef/);
   assert.match(

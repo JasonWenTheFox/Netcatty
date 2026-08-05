@@ -107,7 +107,7 @@ test("adopts external navigation-clear mid-composition when compose-start baseli
     }),
     true,
   );
-  // External value still matches the compose-start baseline — keep draft for IME.
+  // External value still matches the compose-start baseline - keep draft for IME.
   assert.equal(
     shouldAdoptExternalImeControlledValue({
       isComposingSession: true,
@@ -117,7 +117,7 @@ test("adopts external navigation-clear mid-composition when compose-start baseli
     }),
     false,
   );
-  // Draft already matches external after a prior adopt — no-op.
+  // Draft already matches external after a prior adopt - no-op.
   assert.equal(
     shouldAdoptExternalImeControlledValue({
       isComposingSession: true,

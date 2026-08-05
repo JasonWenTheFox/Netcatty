@@ -1091,7 +1091,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 // or directory during the session is external (e.g. follow-CWD
                 // navigation). Honor it and drop the stale composed draft instead of
                 // letting the commit overwrite the navigation-cleared filter. Path
-                // matters when the committed filter was already "" before compose —
+                // matters when the committed filter was already "" before compose -
                 // navigation sets filter to "" again, so filter-only checks miss it.
                 // Keep the supersede latch armed so a browser post-compositionend
                 // onChange cannot reassert the composed text with composing=false.
@@ -1237,7 +1237,7 @@ function SftpBookmarkPopoverBody({
   );
 }
 
-/** Nested bookmark opener inside ⋮ — keeps overflow open until a leaf action. */
+/** Nested bookmark opener inside ⋮ - keeps overflow open until a leaf action. */
 function SftpOverflowNestedBookmark({
   menuItemClass,
   bookmarkButtonLabel,
