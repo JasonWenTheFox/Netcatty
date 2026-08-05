@@ -182,7 +182,9 @@ export const buildVaultHostEndpointKey = (
 export const buildVaultHostMergeKey = (
   host: Pick<Host, 'hostname' | 'port' | 'username' | 'protocol' | 'group'>,
 ): string => {
-  const group = normalizeGroupPath(host.group)?.toLowerCase() ?? '';
+  // Keep normalized group spelling (do not case-fold). Vault group paths are
+  // compared exactly elsewhere, so Prod vs prod are distinct sessions.
+  const group = normalizeGroupPath(host.group) ?? '';
   return `${buildVaultHostEndpointKey(host)}|${group}`;
 };
 

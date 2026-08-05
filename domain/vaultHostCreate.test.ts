@@ -31,6 +31,10 @@ test('buildVaultHostMergeKey treats group as part of session identity', () => {
     buildVaultHostMergeKey({ ...base, group: 'lan' }),
     buildVaultHostMergeKey({ ...base, group: 'lan' }),
   );
+  assert.notEqual(
+    buildVaultHostMergeKey({ ...base, group: 'Prod' }),
+    buildVaultHostMergeKey({ ...base, group: 'prod' }),
+  );
   assert.equal(
     buildVaultHostEndpointKey({ ...base, group: 'lan' }),
     buildVaultHostEndpointKey({ ...base, group: 'lan-proxy' }),
