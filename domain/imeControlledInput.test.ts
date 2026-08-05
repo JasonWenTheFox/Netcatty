@@ -160,3 +160,25 @@ test("suppresses post-composition onChange after external supersede and clears t
     { ignoreEventValue: false, clearSupersedeLatch: false },
   );
 });
+
+test("ordinary commits remain blocked only while the supersede latch is armed", () => {
+  // Documents the stuck-latch failure mode: if compositionend arms the latch and
+  // no post-composition onChange clears it, shouldCommitImeControlledChange stays
+  // false for ordinary keystrokes. UI must clear via onChange or a deferred fallback.
+  assert.equal(
+    shouldCommitImeControlledChange({
+      isComposingSession: false,
+      nativeEventIsComposing: false,
+      compositionExternallySuperseded: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldCommitImeControlledChange({
+      isComposingSession: false,
+      nativeEventIsComposing: false,
+      compositionExternallySuperseded: false,
+    }),
+    true,
+  );
+});

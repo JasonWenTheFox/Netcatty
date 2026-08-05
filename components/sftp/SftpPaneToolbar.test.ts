@@ -346,11 +346,20 @@ test("SFTP filter suppresses the post-composition onChange after external supers
   assert.match(toolbarSource, /resolveSupersededImeInputEvent/);
   assert.match(toolbarSource, /superseded\.ignoreEventValue/);
   assert.match(toolbarSource, /compositionExternallySuperseded:\s*filterCompositionSupersededRef\.current/);
-  // If no post-composition change arrives, disarm the latch after this turn so the
-  // next ordinary keystroke is not dropped as a stale composed echo.
+});
+
+test("SFTP filter clears the supersede latch if no post-composition change arrives", () => {
+  // Some IME/browser paths never fire the post-compositionend onChange that would
+  // clear filterCompositionSupersededRef; without a deferred clear, the next
+  // ordinary keystroke is treated as the stale supersede follow-up and dropped.
+  // Guard the clear so an intervening onChange clear or new compositionstart wins.
   assert.match(
     toolbarSource,
-    /filterCompositionSupersededRef\.current = true;\s*setFilterDraft\(pane\.filter\);\s*window\.setTimeout\(\(\) => \{\s*filterCompositionSupersededRef\.current = false;\s*\}, 0\);/,
+    /filterCompositionSupersededRef\.current = true;\s*setFilterDraft\(pane\.filter\);\s*window\.setTimeout\(\(\) => \{/,
+  );
+  assert.match(
+    toolbarSource,
+    /if \(\s*filterCompositionSupersededRef\.current\s*&&\s*!filterComposingRef\.current\s*\) \{\s*filterCompositionSupersededRef\.current = false;/,
   );
 });
 
