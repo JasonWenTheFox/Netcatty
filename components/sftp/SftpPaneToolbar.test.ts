@@ -299,9 +299,10 @@ test("SFTP filter honors an external filter change over a stale draft when compo
   // external value instead of committing the stale draft, preserving the invariant
   // that different-directory navigation clears the filter.
   assert.match(toolbarSource, /filterAtComposeStartRef\.current = pane\.filter;/);
+  assert.match(toolbarSource, /filterPathAtComposeStartRef\.current = pane\.connection\?\.currentPath/);
   assert.match(
     toolbarSource,
-    /pane\.filter !== filterAtComposeStartRef\.current\s*\|\|\s*filterCompositionSupersededRef\.current/,
+    /pane\.filter !== filterAtComposeStartRef\.current\s*\|\|\s*pathChangedDuringCompose\s*\|\|\s*filterCompositionSupersededRef\.current/,
   );
   assert.match(toolbarSource, /filterCompositionSupersededRef\.current = true;/);
   assert.match(toolbarSource, /setFilterDraft\(pane\.filter\);/);
@@ -310,11 +311,32 @@ test("SFTP filter honors an external filter change over a stale draft when compo
 test("SFTP filter adopts external navigation-cleared filters during an open IME composition", () => {
   // Sync path must pass valueAtComposeStart while composing so pane.filter="" from
   // different-directory navigation supersedes the draft mid-composition.
-  assert.match(toolbarSource, /valueAtComposeStart:\s*filterComposingRef\.current/);
+  assert.match(toolbarSource, /valueAtComposeStart:\s*composing/);
   assert.match(toolbarSource, /filterAtComposeStartRef\.current/);
+  assert.match(toolbarSource, /pathChangedDuringCompose/);
   assert.match(
     toolbarSource,
     /filterCompositionSupersededRef\.current = true;/,
+  );
+});
+
+test("SFTP filter supersedes IME draft on path navigation even when committed filter was already empty", () => {
+  // When the filter was already "" at compose start, navigation sets filter to ""
+  // again — pane.filter does not change — so path-at-compose-start must drive
+  // supersede; otherwise compositionend commits the stale draft.
+  assert.match(toolbarSource, /filterPathAtComposeStartRef/);
+  assert.match(
+    toolbarSource,
+    /currentPath !== filterPathAtComposeStartRef\.current/,
+  );
+  assert.match(
+    toolbarSource,
+    /\[pane\.filter, pane\.connection\?\.currentPath\]/,
+  );
+  // Hide-filter reset must still clear composing + supersede and resync draft.
+  assert.match(
+    toolbarSource,
+    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;\s*filterCompositionSupersededRef\.current = false;\s*setFilterDraft\(pane\.filter\);/,
   );
 });
 

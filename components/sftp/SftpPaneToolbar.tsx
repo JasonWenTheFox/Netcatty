@@ -333,8 +333,12 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   const [filterDraft, setFilterDraft] = useState(pane.filter);
   const filterComposingRef = useRef(false);
   const filterAtComposeStartRef = useRef(pane.filter);
-  // Set when pane.filter changes externally during (or just after) composition so
-  // the post-compositionend onChange cannot re-commit a stale composed draft.
+  // Directory at compositionstart. Navigation that leaves the filter already ""
+  // does not change pane.filter, so path is the signal that must supersede the
+  // draft (compositionend would otherwise commit stale IME text).
+  const filterPathAtComposeStartRef = useRef(pane.connection?.currentPath ?? "");
+  // Set when pane.filter / path changes externally during (or just after)
+  // composition so the post-compositionend onChange cannot re-commit a stale draft.
   const filterCompositionSupersededRef = useRef(false);
   const prevDisplayConnectionIdRef = useRef(pane.connection?.id);
   const toolbarLayout = useToolbarItemLayout(
@@ -358,26 +362,33 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
 
   useEffect(() => {
     setFilterDraft((draftValue) => {
+      const composing = filterComposingRef.current;
+      const currentPath = pane.connection?.currentPath ?? "";
+      const pathChangedDuringCompose = composing
+        && currentPath !== filterPathAtComposeStartRef.current;
       const shouldAdopt = shouldAdoptExternalImeControlledValue({
-        isComposingSession: filterComposingRef.current,
+        isComposingSession: composing,
         draftValue,
         externalValue: pane.filter,
         // Allow navigation-cleared filters to supersede an open IME composition so
         // compositionend / post-composition onChange cannot resurrect the draft.
-        valueAtComposeStart: filterComposingRef.current
+        valueAtComposeStart: composing
           ? filterAtComposeStartRef.current
           : undefined,
-      });
+      }) || pathChangedDuringCompose;
       if (
         shouldAdopt
-        && filterComposingRef.current
-        && pane.filter !== filterAtComposeStartRef.current
+        && composing
+        && (
+          pane.filter !== filterAtComposeStartRef.current
+          || pathChangedDuringCompose
+        )
       ) {
         filterCompositionSupersededRef.current = true;
       }
       return shouldAdopt ? pane.filter : draftValue;
     });
-  }, [pane.filter]);
+  }, [pane.filter, pane.connection?.currentPath]);
 
   // The filter input only mounts while the bar is open, so a composition that is
   // still active when the bar closes never fires `compositionend`. Clear the guard
@@ -1072,17 +1083,23 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 filterComposingRef.current = true;
                 filterCompositionSupersededRef.current = false;
                 filterAtComposeStartRef.current = pane.filter;
+                filterPathAtComposeStartRef.current = pane.connection?.currentPath ?? "";
               }}
               onCompositionEnd={(e) => {
                 filterComposingRef.current = false;
                 // We never self-commit while composing, so any change to pane.filter
-                // during the session is external (e.g. follow-CWD navigation clearing
-                // the filter). Honor it and drop the stale composed draft instead of
-                // letting the commit overwrite the navigation-cleared filter. Keep the
-                // supersede latch armed so a browser post-compositionend onChange
-                // cannot reassert the composed text with composing=false.
+                // or directory during the session is external (e.g. follow-CWD
+                // navigation). Honor it and drop the stale composed draft instead of
+                // letting the commit overwrite the navigation-cleared filter. Path
+                // matters when the committed filter was already "" before compose —
+                // navigation sets filter to "" again, so filter-only checks miss it.
+                // Keep the supersede latch armed so a browser post-compositionend
+                // onChange cannot reassert the composed text with composing=false.
+                const pathChangedDuringCompose =
+                  (pane.connection?.currentPath ?? "") !== filterPathAtComposeStartRef.current;
                 if (
                   pane.filter !== filterAtComposeStartRef.current
+                  || pathChangedDuringCompose
                   || filterCompositionSupersededRef.current
                 ) {
                   filterCompositionSupersededRef.current = true;
