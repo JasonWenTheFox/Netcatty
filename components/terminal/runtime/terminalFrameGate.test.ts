@@ -128,11 +128,17 @@ test("makesFullRepaint rejects partial paints even when well above 40% coverage"
   // 60% of cells — previously accepted under the 0.4 bar, must now fail.
   const partial = `${HOME}${"z".repeat(Math.floor(cols * rows * 0.6))}`;
   assert.equal(makesFullRepaint(partial, cols, rows), false);
+  // 98% is still short of the 0.99 bar (must not drop prior frames).
+  const almost = `${HOME}${"z".repeat(98)}`;
+  assert.equal(makesFullRepaint(almost, cols, rows), false);
   // ED2 clear still counts as a full repaint.
   assert.equal(makesFullRepaint("\x1b[2J", cols, rows), true);
   // Near-full (>= 99%) is accepted: 99 of 100 cells.
   const nearFull = `${HOME}${"z".repeat(99)}`;
   assert.equal(makesFullRepaint(nearFull, cols, rows), true);
+  // Exact full coverage is accepted.
+  const full = `${HOME}${"z".repeat(100)}`;
+  assert.equal(makesFullRepaint(full, cols, rows), true);
 });
 
 test("collapse drops only when coverage proves a full repaint", () => {

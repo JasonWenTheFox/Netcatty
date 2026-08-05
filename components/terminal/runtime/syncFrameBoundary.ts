@@ -34,9 +34,17 @@ export function isInsideSyncBlockAt(data: string, from: number, to: number): boo
   let i = data.indexOf("\x1b[?2026", from);
   while (i !== -1 && i < to) {
     if (data.startsWith(SYNC_OPEN, i)) {
+      // Only latch open once the whole opener is before `to`. A cut mid-open
+      // leaves the block not yet entered for this scan.
+      if (i + SYNC_OPEN.length > to) break;
       open = true;
       i += SYNC_OPEN.length;
     } else if (data.startsWith(SYNC_CLOSE, i)) {
+      // Only latch closed once the whole closer is before `to`. `startsWith`
+      // matches against full `data`, so a mid-close cut would otherwise see
+      // the complete marker and report "outside" while the trailing `l` is
+      // still past `to` — splitting the close sequence itself.
+      if (i + SYNC_CLOSE.length > to) break;
       open = false;
       i += SYNC_CLOSE.length;
     } else {
@@ -53,10 +61,11 @@ export function isInsideSyncBlockAt(data: string, from: number, to: number): boo
  * If `pos` lands strictly inside a DEC 2026 close marker (`ESC[?2026l`), return
  * the index just past that full marker; otherwise return `pos` unchanged.
  *
- * `isInsideSyncBlockAt` matches whole markers in `data` (not truncated at
- * `to`), so a cut mid-close already sees the block as closed and would
- * otherwise leave the partial `\x1b[?2026` shard on one write and the trailing
- * `l` on the next — tearing the close marker itself.
+ * Defence in depth with {@link isInsideSyncBlockAt}: that helper already keeps
+ * a mid-close cut "inside" so the open-block path extends past the closer, but
+ * this also catches mid-close cuts if a caller ever uses a looser inside check.
+ * Without either fix, a large-write slicer can split `\x1b[?2026` from the
+ * trailing `l` and leave xterm stuck in synchronized-output mode.
  */
 function extendPastCloseMarkerIfSplit(
   data: string,

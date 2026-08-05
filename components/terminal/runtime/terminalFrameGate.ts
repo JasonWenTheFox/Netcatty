@@ -197,8 +197,11 @@ export const viewportRepaintCoverage = (
  * Fraction of the viewport a successor must repaint before its predecessor is
  * dropped. Require near-full coverage so incremental successors (HOME + a few
  * cells, or SGR-heavy partial paints) never justify dropping a prior frame.
- * 99% allows a single off-by-one from wrap/clamp edge cases while still
- * demanding essentially complete cell overwrite (or an ED2 clear).
+ *
+ * Historical note: a 0.4 threshold accepted ~40% paints and dropped prior
+ * frames with untouched cells still showing stale content. 0.99 keeps only a
+ * single-cell wrap/clamp off-by-one margin while still demanding essentially
+ * complete cell overwrite (or an ED2 clear).
  */
 const FULL_REPAINT_COVERAGE = 0.99;
 

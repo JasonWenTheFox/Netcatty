@@ -27,6 +27,22 @@ test("isInsideSyncBlockAt: a DECRQM query is not a frame boundary", () => {
   assert.equal(isInsideSyncBlockAt(data, 0, data.length), false);
 });
 
+test("isInsideSyncBlockAt: a cut mid-close still counts as inside", () => {
+  // startsWith matches whole SYNC_CLOSE in data even when `to` lands inside the
+  // marker. The scan must not flip to closed until the full closer is before `to`.
+  const frame = `${H}${"x".repeat(20)}${L}`;
+  const closeStart = frame.length - L.length;
+  for (let mid = 1; mid < L.length; mid++) {
+    const to = closeStart + mid;
+    assert.equal(
+      isInsideSyncBlockAt(frame, 0, to),
+      true,
+      `mid-close at +${mid} must still be inside the open block`,
+    );
+  }
+  assert.equal(isInsideSyncBlockAt(frame, 0, frame.length), false);
+});
+
 test("frameSafeSliceEnd: a cut inside a frame extends to past its close", () => {
   const frame = `${H}${"x".repeat(100)}${L}`;
   const data = `${frame}${frame}`;
