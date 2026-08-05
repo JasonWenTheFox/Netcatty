@@ -169,10 +169,50 @@ export function applyVaultImportDestination(
   if (destination.mode === "preserve") return result;
   const group = normalizeGroupPath(destination.group);
   if (!group) return result;
+
+  // Destination rewriting can collapse previously distinct group-scoped sessions
+  // onto one merge key; re-dedupe so identical endpoints are not imported twice.
+  const rewrittenHosts = result.hosts.map((host) => ({ ...host, group }));
+  const { hosts, duplicates } = dedupeHosts(rewrittenHosts);
+  const retainedIds = new Set(hosts.map((host) => host.id));
+  const retainedByMergeKey = new Map(hosts.map((host) => [hostKey(host), host]));
+  const originalById = new Map(result.hosts.map((host) => [host.id, host]));
+
+  const remapHostId = (hostId: string): string | undefined => {
+    if (retainedIds.has(hostId)) return hostId;
+    const original = originalById.get(hostId);
+    if (!original) return undefined;
+    return retainedByMergeKey.get(hostKey({ ...original, group }))?.id;
+  };
+
+  const remapKeyPassphrases = (
+    entries: VaultHostKeyPassphrase[] | undefined,
+  ): VaultHostKeyPassphrase[] | undefined => {
+    if (!entries) return entries;
+    const remapped: VaultHostKeyPassphrase[] = [];
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      const nextHostId = remapHostId(entry.hostId);
+      if (!nextHostId) continue;
+      const dedupeKey = `${nextHostId}\u0000${normalizeKeyPathKey(entry.keyPath)}\u0000${entry.passphrase}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      remapped.push(nextHostId === entry.hostId ? entry : { ...entry, hostId: nextHostId });
+    }
+    return remapped;
+  };
+
   return {
     ...result,
-    hosts: result.hosts.map((host) => ({ ...host, group })),
+    hosts,
     groups: [group],
+    keyPassphrases: remapKeyPassphrases(result.keyPassphrases),
+    keyPassphraseCandidates: remapKeyPassphrases(result.keyPassphraseCandidates),
+    stats: {
+      ...result.stats,
+      imported: hosts.length,
+      duplicates: result.stats.duplicates + duplicates,
+    },
   };
 }
 

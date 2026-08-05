@@ -185,6 +185,31 @@ test("vault import can place every imported host into one selected group", () =>
   assert.deepEqual(imported.groups, ["Production/Web", "Production/DB"]);
 });
 
+test("applyVaultImportDestination re-dedupes same-endpoint hosts collapsed into one group", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "lan,direct,10.10.10.10,22,root",
+    "lan-proxy,via-socks,10.10.10.10,22,root",
+  ].join("\n"));
+
+  assert.equal(imported.hosts.length, 2);
+
+  const targeted = applyVaultImportDestination(imported, {
+    mode: "group",
+    group: "Imported/July",
+  });
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.equal(targeted.hosts[0]?.group, "Imported/July");
+  assert.equal(targeted.stats.duplicates, 1);
+  assert.equal(targeted.stats.imported, 1);
+  assert.deepEqual(targeted.groups, ["Imported/July"]);
+
+  const merged = applyVaultHostImport([], [], targeted);
+  assert.equal(merged.addedCount, 1);
+  assert.equal(merged.hosts.length, 1);
+});
+
 test("CSV import keeps working when KeyPath and Passphrase columns are absent", () => {
   const result = importVaultHostsFromText(
     "csv",
