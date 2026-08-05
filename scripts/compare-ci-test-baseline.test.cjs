@@ -101,7 +101,7 @@ test('rejects deleting successful coverage even when the run stays green', () =>
   assert.deepEqual(result.newFailures, ['removed test']);
 });
 
-test('rejects a clean candidate when the exact-base TAP summary is incomplete', () => {
+test('rejects a clean candidate when the exact-base TAP summary is incomplete (fail closed)', () => {
   const result = compareTapResults(
     parseTapResult('base runner stopped early', 1),
     parseTapResult(tap(), 0),
