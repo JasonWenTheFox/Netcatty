@@ -1636,6 +1636,9 @@ function createPreloadApi(ctx) {
   respondCodexAppServerInteraction: async (payload) => {
     return ipcRenderer.invoke("netcatty:ai:codex-app-server:interaction-response", payload);
   },
+  cancelCodexAppServerInteractionTimeout: async (interactionId) => {
+    return ipcRenderer.invoke("netcatty:ai:codex-app-server:interaction-cancel-timeout", { interactionId });
+  },
   aiSdkAgentCancel: async (requestId, chatSessionId) => {
     return ipcRenderer.invoke("netcatty:ai:sdk-agent:cancel", { requestId, chatSessionId });
   },

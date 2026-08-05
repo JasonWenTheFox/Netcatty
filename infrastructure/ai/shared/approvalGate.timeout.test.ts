@@ -65,3 +65,26 @@ test('idle approval timeout still auto-denies when the user never reviews', asyn
   unsub();
   clearAllPendingApprovals();
 });
+
+test('cancelApprovalTimeout asks main to drop Codex App Server interaction timers', () => {
+  clearAllPendingApprovals();
+  const calls: string[] = [];
+  const previous = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    netcatty: {
+      cancelCodexAppServerInteractionTimeout: async (id: string) => {
+        calls.push(id);
+        return { ok: true, cancelled: true };
+      },
+    },
+  };
+
+  try {
+    const toolCallId = `codex_interaction_1_${Date.now()}`;
+    cancelApprovalTimeout(toolCallId);
+    assert.deepEqual(calls, [toolCallId]);
+  } finally {
+    (globalThis as { window?: unknown }).window = previous;
+    clearAllPendingApprovals();
+  }
+});

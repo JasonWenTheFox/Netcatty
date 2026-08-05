@@ -300,12 +300,26 @@ export const ToolCall = ({
     window.setTimeout(() => setCopied(false), 1500);
   }, [markReviewing, reviewCommand]);
 
-  // Keyboard: Enter = approve, Escape = reject (when pending)
+  // Keyboard: Enter = approve, Escape = reject (when pending).
+  // Ignore Enter from nested controls (Copy / Expand / action buttons) so it
+  // activates that control instead of approving the pending command.
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!isPendingApproval) return;
-    if (e.key === 'Enter') { e.preventDefault(); handleApproveOnce(); }
-    else if (e.key === 'Escape') { e.preventDefault(); handleReject(); }
-    else {
+    if (e.key === 'Enter') {
+      const target = e.target as HTMLElement | null;
+      if (
+        target
+        && target !== e.currentTarget
+        && target.closest('button, a, input, textarea, select, [role="button"]')
+      ) {
+        return;
+      }
+      e.preventDefault();
+      handleApproveOnce();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleReject();
+    } else {
       // Typing / navigation while reviewing cancels the idle auto-deny timer.
       markReviewing();
     }
@@ -463,6 +477,7 @@ export const ToolCall = ({
                         markReviewing();
                         setCommandExpanded((v) => !v);
                       }}
+                      onKeyDown={(e) => e.stopPropagation()}
                     >
                       {commandExpanded ? t('ai.chat.collapse') : t('ai.chat.expand')}
                     </button>
@@ -471,6 +486,7 @@ export const ToolCall = ({
                     type="button"
                     className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground px-1.5 py-0.5 rounded hover:bg-muted/30"
                     onClick={() => { void handleCopyCommand(); }}
+                    onKeyDown={(e) => e.stopPropagation()}
                   >
                     <Copy size={10} className="shrink-0" />
                     {copied ? t('ai.chat.commandCopied') : t('ai.chat.copyCommand')}

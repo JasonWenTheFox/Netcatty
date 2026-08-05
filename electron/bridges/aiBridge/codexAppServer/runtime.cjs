@@ -840,6 +840,19 @@ class CodexAppServerRuntime {
     return this.#resolveInteraction(interactionId, response);
   }
 
+  /**
+   * Drop the auto-reject timer after the user starts reviewing an approval card.
+   * Leaves the interaction pending until an explicit approve/reject/cancel.
+   */
+  cancelInteractionTimeout(interactionId, sender) {
+    const pending = this.pendingInteractions.get(interactionId);
+    if (!pending?.timer) return false;
+    if (sender && pending.context?.sender && pending.context.sender !== sender) return false;
+    clearTimeout(pending.timer);
+    pending.timer = null;
+    return true;
+  }
+
   #clearInteractionsForContext(context, decision) {
     for (const [interactionId, pending] of Array.from(this.pendingInteractions)) {
       if (pending.context === context) {

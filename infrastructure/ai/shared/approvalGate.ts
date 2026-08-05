@@ -243,12 +243,17 @@ export function cancelApprovalTimeout(toolCallId: string): void {
     entry.cancelTimeout = undefined;
   }
 
-  // MCP approvals are timed in the main process; ask it to drop its timer too.
+  // MCP / Codex App Server approvals are timed in the main process; drop those too.
   if (toolCallId.startsWith('mcp_approval_')) {
     const bridge = (window as unknown as {
       netcatty?: { cancelMcpApprovalTimeout?: (id: string) => Promise<unknown> };
     }).netcatty;
     void bridge?.cancelMcpApprovalTimeout?.(toolCallId);
+  } else if (toolCallId.startsWith('codex_interaction_')) {
+    const bridge = (window as unknown as {
+      netcatty?: { cancelCodexAppServerInteractionTimeout?: (id: string) => Promise<unknown> };
+    }).netcatty;
+    void bridge?.cancelCodexAppServerInteractionTimeout?.(toolCallId);
   }
 }
 

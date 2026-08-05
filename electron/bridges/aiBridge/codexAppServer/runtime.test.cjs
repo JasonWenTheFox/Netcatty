@@ -311,6 +311,57 @@ test("runtime routes native approvals and request_user_input responses", async (
   await run;
 });
 
+test("cancelInteractionTimeout keeps a pending approval past the idle auto-reject timer", async () => {
+  let connection;
+  let interaction;
+  const runtime = new CodexAppServerRuntime({
+    connectionFactory: (options) => (connection = new FakeConnection(options)),
+    sendInteractionRequest: (payload) => { interaction = payload; return true; },
+  });
+  const run = runtime.runTurn({
+    requestId: "request-timeout-cancel",
+    chatSessionId: "chat-timeout-cancel",
+    prompt: "ask",
+    permissionMode: "confirm",
+    env: {},
+    binPath: "/bin/codex",
+    injectedMcpServers: [],
+    emitter: createEmitter(),
+  });
+  await waitFor(() => connection?.requests.some((request) => request.method === "turn/start"));
+
+  await connection.serverRequest({
+    id: 90,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "question-timeout",
+      questions: [{ id: "choice", question: "Choose", header: "Mode", isOther: true, isSecret: false, options: null }],
+      autoResolutionMs: 40,
+    },
+  });
+  assert.ok(interaction?.interactionId);
+  assert.equal(runtime.cancelInteractionTimeout(interaction.interactionId), true);
+  assert.equal(runtime.cancelInteractionTimeout(interaction.interactionId), false);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(
+    connection.responses.some((response) => response.id === 90),
+    false,
+    "idle timer must not auto-resolve after cancelInteractionTimeout",
+  );
+
+  runtime.respondInteraction(interaction.interactionId, { answers: { choice: { answers: ["safe"] } } });
+  assert.deepEqual(connection.responses.at(-1), {
+    id: 90,
+    result: { answers: { choice: { answers: ["safe"] } } },
+  });
+
+  connection.notify({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } } });
+  await run;
+});
+
 test("runtime steers the active turn with text, local images, and a stable user message id", async () => {
   let connection;
   const runtime = new CodexAppServerRuntime({
