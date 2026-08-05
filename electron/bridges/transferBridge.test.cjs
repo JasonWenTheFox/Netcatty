@@ -5236,6 +5236,116 @@ test("cancel during stalled shared verification READ settles without sftp.end()"
   await new Promise((resolve) => setImmediate(resolve));
 });
 
+test("cancel during responsive last verification sample reports cancelled", async (t) => {
+  // Codex P2 on 74ae5e0a: cancel during the last sample can let the READ win the
+  // race before the 2s force-settle fires. Without a post-race cancelled check,
+  // verification returns successfully and sendComplete() reports done.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-sudo-verify-race-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.alloc(3 * TRANSFER_CHUNK_SIZE, 67);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = index % 251;
+  const targetPath = path.join(tempDir, "download.bin");
+  let endCalls = 0;
+  let transferredBytes = 0;
+  let verifyReadCount = 0;
+  let releaseLastVerifyRead = null;
+  const lastVerifyReadHeld = new Promise((resolve) => {
+    releaseLastVerifyRead = resolve;
+  });
+  const sharedSftp = createFastSftp({
+    open(_remotePath, flags, callback) {
+      assert.equal(flags, "r");
+      callback(null, Buffer.from("shared-verify-race-handle"));
+    },
+    read(_handle, buffer, offset, length, position, callback) {
+      if (transferredBytes < payload.length) {
+        const slice = payload.subarray(position, position + length);
+        slice.copy(buffer, offset);
+        transferredBytes += slice.length;
+        setImmediate(() => callback(null, slice.length));
+        return;
+      }
+      verifyReadCount += 1;
+      const slice = payload.subarray(position, position + length);
+      slice.copy(buffer, offset);
+      // Hold only the last sample briefly so cancel can land mid-READ, then
+      // complete successfully (responsive server — force-settle never fires).
+      if (verifyReadCount >= 3) {
+        lastVerifyReadHeld.then(() => {
+          setImmediate(() => callback(null, slice.length));
+        });
+        return;
+      }
+      setImmediate(() => callback(null, slice.length));
+    },
+    close(_handle, callback) {
+      callback(null);
+    },
+    createReadStream() {
+      throw new Error("serial createReadStream must not run");
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat() {
+      return Promise.resolve({
+        size: payload.length,
+        mtimeMs: 1_000,
+        ctimeMs: 1_000,
+        mtime: 1,
+        ctime: 1,
+      });
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["source", client]]) });
+
+  const sender = createSender();
+  const transferId = "download-sudo-verify-race-cancel";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: "/root/download.bin",
+      targetPath,
+      sourceType: "sftp",
+      targetType: "local",
+      sourceSftpId: "source",
+      totalBytes: payload.length,
+      resumable: true,
+    },
+  );
+
+  const ready = await waitUntil(() => verifyReadCount >= 3, 3000);
+  assert.ok(ready, "expected last verification sample to be held");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+  releaseLastVerifyRead();
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("transfer did not settle after cancel during last verification sample")),
+        3000,
+      );
+    }),
+  ]);
+
+  assert.match(result.error || "", /cancel/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+  assert.ok(sender.sent.some((entry) => entry.channel === "netcatty:transfer:cancelled"));
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:error"), false);
+});
+
 test("shared upload errors wait for all in-flight WRITEs before returning", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-error-drain-"));
   t.after(async () => {

@@ -2183,6 +2183,10 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
           if (transfer.cancelled) abortDuringVerify();
         }),
       ]);
+      // Cancel during a responsive sample can win the race above without the
+      // force-settle timer firing. Recheck so we never report complete after
+      // cancel (especially the last sample on direct/non-staged downloads).
+      if (transfer.cancelled) throw cancelError();
     }
   } finally {
     verifyDone = true;
