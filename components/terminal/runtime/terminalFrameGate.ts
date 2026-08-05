@@ -136,44 +136,84 @@ export const viewportRepaintCoverage = (
   const markRange = (r: number, from: number, to: number) => {
     for (let c = Math.max(0, from); c <= to && c < cols; c++) mark(r, c);
   };
+  /** Advance past a control-string payload terminated by BEL, ST (ESC \), or C1 ST. */
+  const skipControlString = (from: number): number => {
+    let j = from;
+    while (j < content.length) {
+      const c = content.charCodeAt(j);
+      if (c === 0x07) return j + 1; // BEL
+      if (c === 0x9c) return j + 1; // C1 ST
+      if (content[j] === "\x1b" && content[j + 1] === "\\") return j + 2; // ESC \
+      j++;
+    }
+    return content.length; // incomplete — consume remainder, never count as cells
+  };
+  /** Apply CSI cursor/erase effects starting at the first parameter byte. */
+  const applyCsi = (paramStart: number): number => {
+    let j = paramStart;
+    let params = "";
+    while (j < content.length) {
+      const c = content.charCodeAt(j);
+      if (c >= 0x30 && c <= 0x3f) { params += content[j]; j++; } else break;
+    }
+    while (j < content.length && content.charCodeAt(j) >= 0x20 && content.charCodeAt(j) <= 0x2f) j++;
+    const final = content[j];
+    const nums = params.split(";").map((p) => (p === "" ? undefined : parseInt(p, 10)));
+    const n0 = nums[0];
+    if (final === "H" || final === "f") { row = (n0 ?? 1) - 1; col = (nums[1] ?? 1) - 1; clampRow(); clampCol(); }
+    else if (final === "A") { row -= n0 ?? 1; clampRow(); }
+    else if (final === "B" || final === "E") { row += n0 ?? 1; clampRow(); }
+    else if (final === "C") { col += n0 ?? 1; clampCol(); }
+    else if (final === "D") { col -= n0 ?? 1; clampCol(); }
+    else if (final === "G" || final === "`") { col = (n0 ?? 1) - 1; clampCol(); }
+    else if (final === "d") { row = (n0 ?? 1) - 1; clampRow(); }
+    else if (final === "J") {
+      const p = n0 ?? 0;
+      // ED2 (p=2) clears the whole viewport and counts as coverage. ED3 (p=3)
+      // clears saved scrollback only — it must not mark viewport cells, or
+      // makesFullRepaint would let collapseAndSplit drop a prior visual frame
+      // whose content the ED3 successor never repaints.
+      if (p === 2) { for (let r = 0; r < rows; r++) markRange(r, 0, cols - 1); }
+      else if (p === 0) { markRange(row, col, cols - 1); for (let r = row + 1; r < rows; r++) markRange(r, 0, cols - 1); }
+      else if (p === 1) { for (let r = 0; r < row; r++) markRange(r, 0, cols - 1); markRange(row, 0, col); }
+    } else if (final === "K") {
+      const p = n0 ?? 0;
+      if (p === 0) markRange(row, col, cols - 1);
+      else if (p === 1) markRange(row, 0, col);
+      else if (p === 2) markRange(row, 0, cols - 1);
+    }
+    return final === undefined ? content.length : j + 1;
+  };
   let i = 0;
   while (i < content.length) {
     const ch = content[i];
     const code = content.charCodeAt(i);
-    if (ch === "\x1b" && content[i + 1] === "[") {
-      let j = i + 2;
-      let params = "";
-      while (j < content.length) {
-        const c = content.charCodeAt(j);
-        if (c >= 0x30 && c <= 0x3f) { params += content[j]; j++; } else break;
+    if (ch === "\x1b") {
+      const intro = content[i + 1];
+      if (intro === "[") {
+        // CSI: parse cursor/erase; do not count parameter bytes as cell paints.
+        i = applyCsi(i + 2);
+        continue;
       }
-      while (j < content.length && content.charCodeAt(j) >= 0x20 && content.charCodeAt(j) <= 0x2f) j++;
-      const final = content[j];
-      const nums = params.split(";").map((p) => (p === "" ? undefined : parseInt(p, 10)));
-      const n0 = nums[0];
-      if (final === "H" || final === "f") { row = (n0 ?? 1) - 1; col = (nums[1] ?? 1) - 1; clampRow(); clampCol(); }
-      else if (final === "A") { row -= n0 ?? 1; clampRow(); }
-      else if (final === "B" || final === "E") { row += n0 ?? 1; clampRow(); }
-      else if (final === "C") { col += n0 ?? 1; clampCol(); }
-      else if (final === "D") { col -= n0 ?? 1; clampCol(); }
-      else if (final === "G" || final === "`") { col = (n0 ?? 1) - 1; clampCol(); }
-      else if (final === "d") { row = (n0 ?? 1) - 1; clampRow(); }
-      else if (final === "J") {
-        const p = n0 ?? 0;
-        // ED2 (p=2) clears the whole viewport and counts as coverage. ED3 (p=3)
-        // clears saved scrollback only — it must not mark viewport cells, or
-        // makesFullRepaint would let collapseAndSplit drop a prior visual frame
-        // whose content the ED3 successor never repaints.
-        if (p === 2) { for (let r = 0; r < rows; r++) markRange(r, 0, cols - 1); }
-        else if (p === 0) { markRange(row, col, cols - 1); for (let r = row + 1; r < rows; r++) markRange(r, 0, cols - 1); }
-        else if (p === 1) { for (let r = 0; r < row; r++) markRange(r, 0, cols - 1); markRange(row, 0, col); }
-      } else if (final === "K") {
-        const p = n0 ?? 0;
-        if (p === 0) markRange(row, col, cols - 1);
-        else if (p === 1) markRange(row, 0, col);
-        else if (p === 2) markRange(row, 0, cols - 1);
+      // OSC / DCS / SOS / PM / APC control strings — payloads run until ST or BEL.
+      // Counting their bytes as cell paints falsely inflates repaint coverage.
+      if (intro === "]" || intro === "P" || intro === "X" || intro === "^" || intro === "_") {
+        i = skipControlString(i + 2);
+        continue;
       }
-      i = final === undefined ? content.length : j + 1;
+      // Other ESC sequences (e.g. ESC 7, ESC (B): skip introducer + body; never
+      // mark intermediate/final bytes as viewport cells.
+      if (intro !== undefined) {
+        let j = i + 1;
+        while (j < content.length && content.charCodeAt(j) >= 0x20 && content.charCodeAt(j) <= 0x2f) j++;
+        if (j < content.length && content.charCodeAt(j) >= 0x30 && content.charCodeAt(j) <= 0x7e) {
+          i = j + 1;
+        } else {
+          i = content.length;
+        }
+        continue;
+      }
+      i++;
       continue;
     }
     if (code < 0x20) {
@@ -185,6 +225,16 @@ export const viewportRepaintCoverage = (
       continue;
     }
     if (code === 0x7f) { i++; continue; }
+    // 8-bit C1: CSI (0x9B) and control-string introducers — never cell paints.
+    if (code === 0x9b) {
+      i = applyCsi(i + 1);
+      continue;
+    }
+    if (code === 0x90 || code === 0x98 || code === 0x9d || code === 0x9e || code === 0x9f) {
+      i = skipControlString(i + 1);
+      continue;
+    }
+    if (code >= 0x80 && code <= 0x9f) { i++; continue; }
     mark(row, col);
     col += 1;
     if (col >= cols) { col = 0; row += 1; clampRow(); }

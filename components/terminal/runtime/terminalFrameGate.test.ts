@@ -214,6 +214,35 @@ test("8-bit C1 controls make a frame un-droppable", () => {
   assert.equal(isDroppableVisualPayload("café中文"), true, "printable Unicode cell text");
 });
 
+test("coverage ignores OSC/DCS control-string payloads (not cell paints)", () => {
+  const cols = 4;
+  const rows = 2;
+  // Long OSC title would falsely fill the viewport if payload bytes were counted.
+  const oscBel = "\x1b]0;" + "T".repeat(cols * rows * 2) + "\x07";
+  const oscSt = "\x1b]0;" + "T".repeat(cols * rows * 2) + "\x1b\\";
+  assert.equal(viewportRepaintCoverage(oscBel, cols, rows), 0, "OSC … BEL covers zero cells");
+  assert.equal(viewportRepaintCoverage(oscSt, cols, rows), 0, "OSC … ST covers zero cells");
+  assert.equal(makesFullRepaint(oscBel, cols, rows), false, "OSC-only is not a full repaint");
+  // DCS / APC / PM / SOS payloads are likewise not paints.
+  assert.equal(viewportRepaintCoverage("\x1bP1$r\x1b\\", cols, rows), 0, "DCS");
+  assert.equal(viewportRepaintCoverage("\x1b_payload\x1b\\", cols, rows), 0, "APC");
+  assert.equal(viewportRepaintCoverage("\x1b^payload\x1b\\", cols, rows), 0, "PM");
+  assert.equal(viewportRepaintCoverage("\x1bXpayload\x1b\\", cols, rows), 0, "SOS");
+  // C1 forms: OSC (0x9D) + BEL, DCS (0x90) + C1 ST (0x9C).
+  assert.equal(viewportRepaintCoverage("\x9d0;title\x07", cols, rows), 0, "C1 OSC");
+  assert.equal(viewportRepaintCoverage("\x90data\x9c", cols, rows), 0, "C1 DCS");
+  // Real cell writes after OSC still count; OSC itself does not inflate.
+  assert.equal(viewportRepaintCoverage(`${oscBel}ab`, cols, rows), 2, "cells after OSC still count");
+  // A short paint padded with OSC must not pass the full-repaint bar.
+  const shortPlusOsc = `${HOME}z${oscBel}`;
+  assert.equal(makesFullRepaint(shortPlusOsc, cols, rows), false, "OSC must not inflate partial paint");
+  // Predecessor must not drop when successor is only OSC noise.
+  const stale = frame("AAAAAAAA");
+  const oscOnly = frame(oscBel);
+  const pred = (c: string) => makesFullRepaint(c, cols, rows);
+  assert.equal(collapseAndSplit(stale + oscOnly, pred).dropped, 0, "OSC successor must not drop prior frame");
+});
+
 test("holds back a split sync opener as partial", () => {
   // Buffer ends mid-opener (ESC[?20); it must be held, not forwarded.
   const r = collapseAndSplit("hello\x1b[?20", always);
