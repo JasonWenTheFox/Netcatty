@@ -255,7 +255,11 @@ class PluginSecretStore {
     for (const [pluginId, providerIds] of providersByPlugin) {
       if (providerIds.size !== 1) continue;
       const providerId = [...providerIds][0];
-      if (this.resolveSyncProviderPlugin(providerId)) continue;
+      // Skip active binds and explicit-unbind tombstones alike.
+      if (typeof this.database.getSyncProviderBinding === "function"
+        && this.database.getSyncProviderBinding(providerId)) {
+        continue;
+      }
       try {
         this.bindSyncProviderPlugin(pluginId, providerId);
         promoted += 1;
@@ -268,10 +272,23 @@ class PluginSecretStore {
 
   unbindSyncProviderPlugin(pluginId, providerId) {
     assertSecretKey(providerId);
-    if (typeof this.database.deleteSyncProviderBinding !== "function") return;
-    const existing = this.database.getSyncProviderBinding(providerId);
-    if (existing && existing.pluginId !== pluginId) return;
-    this.database.deleteSyncProviderBinding(providerId);
+    if (typeof this.database.upsertSyncProviderBinding !== "function") return;
+    const existing = typeof this.database.getSyncProviderBinding === "function"
+      ? this.database.getSyncProviderBinding(providerId)
+      : null;
+    // Do not steal another plugin's active binding. Empty plugin_id is an
+    // unbind tombstone and may be refreshed idempotently.
+    if (
+      existing
+      && typeof existing.pluginId === "string"
+      && existing.pluginId.length > 0
+      && existing.pluginId !== pluginId
+    ) {
+      return;
+    }
+    // Tombstone with empty plugin_id so leftover sync-provider-map:* secret
+    // rows cannot re-promote this provider on the next database open.
+    this.database.upsertSyncProviderBinding(providerId, "");
   }
 
   resolve(pluginId, secret) {

@@ -598,6 +598,30 @@ test("legacy map backfill never deletes plugin secrets under the map key prefix"
   database.close();
 });
 
+test("legacy map backfill does not resurrect after explicit unbind tombstone", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-provider-map:com.example.sync",
+    "ref-legacy-map",
+    Buffer.from("sealed"),
+    now,
+    now,
+  );
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
+  // Explicit disconnect tombstones the host row without deleting map secrets.
+  database.upsertSyncProviderBinding("com.example.sync", "");
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
+  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"));
+  database.close();
+});
+
 
 test("listInstalledVersions includes inactive package manifests", (context) => {
   const database = createDatabase(context);

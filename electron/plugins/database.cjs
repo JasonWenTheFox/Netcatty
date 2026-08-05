@@ -861,9 +861,9 @@ class PluginDatabase {
    * migration only *reads* candidate rows to seed missing bindings; it never
    * deletes plugin_secrets. Multiple plugins may hold map rows for the same
    * provider (parent + real owner): group by provider, never overwrite an
-   * existing host binding, and when unbound pick the longest pluginId
-   * namespace match so a shorter parent cannot win just because SQLite returned
-   * it first.
+   * existing host binding (including empty-plugin_id unbind tombstones), and
+   * when unbound pick the longest pluginId namespace match so a shorter parent
+   * cannot win just because SQLite returned it first.
    */
   backfillSyncProviderBindingsFromLegacySecrets() {
     const legacyPrefix = "sync-provider-map:";
@@ -891,9 +891,9 @@ class PluginDatabase {
     }
     let promoted = 0;
     for (const [providerId, candidates] of byProvider) {
-      // Never overwrite a host binding that already exists; leave secrets alone.
-      const existing = this.getSyncProviderBinding(providerId);
-      if (existing && typeof existing.pluginId === "string" && existing.pluginId.length > 0) {
+      // Any host row means a prior decision: active bind or explicit unbind
+      // tombstone (empty plugin_id). Never resurrect from leftover map secrets.
+      if (this.getSyncProviderBinding(providerId)) {
         continue;
       }
       // Strongest owner = longest pluginId namespace prefix.

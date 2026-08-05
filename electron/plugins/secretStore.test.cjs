@@ -378,6 +378,13 @@ test("sync provider bindings live outside plugin secrets and reject namespace mi
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
   store.unbindSyncProviderPlugin("com.example", "com.example.sync");
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
+  // Tombstone remains so legacy map backfill cannot resurrect after disconnect.
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
+  // Reconnect clears the tombstone.
+  store.bindSyncProviderPlugin("com.example", "com.example.sync");
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
   database.close();
 });
 
@@ -500,5 +507,25 @@ test("live provider backfill seeds bindings for v2 credential-only upgrades", (c
   );
   assert.equal(store.resolveSyncProviderPlugin("com.multi.old"), undefined);
   assert.equal(store.resolveSyncProviderPlugin("com.multi.new"), undefined);
+  database.close();
+});
+
+test("live provider backfill does not resurrect explicit unbind tombstones", (context) => {
+  const database = createDatabase(context);
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+  });
+  store.set("com.example", "sync-credential", "pw");
+  store.bindSyncProviderPlugin("com.example", "com.example.sync");
+  store.unbindSyncProviderPlugin("com.example", "com.example.sync");
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
+  assert.equal(
+    store.backfillSyncProviderBindingsFromLiveProviders([
+      { pluginId: "com.example", provider: { id: "com.example.sync" } },
+    ]),
+    0,
+  );
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
   database.close();
 });
