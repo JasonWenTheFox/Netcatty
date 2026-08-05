@@ -444,7 +444,7 @@ test("existing overwrite stash is preserved across retry puts and cleared by pre
   database.close();
 });
 
-test("resolveSyncProviderPlugin infers ownership from sync-credential rows after upgrade", (context) => {
+test("resolveSyncProviderPlugin does not infer ownership from credential prefixes alone", (context) => {
   const database = createDatabase(context);
   const store = new PluginSecretStore({
     database,
@@ -452,7 +452,10 @@ test("resolveSyncProviderPlugin infers ownership from sync-credential rows after
   });
   store.set("com.example", "sync-credential", "pw");
   assert.equal(database.getSyncProviderBinding("com.example.sync"), null);
+  // Without a binding (or legacy map backfill), credentials alone are not enough.
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
+  // Explicit bind still works for disconnect cleanup.
+  store.bindSyncProviderPlugin("com.example", "com.example.sync");
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
-  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
   database.close();
 });

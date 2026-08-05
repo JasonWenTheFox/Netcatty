@@ -208,20 +208,11 @@ class PluginSecretStore {
         return pluginId;
       }
     }
-    // Schema upgrades leave the binding table empty until the next put. Derive
-    // ownership from existing sync-credential* rows with the namespace check
-    // so disconnect still cleans credentials for pre-binding installs.
-    if (typeof this.database.inferPluginIdForSyncProvider === "function") {
-      const inferred = this.database.inferPluginIdForSyncProvider(providerId);
-      if (typeof inferred === "string" && inferred.length > 0) {
-        try {
-          this.bindSyncProviderPlugin(inferred, providerId);
-        } catch {
-          /* binding write is best-effort; still return the inferred id */
-        }
-        return inferred;
-      }
-    }
+    // Do not infer ownership from sync-credential* key prefixes: a parent
+    // plugin id may namespace-prefix another plugin's provider and would cause
+    // disconnect to delete the wrong secrets. Pre-binding installs recover
+    // ownership via backfillSyncProviderBindingsFromLegacySecrets (legacy
+    // sync-provider-map:* rows) or the next successful put that binds.
     return undefined;
   }
 

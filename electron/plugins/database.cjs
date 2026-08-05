@@ -869,23 +869,17 @@ class PluginDatabase {
   }
 
   /**
-   * Infer which plugin owns a sync provider from existing sync-credential*
-   * rows when no binding exists yet (schema upgrade / pre-binding installs).
-   * Prefers the longest plugin id whose `pluginId.` namespace prefixes providerId.
-   * Exact pluginId===providerId is not ownership: provider contribution ids live
-   * under the owning plugin namespace, and another plugin may share that id.
+   * Credential-row prefix inference is intentionally not used.
+   *
+   * A shorter parent plugin id (e.g. com.example with sync-credential rows) can
+   * namespace-prefix a provider owned by a different/removed plugin
+   * (com.example.backup.sync). Falling back to that parent would let
+   * syncDeleteSecrets wipe unrelated credentials. Ownership must come from the
+   * host binding table (including rows promoted by
+   * backfillSyncProviderBindingsFromLegacySecrets) or a live contribution.
    */
-  inferPluginIdForSyncProvider(providerId) {
-    if (typeof providerId !== "string" || providerId.length < 1) return undefined;
-    const pluginIds = this.listPluginIdsWithSecretKeyPrefix("sync-credential");
-    const matches = pluginIds.filter((pluginId) => (
-      typeof pluginId === "string"
-      && pluginId.length > 0
-      && providerId.startsWith(`${pluginId}.`)
-    ));
-    if (matches.length === 0) return undefined;
-    matches.sort((a, b) => b.length - a.length);
-    return matches[0];
+  inferPluginIdForSyncProvider(_providerId) {
+    return undefined;
   }
 
   recordSecurityAudit(pluginId, event, details) {

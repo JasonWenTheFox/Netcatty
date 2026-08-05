@@ -519,14 +519,13 @@ test("schema upgrade backfills bindings from legacy sync-provider-map secrets", 
   database.close();
 });
 
-test("inferPluginIdForSyncProvider prefers the longest namespace match with sync credentials", (context) => {
+test("inferPluginIdForSyncProvider never guesses from credential key prefixes", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
   for (const [pluginId, key] of [
     ["com.example", "sync-credential"],
     ["com.example.backup", "sync-credential"],
     ["com.other", "sync-credential"],
-    // A plugin whose id equals another provider id must not win inference.
     ["com.example.sync", "sync-credential"],
   ]) {
     database.db.prepare(`
@@ -534,16 +533,11 @@ test("inferPluginIdForSyncProvider prefers the longest namespace match with sync
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(pluginId, key, `ref-${pluginId}`, Buffer.from("x"), now, now);
   }
-  assert.equal(
-    database.inferPluginIdForSyncProvider("com.example.backup.sync"),
-    "com.example.backup",
-  );
-  assert.equal(
-    database.inferPluginIdForSyncProvider("com.example.sync"),
-    "com.example",
-    "exact pluginId===providerId must not beat the owning plugin namespace",
-  );
-  assert.equal(database.inferPluginIdForSyncProvider("com.other.cloud"), "com.other");
+  // Parent prefix alone is not enough: a removed plugin may have owned
+  // com.example.backup.sync while only com.example still has credentials.
+  assert.equal(database.inferPluginIdForSyncProvider("com.example.backup.sync"), undefined);
+  assert.equal(database.inferPluginIdForSyncProvider("com.example.sync"), undefined);
+  assert.equal(database.inferPluginIdForSyncProvider("com.other.cloud"), undefined);
   assert.equal(database.inferPluginIdForSyncProvider("com.missing.sync"), undefined);
   database.close();
 });
