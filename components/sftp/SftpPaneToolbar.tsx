@@ -331,6 +331,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   const [displayPath, setDisplayPath] = useState(pane.connection?.currentPath ?? "");
   const [filterDraft, setFilterDraft] = useState(pane.filter);
   const filterComposingRef = useRef(false);
+  const filterAtComposeStartRef = useRef(pane.filter);
   const prevDisplayConnectionIdRef = useRef(pane.connection?.id);
   const toolbarLayout = useToolbarItemLayout(
     STORAGE_KEY_SFTP_TOOLBAR_LAYOUT,
@@ -1037,8 +1038,18 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
               }}
               onCompositionStart={() => {
                 filterComposingRef.current = true;
+                filterAtComposeStartRef.current = pane.filter;
               }}
               onCompositionEnd={(e) => {
+                filterComposingRef.current = false;
+                // We never self-commit while composing, so any change to pane.filter
+                // during the session is external (e.g. follow-CWD navigation clearing
+                // the filter). Honor it and drop the stale composed draft instead of
+                // letting the commit overwrite the navigation-cleared filter.
+                if (pane.filter !== filterAtComposeStartRef.current) {
+                  setFilterDraft(pane.filter);
+                  return;
+                }
                 commitFilterValue(e.currentTarget.value);
               }}
               placeholder={t("sftp.filter.placeholder")}

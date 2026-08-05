@@ -294,6 +294,17 @@ test("SFTP filter input guards CJK IME composition instead of deferring controll
   );
 });
 
+test("SFTP filter honors an external filter change over a stale draft when composition ends", () => {
+  // If navigation clears pane.filter mid-composition, compositionEnd must adopt the
+  // external value instead of committing the stale draft, preserving the invariant
+  // that different-directory navigation clears the filter.
+  assert.match(toolbarSource, /filterAtComposeStartRef\.current = pane\.filter;/);
+  assert.match(
+    toolbarSource,
+    /if \(pane\.filter !== filterAtComposeStartRef\.current\) \{\s*setFilterDraft\(pane\.filter\);\s*return;/,
+  );
+});
+
 test("SFTP filter commit path clears the IME composing guard so clears/commits can't leave it stuck", () => {
   // commitFilterValue backs composition end, Escape, inline clear and close; it must
   // drop the guard so a programmatic clear mid-composition isn't blocked or undone.
