@@ -408,3 +408,38 @@ test("failed restoreOverwrite keeps stash for retry", (context) => {
   assert.equal(store.resolve("com.example", first), "good-password");
   database.close();
 });
+
+test("existing overwrite stash is preserved across retry puts and cleared by prefix delete", (context) => {
+  const database = createDatabase(context);
+  let failEncrypt = false;
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => {
+      if (failEncrypt) return Buffer.alloc(0);
+      return Buffer.from(`sealed:${Buffer.from(value).toString("base64")}`);
+    },
+    decryptString: (value) => {
+      const encoded = value.toString().slice("sealed:".length);
+      return Buffer.from(encoded, "base64").toString();
+    },
+  };
+  const store = new PluginSecretStore({ database, safeStorage });
+  const first = store.set("com.example", "sync-credential", "good-password");
+  store.set("com.example", "sync-credential", "bad-password", { stashPrevious: true });
+  failEncrypt = true;
+  assert.throws(
+    () => store.restoreOverwrite("com.example", "sync-credential"),
+    (error) => error.code === RPC_ERRORS.unavailable,
+  );
+  failEncrypt = false;
+  // Retry put must not replace the original good-password stash with bad-password.
+  store.set("com.example", "sync-credential", "worse-password", { stashPrevious: true });
+  assert.equal(store.restoreOverwrite("com.example", "sync-credential"), true);
+  assert.equal(store.resolve("com.example", first), "good-password");
+
+  store.set("com.example", "sync-credential", "temp", { stashPrevious: true });
+  store.deleteByKeyPrefix("com.example", "sync-credential");
+  assert.equal(store.restoreOverwrite("com.example", "sync-credential"), false);
+  assert.equal(store.getReference("com.example", "sync-credential"), undefined);
+  database.close();
+});

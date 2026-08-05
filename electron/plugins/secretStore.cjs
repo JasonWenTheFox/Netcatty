@@ -83,7 +83,9 @@ class PluginSecretStore {
     const stashPrevious = options.stashPrevious === true;
     const stashKey = this.#stashKey(pluginId, key);
     let stashed = false;
-    if (stashPrevious) {
+    if (stashPrevious && !this.#overwriteStash.has(stashKey)) {
+      // Keep an existing stash (e.g. after a failed restore) so a later retry
+      // still recovers the original SecretRef, not a rejected replacement.
       const existing = this.getReference(pluginId, key);
       if (existing) {
         try {
@@ -154,11 +156,22 @@ class PluginSecretStore {
 
   deleteByKeyPrefix(pluginId, prefix) {
     assertSecretKey(prefix);
+    let deleted = 0;
     if (typeof this.database.deleteSecretsByKeyPrefix !== "function") {
       this.delete(pluginId, prefix);
-      return 1;
+      deleted = 1;
+    } else {
+      deleted = this.database.deleteSecretsByKeyPrefix(pluginId, prefix);
     }
-    return this.database.deleteSecretsByKeyPrefix(pluginId, prefix);
+    const pluginPrefix = `${pluginId}\0`;
+    for (const stashKey of [...this.#overwriteStash.keys()]) {
+      if (!stashKey.startsWith(pluginPrefix)) continue;
+      const secretKey = stashKey.slice(pluginPrefix.length);
+      if (secretKey === prefix || secretKey.startsWith(`${prefix}:`)) {
+        this.#overwriteStash.delete(stashKey);
+      }
+    }
+    return deleted;
   }
 
   /**
