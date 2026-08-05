@@ -117,6 +117,7 @@ export interface ApprovalExecutionContext {
   sessionId?: string;
   cwd?: string;
   shell?: string;
+  reason?: string;
 }
 
 function rawCommandString(args: Record<string, unknown> | undefined): string | null {
@@ -125,6 +126,28 @@ function rawCommandString(args: Record<string, unknown> | undefined): string | n
   if (typeof raw === 'string') return raw || null;
   if (Array.isArray(raw) && raw.length > 0) return raw.map((p) => String(p)).join(' ');
   return null;
+}
+
+const APPROVAL_CONTEXT_ARG_KEYS = new Set([
+  'command',
+  'cwd',
+  'working_directory',
+  'workdir',
+  'workingDirectory',
+  'sessionId',
+  'shell',
+  'reason',
+]);
+
+/**
+ * True when pending args still carry review-relevant fields beyond the
+ * command block / execution-context strip (e.g. commandActions).
+ */
+export function approvalArgsHaveExtraContext(
+  args: Record<string, unknown> | undefined,
+): boolean {
+  if (!args) return false;
+  return Object.keys(args).some((key) => !APPROVAL_CONTEXT_ARG_KEYS.has(key));
 }
 
 /**
@@ -164,6 +187,10 @@ export function extractApprovalExecutionContext(
     ? args.shell.trim()
     : undefined;
 
+  const reason = typeof args.reason === 'string' && args.reason.trim()
+    ? args.reason.trim()
+    : undefined;
+
   const raw = (args as { command?: unknown }).command;
   if (!shell) {
     if (Array.isArray(raw) && raw.length >= 2) {
@@ -186,8 +213,8 @@ export function extractApprovalExecutionContext(
     }
   }
 
-  if (!sessionId && !cwd && !shell) return null;
-  return { sessionId, cwd, shell };
+  if (!sessionId && !cwd && !shell && !reason) return null;
+  return { sessionId, cwd, shell, reason };
 }
 
 /**
@@ -299,7 +326,7 @@ export const ToolCall = ({
     showApprovalCommand
     && args
     && Object.keys(args).length > 0
-    && approvalCommandWasUnwrapped(args, reviewCommand),
+    && (approvalCommandWasUnwrapped(args, reviewCommand) || approvalArgsHaveExtraContext(args)),
   );
   const commandNeedsExpand = Boolean(
     reviewCommand
@@ -500,6 +527,11 @@ export const ToolCall = ({
                   {executionContext.cwd && (
                     <span className="font-mono truncate" title={executionContext.cwd}>
                       {t('ai.chat.approvalCwd')}: {executionContext.cwd}
+                    </span>
+                  )}
+                  {executionContext.reason && (
+                    <span className="truncate" title={executionContext.reason}>
+                      {t('ai.chat.approvalReason')}: {executionContext.reason}
                     </span>
                   )}
                 </div>

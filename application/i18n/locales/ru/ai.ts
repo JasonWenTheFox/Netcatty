@@ -362,6 +362,7 @@ export const ruAiMessages: Messages = {
   'ai.chat.approvalSession': 'Сессия',
   'ai.chat.approvalShell': 'Shell',
   'ai.chat.approvalCwd': 'Каталог',
+  'ai.chat.approvalReason': 'Причина',
   'ai.chat.approvalInvocation': 'Вызов',
   'ai.chat.permissionRequired': 'Требуется разрешение',
   'ai.chat.permissionDescription': 'AI-агент хочет выполнить вызов инструмента, для которого требуется ваше одобрение.',

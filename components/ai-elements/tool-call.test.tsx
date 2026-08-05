@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  approvalArgsHaveExtraContext,
   approvalCommandWasUnwrapped,
   extractApprovalExecutionContext,
   extractDisplayCommand,
@@ -80,13 +81,13 @@ test('extractApprovalExecutionContext surfaces session/cwd/shell without rewriti
       cwd: '/var/log',
       command: ['zsh', '-lc', 'df -h | sort'],
     }),
-    { sessionId: 'term-1', cwd: '/var/log', shell: 'zsh' },
+    { sessionId: 'term-1', cwd: '/var/log', shell: 'zsh', reason: undefined },
   );
   assert.deepEqual(
     extractApprovalExecutionContext({
       command: `/bin/bash -lc 'uptime'`,
     }),
-    { sessionId: undefined, cwd: undefined, shell: 'bash' },
+    { sessionId: undefined, cwd: undefined, shell: 'bash', reason: undefined },
   );
   assert.equal(extractApprovalExecutionContext({ path: '/tmp' }), null);
 });
@@ -96,7 +97,24 @@ test('extractApprovalExecutionContext reads --session from netcatty-tool-cli wra
     extractApprovalExecutionContext({
       command: `/bin/zsh -lc '"/abs/netcatty-tool-cli" exec --session term-9 --chat-session chat-1 -- "uptime"'`,
     }),
-    { sessionId: 'term-9', cwd: undefined, shell: 'zsh' },
+    { sessionId: 'term-9', cwd: undefined, shell: 'zsh', reason: undefined },
+  );
+});
+
+test('extractApprovalExecutionContext surfaces Codex reason for approval review', () => {
+  assert.deepEqual(
+    extractApprovalExecutionContext({
+      command: 'rm -rf /tmp/x',
+      cwd: '/tmp',
+      reason: 'Clean stale build artifacts',
+      commandActions: [{ type: 'delete' }],
+    }),
+    {
+      sessionId: undefined,
+      cwd: '/tmp',
+      shell: undefined,
+      reason: 'Clean stale build artifacts',
+    },
   );
 });
 
@@ -108,4 +126,19 @@ test('approvalCommandWasUnwrapped detects Skills+CLI display unwrap', () => {
   assert.equal(display, 'uptime');
   assert.equal(approvalCommandWasUnwrapped(args, display), true);
   assert.equal(approvalCommandWasUnwrapped({ command: 'uptime' }, 'uptime'), false);
+});
+
+test('approvalArgsHaveExtraContext keeps commandActions visible beside the command block', () => {
+  assert.equal(
+    approvalArgsHaveExtraContext({
+      command: 'echo hi',
+      reason: 'demo',
+      commandActions: [{ type: 'read' }],
+    }),
+    true,
+  );
+  assert.equal(
+    approvalArgsHaveExtraContext({ command: 'echo hi', cwd: '/tmp', reason: 'demo' }),
+    false,
+  );
 });
