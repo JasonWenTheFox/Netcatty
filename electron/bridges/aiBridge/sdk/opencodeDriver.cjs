@@ -298,7 +298,9 @@ function translateOpenCodeEvent(event, emitter, state = {}) {
         state.toolResults = state.toolResults || new Set();
         if (!state.toolResults.has(callId)) {
           state.toolResults.add(callId);
-          const rawError = part.state.error ?? part.state.output ?? "OpenCode tool failed";
+          // Prefer non-empty error, then output, then a stable default (blank
+          // string error must not hide a useful output payload).
+          const rawError = part.state.error || part.state.output || "OpenCode tool failed";
           const errorText = typeof rawError === "string"
             ? rawError
             : (extractOpenCodeErrorMessage(rawError) || "OpenCode tool failed");

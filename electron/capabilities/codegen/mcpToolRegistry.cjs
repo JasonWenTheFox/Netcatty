@@ -74,12 +74,19 @@ function formatTerminalExecuteResult(result) {
   return parts.join("\n");
 }
 
+// Align with Catty executor wording when a command ran but produced no text.
+const TERMINAL_EXECUTE_NO_OUTPUT_TEXT = "Command completed (no output)";
+
 /**
  * Format terminal_execute for MCP clients.
  * Match Catty semantics: when the command actually ran, always surface
  * stdout/stderr/exitCode so the model can judge the failure. Only pure
  * operational failures (session missing, blocked, etc.) become a bare
  * "Error: …" payload. See issue #2718.
+ *
+ * Successful empty results (serial/network raw PTY often returns ok:true with
+ * empty stdout/stderr and exitCode:null) must NOT fall back to
+ * "Error: Operation failed" — Codex P2 on PR #2724.
  */
 function formatTerminalExecuteMcpResponse(result) {
   if (!result || typeof result !== "object") {
@@ -91,7 +98,10 @@ function formatTerminalExecuteMcpResponse(result) {
     return { content: [{ type: "text", text: formatRpcError(result) }], isError: true };
   }
 
-  const text = formatTerminalExecuteResult(result) || formatRpcError(result);
+  // Empty successful payloads (serial/raw PTY): neutral text.
+  // Never fall back to formatRpcError here — that mislabels silent successes (#2724 P2).
+  // When result.error is set, formatTerminalExecuteResult already includes `[error] …`.
+  const text = formatTerminalExecuteResult(result) || TERMINAL_EXECUTE_NO_OUTPUT_TEXT;
   // Mark isError only for operational/runtime failures that include an error
   // string (timeout, cancel, stream lost). Non-zero exit alone is success of
   // the tool call with a failed command — same as Catty ok:true + exitCode.
