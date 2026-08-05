@@ -333,3 +333,50 @@ test("overwrite stash restores previous plaintext and discard clears it", (conte
   assert.equal(store.restoreOverwrite("com.example.one", "api-key"), false);
   database.close();
 });
+
+test("failed overwrite clears stashed plaintext", (context) => {
+  const database = createDatabase(context);
+  let failEncrypt = false;
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => {
+      if (failEncrypt) return Buffer.alloc(0);
+      return Buffer.from(`sealed:${Buffer.from(value).toString("base64")}`);
+    },
+    decryptString: (value) => {
+      const encoded = value.toString().slice("sealed:".length);
+      return Buffer.from(encoded, "base64").toString();
+    },
+  };
+  const store = new PluginSecretStore({ database, safeStorage });
+  store.set("com.example", "sync-credential", "good-password");
+  failEncrypt = true;
+  assert.throws(
+    () => store.set("com.example", "sync-credential", "bad-password", { stashPrevious: true }),
+    (error) => error.code === RPC_ERRORS.unavailable,
+  );
+  assert.equal(store.restoreOverwrite("com.example", "sync-credential"), false);
+  failEncrypt = false;
+  const ref = store.getReference("com.example", "sync-credential");
+  assert.equal(store.resolve("com.example", ref), "good-password");
+  database.close();
+});
+
+test("sync provider bindings live outside plugin secrets and reject namespace mismatches", (context) => {
+  const database = createDatabase(context);
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+  });
+  store.bindSyncProviderPlugin("com.example", "com.example.sync");
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  assert.throws(
+    () => store.bindSyncProviderPlugin("com.example", "com.other.sync"),
+    /outside the plugin namespace/,
+  );
+  store.set("com.attacker", "sync-provider-map:com.example.sync", "com.attacker");
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  store.unbindSyncProviderPlugin("com.example", "com.example.sync");
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
+  database.close();
+});

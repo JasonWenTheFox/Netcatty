@@ -81,27 +81,36 @@ class PluginSecretStore {
       throw new PluginRpcError(RPC_ERRORS.invalidArgument, "Plugin secret value is invalid or too large");
     }
     const stashPrevious = options.stashPrevious === true;
+    const stashKey = this.#stashKey(pluginId, key);
+    let stashed = false;
     if (stashPrevious) {
       const existing = this.getReference(pluginId, key);
       if (existing) {
         try {
-          this.#overwriteStash.set(this.#stashKey(pluginId, key), {
+          this.#overwriteStash.set(stashKey, {
             value: this.resolve(pluginId, existing),
             // Keep the prior SecretRef id so saved provider connections still resolve.
             secretRef: existing.id,
           });
+          stashed = true;
         } catch {
           /* keep going; restore may be unavailable for this key */
         }
       }
     }
-    const secretRef = this.randomBytes(24).toString("base64url");
-    const ciphertext = this.safeStorage.encryptString(value);
-    if (!Buffer.isBuffer(ciphertext) || ciphertext.byteLength < 1) {
-      throw new PluginRpcError(RPC_ERRORS.unavailable, "OS-backed plugin secret encryption failed");
+    try {
+      const secretRef = this.randomBytes(24).toString("base64url");
+      const ciphertext = this.safeStorage.encryptString(value);
+      if (!Buffer.isBuffer(ciphertext) || ciphertext.byteLength < 1) {
+        throw new PluginRpcError(RPC_ERRORS.unavailable, "OS-backed plugin secret encryption failed");
+      }
+      this.database.upsertSecret({ pluginId, key, secretRef, ciphertext });
+      return Object.freeze({ kind: "secret", id: secretRef, key });
+    } catch (error) {
+      // Failed replacement must not leave prior plaintext stranded in memory.
+      if (stashed) this.#overwriteStash.delete(stashKey);
+      throw error;
     }
-    this.database.upsertSecret({ pluginId, key, secretRef, ciphertext });
-    return Object.freeze({ kind: "secret", id: secretRef, key });
   }
 
   /**
@@ -153,33 +162,43 @@ class PluginSecretStore {
   /**
    * Durable providerId → pluginId binding so disconnect can wipe sync secrets
    * after the contribution disappears (disabled/uninstalled plugin).
+   * Stored in a host-owned table, not plugin-writable secrets.
    */
-  syncProviderBindingKey(providerId) {
-    return `sync-provider-map:${assertSecretKey(providerId)}`;
-  }
-
   bindSyncProviderPlugin(pluginId, providerId) {
-    const key = this.syncProviderBindingKey(providerId);
-    if (this.getReference(pluginId, key)) return;
-    this.set(pluginId, key, pluginId);
+    if (typeof pluginId !== "string" || pluginId.length < 1) {
+      throw new TypeError("Plugin id is invalid");
+    }
+    assertSecretKey(providerId);
+    if (
+      providerId !== pluginId
+      && !providerId.startsWith(`${pluginId}.`)
+    ) {
+      throw new TypeError("Sync provider id is outside the plugin namespace");
+    }
+    if (typeof this.database.upsertSyncProviderBinding !== "function") {
+      throw new Error("Plugin sync provider binding storage is unavailable");
+    }
+    this.database.upsertSyncProviderBinding(providerId, pluginId);
   }
 
   resolveSyncProviderPlugin(providerId) {
-    const key = this.syncProviderBindingKey(providerId);
-    if (typeof this.database.findSecretsByKey === "function") {
-      const rows = this.database.findSecretsByKey(key);
-      const pluginId = rows?.[0]?.pluginId;
-      return typeof pluginId === "string" && pluginId.length > 0 ? pluginId : undefined;
+    assertSecretKey(providerId);
+    if (typeof this.database.getSyncProviderBinding !== "function") return undefined;
+    const row = this.database.getSyncProviderBinding(providerId);
+    const pluginId = row?.pluginId;
+    if (typeof pluginId !== "string" || pluginId.length < 1) return undefined;
+    if (providerId !== pluginId && !providerId.startsWith(`${pluginId}.`)) {
+      return undefined;
     }
-    return undefined;
+    return pluginId;
   }
 
   unbindSyncProviderPlugin(pluginId, providerId) {
-    try {
-      this.delete(pluginId, this.syncProviderBindingKey(providerId));
-    } catch {
-      /* ignore missing binding */
-    }
+    assertSecretKey(providerId);
+    if (typeof this.database.deleteSyncProviderBinding !== "function") return;
+    const existing = this.database.getSyncProviderBinding(providerId);
+    if (existing && existing.pluginId !== pluginId) return;
+    this.database.deleteSyncProviderBinding(providerId);
   }
 
   resolve(pluginId, secret) {
