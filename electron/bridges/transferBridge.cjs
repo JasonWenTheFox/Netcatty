@@ -2203,22 +2203,19 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     };
 
     // OPEN wait may settle without a callback (channel error, or cancel settle
-    // timeout). Keep drain pending for a late truncating OPEN, but force-
-    // complete if the callback never arrives so cleanup/lease cannot hang.
-    // Also release the path gate so a dead channel cannot pin same-path retries
-    // forever. A still-late OPEN callback then closes and, if a retry already
-    // accepted its own OPEN on this path, invalidates that retry (Codex P1).
+    // timeout). Force-complete the drain so cleanup/lease cannot hang, but
+    // NEVER release the path gate here: a still-in-flight truncating OPEN can
+    // land later and wipe a same-path retry that already wrote (Codex P1 on
+    // a0b2ce01). Gate is only released from the OPEN callback paths
+    // (success, error, late finishLateSharedWriteOpen).
     const armSharedWriteDrainForceComplete = () => {
       if (!trackSharedWriteDrain || !resolveSharedWriteDrain || drainForceTimer) return;
       drainForceTimer = setTimeout(() => {
         drainForceTimer = null;
-        // Free the transfer/lease, but keep the path gate held until the OPEN
-        // callback settles (late path releases it). Releasing here lets a
-        // same-id retry OPEN the stage while the stale OPEN is still pending
-        // (Codex P1 on 9d87df6c). If the callback never arrives, free after a
-        // long grace so a dead channel cannot pin same-path uploads forever.
+        // Free the transfer/lease only. Path gate stays held until the OPEN
+        // callback actually settles (or never, if the channel is dead — safer
+        // than reusing a path that a stale truncating OPEN can still wipe).
         completeSharedWriteDrain();
-        setTimeout(() => releasePathGate(), 30000);
       }, 2000);
     };
 
