@@ -2223,18 +2223,17 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // never invokes the unlink callback must not pin finishCancel / drain
     // settle forever (lease + admission slot hang). Same 2s grace as the
     // shared-write drain force-complete.
+    // Unlink without a local timeout so the path gate stays held until the
+    // server callback (or sync throw). A 2s force-resolve let retries write a
+    // deterministic stage while a delayed unlink could still delete it
+    // (Codex P2 on 0ee64386).
     const unlinkSharedWritePathBestEffort = () => new Promise((resolveUnlink) => {
       let settledUnlink = false;
       const finishUnlink = () => {
         if (settledUnlink) return;
         settledUnlink = true;
-        if (unlinkTimer) {
-          clearTimeout(unlinkTimer);
-          unlinkTimer = null;
-        }
         resolveUnlink();
       };
-      let unlinkTimer = setTimeout(finishUnlink, 2000);
       // Ownership can change between close and unlink (retry start).
       if (!canUnlinkLateGeneratedStageNow()) {
         finishUnlink();
