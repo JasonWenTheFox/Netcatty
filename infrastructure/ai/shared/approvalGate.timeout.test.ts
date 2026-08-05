@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { CATTY_APPROVAL_ABSOLUTE_GRACE_MS } from './approvalConstants';
 import {
   cancelApprovalTimeout,
   clearAllPendingApprovals,
@@ -10,6 +9,7 @@ import {
   requestApproval,
   resolveApproval,
 } from './approvalGate';
+import { resolveCattyApprovalDeadlines } from './approvalConstants';
 
 function stubNow(startMs: number): { advance: (deltaMs: number) => void; restore: () => void } {
   const realNow = Date.now;
@@ -25,7 +25,24 @@ function stubNow(startMs: number): { advance: (deltaMs: number) => void; restore
   };
 }
 
-test('cancelApprovalTimeout keeps a distinct absolute Catty deadline beyond idle', async () => {
+test('resolveCattyApprovalDeadlines keeps hard deadline >= idle and 3x by default', () => {
+  assert.deepEqual(resolveCattyApprovalDeadlines(100), { idleMs: 100, hardDeadlineMs: 300 });
+  assert.deepEqual(resolveCattyApprovalDeadlines(5 * 60 * 1000), {
+    idleMs: 5 * 60 * 1000,
+    hardDeadlineMs: 15 * 60 * 1000,
+  });
+  // Cap at 30m when 3× would exceed, unless idle itself is larger.
+  assert.deepEqual(resolveCattyApprovalDeadlines(20 * 60 * 1000), {
+    idleMs: 20 * 60 * 1000,
+    hardDeadlineMs: 30 * 60 * 1000,
+  });
+  assert.deepEqual(resolveCattyApprovalDeadlines(40 * 60 * 1000), {
+    idleMs: 40 * 60 * 1000,
+    hardDeadlineMs: 40 * 60 * 1000,
+  });
+});
+
+test('cancelApprovalTimeout re-arms a fresh idle window, not the original absolute remainder', async () => {
   clearAllPendingApprovals();
   const cleared: string[] = [];
   const unsub = onApprovalCleared((ids) => {
@@ -34,23 +51,29 @@ test('cancelApprovalTimeout keeps a distinct absolute Catty deadline beyond idle
   const clock = stubNow(1_000_000);
 
   try {
-    const toolCallId = `timeout-absolute-${Date.now()}`;
-    const idleMs = 100;
+    const toolCallId = `timeout-idle-rearm-${Date.now()}`;
+    // idle 100ms, hard 300ms
     const approvalPromise = requestApproval(
       toolCallId,
       'terminal_execute',
       { sessionId: 's1', command: 'echo hi' },
       'chat-1',
-      idleMs,
+      100,
     );
 
-    // Past idle but still within absolute (idle + grace). Jump near the absolute
-    // ceiling, then cancel idle so the re-armed remainder is ~30ms of wall time.
-    clock.advance(idleMs + CATTY_APPROVAL_ABSOLUTE_GRACE_MS - 30);
+    // Review near end of first idle window — previously this left ~30ms absolute
+    // remainder and denied while the user was still deciding.
+    clock.advance(70);
     cancelApprovalTimeout(toolCallId);
 
-    await delay(15);
-    assert.equal(cleared.includes(toolCallId), false, 'must stay pending before absolute expiry');
+    // Fresh idle (100ms) should keep the approval pending well past the old
+    // absolute mark at t=100.
+    await delay(50);
+    assert.equal(cleared.includes(toolCallId), false, 'must stay pending through re-armed idle');
+
+    // Still before hard deadline (300): jump clock so remaining hard is short.
+    clock.advance(220); // now = start+290; remaining hard = 10ms; re-arm idle capped to 10
+    cancelApprovalTimeout(toolCallId);
 
     const outcome = await Promise.race([
       approvalPromise.then((approved) => ({ approved })),
@@ -71,10 +94,11 @@ test('cancelApprovalTimeout survives past the idle deadline while reviewing', as
   const unsub = onApprovalCleared((ids) => {
     cleared.push(...ids);
   });
+  const clock = stubNow(3_000_000);
 
   try {
     const toolCallId = `timeout-past-idle-${Date.now()}`;
-    const idleMs = 40;
+    const idleMs = 80;
     const approvalPromise = requestApproval(
       toolCallId,
       'terminal_execute',
@@ -83,21 +107,24 @@ test('cancelApprovalTimeout survives past the idle deadline while reviewing', as
       idleMs,
     );
 
-    // Review immediately — re-arms absolute (idle + grace). Idle alone would deny at 40ms.
+    // Review near end of first idle — re-arms a full idleMs from now (hard = 3x).
+    clock.advance(idleMs - 20);
     cancelApprovalTimeout(toolCallId);
 
-    await delay(idleMs + 40);
-    assert.equal(cleared.includes(toolCallId), false, 'active review must outlive idle timeout');
+    // Wall-clock past the original idle mark; re-armed idle still has ~idleMs left.
+    await delay(40);
+    assert.equal(cleared.includes(toolCallId), false, 'active review must outlive original idle');
 
     resolveApproval(toolCallId, true);
     assert.equal(await approvalPromise, true);
   } finally {
+    clock.restore();
     unsub();
     clearAllPendingApprovals();
   }
 });
 
-test('cancelApprovalTimeout still allows explicit approve before absolute Catty expiry', async () => {
+test('cancelApprovalTimeout still allows explicit approve before hard Catty deadline', async () => {
   clearAllPendingApprovals();
   const clock = stubNow(2_000_000);
 
@@ -111,6 +138,7 @@ test('cancelApprovalTimeout still allows explicit approve before absolute Catty 
       200,
     );
 
+    clock.advance(150);
     cancelApprovalTimeout(toolCallId);
     resolveApproval(toolCallId, true);
     assert.equal(await approvalPromise, true);

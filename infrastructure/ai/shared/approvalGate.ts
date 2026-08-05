@@ -18,8 +18,8 @@
  */
 
 import {
-  CATTY_APPROVAL_ABSOLUTE_GRACE_MS,
   CATTY_APPROVAL_TIMEOUT_MS,
+  resolveCattyApprovalDeadlines,
 } from './approvalConstants';
 import { localStorageAdapter } from '../../persistence/localStorageAdapter';
 import { STORAGE_KEY_AI_PERMISSION_GRANTS } from '../../config/storageKeys';
@@ -168,8 +168,10 @@ function isGrantedByRules(request: ApprovalRequest): boolean {
  * Returns a Promise<boolean> that resolves to `true` (approved) or `false` (denied).
  * The UI is notified via the listener system to render approval buttons.
  *
- * If the user does not respond within `timeoutMs` (default 5 minutes), the
- * approval is auto-denied to prevent the session from hanging indefinitely.
+ * Idle auto-deny uses `timeoutMs` (default 5 minutes). Review activity re-arms
+ * a fresh idle window from *now*, but never past a hard deadline from creation
+ * (default 3× idle, capped at 30 minutes) so late review is not cut off at the
+ * original idle mark while still staying bounded.
  */
 export function requestApproval(
   toolCallId: string,
@@ -195,11 +197,10 @@ export function requestApproval(
 
   return new Promise<boolean>((resolve) => {
     let timerId: ReturnType<typeof setTimeout> | null = null;
-    // Idle and absolute are distinct: idle auto-denies if the card is ignored;
-    // absolute is idle + stream-tool grace so active review is not clipped at
-    // the idle boundary while still staying inside the Catty toolMs budget.
-    const absoluteExpiresAt = Date.now() + timeoutMs + CATTY_APPROVAL_ABSOLUTE_GRACE_MS;
-    let idleCancelled = false;
+    const { idleMs, hardDeadlineMs } = resolveCattyApprovalDeadlines(timeoutMs);
+    // Hard ceiling from creation — review re-arms idle from now for idleMs
+    // but never past this bound.
+    const hardDeadlineAt = Date.now() + hardDeadlineMs;
 
     const clearTimer = () => {
       if (timerId) {
@@ -234,18 +235,20 @@ export function requestApproval(
       timerId = setTimeout(denyTimedOut, ms);
     };
 
-    // Auto-deny after idle timeout so an ignored card cannot hang the session.
-    // Review cancels this arm and re-arms the longer absolute remainder
-    // (never auto-approves; never extends past absoluteExpiresAt).
-    armTimer(timeoutMs);
+    // Initial arm is the idle window. Review re-arms idle (capped by hard deadline).
+    armTimer(idleMs);
 
     pendingApprovals.set(toolCallId, {
       resolve: wrappedResolve,
       request,
       cancelTimeout: () => {
-        if (idleCancelled) return;
-        idleCancelled = true;
-        armTimer(absoluteExpiresAt - Date.now());
+        const remainingHard = hardDeadlineAt - Date.now();
+        if (remainingHard <= 0) {
+          armTimer(0);
+          return;
+        }
+        // Re-arm a full idle window from now, never past the hard deadline.
+        armTimer(Math.min(idleMs, remainingHard));
       },
     });
 
@@ -257,18 +260,15 @@ export function requestApproval(
 }
 
 /**
- * Cancel the idle auto-deny timer after the user starts reviewing or interacting
- * with the card. Catty local approvals re-arm the longer absolute deadline
- * (idle + grace) so active review is not clipped at the idle boundary while a
- * late approve still cannot outlive the stream tool budget.
+ * Cancel / reset the idle auto-deny timer after the user starts reviewing or
+ * interacting with the card. Catty local approvals re-arm idle from *now* for
+ * a fresh idleMs window, never past the hard creation deadline.
  * Timeout never auto-approves.
  */
 export function cancelApprovalTimeout(toolCallId: string): void {
   const entry = pendingApprovals.get(toolCallId);
-  if (entry?.cancelTimeout) {
-    entry.cancelTimeout();
-    entry.cancelTimeout = undefined;
-  }
+  // Keep cancelTimeout registered so further review activity can re-arm idle.
+  entry?.cancelTimeout?.();
 
   // MCP / Codex App Server approvals are timed in the main process.
   // MCP cancel drops idle but keeps the absolute creation deadline.
