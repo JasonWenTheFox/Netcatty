@@ -2143,6 +2143,7 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
   let rejectPending = null;
   let forceSettleTimer = null;
   let verifyDone = false;
+  let channelError = null;
   const previousAbort = transfer.abort;
   const cancelError = () => new Error("Transfer cancelled");
   const abortDuringVerify = () => {
@@ -2155,15 +2156,21 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
     }, 2000);
   };
   const onVerifyChannelError = (error) => {
-    rejectPending?.(error || new Error("SFTP channel error"));
+    // Remember across sample gaps: an error between races (after one sample
+    // resolves, before the next rejectPending is installed) must still fail
+    // the next sample instead of letting readSftpRange hang forever.
+    channelError = channelError || error || new Error("SFTP channel error");
+    rejectPending?.(channelError);
   };
   transfer.abort = abortDuringVerify;
   sftp.on?.("error", onVerifyChannelError);
 
   try {
     if (transfer.cancelled) throw cancelError();
+    if (channelError) throw channelError;
     for (const position of offsets) {
       if (transfer.cancelled) throw cancelError();
+      if (channelError) throw channelError;
       const length = Math.min(sampleSize, fileSize - position);
       const remoteBuffer = Buffer.allocUnsafe(length);
       const localBuffer = Buffer.allocUnsafe(length);
@@ -2180,6 +2187,10 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
         })(),
         new Promise((_, reject) => {
           rejectPending = reject;
+          if (channelError) {
+            reject(channelError);
+            return;
+          }
           if (transfer.cancelled) abortDuringVerify();
         }),
       ]);
@@ -2187,6 +2198,7 @@ async function verifyFastDownloadSamples(sftp, remoteHandle, localHandle, fileSi
       // force-settle timer firing. Recheck so we never report complete after
       // cancel (especially the last sample on direct/non-staged downloads).
       if (transfer.cancelled) throw cancelError();
+      if (channelError) throw channelError;
     }
   } finally {
     verifyDone = true;
