@@ -95,10 +95,14 @@ export function extractDisplayCommand(args: Record<string, unknown> | undefined)
   if (strWrap) cmdString = strWrap[2];
 
   // Netcatty CLI wrapper extraction.
-  const cliIdx = cmdString.indexOf('netcatty-tool-cli');
+  // Packaged / Windows paths may be `netcatty-tool-cli.cjs` or `.cmd`; strip the
+  // optional extension so the subcommand after the binary is still found.
+  const cliIdx = cmdString.search(/netcatty-tool-cli(?:\.(?:cjs|cmd|exe|js))?/i);
   if (cliIdx >= 0) {
+    const cliMatch = cmdString.slice(cliIdx).match(/^netcatty-tool-cli(?:\.(?:cjs|cmd|exe|js))?/i);
+    const cliTokenLen = cliMatch?.[0]?.length ?? 'netcatty-tool-cli'.length;
     const afterCli = cmdString
-      .slice(cliIdx + 'netcatty-tool-cli'.length)
+      .slice(cliIdx + cliTokenLen)
       .replace(/^["']?\s*/, '');
     const subMatch = afterCli.match(/^(\S+)/);
     const sub = subMatch ? subMatch[1] : '';

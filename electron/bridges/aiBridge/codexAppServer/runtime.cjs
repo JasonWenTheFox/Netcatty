@@ -740,9 +740,30 @@ class CodexAppServerRuntime {
     const timeoutMs = kind === "user-input" && Number(params.autoResolutionMs) > 0
       ? Number(params.autoResolutionMs)
       : INTERACTION_TIMEOUT_MS;
-    const timer = setTimeout(() => {
-      this.#resolveInteraction(interactionId, kind === "user-input" ? { answers: {} } : { decision: "reject" });
-    }, timeoutMs);
+    // Hard ceiling from creation — review can cancel the idle timer but must
+    // re-arm the absolute remainder (Catty/MCP pattern; never unbounded).
+    const absoluteExpiresAt = Date.now() + timeoutMs;
+    const armTimer = (ms) => {
+      const pending = this.pendingInteractions.get(interactionId);
+      if (!pending) return;
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
+      if (ms <= 0) {
+        this.#resolveInteraction(
+          interactionId,
+          kind === "user-input" ? { answers: {} } : { decision: "reject" },
+        );
+        return;
+      }
+      pending.timer = setTimeout(() => {
+        this.#resolveInteraction(
+          interactionId,
+          kind === "user-input" ? { answers: {} } : { decision: "reject" },
+        );
+      }, ms);
+    };
     this.pendingInteractions.set(interactionId, {
       interactionId,
       connection,
@@ -750,8 +771,11 @@ class CodexAppServerRuntime {
       kind,
       params,
       context,
-      timer,
+      timer: null,
+      absoluteExpiresAt,
+      idleCancelled: false,
     });
+    armTimer(timeoutMs);
 
     const payload = {
       interactionId,
@@ -841,15 +865,33 @@ class CodexAppServerRuntime {
   }
 
   /**
-   * Drop the auto-reject timer after the user starts reviewing an approval card.
-   * Leaves the interaction pending until an explicit approve/reject/cancel.
+   * Drop the idle auto-reject timer after the user starts reviewing an approval card.
+   * Re-arms the absolute creation deadline so a late approve cannot outlive the
+   * original timeout window (matches Catty/MCP approval cancel semantics).
    */
   cancelInteractionTimeout(interactionId, sender) {
     const pending = this.pendingInteractions.get(interactionId);
-    if (!pending?.timer) return false;
+    if (!pending || pending.idleCancelled) return false;
     if (sender && pending.context?.sender && pending.context.sender !== sender) return false;
-    clearTimeout(pending.timer);
-    pending.timer = null;
+    pending.idleCancelled = true;
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    const remainingMs = Math.max(0, (pending.absoluteExpiresAt ?? 0) - Date.now());
+    if (remainingMs <= 0) {
+      this.#resolveInteraction(
+        interactionId,
+        pending.kind === "user-input" ? { answers: {} } : { decision: "reject" },
+      );
+      return true;
+    }
+    pending.timer = setTimeout(() => {
+      this.#resolveInteraction(
+        interactionId,
+        pending.kind === "user-input" ? { answers: {} } : { decision: "reject" },
+      );
+    }, remainingMs);
     return true;
   }
 

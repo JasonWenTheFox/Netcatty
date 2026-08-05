@@ -48,6 +48,30 @@ test('raw (unwrapped) netcatty-tool-cli exec still works', () => {
   );
 });
 
+test('netcatty-tool-cli.cjs wrapper still unwraps to remote command', () => {
+  assert.equal(
+    extractDisplayCommand({
+      command: `/bin/zsh -lc '"/abs/netcatty-tool-cli.cjs" exec --session X -- "uptime"'`,
+    }),
+    'uptime',
+  );
+  assert.equal(
+    extractDisplayCommand({
+      command: `"/Resources/netcatty-tool-cli.cjs" exec --session X -- "df -h"`,
+    }),
+    'df -h',
+  );
+});
+
+test('netcatty-tool-cli.cmd wrapper still unwraps to remote command', () => {
+  assert.equal(
+    extractDisplayCommand({
+      command: `"C:\\\\App\\\\netcatty-tool-cli.cmd" exec --session X -- "whoami"`,
+    }),
+    'whoami',
+  );
+});
+
 test('netcatty-tool-cli env -> list sessions', () => {
   assert.equal(extractDisplayCommand({ command: 'netcatty-tool-cli env' }), 'netcatty: list sessions');
 });
