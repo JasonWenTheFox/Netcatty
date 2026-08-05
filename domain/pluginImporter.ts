@@ -501,11 +501,18 @@ export function applyPluginImporterDestination(
   const nextAddedGroupCount = customGroups.filter(
     (group) => !existingGroupSet.has(group),
   ).length;
+  // Destination rewriting can collapse same-endpoint hosts into one group;
+  // keep added/duplicate counts aligned with the hosts actually retained.
+  const collapsedHostCount = Math.max(0, importedHosts.length - targeted.hosts.length);
   return {
     ...merged,
     hosts: [...existingHosts, ...targeted.hosts],
     customGroups,
-    addedCount: merged.addedCount - previousAddedGroupCount + nextAddedGroupCount,
+    duplicateCount: merged.duplicateCount + collapsedHostCount,
+    addedCount: merged.addedCount
+      - previousAddedGroupCount
+      + nextAddedGroupCount
+      - collapsedHostCount,
   };
 }
 

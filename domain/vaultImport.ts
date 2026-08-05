@@ -185,8 +185,16 @@ export function applyVaultImportDestination(
     return retainedByMergeKey.get(hostKey({ ...original, group }))?.id;
   };
 
+  const selectedKeyByHostId = new Map(
+    hosts.map((host) => {
+      const selected = host.identityFilePaths?.find((path) => path.trim())?.trim();
+      return [host.id, selected ? normalizeKeyPathKey(selected) : undefined] as const;
+    }),
+  );
+
   const remapKeyPassphrases = (
     entries: VaultHostKeyPassphrase[] | undefined,
+    options?: { matchSelectedKey?: boolean },
   ): VaultHostKeyPassphrase[] | undefined => {
     if (!entries) return entries;
     const remapped: VaultHostKeyPassphrase[] = [];
@@ -194,6 +202,12 @@ export function applyVaultImportDestination(
     for (const entry of entries) {
       const nextHostId = remapHostId(entry.hostId);
       if (!nextHostId) continue;
+      // Match CSV same-group dedupe: never attach a passphrase for a key the
+      // retained host did not keep as its selected identity file.
+      if (options?.matchSelectedKey) {
+        const selectedKey = selectedKeyByHostId.get(nextHostId);
+        if (!selectedKey || normalizeKeyPathKey(entry.keyPath) !== selectedKey) continue;
+      }
       const dedupeKey = `${nextHostId}\u0000${normalizeKeyPathKey(entry.keyPath)}\u0000${entry.passphrase}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
@@ -206,7 +220,9 @@ export function applyVaultImportDestination(
     ...result,
     hosts,
     groups: [group],
-    keyPassphrases: remapKeyPassphrases(result.keyPassphrases),
+    keyPassphrases: remapKeyPassphrases(result.keyPassphrases, { matchSelectedKey: true }),
+    // Keep remapped candidates for alias conflict checks (same as CSV same-group
+    // dedupe); the import handler still gates saves on the retained key path.
     keyPassphraseCandidates: remapKeyPassphrases(result.keyPassphraseCandidates),
     stats: {
       ...result.stats,

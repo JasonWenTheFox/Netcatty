@@ -450,6 +450,58 @@ test('plugin importer destination moves only newly imported hosts into the selec
   assert.equal(targeted.addedCount, 2);
 });
 
+test('plugin importer destination re-dedupes same-endpoint hosts collapsed into one group', () => {
+  const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
+    kind: 'host',
+    value: { label: 'Existing', hostname: 'existing.test', group: 'Original' },
+  } }]);
+  const importedDrafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: {
+      kind: 'host',
+      value: {
+        label: 'direct',
+        hostname: '10.10.10.10',
+        port: 22,
+        username: 'root',
+        group: 'lan',
+      },
+    } },
+    { type: 'draft', draft: {
+      kind: 'host',
+      value: {
+        label: 'via-socks',
+        hostname: '10.10.10.10',
+        port: 22,
+        username: 'root',
+        group: 'lan-proxy',
+      },
+    } },
+  ]);
+  const merged = mergePluginImporterDrafts({
+    hosts: existingDrafts.hosts,
+    identities: [],
+    keys: [],
+    snippets: [],
+    customGroups: ['Original'],
+  }, importedDrafts);
+
+  assert.equal(merged.hosts.length, 3);
+  assert.equal(merged.addedCount, 4); // 2 hosts + 2 new groups
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    existingDrafts.hosts.length,
+    { mode: 'group', group: 'Chosen' },
+    ['Original'],
+  );
+
+  assert.equal(targeted.hosts.length, 2);
+  assert.equal(targeted.hosts[1]?.group, 'Chosen');
+  assert.deepEqual(targeted.customGroups, ['Original', 'Chosen']);
+  assert.equal(targeted.duplicateCount, merged.duplicateCount + 1);
+  assert.equal(targeted.addedCount, 2); // 1 retained host + Chosen group
+});
+
 test('plugin importer does not count a host-owned destination group as newly added', () => {
   const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
     kind: 'host',

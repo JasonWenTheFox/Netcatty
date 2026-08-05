@@ -210,6 +210,50 @@ test("applyVaultImportDestination re-dedupes same-endpoint hosts collapsed into 
   assert.equal(merged.hosts.length, 1);
 });
 
+test("applyVaultImportDestination remaps a shared key passphrase onto the retained host", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username,KeyPath,Passphrase",
+    "lan,direct,10.10.10.10,22,root,~/.ssh/id_ed25519,",
+    "lan-proxy,via-socks,10.10.10.10,22,root,~/.ssh/id_ed25519,secret",
+  ].join("\n"));
+
+  assert.equal(imported.hosts.length, 2);
+
+  const targeted = applyVaultImportDestination(imported, {
+    mode: "group",
+    group: "Imported/July",
+  });
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.deepEqual(targeted.hosts[0]?.identityFilePaths, ["~/.ssh/id_ed25519"]);
+  assert.deepEqual(targeted.keyPassphrases, [{
+    hostId: targeted.hosts[0]?.id,
+    keyPath: "~/.ssh/id_ed25519",
+    passphrase: "secret",
+  }]);
+});
+
+test("applyVaultImportDestination does not attach a passphrase for a non-retained key", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username,KeyPath,Passphrase",
+    "lan,direct,10.10.10.10,22,root,~/.ssh/id_first,first",
+    "lan-proxy,via-socks,10.10.10.10,22,root,~/.ssh/id_second,second",
+  ].join("\n"));
+
+  const targeted = applyVaultImportDestination(imported, {
+    mode: "group",
+    group: "Imported/July",
+  });
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.deepEqual(targeted.hosts[0]?.identityFilePaths, ["~/.ssh/id_first"]);
+  assert.deepEqual(targeted.keyPassphrases, [{
+    hostId: targeted.hosts[0]?.id,
+    keyPath: "~/.ssh/id_first",
+    passphrase: "first",
+  }]);
+});
+
 test("CSV import keeps working when KeyPath and Passphrase columns are absent", () => {
   const result = importVaultHostsFromText(
     "csv",
