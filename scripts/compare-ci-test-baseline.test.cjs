@@ -101,13 +101,13 @@ test('rejects deleting successful coverage even when the run stays green', () =>
   assert.deepEqual(result.newFailures, ['removed test']);
 });
 
-test('accepts a clean candidate when the exact-base TAP summary is incomplete', () => {
+test('rejects a clean candidate when the exact-base TAP summary is incomplete', () => {
   const result = compareTapResults(
     parseTapResult('base runner stopped early', 1),
     parseTapResult(tap(), 0),
   );
-  assert.equal(result.passed, true);
-  assert.equal(result.kind, 'clean');
+  assert.equal(result.passed, false);
+  assert.equal(result.kind, 'unclassified_failure');
 });
 
 test('accepts only failures already present on the exact base', () => {

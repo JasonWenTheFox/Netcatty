@@ -272,22 +272,18 @@ function compareTapResults(baseline, candidate) {
         unresolvedBaselineFailures.push(name);
       }
     }
-    // A fully green candidate is trusted even when the baseline log is truncated
-    // or individual success titles were renamed, as long as quantitative coverage
-    // did not shrink and every prior failure title is still covered.
+    // A fully green candidate may rename success titles when quantitative
+    // coverage does not shrink, but only against a complete baseline summary.
+    // An incomplete baseline cannot prove coverage was preserved, so fail closed.
     const quantitativeClean =
+      baseline.complete &&
       candidate.complete &&
       candidate.failCount === 0 &&
       candidate.cancelledCount === 0 &&
       unresolvedBaselineFailures.length === 0 &&
-      (
-        !baseline.complete ||
-        (
-          candidate.skippedCount <= baseline.skippedCount &&
-          candidate.todoCount <= baseline.todoCount &&
-          candidate.testCount >= baseline.testCount
-        )
-      );
+      candidate.skippedCount <= baseline.skippedCount &&
+      candidate.todoCount <= baseline.todoCount &&
+      candidate.testCount >= baseline.testCount;
     if (quantitativeClean) {
       return result({ passed: true, kind: 'clean' });
     }
