@@ -1941,7 +1941,10 @@ async function uploadFile(
  * after cancel still closes the handle and, when the path is an explicit
  * generated stage (`generatedStagePath`), best-effort unlinks it so stage
  * cleanup cannot race a recreate/orphan. In-place final targets are never
- * unlinked here.
+ * unlinked here. Same-id retries that already re-own the active transfer
+ * slot also skip unlink: resumable stages reuse
+ * `.netcatty-<transferId>.part`, and a stale late OPEN must not delete the
+ * new attempt's stage (Codex P2 on d19ecb88).
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null, generatedStagePath?: boolean }} [options]
  */
@@ -1960,6 +1963,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // must unlink generated stages so cleanup cannot leave a recreate orphan.
   // In-place finals never unlink.
   const shouldUnlinkLateGeneratedStage = generatedStagePath && isTruncatingOpen;
+  // Re-check ownership at unlink time: a same-id retry may already own
+  // activeTransfers and the deterministic resume stage path.
+  const canUnlinkLateGeneratedStageNow = () => {
+    if (!shouldUnlinkLateGeneratedStage) return false;
+    const transferId = transfer?.transferId;
+    if (transferId == null || transferId === "") return true;
+    const active = activeTransfers.get(transferId);
+    if (active && active !== transfer) return false;
+    return true;
+  };
   let resolveSharedWriteDrain = null;
   if (trackSharedWriteDrain) {
     transfer.sharedWriteOpenDrain = new Promise((resolve) => {
@@ -1999,6 +2012,11 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     };
 
     const unlinkSharedWritePathBestEffort = () => new Promise((resolveUnlink) => {
+      // Ownership can change between close and unlink (retry start).
+      if (!canUnlinkLateGeneratedStageNow()) {
+        resolveUnlink();
+        return;
+      }
       if (typeof sftp.unlink !== "function") {
         resolveUnlink();
         return;
@@ -2014,11 +2032,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // truncating stages also unlink so a force-completed drain / stage delete
     // cannot leave a recreate orphan after cancel OR channel-error settle
     // (Codex P2 on 0cda4a39 / cd57d960 / bd42c51c). Never unlink in-place
-    // final targets (Codex P1 on a9f748c8).
+    // final targets (Codex P1 on a9f748c8). Skip unlink when a same-id retry
+    // already owns the active transfer (Codex P2 on d19ecb88).
     const finishLateSharedWriteOpen = (handle) => {
       const afterClose = () => {
         const finish = () => completeSharedWriteDrain();
-        if (shouldUnlinkLateGeneratedStage) {
+        if (canUnlinkLateGeneratedStageNow()) {
           unlinkSharedWritePathBestEffort().then(finish, finish);
           return;
         }
@@ -2116,8 +2135,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             // Close before settle/drain so shared write cleanup runs after the
             // truncating OPEN handle is released. Cancel + generated stage
             // "w": unlink too so a staged recreate cannot survive if cleanup
-            // already raced. In-place finals are close-only.
-            if (shouldUnlinkLateGeneratedStage) {
+            // already raced. In-place finals are close-only. Same-id retries
+            // that re-own activeTransfers skip unlink (resume stage reuse).
+            if (canUnlinkLateGeneratedStageNow()) {
               closeSftpHandle(sftp, handle)
                 .catch(() => {})
                 .then(() => unlinkSharedWritePathBestEffort())
