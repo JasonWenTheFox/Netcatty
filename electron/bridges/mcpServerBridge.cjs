@@ -199,17 +199,18 @@ function requestApprovalFromRenderer(toolName, args, chatSessionId) {
       return;
     }
     const approvalId = `mcp_approval_${++approvalIdCounter}_${Date.now()}`;
+    // Hard ceiling from creation — must stay below external SDK tool-call
+    // timeouts (~120s). Review can cancel the idle timer but not this bound.
+    const absoluteExpiresAt = Date.now() + APPROVAL_TIMEOUT_MS;
+    let timerId = null;
 
-    // Auto-deny after timeout so SDK/MCP tool calls don't hang indefinitely.
-    // Cleared when the user starts reviewing the approval card (never auto-approves).
-    let timerId = setTimeout(() => {
-      if (pendingApprovals.has(approvalId)) {
-        pendingApprovals.delete(approvalId);
-        resolve(false);
-        // Notify renderer(s) to remove the stale approval card
-        broadcastApprovalEvent('netcatty:ai:mcp:approval-cleared', { approvalIds: [approvalId] });
-      }
-    }, APPROVAL_TIMEOUT_MS);
+    const denyTimedOut = () => {
+      if (!pendingApprovals.has(approvalId)) return;
+      pendingApprovals.delete(approvalId);
+      resolve(false);
+      // Notify renderer(s) to remove the stale approval card
+      broadcastApprovalEvent('netcatty:ai:mcp:approval-cleared', { approvalIds: [approvalId] });
+    };
 
     const clearTimer = () => {
       if (timerId != null) {
@@ -218,12 +219,29 @@ function requestApprovalFromRenderer(toolName, args, chatSessionId) {
       }
     };
 
+    const armTimer = (ms) => {
+      clearTimer();
+      if (ms <= 0) {
+        denyTimedOut();
+        return;
+      }
+      timerId = setTimeout(denyTimedOut, ms);
+    };
+
+    // Auto-deny after timeout so SDK/MCP tool calls don't hang indefinitely.
+    // Idle engagement cancels this arm and re-arms the absolute remainder
+    // (never auto-approves; never extends past absoluteExpiresAt).
+    armTimer(APPROVAL_TIMEOUT_MS);
+
     pendingApprovals.set(approvalId, {
       resolve: (approved) => {
         clearTimer();
         resolve(approved);
       },
-      cancelTimeout: clearTimer,
+      clearTimer,
+      armAbsoluteTimeout: () => armTimer(absoluteExpiresAt - Date.now()),
+      absoluteExpiresAt,
+      idleCancelled: false,
       chatSessionId: chatSessionId || null,
     });
     broadcastApprovalEvent('netcatty:ai:mcp:approval-request', {
@@ -247,14 +265,16 @@ function resolveApprovalFromRenderer(approvalId, approved) {
 }
 
 /**
- * Drop the auto-deny timer after the user starts reviewing an approval card.
- * Leaves the approval pending until an explicit approve/reject.
+ * Drop the idle auto-deny timer after the user starts reviewing an approval card.
+ * Re-arms the absolute creation deadline so a late approve cannot outlive the
+ * external agent's tool-call timeout window.
  */
 function cancelApprovalTimeoutFromRenderer(approvalId) {
   const entry = pendingApprovals.get(approvalId);
-  if (!entry?.cancelTimeout) return false;
-  entry.cancelTimeout();
-  entry.cancelTimeout = undefined;
+  if (!entry || entry.idleCancelled) return false;
+  entry.idleCancelled = true;
+  entry.clearTimer?.();
+  entry.armAbsoluteTimeout?.();
   return true;
 }
 
@@ -2020,6 +2040,7 @@ module.exports = {
   revokeExternalMcpAuthToken,
   getExternalMcpAuthToken,
   syncLiveSessionsToExternalScope,
+  requestApprovalFromRenderer,
   resolveApprovalFromRenderer,
   cancelApprovalTimeoutFromRenderer,
   clearPendingApprovals,

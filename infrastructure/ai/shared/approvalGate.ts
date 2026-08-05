@@ -243,7 +243,8 @@ export function cancelApprovalTimeout(toolCallId: string): void {
     entry.cancelTimeout = undefined;
   }
 
-  // MCP / Codex App Server approvals are timed in the main process; drop those too.
+  // MCP / Codex App Server approvals are timed in the main process.
+  // MCP cancel drops idle but keeps the absolute creation deadline.
   if (toolCallId.startsWith('mcp_approval_')) {
     const bridge = (window as unknown as {
       netcatty?: { cancelMcpApprovalTimeout?: (id: string) => Promise<unknown> };

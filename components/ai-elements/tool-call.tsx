@@ -477,7 +477,10 @@ export const ToolCall = ({
                         markReviewing();
                         setCommandExpanded((v) => !v);
                       }}
-                      onKeyDown={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        // Keep Enter on this control; let Escape bubble to card reject.
+                        if (e.key === 'Enter') e.stopPropagation();
+                      }}
                     >
                       {commandExpanded ? t('ai.chat.collapse') : t('ai.chat.expand')}
                     </button>
@@ -486,7 +489,9 @@ export const ToolCall = ({
                     type="button"
                     className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground px-1.5 py-0.5 rounded hover:bg-muted/30"
                     onClick={() => { void handleCopyCommand(); }}
-                    onKeyDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.stopPropagation();
+                    }}
                   >
                     <Copy size={10} className="shrink-0" />
                     {copied ? t('ai.chat.commandCopied') : t('ai.chat.copyCommand')}
