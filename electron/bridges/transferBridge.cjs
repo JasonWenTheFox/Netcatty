@@ -3422,7 +3422,11 @@ async function uploadFileConcurrent(
         afterPathGate: async () => {
           // A late stale OPEN may have zeroed the stage while we waited; force
           // a full rewrite rather than sparse r+ from an obsolete offset.
+          // Consume the flag here: a gated restart from zero is the recovery
+          // path. Leaving it set makes the post-upload guard fail a successful
+          // full rewrite (Codex P2 on 81979ebb).
           if (transfer.staleOpenTruncatedStage) {
+            transfer.staleOpenTruncatedStage = false;
             checkpoint = 0;
             transfer.checkpointBytes = 0;
             try {
