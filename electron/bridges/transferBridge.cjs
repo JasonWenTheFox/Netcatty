@@ -342,6 +342,9 @@ function remoteOpenPathMatchesStaged(openPath, stagedRemote) {
  * @type {Map<string, { promise: Promise<void>, resolve: () => void, released: boolean }>}
  */
 const truncatingSharedWriteOpenGates = new Map();
+/** @type {WeakMap<object, string>} */
+const truncatingSharedWriteSftpKeys = new WeakMap();
+let truncatingSharedWriteSftpSeq = 0;
 
 function sharedWriteOpenPathKey(filePath) {
   if (Buffer.isBuffer(filePath)) return `b:${filePath.toString("hex")}`;
@@ -349,11 +352,38 @@ function sharedWriteOpenPathKey(filePath) {
 }
 
 /**
+ * Scope path gates per SFTP endpoint so two hosts with the same remote path do
+ * not serialize each other (Codex P2 on c3682460).
+ * @param {object | null | undefined} sftp
+ * @param {object | null | undefined} transfer
+ */
+function sharedWriteOpenSessionKey(sftp, transfer) {
+  const fromTransfer = transfer?.targetSftpId
+    || transfer?.sourceSftpId
+    || transfer?.sftpId
+    || transfer?.sessionId;
+  if (fromTransfer != null && String(fromTransfer).length > 0) {
+    return `id:${String(fromTransfer)}`;
+  }
+  if (sftp && typeof sftp === "object") {
+    let key = truncatingSharedWriteSftpKeys.get(sftp);
+    if (!key) {
+      truncatingSharedWriteSftpSeq += 1;
+      key = `obj:${truncatingSharedWriteSftpSeq}`;
+      truncatingSharedWriteSftpKeys.set(sftp, key);
+    }
+    return key;
+  }
+  return "unknown";
+}
+
+/**
  * @param {string | Buffer} filePath
+ * @param {string} [sessionKey]
  * @returns {{ waitForPrior: Promise<void>, release: () => void }}
  */
-function beginTruncatingSharedWriteOpen(filePath) {
-  const key = sharedWriteOpenPathKey(filePath);
+function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
+  const key = `${sessionKey}|${sharedWriteOpenPathKey(filePath)}`;
   const prior = truncatingSharedWriteOpenGates.get(key);
   const waitForPrior = prior && !prior.released
     ? prior.promise
@@ -2080,7 +2110,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // Path gate only for truncating shared writes — non-truncating "r+" resume
   // opens do not wipe peer bytes if ordered loosely.
   const pathGate = trackSharedWriteDrain && isTruncatingOpen
-    ? beginTruncatingSharedWriteOpen(filePath)
+    ? beginTruncatingSharedWriteOpen(filePath, sharedWriteOpenSessionKey(sftp, transfer))
     : null;
   // Late truncating OPEN after settle (cancel or channel-error force-complete)
   // must unlink generated stages so cleanup cannot leave a recreate orphan.
