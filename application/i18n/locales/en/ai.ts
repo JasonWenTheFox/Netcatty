@@ -410,6 +410,7 @@ export const enAiMessages: Messages = {
   'ai.chat.approvalSession': 'Session',
   'ai.chat.approvalShell': 'Shell',
   'ai.chat.approvalCwd': 'Cwd',
+  'ai.chat.approvalInvocation': 'Invocation',
   'ai.chat.permissionRequired': 'Permission Required',
   'ai.chat.permissionDescription': 'The AI agent wants to execute a tool call that requires your approval.',
   'ai.chat.commandBlocked': 'This command is blocked by your security policy and cannot be executed.',

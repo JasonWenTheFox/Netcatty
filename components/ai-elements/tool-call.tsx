@@ -119,16 +119,40 @@ export interface ApprovalExecutionContext {
   shell?: string;
 }
 
+function rawCommandString(args: Record<string, unknown> | undefined): string | null {
+  if (!args) return null;
+  const raw = (args as { command?: unknown }).command;
+  if (typeof raw === 'string') return raw || null;
+  if (Array.isArray(raw) && raw.length > 0) return raw.map((p) => String(p)).join(' ');
+  return null;
+}
+
+/**
+ * True when the reviewable display command was unwrapped from a Skills+CLI /
+ * shell wrapper — the pending card should still surface target flags.
+ */
+export function approvalCommandWasUnwrapped(
+  args: Record<string, unknown> | undefined,
+  displayCommand: string | null,
+): boolean {
+  if (!displayCommand) return false;
+  const raw = rawCommandString(args);
+  if (!raw || raw === displayCommand) return false;
+  return raw.includes('netcatty-tool-cli') || /(?:^|\/)(sh|bash|zsh|fish|ash|dash)\s+-l?c\s+/.test(raw)
+    || (Array.isArray(args?.command) && args.command.length >= 3);
+}
+
 /**
  * Best-effort execution context for approval review (session / cwd / shell).
- * Never invents host names; only surfaces fields already present on tool args.
+ * Never invents host names; only surfaces fields already present on tool args
+ * or explicit netcatty-tool-cli flags in the command string.
  */
 export function extractApprovalExecutionContext(
   args: Record<string, unknown> | undefined,
 ): ApprovalExecutionContext | null {
   if (!args) return null;
 
-  const sessionId = typeof args.sessionId === 'string' && args.sessionId.trim()
+  let sessionId = typeof args.sessionId === 'string' && args.sessionId.trim()
     ? args.sessionId.trim()
     : undefined;
 
@@ -140,8 +164,8 @@ export function extractApprovalExecutionContext(
     ? args.shell.trim()
     : undefined;
 
+  const raw = (args as { command?: unknown }).command;
   if (!shell) {
-    const raw = (args as { command?: unknown }).command;
     if (Array.isArray(raw) && raw.length >= 2) {
       const first = String(raw[0] ?? '');
       const shellMatch = first.match(/(?:^|\/)(sh|bash|zsh|fish|ash|dash)$/);
@@ -149,6 +173,16 @@ export function extractApprovalExecutionContext(
     } else if (typeof raw === 'string') {
       const shellMatch = raw.match(/^(?:\S*\/)?(sh|bash|zsh|fish|ash|dash)\s+-l?c\s+/);
       if (shellMatch) shell = shellMatch[1];
+    }
+  }
+
+  // Skills+CLI wrappers keep the Netcatty target only on CLI flags after unwrap.
+  if (!sessionId) {
+    const cmd = rawCommandString(args);
+    if (cmd && cmd.includes('netcatty-tool-cli')) {
+      const sessionMatch = cmd.match(/--session(?:\s+|=)(?:"([^"]+)"|'([^']+)'|(\S+))/);
+      const fromFlag = sessionMatch?.[1] ?? sessionMatch?.[2] ?? sessionMatch?.[3];
+      if (fromFlag) sessionId = fromFlag;
     }
   }
 
@@ -261,6 +295,12 @@ export const ToolCall = ({
     : liveDisplayCommand;
   const executionContext = extractApprovalExecutionContext(args);
   const showApprovalCommand = Boolean(isPendingApproval && reviewCommand);
+  const showArgsAlongsideCommand = Boolean(
+    showApprovalCommand
+    && args
+    && Object.keys(args).length > 0
+    && approvalCommandWasUnwrapped(args, reviewCommand),
+  );
   const commandNeedsExpand = Boolean(
     reviewCommand
     && (reviewCommand.length > APPROVAL_COMMAND_EXPAND_CHAR_THRESHOLD
@@ -517,9 +557,11 @@ export const ToolCall = ({
             </div>
           )}
 
-          {args && Object.keys(args).length > 0 && !showApprovalCommand && (
+          {args && Object.keys(args).length > 0 && (!showApprovalCommand || showArgsAlongsideCommand) && (
             <div className="px-3 py-2">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/30 mb-1">Arguments</div>
+              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/30 mb-1">
+                {showArgsAlongsideCommand ? t('ai.chat.approvalInvocation') : 'Arguments'}
+              </div>
               <pre className="max-h-64 overflow-auto text-[11px] font-mono text-muted-foreground/50 whitespace-pre [overflow-wrap:normal]">
                 {JSON.stringify(args, null, 2)}
               </pre>

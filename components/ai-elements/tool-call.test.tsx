@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  approvalCommandWasUnwrapped,
   extractApprovalExecutionContext,
   extractDisplayCommand,
   MAX_TOOL_COMMAND_TOOLTIP_CHARS,
@@ -88,4 +89,23 @@ test('extractApprovalExecutionContext surfaces session/cwd/shell without rewriti
     { sessionId: undefined, cwd: undefined, shell: 'bash' },
   );
   assert.equal(extractApprovalExecutionContext({ path: '/tmp' }), null);
+});
+
+test('extractApprovalExecutionContext reads --session from netcatty-tool-cli wrappers', () => {
+  assert.deepEqual(
+    extractApprovalExecutionContext({
+      command: `/bin/zsh -lc '"/abs/netcatty-tool-cli" exec --session term-9 --chat-session chat-1 -- "uptime"'`,
+    }),
+    { sessionId: 'term-9', cwd: undefined, shell: 'zsh' },
+  );
+});
+
+test('approvalCommandWasUnwrapped detects Skills+CLI display unwrap', () => {
+  const args = {
+    command: `/bin/zsh -lc '"/abs/netcatty-tool-cli" exec --session X -- "uptime"'`,
+  };
+  const display = extractDisplayCommand(args);
+  assert.equal(display, 'uptime');
+  assert.equal(approvalCommandWasUnwrapped(args, display), true);
+  assert.equal(approvalCommandWasUnwrapped({ command: 'uptime' }, 'uptime'), false);
 });

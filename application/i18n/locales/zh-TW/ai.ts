@@ -409,6 +409,7 @@ export const zhTWAiMessages: Messages = {
   'ai.chat.approvalSession': '工作階段',
   'ai.chat.approvalShell': 'Shell',
   'ai.chat.approvalCwd': '目錄',
+  'ai.chat.approvalInvocation': '呼叫詳情',
   'ai.chat.permissionRequired': '需要權限',
   'ai.chat.permissionDescription': 'AI Agent 希望執行一個需要你批准的工具呼叫。',
   'ai.chat.commandBlocked': '此指令已被安全策略攔截，無法執行。',

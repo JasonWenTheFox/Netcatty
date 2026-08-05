@@ -410,6 +410,7 @@ export const zhCNAiMessages: Messages = {
   'ai.chat.approvalSession': '会话',
   'ai.chat.approvalShell': 'Shell',
   'ai.chat.approvalCwd': '目录',
+  'ai.chat.approvalInvocation': '调用详情',
   'ai.chat.permissionRequired': '需要权限',
   'ai.chat.permissionDescription': 'AI Agent 希望执行一个需要你批准的工具调用。',
   'ai.chat.commandBlocked': '此命令已被安全策略拦截，无法执行。',
