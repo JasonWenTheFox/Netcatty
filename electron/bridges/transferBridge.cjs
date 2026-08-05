@@ -2898,14 +2898,12 @@ async function uploadFileConcurrent(
     throw error;
   } finally {
     // Shared write OPEN may still be in flight after a cancel settle timeout.
-    // Await the drain barrier before returning so runRemoteUploadTransaction
-    // cannot clean up the stage before a late truncating OPEN finishes.
+    // Await the drain barrier with no timeout before returning so
+    // runRemoteUploadTransaction cannot clean up the stage before a late
+    // truncating OPEN finishes (Codex P2 on 747847e7).
     const sharedWriteOpenDrain = transfer.sharedWriteOpenDrain;
     if (sharedWriteOpenDrain) {
-      await Promise.race([
-        sharedWriteOpenDrain,
-        new Promise((resolve) => setTimeout(resolve, 10000)),
-      ]).catch(() => {});
+      await sharedWriteOpenDrain.catch(() => {});
       if (transfer.sharedWriteOpenDrain === sharedWriteOpenDrain) {
         transfer.sharedWriteOpenDrain = null;
       }
