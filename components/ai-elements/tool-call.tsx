@@ -16,6 +16,22 @@ export const APPROVAL_COMMAND_EXPANDED_MAX_HEIGHT_PX = 384;
 /** Prefer expand control when the raw command exceeds this many characters. */
 export const APPROVAL_COMMAND_EXPAND_CHAR_THRESHOLD = 180;
 
+const NESTED_INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"]';
+
+/**
+ * Enter on the pending-card root means Approve Once. Enter on nested review
+ * controls (Copy / Expand / action buttons) must not approve — those controls
+ * also stopPropagation on Enter so the card handler is a second line of defense.
+ */
+export function isNestedInteractiveApprovalTarget(
+  target: { closest?: (selector: string) => unknown } | null,
+  currentTarget: unknown,
+): boolean {
+  if (!target || target === currentTarget) return false;
+  if (typeof target.closest !== 'function') return false;
+  return Boolean(target.closest(NESTED_INTERACTIVE_SELECTOR));
+}
+
 export function truncateToolCommandTooltip(
   command: string,
   maxChars = MAX_TOOL_COMMAND_TOOLTIP_CHARS,
@@ -373,12 +389,7 @@ export const ToolCall = ({
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!isPendingApproval) return;
     if (e.key === 'Enter') {
-      const target = e.target as HTMLElement | null;
-      if (
-        target
-        && target !== e.currentTarget
-        && target.closest('button, a, input, textarea, select, [role="button"]')
-      ) {
+      if (isNestedInteractiveApprovalTarget(e.target as HTMLElement | null, e.currentTarget)) {
         return;
       }
       e.preventDefault();

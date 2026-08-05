@@ -192,6 +192,10 @@ export function requestApproval(
 
   return new Promise<boolean>((resolve) => {
     let timerId: ReturnType<typeof setTimeout> | null = null;
+    // Hard ceiling from creation — review can drop the idle arm but never
+    // extend past this bound (mirrors MCP absolute deadline behaviour).
+    const absoluteExpiresAt = Date.now() + timeoutMs;
+    let idleCancelled = false;
 
     const clearTimer = () => {
       if (timerId) {
@@ -205,9 +209,7 @@ export function requestApproval(
       resolve(resolution.approved);
     };
 
-    // Auto-deny after timeout so the session doesn't hang indefinitely.
-    // Cleared when the user starts reviewing the approval card.
-    timerId = setTimeout(() => {
+    const denyTimedOut = () => {
       const entry = pendingApprovals.get(toolCallId);
       if (!entry) return;
       pendingApprovals.delete(toolCallId);
@@ -216,12 +218,31 @@ export function requestApproval(
       for (const cl of clearedListeners) {
         try { cl([toolCallId]); } catch { /* ignore */ }
       }
-    }, timeoutMs);
+    };
+
+    const armTimer = (ms: number) => {
+      clearTimer();
+      if (ms <= 0) {
+        // Defer so cancelApprovalTimeout callers finish before deny cleanup.
+        timerId = setTimeout(denyTimedOut, 0);
+        return;
+      }
+      timerId = setTimeout(denyTimedOut, ms);
+    };
+
+    // Auto-deny after timeout so the session doesn't hang indefinitely.
+    // Idle engagement cancels this arm and re-arms the absolute remainder
+    // (never auto-approves; never extends past absoluteExpiresAt).
+    armTimer(timeoutMs);
 
     pendingApprovals.set(toolCallId, {
       resolve: wrappedResolve,
       request,
-      cancelTimeout: clearTimer,
+      cancelTimeout: () => {
+        if (idleCancelled) return;
+        idleCancelled = true;
+        armTimer(absoluteExpiresAt - Date.now());
+      },
     });
 
     // Notify all UI listeners
@@ -232,9 +253,10 @@ export function requestApproval(
 }
 
 /**
- * Cancel the auto-deny timer for a pending approval after the user starts
- * reviewing or interacting with the card. The approval remains pending until
- * an explicit approve/reject (timeout never auto-approves).
+ * Cancel the idle auto-deny timer after the user starts reviewing or interacting
+ * with the card. Catty local approvals re-arm the absolute creation deadline so a
+ * late approve cannot outlive the original timeout / stream tool budget.
+ * Timeout never auto-approves.
  */
 export function cancelApprovalTimeout(toolCallId: string): void {
   const entry = pendingApprovals.get(toolCallId);

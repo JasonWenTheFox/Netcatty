@@ -10,37 +10,79 @@ import {
   resolveApproval,
 } from './approvalGate';
 
-test('cancelApprovalTimeout keeps the approval pending past the idle timer', async () => {
+function stubNow(startMs: number): { advance: (deltaMs: number) => void; restore: () => void } {
+  const realNow = Date.now;
+  let now = startMs;
+  Date.now = () => now;
+  return {
+    advance: (deltaMs: number) => {
+      now += deltaMs;
+    },
+    restore: () => {
+      Date.now = realNow;
+    },
+  };
+}
+
+test('cancelApprovalTimeout keeps the absolute Catty deadline armed', async () => {
   clearAllPendingApprovals();
   const cleared: string[] = [];
   const unsub = onApprovalCleared((ids) => {
     cleared.push(...ids);
   });
+  const clock = stubNow(1_000_000);
 
-  const toolCallId = `timeout-cancel-${Date.now()}`;
-  let settled: boolean | undefined;
-  const approvalPromise = requestApproval(
-    toolCallId,
-    'terminal_execute',
-    { sessionId: 's1', command: 'echo hi' },
-    'chat-1',
-    40,
-  ).then((approved) => {
-    settled = approved;
-    return approved;
-  });
+  try {
+    const toolCallId = `timeout-absolute-${Date.now()}`;
+    const approvalPromise = requestApproval(
+      toolCallId,
+      'terminal_execute',
+      { sessionId: 's1', command: 'echo hi' },
+      'chat-1',
+      100,
+    );
 
-  cancelApprovalTimeout(toolCallId);
-  await delay(80);
+    // Jump close to the absolute ceiling, then cancel idle. Remaining absolute ~30ms.
+    clock.advance(70);
+    cancelApprovalTimeout(toolCallId);
 
-  assert.equal(settled, undefined, 'timeout must not auto-resolve after cancel');
-  assert.deepEqual(cleared, []);
+    await delay(15);
+    assert.equal(cleared.includes(toolCallId), false, 'must stay pending before absolute expiry');
 
-  resolveApproval(toolCallId, false);
-  assert.equal(await approvalPromise, false);
+    const outcome = await Promise.race([
+      approvalPromise.then((approved) => ({ approved })),
+      delay(120).then(() => ({ approved: 'timeout-wait' as const })),
+    ]);
+    assert.deepEqual(outcome, { approved: false });
+    assert.ok(cleared.includes(toolCallId));
+  } finally {
+    clock.restore();
+    unsub();
+    clearAllPendingApprovals();
+  }
+});
 
-  unsub();
+test('cancelApprovalTimeout still allows explicit approve before absolute Catty expiry', async () => {
   clearAllPendingApprovals();
+  const clock = stubNow(2_000_000);
+
+  try {
+    const toolCallId = `timeout-approve-${Date.now()}`;
+    const approvalPromise = requestApproval(
+      toolCallId,
+      'sftp_write',
+      { path: '/tmp/x' },
+      'chat-1',
+      200,
+    );
+
+    cancelApprovalTimeout(toolCallId);
+    resolveApproval(toolCallId, true);
+    assert.equal(await approvalPromise, true);
+  } finally {
+    clock.restore();
+    clearAllPendingApprovals();
+  }
 });
 
 test('idle approval timeout still auto-denies when the user never reviews', async () => {

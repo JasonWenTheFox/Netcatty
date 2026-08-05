@@ -6,6 +6,7 @@ import {
   approvalCommandWasUnwrapped,
   extractApprovalExecutionContext,
   extractDisplayCommand,
+  isNestedInteractiveApprovalTarget,
   MAX_TOOL_COMMAND_TOOLTIP_CHARS,
   truncateToolCommandTooltip,
 } from './tool-call';
@@ -141,4 +142,19 @@ test('approvalArgsHaveExtraContext keeps commandActions visible beside the comma
     approvalArgsHaveExtraContext({ command: 'echo hi', cwd: '/tmp', reason: 'demo' }),
     false,
   );
+});
+
+test('isNestedInteractiveApprovalTarget ignores Enter on Copy/Expand review controls', () => {
+  const card = { id: 'card' };
+  const copyBtn = {
+    closest: (selector: string) => (selector.includes('button') ? copyBtn : null),
+  };
+  const plainSpan = {
+    closest: () => null,
+  };
+
+  assert.equal(isNestedInteractiveApprovalTarget(copyBtn, card), true);
+  assert.equal(isNestedInteractiveApprovalTarget(plainSpan, card), false);
+  assert.equal(isNestedInteractiveApprovalTarget(card, card), false);
+  assert.equal(isNestedInteractiveApprovalTarget(null, card), false);
 });
