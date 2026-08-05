@@ -905,6 +905,9 @@ class PluginDatabase {
     // Same single-provider guard as live backfill: one shared sync-credential*
     // row must not seed bindings for every historical map provider under that
     // plugin (disconnecting a stale provider would wipe the live credentials).
+    // Count both legacy map rows and installed-manifest sync providers so a
+    // stale map cannot promote when the live manifest also declares another
+    // provider under the same credential owner (Codex P2 on 8ae60205).
     /** @type {Map<string, Set<string>>} */
     const providersByCredentialOwner = new Map();
     for (const [providerId, candidates] of byProvider) {
@@ -914,6 +917,24 @@ class PluginDatabase {
         set.add(providerId);
         providersByCredentialOwner.set(c.pluginId, set);
       }
+    }
+    try {
+      const versions = typeof this.listInstalledVersions === "function"
+        ? this.listInstalledVersions()
+        : [];
+      for (const version of versions) {
+        const pluginId = version?.pluginId;
+        if (typeof pluginId !== "string" || !credentialOwners.has(pluginId)) continue;
+        for (const provider of version.manifest?.contributes?.providers ?? []) {
+          if (provider?.kind !== "sync") continue;
+          if (typeof provider.id !== "string" || provider.id.length < 1) continue;
+          const set = providersByCredentialOwner.get(pluginId) || new Set();
+          set.add(provider.id);
+          providersByCredentialOwner.set(pluginId, set);
+        }
+      }
+    } catch {
+      /* ignore catalog probe failures */
     }
     let promoted = 0;
     for (const [providerId, candidates] of byProvider) {
