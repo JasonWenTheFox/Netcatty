@@ -548,6 +548,7 @@ function App({ settings }: { settings: SettingsState }) {
   }, [buildCurrentSyncPayload]);
 
   const versionBackupAttemptedRef = useRef(false);
+  const versionBackupInFlightRef = useRef(false);
   // Bumps when plugin contributions settle or the sidecar-host grace timer
   // fires so version-change backups can wait for live sidecar collect.
   const [pluginSidecarReadyTick, setPluginSidecarReadyTick] = useState(0);
@@ -589,34 +590,40 @@ function App({ settings }: { settings: SettingsState }) {
   // in which case the effect continues to no-op).
   useEffect(() => {
     if (isPeerSessionWindow || !isVaultInitialized || versionBackupAttemptedRef.current) return;
+    // Always wait for contributions or the grace tick — host-ready alone is
+    // not enough because collect can still return an empty authoritative
+    // bundle before plugin settings are declared.
+    if (pluginSidecarReadyTick === 0) return;
+    if (versionBackupInFlightRef.current) return;
 
     let cancelled = false;
+    versionBackupInFlightRef.current = true;
     void (async () => {
       try {
-        const { isPluginSidecarHostReady } = await import('./application/pluginSyncSidecarBridge');
-        // Defer the one-shot upgrade snapshot until the sidecar host is
-        // wired (or the grace tick above has fired). Otherwise we latch a
-        // vault-only backup and permanently miss plugin settings.
-        if (!isPluginSidecarHostReady() && pluginSidecarReadyTick === 0) {
-          return;
-        }
         const payload = await buildCurrentSyncPayloadRef.current();
         if (cancelled) return;
         if (!hasMeaningfulSyncData(payload)) return;
         const info = await netcattyBridge.get()?.getAppInfo?.();
         if (cancelled) return;
-        // Latch only once we are about to write, so a cancelled in-flight
-        // attempt cannot suppress a later retry after vault hydration.
-        versionBackupAttemptedRef.current = true;
         await ensureVersionChangeBackup(payload, info?.version ?? null);
+        if (cancelled) return;
+        // Latch only after a completed (non-cancelled) attempt so effect
+        // cleanup cannot permanently suppress retries when the in-flight
+        // call later throws.
+        versionBackupAttemptedRef.current = true;
       } catch (error) {
         if (!cancelled) {
-          // Reset the latch so a later data change (or the next mount)
-          // can retry. ensureVersionChangeBackup already leaves the
-          // version stamp untouched on failure, so retrying is safe.
-          versionBackupAttemptedRef.current = false;
+          console.error('[App] Failed to create version-change backup:', error);
         }
-        console.error('[App] Failed to create version-change backup:', error);
+      } finally {
+        versionBackupInFlightRef.current = false;
+        // If hydration re-ran the effect mid-flight, nudge another attempt
+        // now that the in-flight guard is clear.
+        if (cancelled && !versionBackupAttemptedRef.current) {
+          queueMicrotask(() => {
+            setPluginSidecarReadyTick((v) => v + 1);
+          });
+        }
       }
     })();
 
