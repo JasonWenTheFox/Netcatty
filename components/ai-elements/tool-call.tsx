@@ -333,7 +333,6 @@ export const ToolCall = ({
   const cardRef = useRef<HTMLDivElement>(null);
   const approveBtnRef = useRef<HTMLButtonElement>(null);
   const [responded, setResponded] = useState(false);
-  const timeoutCancelledRef = useRef(false);
 
   const isPendingApproval = approvalStatus === 'pending' && !responded;
   const liveDisplayCommand = extractDisplayCommand(args);
@@ -354,9 +353,11 @@ export const ToolCall = ({
       || reviewCommand.includes('\n')),
   );
 
+  // Each review interaction re-arms the Catty idle window (capped by hard
+  // deadline). Do not one-shot cancel — subsequent focus/scroll/key events
+  // must keep extending idle while the user is still deciding.
   const markReviewing = useCallback(() => {
-    if (!isPendingApproval || !approvalId || timeoutCancelledRef.current) return;
-    timeoutCancelledRef.current = true;
+    if (!isPendingApproval || !approvalId) return;
     cancelApprovalTimeout(approvalId);
   }, [approvalId, isPendingApproval]);
 
@@ -422,7 +423,6 @@ export const ToolCall = ({
   useEffect(() => {
     if (approvalStatus === 'pending') {
       setResponded(false);
-      timeoutCancelledRef.current = false;
       setCommandExpanded(false);
       setFrozenCommand(extractDisplayCommand(args));
       return;

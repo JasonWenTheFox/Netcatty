@@ -228,8 +228,9 @@ export function requestApproval(
     const armTimer = (ms: number) => {
       clearTimer();
       if (ms <= 0) {
-        // Defer so cancelApprovalTimeout callers finish before deny cleanup.
-        timerId = setTimeout(denyTimedOut, 0);
+        // Hard deadline already elapsed — reject synchronously so a late
+        // approve cannot race a deferred setTimeout(0) deny.
+        denyTimedOut();
         return;
       }
       timerId = setTimeout(denyTimedOut, ms);

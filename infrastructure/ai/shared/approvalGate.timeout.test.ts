@@ -148,6 +148,82 @@ test('cancelApprovalTimeout still allows explicit approve before hard Catty dead
   }
 });
 
+test('cancelApprovalTimeout rejects expired Catty approvals synchronously after hard deadline', async () => {
+  clearAllPendingApprovals();
+  const cleared: string[] = [];
+  const unsub = onApprovalCleared((ids) => {
+    cleared.push(...ids);
+  });
+  const clock = stubNow(4_000_000);
+
+  try {
+    const toolCallId = `timeout-hard-sync-${Date.now()}`;
+    // idle 50ms → hard 150ms
+    const approvalPromise = requestApproval(
+      toolCallId,
+      'terminal_execute',
+      { sessionId: 's1', command: 'echo hi' },
+      'chat-1',
+      50,
+    );
+
+    clock.advance(160); // past hard deadline
+    cancelApprovalTimeout(toolCallId);
+
+    // Must already be denied — no setTimeout(0) race window for approve.
+    assert.ok(cleared.includes(toolCallId), 'must clear synchronously when hard deadline elapsed');
+    assert.equal(await approvalPromise, false);
+
+    // Late approve after hard-deadline deny must not resurrect the request.
+    resolveApproval(toolCallId, true);
+    assert.equal(await approvalPromise, false);
+  } finally {
+    clock.restore();
+    unsub();
+    clearAllPendingApprovals();
+  }
+});
+
+test('repeated cancelApprovalTimeout re-arms idle on each review interaction', async () => {
+  clearAllPendingApprovals();
+  const cleared: string[] = [];
+  const unsub = onApprovalCleared((ids) => {
+    cleared.push(...ids);
+  });
+  const clock = stubNow(5_000_000);
+
+  try {
+    const toolCallId = `timeout-multi-rearm-${Date.now()}`;
+    const idleMs = 100;
+    const approvalPromise = requestApproval(
+      toolCallId,
+      'terminal_execute',
+      { sessionId: 's1', command: 'echo hi' },
+      'chat-1',
+      idleMs,
+    );
+
+    // Simulate successive review events (focus, scroll, key) — each re-arms.
+    clock.advance(60);
+    cancelApprovalTimeout(toolCallId);
+    clock.advance(60);
+    cancelApprovalTimeout(toolCallId);
+    clock.advance(60);
+    cancelApprovalTimeout(toolCallId);
+
+    // Still before hard deadline (300ms); original idle marks have long passed.
+    await delay(20);
+    assert.equal(cleared.includes(toolCallId), false, 'each re-arm must keep approval pending');
+
+    resolveApproval(toolCallId, true);
+    assert.equal(await approvalPromise, true);
+  } finally {
+    clock.restore();
+    unsub();
+    clearAllPendingApprovals();
+  }
+});
+
 test('idle approval timeout still auto-denies when the user never reviews', async () => {
   clearAllPendingApprovals();
   const cleared: string[] = [];
