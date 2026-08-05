@@ -1930,9 +1930,10 @@ async function uploadFile(
  * Channel `error` while OPEN is pending must reject here: callers only check
  * recorded channelError after this await returns, so a dead channel that never
  * invokes the OPEN callback would otherwise hang the transfer and SFTP lease.
- * Shared write opens ("w" / "r+" / …) defer cancel settle until the OPEN
- * callback (or a drain timeout) so callers cannot clean up a remote stage
- * before a late truncating OPEN recreates it.
+ * Shared write opens ("w" / "r+" / …) publish transfer.sharedWriteOpenDrain and
+ * keep it pending until the OPEN callback finishes (including late opens after
+ * a cancel settle timeout), so upload cleanup awaits the drain before deleting
+ * the remote stage.
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
  */
@@ -1943,11 +1944,25 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     : null;
   // ssh2 string flags: "r" is read-only; anything else can create/truncate.
   const isWriteOpen = String(flags ?? "r") !== "r";
+  const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
+  let resolveSharedWriteDrain = null;
+  if (trackSharedWriteDrain) {
+    transfer.sharedWriteOpenDrain = new Promise((resolve) => {
+      resolveSharedWriteDrain = resolve;
+    });
+  }
 
   return new Promise((resolve, reject) => {
     let settled = false;
     let openDrainTimer = null;
     const previousAbort = transfer.abort;
+
+    const completeSharedWriteDrain = () => {
+      if (!resolveSharedWriteDrain) return;
+      const resolve = resolveSharedWriteDrain;
+      resolveSharedWriteDrain = null;
+      resolve();
+    };
 
     const settle = (fn, value) => {
       if (settled) return;
@@ -1965,10 +1980,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
     const abortDuringOpen = () => {
       transfer.cancelled = true;
-      // Shared write OPEN can truncate/create the remote path. Defer settle so
-      // runRemoteUploadTransaction cleanup cannot delete the stage before a
-      // late OPEN recreates it (Codex P2 on a7f96c94). abortChannel is a no-op
-      // on shared sessions, so ordering vs end() does not apply here.
+      // Shared write OPEN can truncate/create the remote path. A settle timeout
+      // unblocks the transfer UX, but sharedWriteOpenDrain stays pending until
+      // the OPEN callback finishes so cleanup cannot race a late truncating OPEN.
       if (!disposeChannel && isWriteOpen && !settled) {
         try { abortChannel?.(); } catch { /* ignore */ }
         if (!openDrainTimer) {
@@ -1982,13 +1996,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       // sftp.end() cannot win the promise with a channel-close error first.
       settle(reject, new Error("Transfer cancelled"));
       try { abortChannel?.(); } catch { /* ignore */ }
+      if (!trackSharedWriteDrain) completeSharedWriteDrain();
     };
 
     const onOpenChannelError = (error) => {
       settle(reject, error || new Error("SFTP channel error"));
+      completeSharedWriteDrain();
     };
 
     if (transfer.cancelled) {
+      completeSharedWriteDrain();
       reject(new Error("Transfer cancelled"));
       return;
     }
@@ -1999,21 +2016,30 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     try {
       sftp.open(filePath, flags, (error, handle) => {
         if (settled) {
-          // Cancel / channel error already rejected the wait; close a late handle
-          // on shared sessions so the browse channel does not leak handles.
+          // Cancel already settled (possibly via drain timeout). Still close a
+          // late shared handle, then release the drain barrier so cleanup can run.
           if (!error && handle && !disposeChannel) {
-            closeSftpHandle(sftp, handle).catch(() => {});
+            closeSftpHandle(sftp, handle).then(
+              completeSharedWriteDrain,
+              completeSharedWriteDrain,
+            );
+            return;
           }
+          completeSharedWriteDrain();
           return;
         }
         if (error) {
           settle(reject, error);
+          completeSharedWriteDrain();
           return;
         }
         if (transfer.cancelled) {
-          const finishCancel = () => settle(reject, new Error("Transfer cancelled"));
+          const finishCancel = () => {
+            settle(reject, new Error("Transfer cancelled"));
+            completeSharedWriteDrain();
+          };
           if (handle && !disposeChannel) {
-            // Close before settle so shared write cleanup runs after the
+            // Close before settle/drain so shared write cleanup runs after the
             // truncating OPEN handle is released.
             closeSftpHandle(sftp, handle).then(finishCancel, finishCancel);
             return;
@@ -2022,11 +2048,13 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           return;
         }
         settle(resolve, handle);
+        completeSharedWriteDrain();
       });
     } catch (error) {
       // Sync throw (destroyed channel / bad state) must still settle and drop
       // the error listener; otherwise the shared browse channel leaks listeners.
       settle(reject, error);
+      completeSharedWriteDrain();
     }
   });
 }
@@ -2869,6 +2897,19 @@ async function uploadFileConcurrent(
     }
     throw error;
   } finally {
+    // Shared write OPEN may still be in flight after a cancel settle timeout.
+    // Await the drain barrier before returning so runRemoteUploadTransaction
+    // cannot clean up the stage before a late truncating OPEN finishes.
+    const sharedWriteOpenDrain = transfer.sharedWriteOpenDrain;
+    if (sharedWriteOpenDrain) {
+      await Promise.race([
+        sharedWriteOpenDrain,
+        new Promise((resolve) => setTimeout(resolve, 10000)),
+      ]).catch(() => {});
+      if (transfer.sharedWriteOpenDrain === sharedWriteOpenDrain) {
+        transfer.sharedWriteOpenDrain = null;
+      }
+    }
     transfer.readStream = null;
     transfer.waitForPause = null;
     transfer.cancelPauseWait = null;

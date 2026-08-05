@@ -4245,6 +4245,118 @@ test("cancel during stalled shared upload OPEN drains before remote cleanup", as
   );
 });
 
+test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
+  // Codex P2 on af9cef2e: 2s settle timeout unblocked cancel, but cleanup could
+  // still race a later truncating OPEN. sharedWriteOpenDrain must outlive the
+  // settle timeout so finally awaits close before stage delete.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-drain-timeout-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 43));
+
+  const remoteFiles = new Map();
+  const eventLog = [];
+  let releaseOpen = null;
+  let endCalls = 0;
+  const sharedSftp = createFastSftp({
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      const key = String(remotePath);
+      releaseOpen = () => {
+        remoteFiles.set(key, Buffer.alloc(0));
+        eventLog.push(`open-created:${key}`);
+        callback(null, Buffer.from(`handle:${key}`));
+      };
+    },
+    write() {
+      throw new Error("WRITE must not run after cancel during OPEN");
+    },
+    close(_handle, callback) {
+      eventLog.push("close");
+      callback(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({ size: remoteFiles.get(key).length });
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      const key = String(remotePath);
+      eventLog.push(`delete:${key}`);
+      remoteFiles.delete(key);
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "upload-shared-open-drain-timeout";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath: "/tmp/upload-timeout.bin",
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: true,
+      skipAdmission: true,
+    },
+  );
+
+  const ready = await waitUntil(() => typeof releaseOpen === "function", 2000);
+  assert.ok(ready, "expected shared write OPEN to stall");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+
+  // Let the 2s OPEN cancel settle timeout fire while OPEN is still pending.
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  assert.ok(typeof releaseOpen === "function", "OPEN must still be pending after settle timeout");
+  assert.equal(eventLog.some((entry) => entry.startsWith("delete:")), false,
+    "cleanup must not run before late OPEN drain");
+
+  // Late OPEN after settle timeout — must close then delete, no orphan.
+  releaseOpen?.();
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("transfer did not settle after late shared write OPEN")), 5000);
+    }),
+  ]);
+
+  assert.match(result.error || "", /cancel/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+  const closeIdx = eventLog.indexOf("close");
+  const deleteIdx = eventLog.findIndex((entry) => entry.startsWith("delete:"));
+  assert.ok(closeIdx >= 0, `expected CLOSE after late OPEN, log=${eventLog.join(",")}`);
+  assert.ok(deleteIdx >= 0, `expected stage delete after drain, log=${eventLog.join(",")}`);
+  assert.ok(closeIdx < deleteIdx, `CLOSE must precede cleanup delete, log=${eventLog.join(",")}`);
+  assert.equal(
+    [...remoteFiles.keys()].some((key) => key.includes(".netcatty-upload-")),
+    false,
+    `expected no orphan staged upload, remaining=${[...remoteFiles.keys()].join(",")}`,
+  );
+});
+
 test("sudo SFTP downloads prefer concurrent shared READ over serial createReadStream", async (t) => {
   // Sudo cannot open an isolated channel, so downloads used to fall straight to
   // createReadStream (1-in-flight READs → hundreds of KB/s). Uploads already
