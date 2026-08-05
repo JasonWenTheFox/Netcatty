@@ -2001,7 +2001,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
     const onOpenChannelError = (error) => {
       settle(reject, error || new Error("SFTP channel error"));
-      completeSharedWriteDrain();
+      // Shared write: keep drain pending until the OPEN callback closes any late
+      // handle (same as cancel settle timeout). Completing drain here would let
+      // cleanup race a late truncating OPEN after channel error.
+      if (!trackSharedWriteDrain) {
+        completeSharedWriteDrain();
+      }
     };
 
     if (transfer.cancelled) {
