@@ -254,6 +254,64 @@ test("applyVaultImportDestination does not attach a passphrase for a non-retaine
   }]);
 });
 
+test("applyVaultImportDestination can keep same-endpoint hosts when collapse is disabled", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "Prod,web-a,shared.example.com,22,root",
+    "Staging,web-b,shared.example.com,22,root",
+  ].join("\n"));
+
+  assert.equal(imported.hosts.length, 2);
+
+  const targeted = applyVaultImportDestination(
+    imported,
+    { mode: "group", group: "Imported/SecureCRT" },
+    { collapseDuplicateEndpoints: false },
+  );
+
+  assert.equal(targeted.hosts.length, 2);
+  assert.deepEqual(targeted.hosts.map((host) => host.group), [
+    "Imported/SecureCRT",
+    "Imported/SecureCRT",
+  ]);
+  assert.equal(targeted.stats.duplicates, 0);
+  assert.equal(targeted.stats.imported, 2);
+});
+
+test("applyVaultImportDestination can skip collapse for selected hosts", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "lan,direct,10.10.10.10,22,root",
+    "lan-proxy,via-socks,10.10.10.10,22,root",
+  ].join("\n"));
+  const withPluginFlag = {
+    ...imported,
+    hosts: imported.hosts.map((host, index) => (
+      index === 0
+        ? host
+        : {
+            ...host,
+            pluginConnection: {
+              providerId: "com.example.transport.connection",
+              configuration: { endpoint: "via-socks" },
+            },
+          }
+    )),
+  };
+
+  const targeted = applyVaultImportDestination(
+    withPluginFlag,
+    { mode: "group", group: "Imported/Plugin" },
+    { isCollapsible: (host) => !host.pluginConnection },
+  );
+
+  assert.equal(targeted.hosts.length, 2);
+  assert.deepEqual(targeted.hosts.map((host) => host.group), [
+    "Imported/Plugin",
+    "Imported/Plugin",
+  ]);
+});
+
 test("CSV import keeps working when KeyPath and Passphrase columns are absent", () => {
   const result = importVaultHostsFromText(
     "csv",

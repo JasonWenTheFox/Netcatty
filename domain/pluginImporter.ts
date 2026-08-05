@@ -489,7 +489,11 @@ export function applyPluginImporterDestination(
       skipped: 0,
       duplicates: 0,
     },
-  }, destination);
+  }, destination, {
+    // Plugin hosts that differ by configuration/credentials must survive a
+    // shared destination group; classic vault hosts still collapse by endpoint.
+    isCollapsible: (host) => !host.pluginConnection,
+  });
   const existingGroupSet = new Set([
     ...existingCustomGroups,
     ...existingHosts.flatMap((host) => host.group ? [host.group] : []),

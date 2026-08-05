@@ -181,6 +181,9 @@ export function useVaultImportHandlers({
             result = applyVaultImportDestination(
               result,
               options?.destination ?? { mode: "preserve" },
+              // SecureCRT keeps distinct session files that share an endpoint;
+              // only rewrite their group when the user picks an import location.
+              { collapseDuplicateEndpoints: format !== "securecrt" },
             );
           }
           updateProgress({ stage: "preparing", percent: 70 });

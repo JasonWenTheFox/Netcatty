@@ -139,6 +139,20 @@ export type VaultImportDestination =
   | { mode: "preserve" }
   | { mode: "group"; group: string };
 
+export type ApplyVaultImportDestinationOptions = {
+  /**
+   * When false, only rewrite groups. SecureCRT keeps distinct session files that
+   * share an endpoint even after an import-location override.
+   * @default true
+   */
+  collapseDuplicateEndpoints?: boolean;
+  /**
+   * Return false to keep a host even when another shares its merge key after the
+   * destination rewrite (plugin hosts that differ by configuration/credentials).
+   */
+  isCollapsible?: (host: Host) => boolean;
+};
+
 export function mergeVaultImportIssues(
   ...groups: ReadonlyArray<ReadonlyArray<VaultImportIssue>>
 ): VaultImportIssue[] {
@@ -165,23 +179,42 @@ const normalizeGroupPath = (raw: string | undefined): string | undefined => {
 export function applyVaultImportDestination(
   result: VaultImportResult,
   destination: VaultImportDestination,
+  options?: ApplyVaultImportDestinationOptions,
 ): VaultImportResult {
   if (destination.mode === "preserve") return result;
   const group = normalizeGroupPath(destination.group);
   if (!group) return result;
 
+  const rewrittenHosts = result.hosts.map((host) => ({ ...host, group }));
+  // SecureCRT (and similar) keep same-endpoint sessions as distinct imports.
+  if (options?.collapseDuplicateEndpoints === false) {
+    return {
+      ...result,
+      hosts: rewrittenHosts,
+      groups: [group],
+    };
+  }
+
   // Destination rewriting can collapse previously distinct group-scoped sessions
   // onto one merge key; re-dedupe so identical endpoints are not imported twice.
-  const rewrittenHosts = result.hosts.map((host) => ({ ...host, group }));
-  const { hosts, duplicates } = dedupeHosts(rewrittenHosts);
+  // Plugin hosts can opt out via isCollapsible so configuration/credential
+  // differences survive a shared destination group.
+  const { hosts, duplicates } = dedupeHosts(rewrittenHosts, {
+    isCollapsible: options?.isCollapsible,
+  });
   const retainedIds = new Set(hosts.map((host) => host.id));
-  const retainedByMergeKey = new Map(hosts.map((host) => [hostKey(host), host]));
+  const retainedByMergeKey = new Map(
+    hosts
+      .filter((host) => options?.isCollapsible?.(host) !== false)
+      .map((host) => [hostKey(host), host]),
+  );
   const originalById = new Map(result.hosts.map((host) => [host.id, host]));
 
   const remapHostId = (hostId: string): string | undefined => {
     if (retainedIds.has(hostId)) return hostId;
     const original = originalById.get(hostId);
     if (!original) return undefined;
+    if (options?.isCollapsible?.({ ...original, group }) === false) return undefined;
     return retainedByMergeKey.get(hostKey({ ...original, group }))?.id;
   };
 
@@ -194,7 +227,7 @@ export function applyVaultImportDestination(
 
   const remapKeyPassphrases = (
     entries: VaultHostKeyPassphrase[] | undefined,
-    options?: { matchSelectedKey?: boolean },
+    remapOptions?: { matchSelectedKey?: boolean },
   ): VaultHostKeyPassphrase[] | undefined => {
     if (!entries) return entries;
     const remapped: VaultHostKeyPassphrase[] = [];
@@ -204,7 +237,7 @@ export function applyVaultImportDestination(
       if (!nextHostId) continue;
       // Match CSV same-group dedupe: never attach a passphrase for a key the
       // retained host did not keep as its selected identity file.
-      if (options?.matchSelectedKey) {
+      if (remapOptions?.matchSelectedKey) {
         const selectedKey = selectedKeyByHostId.get(nextHostId);
         if (!selectedKey || normalizeKeyPathKey(entry.keyPath) !== selectedKey) continue;
       }
@@ -286,15 +319,24 @@ const createHost = (input: {
   return built.host;
 };
 
-const dedupeHosts = (hosts: Host[]): { hosts: Host[]; duplicates: number } => {
+const dedupeHosts = (
+  hosts: Host[],
+  options?: { isCollapsible?: (host: Host) => boolean },
+): { hosts: Host[]; duplicates: number } => {
   const seen = new Map<string, Host>();
+  const retained: Host[] = [];
   let duplicates = 0;
 
   for (const host of hosts) {
+    if (options?.isCollapsible?.(host) === false) {
+      retained.push(host);
+      continue;
+    }
     const key = hostKey(host);
     const existing = seen.get(key);
     if (!existing) {
       seen.set(key, host);
+      retained.push(host);
       continue;
     }
     duplicates++;
@@ -313,7 +355,7 @@ const dedupeHosts = (hosts: Host[]): { hosts: Host[]; duplicates: number } => {
     }
   }
 
-  return { hosts: Array.from(seen.values()), duplicates };
+  return { hosts: retained, duplicates };
 };
 
 const uniq = (items: string[]) => Array.from(new Set(items.filter(Boolean)));

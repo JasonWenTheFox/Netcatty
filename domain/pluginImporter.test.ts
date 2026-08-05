@@ -502,6 +502,57 @@ test('plugin importer destination re-dedupes same-endpoint hosts collapsed into 
   assert.equal(targeted.addedCount, 2); // 1 retained host + Chosen group
 });
 
+test('plugin importer destination keeps distinct plugin hosts that share an endpoint', () => {
+  const drafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'credential-a', label: 'Credential A', username: 'root', authMethod: 'password', password: 'first',
+    } } },
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'credential-b', label: 'Credential B', username: 'root', authMethod: 'password', password: 'second',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'Plugin host A',
+      protocol: 'plugin:com.example.transport.connection',
+      group: 'lan',
+      pluginConnection: {
+        providerId: 'com.example.transport.connection',
+        configuration: { endpoint: 'shared', path: 'a' },
+        credentialId: 'credential-a',
+      },
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'Plugin host B',
+      protocol: 'plugin:com.example.transport.connection',
+      group: 'lan-proxy',
+      pluginConnection: {
+        providerId: 'com.example.transport.connection',
+        configuration: { endpoint: 'shared', path: 'b' },
+        credentialId: 'credential-b',
+      },
+    } } },
+  ]);
+  const merged = mergePluginImporterDrafts({
+    hosts: [], identities: [], keys: [], snippets: [], customGroups: [],
+  }, drafts);
+
+  assert.equal(merged.hosts.length, 2);
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    0,
+    { mode: 'group', group: 'Chosen' },
+  );
+
+  assert.equal(targeted.hosts.length, 2);
+  assert.deepEqual(targeted.hosts.map((host) => host.group), ['Chosen', 'Chosen']);
+  assert.notEqual(
+    targeted.hosts[0].pluginConnection?.configuration,
+    targeted.hosts[1].pluginConnection?.configuration,
+  );
+  assert.equal(targeted.duplicateCount, merged.duplicateCount);
+  assert.equal(targeted.addedCount, merged.addedCount - 2 + 1); // replace 2 source groups with Chosen
+});
+
 test('plugin importer does not count a host-owned destination group as newly added', () => {
   const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
     kind: 'host',
