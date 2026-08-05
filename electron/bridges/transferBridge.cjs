@@ -2202,7 +2202,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       drainForceTimer = setTimeout(() => {
         drainForceTimer = null;
         completeSharedWriteDrain();
-        releasePathGate();
+        // In-place opens can free the path gate immediately. Generated/reusable
+        // stages must keep the gate held until a late OPEN callback settles
+        // (finishLateSharedWriteOpen / cancel path) so a same-id retry cannot
+        // promote while the server still processes the stale OPEN "w". Cap the
+        // hold so a permanently dead channel cannot block forever (Codex P1).
+        if (!generatedStagePath) {
+          releasePathGate();
+          return;
+        }
+        setTimeout(() => releasePathGate(), 10000);
       }, 2000);
     };
 
