@@ -17,7 +17,10 @@
  * interference when stopping or cancelling sessions.
  */
 
-import { CATTY_APPROVAL_TIMEOUT_MS } from './approvalConstants';
+import {
+  CATTY_APPROVAL_ABSOLUTE_GRACE_MS,
+  CATTY_APPROVAL_TIMEOUT_MS,
+} from './approvalConstants';
 import { localStorageAdapter } from '../../persistence/localStorageAdapter';
 import { STORAGE_KEY_AI_PERMISSION_GRANTS } from '../../config/storageKeys';
 import { globalTraceStore } from '../harness/traceStore';
@@ -192,9 +195,10 @@ export function requestApproval(
 
   return new Promise<boolean>((resolve) => {
     let timerId: ReturnType<typeof setTimeout> | null = null;
-    // Hard ceiling from creation — review can drop the idle arm but never
-    // extend past this bound (mirrors MCP absolute deadline behaviour).
-    const absoluteExpiresAt = Date.now() + timeoutMs;
+    // Idle and absolute are distinct: idle auto-denies if the card is ignored;
+    // absolute is idle + stream-tool grace so active review is not clipped at
+    // the idle boundary while still staying inside the Catty toolMs budget.
+    const absoluteExpiresAt = Date.now() + timeoutMs + CATTY_APPROVAL_ABSOLUTE_GRACE_MS;
     let idleCancelled = false;
 
     const clearTimer = () => {
@@ -230,8 +234,8 @@ export function requestApproval(
       timerId = setTimeout(denyTimedOut, ms);
     };
 
-    // Auto-deny after timeout so the session doesn't hang indefinitely.
-    // Idle engagement cancels this arm and re-arms the absolute remainder
+    // Auto-deny after idle timeout so an ignored card cannot hang the session.
+    // Review cancels this arm and re-arms the longer absolute remainder
     // (never auto-approves; never extends past absoluteExpiresAt).
     armTimer(timeoutMs);
 
@@ -254,8 +258,9 @@ export function requestApproval(
 
 /**
  * Cancel the idle auto-deny timer after the user starts reviewing or interacting
- * with the card. Catty local approvals re-arm the absolute creation deadline so a
- * late approve cannot outlive the original timeout / stream tool budget.
+ * with the card. Catty local approvals re-arm the longer absolute deadline
+ * (idle + grace) so active review is not clipped at the idle boundary while a
+ * late approve still cannot outlive the stream tool budget.
  * Timeout never auto-approves.
  */
 export function cancelApprovalTimeout(toolCallId: string): void {
