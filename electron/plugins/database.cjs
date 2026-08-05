@@ -863,10 +863,13 @@ class PluginDatabase {
    * rows for the same provider (parent + nested id): group by provider, never
    * overwrite an existing host binding (including empty-plugin_id unbind
    * tombstones). Among candidates, only plugins that still hold sync-credential*
-   * secrets are eligible; pick the longest pluginId among those. Skip when none
-   * have credentials or when multiple distinct winners share the same length -
-   * longest map alone must not override a shorter true owner (validation only
-   * requires providerId.startsWith(pluginId + ".")).
+   * secrets are eligible. Auto-bind only when exactly one distinct
+   * credential-backed candidate exists; if several credential-backed plugins
+   * map the same provider (e.g. com.example and com.example.sync both hold
+   * credentials), skip entirely — longest pluginId is not a reliable owner
+   * signal (the shorter parent can be the legitimate owner). Map-only leftovers
+   * never invent ownership (validation only requires
+   * providerId.startsWith(pluginId + ".")).
    */
   backfillSyncProviderBindingsFromLegacySecrets() {
     const legacyPrefix = "sync-provider-map:";
@@ -908,21 +911,20 @@ class PluginDatabase {
       }
       // Only credential-backed map candidates may win; map-only leftovers stay
       // unbound rather than inventing ownership from namespace length alone.
-      const withCredentials = candidates.filter((c) => credentialOwners.has(c.pluginId));
-      if (withCredentials.length === 0) {
+      // Multiple distinct credential-backed candidates is ambiguous (parent vs
+      // nested can both hold credentials for the same provider namespace) — skip
+      // entirely rather than picking longest pluginId.
+      const uniqueCredentialOwners = [
+        ...new Set(
+          candidates
+            .filter((c) => credentialOwners.has(c.pluginId))
+            .map((c) => c.pluginId),
+        ),
+      ];
+      if (uniqueCredentialOwners.length !== 1) {
         continue;
       }
-      // Among credential owners, strongest = longest pluginId namespace prefix.
-      const ranked = [...withCredentials].sort((a, b) => b.pluginId.length - a.pluginId.length);
-      const winner = ranked[0];
-      const winnerLength = winner.pluginId.length;
-      const tied = ranked.filter((c) => c.pluginId.length === winnerLength);
-      // Same-length distinct plugin ids for one provider is ambiguous; skip.
-      const uniqueWinners = [...new Set(tied.map((c) => c.pluginId))];
-      if (uniqueWinners.length !== 1) {
-        continue;
-      }
-      this.upsertSyncProviderBinding(providerId, uniqueWinners[0]);
+      this.upsertSyncProviderBinding(providerId, uniqueCredentialOwners[0]);
       // Consume legacy map markers for this provider so a later unbind + reopen
       // cannot re-promote from leftover secrets. Only delete namespaced map keys
       // we accepted as candidates (not arbitrary plugin secrets). Consume all

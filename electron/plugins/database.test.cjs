@@ -575,7 +575,7 @@ test("legacy map backfill skips when no candidate holds sync credentials", (cont
   database.close();
 });
 
-test("legacy map backfill prefers longest credential-backed owner when maps conflict", (context) => {
+test("legacy map backfill binds sole credential-backed owner when maps conflict", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
   // Parent has leftover map only; nested owner still holds credentials.
@@ -594,7 +594,7 @@ test("legacy map backfill prefers longest credential-backed owner when maps conf
   assert.equal(
     database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
     "com.example.sync",
-    "longest credential-backed owner must win over map-only parent",
+    "sole credential-backed owner must win over map-only parent",
   );
   // All candidate map markers for the promoted provider are consumed.
   assert.equal(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"), null);
@@ -628,6 +628,34 @@ test("legacy map backfill does not let longest map override credential-backed pa
   assert.equal(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"), null);
   assert.equal(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"), null);
   assert.ok(database.getSecretByKey("com.example", "sync-credential"));
+  database.close();
+});
+
+test("legacy map backfill skips when multiple credential-backed candidates exist", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // Both parent and nested hold credentials + map for the same provider.
+  // Longest pluginId is not a reliable owner signal — the shorter parent may
+  // be the legitimate owner — so leave unbound rather than guessing.
+  for (const [pluginId, key, ciphertext] of [
+    ["com.example", "sync-provider-map:com.example.sync.foo", "map-parent"],
+    ["com.example", "sync-credential", "parent-secret"],
+    ["com.example.sync", "sync-provider-map:com.example.sync.foo", "map-nested"],
+    ["com.example.sync", "sync-credential", "nested-secret"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(pluginId, key, `ref-${pluginId}-${key}`, Buffer.from(ciphertext), now, now);
+  }
+  const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
+  assert.equal(promoted, 0, "ambiguous credential-backed candidates must not auto-bind");
+  assert.equal(database.getSyncProviderBinding("com.example.sync.foo"), null);
+  // Maps stay so a live put / explicit bind can resolve ownership later.
+  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"));
+  assert.ok(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"));
+  assert.ok(database.getSecretByKey("com.example", "sync-credential"));
+  assert.ok(database.getSecretByKey("com.example.sync", "sync-credential"));
   database.close();
 });
 
