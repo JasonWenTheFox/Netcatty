@@ -331,6 +331,20 @@ class PluginDatabase {
     `).all().map((row) => this.#mapPlugin(row));
   }
 
+  /**
+   * Every installed package version (active and inactive), with parsed manifests.
+   * Used for ownership recovery when an older version still identifies a sync
+   * provider that the active manifest no longer contributes.
+   */
+  listInstalledVersions() {
+    return this.db.prepare(`
+      SELECT plugin_id, version, manifest_json, archive_sha256,
+             package_relative_path, installed_at
+      FROM plugin_versions
+      ORDER BY plugin_id COLLATE BINARY, installed_at DESC, version COLLATE BINARY
+    `).all().map((row) => this.#mapVersion(row));
+  }
+
   #mapVersion(row) {
     return {
       pluginId: row.plugin_id,

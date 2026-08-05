@@ -253,19 +253,27 @@ function createPluginHostService(options) {
       }
       const result = await originalInitialize();
       // Schema upgrades leave bindings empty until the next put. Seed from
-      // installed plugin manifests (including disabled/quarantined) when those
-      // plugins still hold sync-credential* rows. listProviders() alone skips
-      // disabled plugins and would miss the upgrade path Codex flagged.
+      // every installed package version manifest (active and inactive) when
+      // those plugins still hold sync-credential* rows. Active-only listing
+      // misses providers removed/renamed on upgrade while credentials remain.
       try {
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
           const installedSyncProviders = [];
-          for (const plugin of database.listPlugins()) {
-            if (typeof plugin?.id !== "string" || !plugin.manifest) continue;
-            for (const provider of plugin.manifest.contributes?.providers ?? []) {
+          const seen = new Set();
+          const versions = typeof database.listInstalledVersions === "function"
+            ? database.listInstalledVersions()
+            : [];
+          for (const version of versions) {
+            const pluginId = version?.pluginId;
+            if (typeof pluginId !== "string" || !version.manifest) continue;
+            for (const provider of version.manifest.contributes?.providers ?? []) {
               if (provider?.kind !== "sync") continue;
               if (typeof provider.id !== "string" || provider.id.length < 1) continue;
+              const key = `${pluginId}\0${provider.id}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
               installedSyncProviders.push({
-                pluginId: plugin.id,
+                pluginId,
                 provider: { id: provider.id },
               });
             }

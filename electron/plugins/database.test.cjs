@@ -598,6 +598,51 @@ test("legacy map backfill never deletes plugin secrets under the map key prefix"
   database.close();
 });
 
+
+test("listInstalledVersions includes inactive package manifests", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // Install two versions under one plugin id via raw rows if helpers are heavy.
+  database.db.prepare(`
+    INSERT INTO plugins(id, enabled, active_version, installed_at, updated_at)
+    VALUES (?, 1, ?, ?, ?)
+  `).run("com.example", "2.0.0", now, now);
+  for (const [version, providerId] of [
+    ["1.0.0", "com.example.legacy-sync"],
+    ["2.0.0", "com.example.sync"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_versions(
+        plugin_id, version, manifest_json, archive_sha256, package_relative_path, installed_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      "com.example",
+      version,
+      JSON.stringify({
+        id: "com.example",
+        version,
+        contributes: { providers: [{ id: providerId, kind: "sync", label: providerId }] },
+      }),
+      "a".repeat(64),
+      `com.example/${version}/package`,
+      now,
+    );
+  }
+  const versions = database.listInstalledVersions();
+  assert.equal(versions.length, 2);
+  const providerIds = new Set();
+  for (const v of versions) {
+    for (const p of v.manifest?.contributes?.providers ?? []) {
+      if (p.kind === "sync") providerIds.add(p.id);
+    }
+  }
+  assert.ok(providerIds.has("com.example.legacy-sync"));
+  assert.ok(providerIds.has("com.example.sync"));
+  // Active list only has 2.0.0
+  assert.equal(database.listPlugins()[0]?.activeVersion, "2.0.0");
+  database.close();
+});
+
 test("inferPluginIdForSyncProvider never guesses from credential key prefixes", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
