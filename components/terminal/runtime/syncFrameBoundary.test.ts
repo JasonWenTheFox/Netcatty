@@ -67,3 +67,32 @@ test("frameSafeSliceEnd: never moves the end backwards", () => {
   const end = frameSafeSliceEnd(data, 0, cut);
   assert.ok(end >= cut, "the adjusted end must not precede the desired end");
 });
+
+test("frameSafeSliceEnd: a cut inside the close marker includes the full marker", () => {
+  const frame = `${H}${"x".repeat(20)}${L}`;
+  const data = `${frame}tail`;
+  // Land mid-close: after ESC[?2026 but before the final `l`.
+  const closeStart = frame.length - L.length;
+  for (let mid = 1; mid < L.length; mid++) {
+    const cut = closeStart + mid;
+    const end = frameSafeSliceEnd(data, 0, cut);
+    assert.equal(
+      end,
+      frame.length,
+      `mid-close cut at +${mid} must extend to full close marker`,
+    );
+    assert.equal(
+      data.slice(0, end).endsWith(L),
+      true,
+      "slice must end on a complete close marker",
+    );
+  }
+});
+
+test("frameSafeSliceEnd: a cut exactly at the close start still completes the frame", () => {
+  const frame = `${H}${"x".repeat(20)}${L}`;
+  const data = `${frame}next`;
+  const closeStart = frame.length - L.length;
+  // At the start of the close the block is still open, so extend past it.
+  assert.equal(frameSafeSliceEnd(data, 0, closeStart), frame.length);
+});

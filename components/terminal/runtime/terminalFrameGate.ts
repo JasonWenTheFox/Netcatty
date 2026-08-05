@@ -195,19 +195,22 @@ export const viewportRepaintCoverage = (
 
 /**
  * Fraction of the viewport a successor must repaint before its predecessor is
- * dropped. Full-screen animated TUIs commonly rewrite only the cells that
- * changed (TryIt.jl repaints ~60% of the grid per frame via cursor jumps), so
- * the bar sits well below 100% to still recognise them, yet far above the few
- * per-cent a small incremental update touches. Dropping is therefore best-effort
- * for animations, not a lossless guarantee — a cell the dropped frame alone
- * repainted shows one frame stale, which is imperceptible in motion.
+ * dropped. Require near-full coverage so incremental successors (HOME + a few
+ * cells, or SGR-heavy partial paints) never justify dropping a prior frame.
+ * 99% allows a single off-by-one from wrap/clamp edge cases while still
+ * demanding essentially complete cell overwrite (or an ED2 clear).
  */
-const FULL_REPAINT_COVERAGE = 0.4;
+const FULL_REPAINT_COVERAGE = 0.99;
 
 /** A successor frame that demonstrably repaints (almost) the whole viewport. */
 export const makesFullRepaint = (content: string, cols: number, rows: number): boolean => {
   if (cols <= 0 || rows <= 0) return false;
-  return viewportRepaintCoverage(content, cols, rows) >= Math.floor(cols * rows * FULL_REPAINT_COVERAGE);
+  const total = cols * rows;
+  const covered = viewportRepaintCoverage(content, cols, rows);
+  // Exact full coverage, or near-full (>= 99%) so tiny clamp/wrap off-by-ones
+  // do not block legitimate full repaints while partial paints still fail.
+  if (covered >= total) return true;
+  return covered >= Math.ceil(total * FULL_REPAINT_COVERAGE);
 };
 
 type Frame = { start: number; end: number; content: string };

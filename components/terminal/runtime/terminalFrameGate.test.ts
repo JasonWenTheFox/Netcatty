@@ -122,6 +122,19 @@ test("makesFullRepaint accepts a whole-screen paint and rejects a small update",
   assert.equal(makesFullRepaint(sgrHeavySmall, cols, rows), false);
 });
 
+test("makesFullRepaint rejects partial paints even when well above 40% coverage", () => {
+  const cols = 10;
+  const rows = 10;
+  // 60% of cells — previously accepted under the 0.4 bar, must now fail.
+  const partial = `${HOME}${"z".repeat(Math.floor(cols * rows * 0.6))}`;
+  assert.equal(makesFullRepaint(partial, cols, rows), false);
+  // ED2 clear still counts as a full repaint.
+  assert.equal(makesFullRepaint("\x1b[2J", cols, rows), true);
+  // Near-full (>= 99%) is accepted: 99 of 100 cells.
+  const nearFull = `${HOME}${"z".repeat(99)}`;
+  assert.equal(makesFullRepaint(nearFull, cols, rows), true);
+});
+
 test("collapse drops only when coverage proves a full repaint", () => {
   const cols = 4;
   const rows = 2;
@@ -133,6 +146,9 @@ test("collapse drops only when coverage proves a full repaint", () => {
   assert.equal(collapseAndSplit(stale + fullNext, pred).dropped, stale.length);
   // Small successor → nothing dropped.
   assert.equal(collapseAndSplit(stale + smallNext, pred).dropped, 0);
+  // Mid-coverage successor (~50%) must not drop the predecessor.
+  const halfNext = frame("z".repeat(Math.floor((cols * rows) / 2)));
+  assert.equal(collapseAndSplit(stale + halfNext, pred).dropped, 0);
 });
 
 // ---- ingress apportioning --------------------------------------------------

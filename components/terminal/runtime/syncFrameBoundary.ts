@@ -50,13 +50,42 @@ export function isInsideSyncBlockAt(data: string, from: number, to: number): boo
 }
 
 /**
+ * If `pos` lands strictly inside a DEC 2026 close marker (`ESC[?2026l`), return
+ * the index just past that full marker; otherwise return `pos` unchanged.
+ *
+ * `isInsideSyncBlockAt` matches whole markers in `data` (not truncated at
+ * `to`), so a cut mid-close already sees the block as closed and would
+ * otherwise leave the partial `\x1b[?2026` shard on one write and the trailing
+ * `l` on the next — tearing the close marker itself.
+ */
+function extendPastCloseMarkerIfSplit(
+  data: string,
+  offset: number,
+  pos: number,
+): number {
+  if (pos <= offset || pos >= data.length) return pos;
+  // pos is strictly inside SYNC_CLOSE when some candidateStart < pos and
+  // candidateStart + SYNC_CLOSE.length > pos, and data starts with SYNC_CLOSE
+  // there. Check each proper prefix length that ends at pos.
+  for (let k = 1; k < SYNC_CLOSE.length; k++) {
+    const candidateStart = pos - k;
+    if (candidateStart < offset) break;
+    if (data.startsWith(SYNC_CLOSE, candidateStart)) {
+      return candidateStart + SYNC_CLOSE.length;
+    }
+  }
+  return pos;
+}
+
+/**
  * A slice end at or after `desiredEnd` that never falls strictly inside an open
- * DEC 2026 block.
+ * DEC 2026 block, and never splits a close marker.
  *
  * If `desiredEnd` lands inside an open frame, it is pushed forward to just past
  * that frame's `\x1b[?2026l`. If the frame never closes within `data`, the end
  * is pushed to `data.length` so the incomplete frame is held for the next
- * write rather than emitted in pieces.
+ * write rather than emitted in pieces. If `desiredEnd` lands mid-close marker
+ * after a completed block, the cut is extended to include the full marker.
  *
  * Never moves the end backwards, so it composes with the slicer's other
  * boundary rules (which only ever shrink a slice).
@@ -67,8 +96,11 @@ export function frameSafeSliceEnd(
   desiredEnd: number,
 ): number {
   if (desiredEnd >= data.length) return data.length;
-  if (!isInsideSyncBlockAt(data, offset, desiredEnd)) return desiredEnd;
-  const close = data.indexOf(SYNC_CLOSE, desiredEnd);
+  // Never leave a half-written close marker at a slice boundary — even when
+  // the block is already considered closed at desiredEnd.
+  const end = extendPastCloseMarkerIfSplit(data, offset, desiredEnd);
+  if (!isInsideSyncBlockAt(data, offset, end)) return end;
+  const close = data.indexOf(SYNC_CLOSE, end);
   if (close === -1) return data.length;
   return close + SYNC_CLOSE.length;
 }
