@@ -11,6 +11,7 @@ const {
   mergePluginSyncSidecars,
   parseSettingsSidecarKey,
   resolveSettingsSidecarTarget,
+  settingsSidecarKey,
   isCloudSyncablePluginSetting,
 } = require("./pluginSyncSidecarHelpers.cjs");
 
@@ -129,10 +130,41 @@ class PluginSyncSidecarService {
     // Drop installed-plugin settings that remote no longer carries.
     // Prefer contributionService.resetSetting so plugins and the renderer
     // receive change events; fall back to direct DB delete when unavailable.
+    // Include live plugin_settings rows that were never mirrored into
+    // plugin_sync_sidecars (e.g. pre-sidecar schema migrations) so remote
+    // deletions still clear them instead of being republished on next collect.
+    const resetCandidates = [];
+    const seenResetKeys = new Set();
+    const pushResetCandidate = (entry) => {
+      const mapKey = `${entry.pluginId}\0${entry.kind}\0${entry.key}`;
+      if (seenResetKeys.has(mapKey)) return;
+      seenResetKeys.add(mapKey);
+      resetCandidates.push(entry);
+    };
     for (const entry of local) {
       if (entry.kind !== "settings") continue;
       if (!declared.has(entry.pluginId)) continue;
       if (remoteKeys.has(`${entry.pluginId}\0${entry.kind}\0${entry.key}`)) continue;
+      pushResetCandidate(entry);
+    }
+    if (typeof this.database.listAllSettings === "function") {
+      for (const row of this.database.listAllSettings()) {
+        if (!declared.has(row.pluginId)) continue;
+        const fields = declared.get(row.pluginId) ?? [];
+        const field = fields.find((item) => item.id === row.settingId);
+        if (!field || !isCloudSyncablePluginSetting(field)) continue;
+        const key = settingsSidecarKey(row.settingId, row.scope, row.scopeId);
+        if (remoteKeys.has(`${row.pluginId}\0settings\0${key}`)) continue;
+        pushResetCandidate({
+          pluginId: row.pluginId,
+          kind: "settings",
+          key,
+          value: row.value,
+          updatedAt: row.updatedAt,
+        });
+      }
+    }
+    for (const entry of resetCandidates) {
       const parsed = parseSettingsSidecarKey(entry.key);
       if (!parsed) continue;
       if (typeof this.contributionService?.resetSetting === "function") {

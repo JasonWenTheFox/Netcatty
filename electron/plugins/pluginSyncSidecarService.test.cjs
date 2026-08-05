@@ -328,6 +328,45 @@ test("hydrateInstalledPluginSettings skips sidecars older than local settings", 
   );
 });
 
+test("applyFromSync empty remote clears installed settings without sidecar rows", async (context) => {
+  const database = tempDb(context);
+  // Pre-sidecar migration residue: setting exists, sidecar table empty.
+  database.setSetting(
+    "com.example.sync",
+    "com.example.sync.theme",
+    "application",
+    "application",
+    "stale-local",
+    3,
+  );
+  const resets = [];
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+      async resetSetting(pluginId, settingId, scopeId) {
+        resets.push({ pluginId, settingId, scopeId });
+        database.deleteSetting(pluginId, settingId, "application", scopeId);
+      },
+    },
+  });
+  await service.applyFromSync({ version: 1, entries: [] });
+  assert.equal(resets.length, 1);
+  assert.equal(
+    database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
+    undefined,
+  );
+});
+
 test("applyFromSync empty remote bundle wipes missing-plugin retained rows", async (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);

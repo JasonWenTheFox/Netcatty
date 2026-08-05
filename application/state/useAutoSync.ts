@@ -458,11 +458,32 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         }
       }
 
-      // Commit collected sidecars (including authoritative empty resets) only
-      // after a successful upload so the empty-vault guard can still see the
-      // prior non-empty last-known during buildPayload → hasMeaningful checks.
+      // Commit sidecar last-known after a successful sync. Prefer the applied
+      // merged/downloaded payload when present so we do not overwrite a remote
+      // apply cache with the pre-sync local collect.
+      let commitSidecars: { version: 1; entries: NonNullable<SyncPayload['pluginSidecars']>['entries'] } | undefined;
       if (Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
-        commitPluginSidecarsLastKnown(payload.pluginSidecars ?? { version: 1, entries: [] });
+        commitSidecars = {
+          version: 1,
+          entries: Array.isArray(payload.pluginSidecars?.entries) ? payload.pluginSidecars.entries : [],
+        };
+      }
+      for (const result of resultList) {
+        if (
+          result.mergedPayload
+          && Object.prototype.hasOwnProperty.call(result.mergedPayload, 'pluginSidecars')
+        ) {
+          commitSidecars = {
+            version: 1,
+            entries: Array.isArray(result.mergedPayload.pluginSidecars?.entries)
+              ? result.mergedPayload.pluginSidecars.entries
+              : [],
+          };
+          break;
+        }
+      }
+      if (commitSidecars) {
+        commitPluginSidecarsLastKnown(commitSidecars);
       }
 
       lastSyncedDataRef.current = dataHash;
