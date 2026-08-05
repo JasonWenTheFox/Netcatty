@@ -312,6 +312,32 @@ test("applyVaultImportDestination can skip collapse for selected hosts", () => {
   ]);
 });
 
+test("applyVaultImportDestination merges referenced credentials onto the retained host", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username",
+    "lan,direct,10.10.10.10,22,root",
+    "lan-proxy,via-socks,10.10.10.10,22,root",
+  ].join("\n"));
+  const [first, second] = imported.hosts;
+  assert.ok(first && second);
+  const withRefs = {
+    ...imported,
+    hosts: [
+      { ...first, identityId: undefined, identityFileId: undefined },
+      { ...second, identityId: "identity-1", identityFileId: "key-1" },
+    ],
+  };
+
+  const targeted = applyVaultImportDestination(withRefs, {
+    mode: "group",
+    group: "Imported/July",
+  });
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.equal(targeted.hosts[0]?.identityId, "identity-1");
+  assert.equal(targeted.hosts[0]?.identityFileId, "key-1");
+});
+
 test("CSV import keeps working when KeyPath and Passphrase columns are absent", () => {
   const result = importVaultHostsFromText(
     "csv",

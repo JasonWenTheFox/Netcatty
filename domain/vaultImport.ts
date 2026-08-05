@@ -349,6 +349,14 @@ const dedupeHosts = (
       existing.authPolicyVersion = host.authPolicyVersion;
       existing.useSshAgent = host.useSshAgent;
     }
+    // Carry over referenced vault credentials when the retained draft is bare.
+    if (!existing.identityId && host.identityId) existing.identityId = host.identityId;
+    if (!existing.telnetIdentityId && host.telnetIdentityId) {
+      existing.telnetIdentityId = host.telnetIdentityId;
+    }
+    if (!existing.identityFileId && host.identityFileId) {
+      existing.identityFileId = host.identityFileId;
+    }
     if (existing.group == null && host.group != null) existing.group = host.group;
     if (existing.label === existing.hostname && host.label && host.label !== host.hostname) {
       existing.label = host.label;

@@ -720,6 +720,51 @@ test('plugin importer destination keeps existing credentials remapped onto skipp
   assert.equal(targeted.identities[0]?.id, existingIdentityId);
 });
 
+test('plugin importer destination merges referenced credentials when collapsing imports', () => {
+  const drafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'imported-identity',
+      label: 'Imported identity',
+      username: 'root',
+      authMethod: 'password',
+      password: 'secret',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'bare',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'lan',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'with-identity',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'lan-proxy',
+      identityId: 'imported-identity',
+    } } },
+  ]);
+  const merged = mergePluginImporterDrafts({
+    hosts: [], identities: [], keys: [], snippets: [], customGroups: [],
+  }, drafts);
+
+  assert.equal(merged.hosts.length, 2);
+  assert.equal(merged.identities.length, 1);
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    0,
+    { mode: 'group', group: 'Chosen' },
+    [],
+    { identities: 0, keys: 0 },
+  );
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.equal(targeted.hosts[0]?.identityId, merged.identities[0]?.id);
+  assert.equal(targeted.identities.length, 1);
+});
+
 test('plugin importer does not count a host-owned destination group as newly added', () => {
   const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
     kind: 'host',
