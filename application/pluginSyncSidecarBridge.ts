@@ -238,8 +238,15 @@ export async function applyPluginSyncSidecarsFromHost(
     );
   }
   clearPendingRemoteSidecars();
-  // Prefer a fresh host collect so last-known reflects merged host state
-  // (applyFromSync preserves missing-plugin local rows that the remote omits).
+  // Prefer merged entries returned by apply (includes missing-plugin rows the
+  // remote omitted) when refreshing last-known without a successful collect.
+  const appliedMerged: PluginSyncSidecarBundle | null = Array.isArray(
+    (result as { entries?: unknown }).entries,
+  )
+    ? { version: 1, entries: (result as { entries: PluginSyncSidecarBundle['entries'] }).entries }
+    : null;
+  const fallbackLastKnown = appliedMerged ?? normalized;
+  // Prefer a fresh host collect so last-known reflects post-apply host state.
   if (typeof api.collectPluginSyncSidecars === 'function') {
     try {
       const collected = await api.collectPluginSyncSidecars();
@@ -247,26 +254,21 @@ export async function applyPluginSyncSidecarsFromHost(
         writeLastKnownSidecars({ version: 1, entries: collected.entries });
         return;
       }
-      // Apply already committed; collect shape was non-authoritative. Align
-      // last-known with the applied remote so offline uploads cannot resurrect
-      // pre-apply rows, then return successfully — throwing here would leave
-      // the interrupted-vault-apply sentinel after vault/settings already landed.
-      writeLastKnownSidecars(normalized);
+      // Apply already committed; collect shape was non-authoritative. Prefer the
+      // merged apply result over the raw remote so preserved local rows survive.
+      writeLastKnownSidecars(fallbackLastKnown);
       return;
     } catch {
-      // Apply already committed. Keep last-known aligned with the applied remote.
-      // Trade-off: missing-plugin rows preserved in the host DB but omitted from
-      // the remote snapshot are not reflected until a later successful collect.
+      // Apply already committed. Do not fall back to the raw remote bundle —
+      // that would drop missing-plugin rows applyFromSync preserved.
       try {
-        writeLastKnownSidecars(normalized);
+        writeLastKnownSidecars(fallbackLastKnown);
       } catch {
         // last-known write failure is secondary; apply already succeeded.
       }
       return;
     }
   }
-  // No collect API: best-effort use remote as last-known (legacy hosts).
-  // Keep explicit empty resets as { entries: [] } so later offline collects
-  // do not omit the field and resurrect deleted sidecars.
-  writeLastKnownSidecars(normalized);
+  // No collect API: use merged apply result when available, else remote.
+  writeLastKnownSidecars(fallbackLastKnown);
 }
