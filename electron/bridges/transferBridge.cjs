@@ -4545,16 +4545,14 @@ async function startTransferNow(event, payload, onProgress) {
   const sendError = (error) => {
     const message = error?.message || String(error);
     const superseded = /superseded/i.test(message);
-    // If a same-id retry already owns activeTransfers, this is a stale attempt.
-    // Do not emit terminal cancelled/failed for that transferId or the live
-    // retry is stuck cancelled in the transfer center (Codex P2 on dbfb411a).
-    const liveOwner = activeTransfers.get(transferId);
-    const isStaleSuperseded = superseded && liveOwner && liveOwner !== transfer;
+    // Superseded always means this attempt lost ownership. Suppress terminal
+    // events even after the retry has finished and left activeTransfers, or
+    // the completed retry is rewritten as cancelled (Codex P2 on 52f0248c).
     cleanupTransfer();
-    if (isStaleSuperseded) {
+    if (superseded) {
       return;
     }
-    const cancelled = /cancel/i.test(message) || superseded;
+    const cancelled = /cancel/i.test(message);
     if (cancelled) {
       sender.send("netcatty:transfer:cancelled", { transferId, error: message });
       broadcastGlobalTransferEvent({
