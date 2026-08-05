@@ -46,6 +46,37 @@ function getElectronProcessMetrics(app, pid) {
   };
 }
 
+/**
+ * Full installed-manifest catalog of sync providers (active + inactive versions).
+ * Shared by startup and enable-time backfill so ambiguity checks always see
+ * cross-plugin / nested-namespace claims.
+ * @param {{ listInstalledVersions?: () => Array<{ pluginId?: string, manifest?: { contributes?: { providers?: Array<{ kind?: string, id?: string }> } } }> }} database
+ * @returns {Array<{ pluginId: string, provider: { id: string } }>}
+ */
+function collectInstalledSyncProviderCatalog(database) {
+  const installedSyncProviders = [];
+  const seen = new Set();
+  const versions = typeof database.listInstalledVersions === "function"
+    ? database.listInstalledVersions()
+    : [];
+  for (const version of versions) {
+    const pluginId = version?.pluginId;
+    if (typeof pluginId !== "string" || !version.manifest) continue;
+    for (const provider of version.manifest.contributes?.providers ?? []) {
+      if (provider?.kind !== "sync") continue;
+      if (typeof provider.id !== "string" || provider.id.length < 1) continue;
+      const key = `${pluginId}\0${provider.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      installedSyncProviders.push({
+        pluginId,
+        provider: { id: provider.id },
+      });
+    }
+  }
+  return installedSyncProviders;
+}
+
 function createPluginHostService(options) {
   const paths = createPluginPaths(options.app.getPath("userData"));
   const appRoot = options.appRoot ?? options.app.getAppPath();
@@ -229,10 +260,13 @@ function createPluginHostService(options) {
       }
       const enabled = await originalOnPluginEnabled(pluginId);
       try {
+        // Use the same installed-manifest catalog as startup so cross-plugin /
+        // inactive-version ambiguity checks still apply when only this plugin
+        // was just enabled (Codex P2 on d3a9b94c).
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
-          const providers = contributionService.listProviders({ kind: "sync" })
-            .filter((entry) => entry?.pluginId === pluginId);
-          secretStore.backfillSyncProviderBindingsFromLiveProviders(providers);
+          secretStore.backfillSyncProviderBindingsFromLiveProviders(
+            collectInstalledSyncProviderCatalog(database),
+          );
         }
       } catch {
         // Best-effort; enable must still succeed.
@@ -258,27 +292,9 @@ function createPluginHostService(options) {
       // misses providers removed/renamed on upgrade while credentials remain.
       try {
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
-          const installedSyncProviders = [];
-          const seen = new Set();
-          const versions = typeof database.listInstalledVersions === "function"
-            ? database.listInstalledVersions()
-            : [];
-          for (const version of versions) {
-            const pluginId = version?.pluginId;
-            if (typeof pluginId !== "string" || !version.manifest) continue;
-            for (const provider of version.manifest.contributes?.providers ?? []) {
-              if (provider?.kind !== "sync") continue;
-              if (typeof provider.id !== "string" || provider.id.length < 1) continue;
-              const key = `${pluginId}\0${provider.id}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              installedSyncProviders.push({
-                pluginId,
-                provider: { id: provider.id },
-              });
-            }
-          }
-          secretStore.backfillSyncProviderBindingsFromLiveProviders(installedSyncProviders);
+          secretStore.backfillSyncProviderBindingsFromLiveProviders(
+            collectInstalledSyncProviderCatalog(database),
+          );
         }
       } catch {
         // Best-effort; startup must continue.
