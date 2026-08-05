@@ -4893,6 +4893,223 @@ test("shared upload OPEN drain unlinks late staged OPEN after channel-error forc
   );
 });
 
+test("late shared OPEN unlink still cleans non-resumable stage under same-id retry", async (t) => {
+  // Codex P2 on 7c446c7: retry ownership must not suppress unlink for every
+  // generatedStagePath. Non-resumable uploads use a unique
+  // `.netcatty-upload-*` path per attempt; a stale late OPEN on attempt 1's
+  // path must still unlink so the orphan is not left behind when a same-id
+  // retry already owns activeTransfers.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-open-late-unlink-nonresume-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 59));
+  const targetPath = "/tmp/upload-late-unlink-nonresume.bin";
+  const transferId = "upload-shared-open-late-unlink-nonresume";
+
+  const remoteFiles = new Map();
+  const eventLog = [];
+  /** @type {null | (() => void)} */
+  let releaseFirstOpen = null;
+  let openGeneration = 0;
+  let endCalls = 0;
+  /** @type {null | (() => void)} */
+  let releaseRetryWrites = null;
+  const retryWritesReleased = new Promise((resolve) => {
+    releaseRetryWrites = resolve;
+  });
+  /** @type {string | null} */
+  let firstStagePath = null;
+  /** @type {string | null} */
+  let retryStagePath = null;
+  const sharedSftp = createFastSftp({
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      const key = String(remotePath);
+      openGeneration += 1;
+      const generation = openGeneration;
+      if (generation === 1) {
+        firstStagePath = key;
+        assert.match(key, /\.netcatty-upload-.*\.part$/, "first attempt must OPEN unique non-resumable stage");
+        releaseFirstOpen = () => {
+          if (!remoteFiles.has(key)) {
+            remoteFiles.set(key, Buffer.alloc(0));
+          }
+          eventLog.push(`open-created-1:${key}`);
+          callback(null, Buffer.from(`handle-1:${key}`));
+        };
+        return;
+      }
+      retryStagePath = key;
+      assert.match(key, /\.netcatty-upload-.*\.part$/, "retry must OPEN a fresh non-resumable stage");
+      assert.notEqual(key, firstStagePath, "non-resumable retry must not reuse first stage path");
+      remoteFiles.set(key, Buffer.from("retry-stage"));
+      eventLog.push(`open-created-${generation}:${key}`);
+      callback(null, Buffer.from(`handle-${generation}:${key}`));
+    },
+    write(handle, buffer, offset, length, position, callback) {
+      void retryWritesReleased.then(() => {
+        const key = String(handle).replace(/^handle-\d+:/, "");
+        const current = remoteFiles.get(key) || Buffer.alloc(0);
+        const end = position + length;
+        const next = Buffer.alloc(Math.max(current.length, end));
+        current.copy(next);
+        buffer.copy(next, position, offset, offset + length);
+        remoteFiles.set(key, next);
+        eventLog.push(`write:${key}:${length}@${position}`);
+        setImmediate(() => callback(null));
+      });
+    },
+    close(handle, callback) {
+      eventLog.push(`close:${String(handle)}`);
+      callback(null);
+    },
+    unlink(remotePath, callback) {
+      const key = String(remotePath);
+      eventLog.push(`unlink:${key}`);
+      remoteFiles.delete(key);
+      callback(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      const key = String(remotePath);
+      eventLog.push(`delete:${key}`);
+      remoteFiles.delete(key);
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const firstSender = createSender();
+  const firstRunning = transferBridge.startTransfer(
+    { sender: firstSender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+
+  const firstOpenReady = await waitUntil(() => typeof releaseFirstOpen === "function", 2000);
+  assert.ok(firstOpenReady, "expected first shared write OPEN to stall");
+
+  sharedSftp.emit("error", new Error("shared SFTP channel died before first OPEN callback"));
+
+  const firstResult = await Promise.race([
+    firstRunning,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("first transfer hung awaiting shared write OPEN drain after channel error")),
+        5000,
+      );
+    }),
+  ]);
+  assert.ok(firstResult.error, "expected first transfer to fail after channel error");
+  assert.match(firstResult.error, /shared SFTP channel died before first OPEN callback/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+
+  // Same transfer id retry (non-resumable) owns a different stage path before
+  // the stale OPEN callback from attempt 1 arrives.
+  transferBridge.clearPendingCancel(transferId);
+  const retrySender = createSender();
+  const retryRunning = transferBridge.startTransfer(
+    { sender: retrySender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+
+  const retryOpenReady = await waitUntil(
+    () => eventLog.some((entry) => entry.startsWith("open-created-2:")),
+    3000,
+  );
+  assert.ok(retryOpenReady, `expected retry OPEN, log=${eventLog.join(",")}`);
+  assert.ok(retryStagePath, "retry must have opened a stage");
+  assert.ok(
+    remoteFiles.has(retryStagePath),
+    "retry must own its unique stage before stale late OPEN",
+  );
+  const retryStageBeforeLateOpen = Buffer.from(remoteFiles.get(retryStagePath));
+
+  // Stale late OPEN from attempt 1: must close + unlink attempt-1 stage only.
+  releaseFirstOpen?.();
+  const lateCleanup = await waitUntil(
+    () => eventLog.some((entry) => entry.startsWith("close:handle-1:"))
+      && eventLog.some((entry) => entry === `unlink:${firstStagePath}`),
+    2000,
+  );
+  assert.ok(
+    lateCleanup,
+    `expected late close+unlink of first non-resumable stage, log=${eventLog.join(",")}`,
+  );
+  assert.equal(
+    eventLog.some((entry) => entry === `unlink:${retryStagePath}`),
+    false,
+    `stale late OPEN must not unlink retry stage, log=${eventLog.join(",")}`,
+  );
+  assert.ok(
+    remoteFiles.has(retryStagePath),
+    "retry stage must survive stale late OPEN on a different path",
+  );
+  assert.ok(
+    remoteFiles.get(retryStagePath).equals(retryStageBeforeLateOpen),
+    "retry stage bytes must not be removed by stale late OPEN unlink",
+  );
+  assert.equal(
+    remoteFiles.has(firstStagePath),
+    false,
+    "first attempt non-resumable stage must be unlinked (no orphan)",
+  );
+
+  releaseRetryWrites?.();
+  await transferBridge.cancelTransfer(null, { transferId });
+  const retryResult = await Promise.race([
+    retryRunning,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("retry transfer hung after cancel")), 5000);
+    }),
+  ]);
+  assert.ok(
+    retryResult.cancelled === true || /cancel/i.test(String(retryResult.error || "")),
+    `expected retry cancel settle, result=${JSON.stringify(retryResult)}`,
+  );
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+});
+
 test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
   // Codex P2 on d19ecb88: after OPEN drain force-complete, a late truncating
   // "w" callback unlinked the generated stage unconditionally. Resumable

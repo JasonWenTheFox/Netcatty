@@ -271,6 +271,25 @@ function buildRemoteTransferStagePath(targetPath, transferId) {
 }
 
 /**
+ * True when `filePath` is a deterministic resumable stage that same-id retries
+ * reuse (`.${base}.netcatty-${transferId}.part`). Non-resumable uploads use a
+ * fresh `.netcatty-upload-...` path per attempt and must not match.
+ */
+function isReusableRemoteTransferStagePath(filePath, transferId) {
+  if (transferId == null || transferId === "") return false;
+  const safeId = String(transferId).replace(/[^A-Za-z0-9_-]/g, "_");
+  if (!safeId) return false;
+  const base = path.posix.basename(String(filePath || ""));
+  // buildRemoteTransferStagePath → `.${name}.netcatty-${safeId}.part`
+  // non-resumable stages → `.netcatty-upload-${uuid}-....part`
+  return (
+    base.startsWith(".")
+    && base.endsWith(`.netcatty-${safeId}.part`)
+    && !base.startsWith(".netcatty-upload-")
+  );
+}
+
+/**
  * Reconcile a claimed resume offset with durable staged bytes.
  *
  * Progress events update checkpointBytes as soon as data is handed to the write
@@ -1942,9 +1961,10 @@ async function uploadFile(
  * generated stage (`generatedStagePath`), best-effort unlinks it so stage
  * cleanup cannot race a recreate/orphan. In-place final targets are never
  * unlinked here. Same-id retries that already re-own the active transfer
- * slot also skip unlink: resumable stages reuse
- * `.netcatty-<transferId>.part`, and a stale late OPEN must not delete the
- * new attempt's stage (Codex P2 on d19ecb88).
+ * slot skip unlink only for reusable resume stages
+ * (`.netcatty-<transferId>.part`); non-resumable `.netcatty-upload-*` paths
+ * are unique per attempt and must still be unlinked so a stale late OPEN
+ * cannot leave an orphan (Codex P2 on d19ecb88 / 7c446c7).
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null, generatedStagePath?: boolean }} [options]
  */
@@ -1964,13 +1984,30 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // In-place finals never unlink.
   const shouldUnlinkLateGeneratedStage = generatedStagePath && isTruncatingOpen;
   // Re-check ownership at unlink time: a same-id retry may already own
-  // activeTransfers and the deterministic resume stage path.
+  // activeTransfers and the deterministic resume stage path. Only suppress
+  // unlink for that reusable path — not every generatedStagePath.
   const canUnlinkLateGeneratedStageNow = () => {
     if (!shouldUnlinkLateGeneratedStage) return false;
     const transferId = transfer?.transferId;
     if (transferId == null || transferId === "") return true;
     const active = activeTransfers.get(transferId);
-    if (active && active !== transfer) return false;
+    if (active && active !== transfer) {
+      // Retry already owns this transfer id. Protect only the stage path that
+      // resumable retries actually reuse; unique non-resumable stage paths
+      // from the failed attempt must still be cleaned up.
+      if (active.stagedRemote?.path && active.stagedRemote.path === filePath) {
+        return false;
+      }
+      if (active.resumable && active.targetPath) {
+        if (buildRemoteTransferStagePath(active.targetPath, transferId) === filePath) {
+          return false;
+        }
+      }
+      if (isReusableRemoteTransferStagePath(filePath, transferId)) {
+        return false;
+      }
+      return true;
+    }
     return true;
   };
   let resolveSharedWriteDrain = null;
@@ -2032,8 +2069,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // truncating stages also unlink so a force-completed drain / stage delete
     // cannot leave a recreate orphan after cancel OR channel-error settle
     // (Codex P2 on 0cda4a39 / cd57d960 / bd42c51c). Never unlink in-place
-    // final targets (Codex P1 on a9f748c8). Skip unlink when a same-id retry
-    // already owns the active transfer (Codex P2 on d19ecb88).
+    // final targets (Codex P1 on a9f748c8). Skip unlink only when a same-id
+    // retry owns a reusable resume stage at this path (Codex P2 on d19ecb88).
     const finishLateSharedWriteOpen = (handle) => {
       const afterClose = () => {
         const finish = () => completeSharedWriteDrain();
