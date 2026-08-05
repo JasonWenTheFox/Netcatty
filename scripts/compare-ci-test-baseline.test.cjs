@@ -56,13 +56,22 @@ test('accepts renaming a successful test when quantitative coverage does not shr
   assert.equal(issueNumberName.passed, true);
   assert.equal(issueNumberName.kind, 'clean');
 
-  // Clean candidate that turns a prior red into green is still accepted.
-  const duplicateName = compareTapResults(
-    parseTapResult(tap({ failures: ['same name'], successes: ['same name'] }), 1),
-    parseTapResult(tap({ successes: ['same name', 'unrelated replacement'] }), 0),
+  // Clean candidate that fixes a prior red must keep the failing test title.
+  const fixedFailure = compareTapResults(
+    parseTapResult(tap({ failures: ['broken test'], successes: ['other test'] }), 1),
+    parseTapResult(tap({ successes: ['broken test', 'other test'] }), 0),
   );
-  assert.equal(duplicateName.passed, true);
-  assert.equal(duplicateName.kind, 'clean');
+  assert.equal(fixedFailure.passed, true);
+  assert.equal(fixedFailure.kind, 'clean');
+
+  // Deleting the failing test and adding an unrelated passer is not a clean fix.
+  const deletedFailure = compareTapResults(
+    parseTapResult(tap({ failures: ['broken test'], successes: ['other test'] }), 1),
+    parseTapResult(tap({ successes: ['other test', 'unrelated replacement'] }), 0),
+  );
+  assert.equal(deletedFailure.passed, false);
+  assert.equal(deletedFailure.kind, 'unclassified_failure');
+  assert.deepEqual(deletedFailure.missingBaselineFailures, ['broken test']);
 });
 
 test('accepts a green candidate that renames one success while adding another', () => {

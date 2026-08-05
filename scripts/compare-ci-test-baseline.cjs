@@ -253,16 +253,33 @@ function compareTapResults(baseline, candidate) {
     candidateFailures,
     newFailures,
     missingBaselineSuccesses,
+    missingBaselineFailures,
   });
 
   if (candidate.exitCode === 0) {
+    // Require every baseline failure title to reappear as a same-named success
+    // before accepting a red→green transition. Aggregate counts alone would allow
+    // deleting the failing test and adding an unrelated passer.
+    const baselineFailCounts = countFailures(baseline.failures);
+    const baselineSuccessCountsForFix = countFailures(baseline.successes);
+    const candidateSuccessCountsForFix = countFailures(candidate.successes);
+    const unresolvedBaselineFailures = [];
+    for (const [name, failCount] of baselineFailCounts) {
+      const required =
+        failCount + (baselineSuccessCountsForFix.get(name) || 0);
+      const available = candidateSuccessCountsForFix.get(name) || 0;
+      for (let i = 0; i < required - available; i += 1) {
+        unresolvedBaselineFailures.push(name);
+      }
+    }
     // A fully green candidate is trusted even when the baseline log is truncated
     // or individual success titles were renamed, as long as quantitative coverage
-    // did not shrink (test count / skips / todos / cancellations).
+    // did not shrink and every prior failure title is still covered.
     const quantitativeClean =
       candidate.complete &&
       candidate.failCount === 0 &&
       candidate.cancelledCount === 0 &&
+      unresolvedBaselineFailures.length === 0 &&
       (
         !baseline.complete ||
         (
@@ -293,7 +310,9 @@ function compareTapResults(baseline, candidate) {
     return result({
       passed: false,
       kind: 'unclassified_failure',
-      newFailures: missingBaselineSuccesses,
+      newFailures: unresolvedBaselineFailures.length
+        ? unresolvedBaselineFailures
+        : missingBaselineSuccesses,
     });
   }
 
