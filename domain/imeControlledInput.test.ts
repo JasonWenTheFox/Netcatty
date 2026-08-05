@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  resolveSupersededImeInputEvent,
   shouldAdoptExternalImeControlledValue,
   shouldCommitImeControlledChange,
 } from "./imeControlledInput.ts";
@@ -49,6 +50,25 @@ test("commits ordinary keystrokes outside composition", () => {
   );
 });
 
+test("does not commit when composition was externally superseded", () => {
+  assert.equal(
+    shouldCommitImeControlledChange({
+      isComposingSession: false,
+      nativeEventIsComposing: false,
+      compositionExternallySuperseded: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldCommitImeControlledChange({
+      isComposingSession: true,
+      nativeEventIsComposing: false,
+      compositionExternallySuperseded: true,
+    }),
+    false,
+  );
+});
+
 test("adopts external value into draft only when not composing and values differ", () => {
   assert.equal(
     shouldAdoptExternalImeControlledValue({
@@ -73,5 +93,70 @@ test("adopts external value into draft only when not composing and values differ
       externalValue: "搜",
     }),
     false,
+  );
+});
+
+test("adopts external navigation-clear mid-composition when compose-start baseline is provided", () => {
+  // Parent cleared filter for different-directory navigation while IME was open.
+  assert.equal(
+    shouldAdoptExternalImeControlledValue({
+      isComposingSession: true,
+      draftValue: "sou",
+      externalValue: "",
+      valueAtComposeStart: "old",
+    }),
+    true,
+  );
+  // External value still matches the compose-start baseline — keep draft for IME.
+  assert.equal(
+    shouldAdoptExternalImeControlledValue({
+      isComposingSession: true,
+      draftValue: "sou",
+      externalValue: "old",
+      valueAtComposeStart: "old",
+    }),
+    false,
+  );
+  // Draft already matches external after a prior adopt — no-op.
+  assert.equal(
+    shouldAdoptExternalImeControlledValue({
+      isComposingSession: true,
+      draftValue: "",
+      externalValue: "",
+      valueAtComposeStart: "old",
+    }),
+    false,
+  );
+});
+
+test("suppresses post-composition onChange after external supersede and clears the latch once ended", () => {
+  // Mid-composition after navigation clear: ignore event, keep latch armed.
+  assert.deepEqual(
+    resolveSupersededImeInputEvent({
+      compositionExternallySuperseded: true,
+      isComposingSession: true,
+      nativeEventIsComposing: true,
+    }),
+    { ignoreEventValue: true, clearSupersedeLatch: false },
+  );
+
+  // Post-compositionend follow-up change (composing=false): ignore once and clear.
+  assert.deepEqual(
+    resolveSupersededImeInputEvent({
+      compositionExternallySuperseded: true,
+      isComposingSession: false,
+      nativeEventIsComposing: false,
+    }),
+    { ignoreEventValue: true, clearSupersedeLatch: true },
+  );
+
+  // No supersede: ordinary path.
+  assert.deepEqual(
+    resolveSupersededImeInputEvent({
+      compositionExternallySuperseded: false,
+      isComposingSession: false,
+      nativeEventIsComposing: false,
+    }),
+    { ignoreEventValue: false, clearSupersedeLatch: false },
   );
 });

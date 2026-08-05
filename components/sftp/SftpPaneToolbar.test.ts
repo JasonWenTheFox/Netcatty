@@ -301,8 +301,29 @@ test("SFTP filter honors an external filter change over a stale draft when compo
   assert.match(toolbarSource, /filterAtComposeStartRef\.current = pane\.filter;/);
   assert.match(
     toolbarSource,
-    /if \(pane\.filter !== filterAtComposeStartRef\.current\) \{\s*setFilterDraft\(pane\.filter\);\s*return;/,
+    /pane\.filter !== filterAtComposeStartRef\.current\s*\|\|\s*filterCompositionSupersededRef\.current/,
   );
+  assert.match(toolbarSource, /filterCompositionSupersededRef\.current = true;/);
+  assert.match(toolbarSource, /setFilterDraft\(pane\.filter\);/);
+});
+
+test("SFTP filter adopts external navigation-cleared filters during an open IME composition", () => {
+  // Sync path must pass valueAtComposeStart while composing so pane.filter="" from
+  // different-directory navigation supersedes the draft mid-composition.
+  assert.match(toolbarSource, /valueAtComposeStart:\s*filterComposingRef\.current/);
+  assert.match(toolbarSource, /filterAtComposeStartRef\.current/);
+  assert.match(
+    toolbarSource,
+    /filterCompositionSupersededRef\.current = true;/,
+  );
+});
+
+test("SFTP filter suppresses the post-composition onChange after external supersede", () => {
+  // Browsers may fire onChange with composing=false after compositionend; that event
+  // must not re-commit the stale composed draft over a navigation-cleared filter.
+  assert.match(toolbarSource, /resolveSupersededImeInputEvent/);
+  assert.match(toolbarSource, /superseded\.ignoreEventValue/);
+  assert.match(toolbarSource, /compositionExternallySuperseded:\s*filterCompositionSupersededRef\.current/);
 });
 
 test("SFTP filter commit path clears the IME composing guard so clears/commits can't leave it stuck", () => {
@@ -310,7 +331,7 @@ test("SFTP filter commit path clears the IME composing guard so clears/commits c
   // drop the guard so a programmatic clear mid-composition isn't blocked or undone.
   assert.match(
     toolbarSource,
-    /const commitFilterValue = useCallback\(\(value: string\) => \{[\s\S]*?filterComposingRef\.current = false;/,
+    /const commitFilterValue = useCallback\(\(value: string\) => \{[\s\S]*?filterComposingRef\.current = false;[\s\S]*?filterCompositionSupersededRef\.current = false;/,
   );
 });
 
@@ -320,7 +341,7 @@ test("SFTP filter clears the IME composing guard and resyncs the draft when the 
   // the committed filter so a reopened bar never shows stale, uncommitted text.
   assert.match(
     toolbarSource,
-    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;\s*setFilterDraft\(pane\.filter\);/,
+    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;\s*filterCompositionSupersededRef\.current = false;\s*setFilterDraft\(pane\.filter\);/,
   );
 });
 

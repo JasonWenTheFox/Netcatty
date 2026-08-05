@@ -19,6 +19,7 @@ import type { SftpPane } from "../../application/state/sftp/types";
 import type { SftpBookmark } from "../../domain/models";
 import { isWindowsPath } from "../../application/state/sftp/utils";
 import {
+  resolveSupersededImeInputEvent,
   shouldAdoptExternalImeControlledValue,
   shouldCommitImeControlledChange,
 } from "../../domain/imeControlledInput";
@@ -332,6 +333,9 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   const [filterDraft, setFilterDraft] = useState(pane.filter);
   const filterComposingRef = useRef(false);
   const filterAtComposeStartRef = useRef(pane.filter);
+  // Set when pane.filter changes externally during (or just after) composition so
+  // the post-compositionend onChange cannot re-commit a stale composed draft.
+  const filterCompositionSupersededRef = useRef(false);
   const prevDisplayConnectionIdRef = useRef(pane.connection?.id);
   const toolbarLayout = useToolbarItemLayout(
     STORAGE_KEY_SFTP_TOOLBAR_LAYOUT,
@@ -353,15 +357,26 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   }, [pane.connection?.currentPath, pane.connection?.id, pane.loading]);
 
   useEffect(() => {
-    setFilterDraft((draftValue) =>
-      shouldAdoptExternalImeControlledValue({
+    setFilterDraft((draftValue) => {
+      const shouldAdopt = shouldAdoptExternalImeControlledValue({
         isComposingSession: filterComposingRef.current,
         draftValue,
         externalValue: pane.filter,
-      })
-        ? pane.filter
-        : draftValue,
-    );
+        // Allow navigation-cleared filters to supersede an open IME composition so
+        // compositionend / post-composition onChange cannot resurrect the draft.
+        valueAtComposeStart: filterComposingRef.current
+          ? filterAtComposeStartRef.current
+          : undefined,
+      });
+      if (
+        shouldAdopt
+        && filterComposingRef.current
+        && pane.filter !== filterAtComposeStartRef.current
+      ) {
+        filterCompositionSupersededRef.current = true;
+      }
+      return shouldAdopt ? pane.filter : draftValue;
+    });
   }, [pane.filter]);
 
   // The filter input only mounts while the bar is open, so a composition that is
@@ -371,6 +386,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   useEffect(() => {
     if (!showFilterBar) {
       filterComposingRef.current = false;
+      filterCompositionSupersededRef.current = false;
       setFilterDraft(pane.filter);
     }
   }, [showFilterBar, pane.filter]);
@@ -380,6 +396,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
     // covers every commit path (composition end, Escape, inline clear, close) so a
     // stale composing flag can't block later commits or resurrect a pre-clear value.
     filterComposingRef.current = false;
+    filterCompositionSupersededRef.current = false;
     setFilterDraft(value);
     // Keep parent filter in lockstep with the input. Deferred updates against a
     // controlled value fight CJK IME composition and can echo/drop candidates.
@@ -1025,12 +1042,27 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
               ref={filterInputRef}
               value={filterDraft}
               onChange={(e) => {
+                const superseded = resolveSupersededImeInputEvent({
+                  compositionExternallySuperseded: filterCompositionSupersededRef.current,
+                  isComposingSession: filterComposingRef.current,
+                  nativeEventIsComposing: e.nativeEvent.isComposing,
+                });
+                if (superseded.ignoreEventValue) {
+                  // Keep draft on the external filter (e.g. navigation clear). Do not
+                  // apply the stale composed text from a post-compositionend change.
+                  if (superseded.clearSupersedeLatch) {
+                    filterCompositionSupersededRef.current = false;
+                  }
+                  setFilterDraft(pane.filter);
+                  return;
+                }
                 const next = e.target.value;
                 setFilterDraft(next);
                 if (
                   shouldCommitImeControlledChange({
                     isComposingSession: filterComposingRef.current,
                     nativeEventIsComposing: e.nativeEvent.isComposing,
+                    compositionExternallySuperseded: filterCompositionSupersededRef.current,
                   })
                 ) {
                   onSetFilter(next);
@@ -1038,6 +1070,7 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
               }}
               onCompositionStart={() => {
                 filterComposingRef.current = true;
+                filterCompositionSupersededRef.current = false;
                 filterAtComposeStartRef.current = pane.filter;
               }}
               onCompositionEnd={(e) => {
@@ -1045,8 +1078,14 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 // We never self-commit while composing, so any change to pane.filter
                 // during the session is external (e.g. follow-CWD navigation clearing
                 // the filter). Honor it and drop the stale composed draft instead of
-                // letting the commit overwrite the navigation-cleared filter.
-                if (pane.filter !== filterAtComposeStartRef.current) {
+                // letting the commit overwrite the navigation-cleared filter. Keep the
+                // supersede latch armed so a browser post-compositionend onChange
+                // cannot reassert the composed text with composing=false.
+                if (
+                  pane.filter !== filterAtComposeStartRef.current
+                  || filterCompositionSupersededRef.current
+                ) {
+                  filterCompositionSupersededRef.current = true;
                   setFilterDraft(pane.filter);
                   return;
                 }
