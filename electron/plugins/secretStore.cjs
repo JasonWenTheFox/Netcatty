@@ -198,14 +198,32 @@ class PluginSecretStore {
 
   resolveSyncProviderPlugin(providerId) {
     assertSecretKey(providerId);
-    if (typeof this.database.getSyncProviderBinding !== "function") return undefined;
-    const row = this.database.getSyncProviderBinding(providerId);
-    const pluginId = row?.pluginId;
-    if (typeof pluginId !== "string" || pluginId.length < 1) return undefined;
-    if (providerId !== pluginId && !providerId.startsWith(`${pluginId}.`)) {
-      return undefined;
+    if (typeof this.database.getSyncProviderBinding === "function") {
+      const row = this.database.getSyncProviderBinding(providerId);
+      const pluginId = row?.pluginId;
+      if (
+        typeof pluginId === "string"
+        && pluginId.length > 0
+        && (providerId === pluginId || providerId.startsWith(`${pluginId}.`))
+      ) {
+        return pluginId;
+      }
     }
-    return pluginId;
+    // Schema upgrades leave the binding table empty until the next put. Derive
+    // ownership from existing sync-credential* rows with the namespace check
+    // so disconnect still cleans credentials for pre-binding installs.
+    if (typeof this.database.inferPluginIdForSyncProvider === "function") {
+      const inferred = this.database.inferPluginIdForSyncProvider(providerId);
+      if (typeof inferred === "string" && inferred.length > 0) {
+        try {
+          this.bindSyncProviderPlugin(inferred, providerId);
+        } catch {
+          /* binding write is best-effort; still return the inferred id */
+        }
+        return inferred;
+      }
+    }
+    return undefined;
   }
 
   unbindSyncProviderPlugin(pluginId, providerId) {

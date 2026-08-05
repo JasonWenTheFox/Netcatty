@@ -474,3 +474,69 @@ test("activating a new version resets runtime quarantine without forgiving the s
   assert.equal(database.getActivePlugin(first.id).runtime.quarantinedAt, 1_000);
   database.close();
 });
+
+test("schema upgrade backfills bindings from legacy sync-provider-map secrets", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-plugin-v2-backfill-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "plugins.sqlite");
+  // Bootstrap a schema-2 DB then open with PluginDatabase to migrate to v3.
+  const seed = new PluginDatabase(file);
+  // Force downgrade-like state: empty bindings + a legacy map secret row.
+  seed.db.exec("DELETE FROM plugin_sync_provider_bindings");
+  const now = Date.now();
+  seed.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-provider-map:com.example.sync",
+    "ref-legacy-map",
+    Buffer.from("sealed"),
+    now,
+    now,
+  );
+  seed.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-credential",
+    "ref-cred",
+    Buffer.from("sealed-cred"),
+    now,
+    now,
+  );
+  seed.close();
+
+  const database = new PluginDatabase(file);
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"),
+    null,
+    "legacy map secret must be removed after promotion",
+  );
+  assert.ok(database.getSecretByKey("com.example", "sync-credential"));
+  database.close();
+});
+
+test("inferPluginIdForSyncProvider prefers the longest namespace match with sync credentials", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  for (const [pluginId, key] of [
+    ["com.example", "sync-credential"],
+    ["com.example.backup", "sync-credential"],
+    ["com.other", "sync-credential"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(pluginId, key, `ref-${pluginId}`, Buffer.from("x"), now, now);
+  }
+  assert.equal(
+    database.inferPluginIdForSyncProvider("com.example.backup.sync"),
+    "com.example.backup",
+  );
+  assert.equal(database.inferPluginIdForSyncProvider("com.other.cloud"), "com.other");
+  assert.equal(database.inferPluginIdForSyncProvider("com.missing.sync"), undefined);
+  database.close();
+});

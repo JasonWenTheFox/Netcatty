@@ -213,6 +213,9 @@ class PluginDatabase {
       });
     }
     this.#assertSchemaLayout();
+    // Recover provider ownership for pre-binding credentials (and any leftover
+    // sync-provider-map:* secret rows from an intermediate build).
+    this.backfillSyncProviderBindingsFromLegacySecrets();
   }
 
   #assertSchemaLayout() {
@@ -823,6 +826,64 @@ class PluginDatabase {
       DELETE FROM plugin_sync_provider_bindings WHERE provider_id = ?
     `).run(providerId);
     return Number(result?.changes) || 0;
+  }
+
+  /** Distinct plugin ids that own secrets with key === prefix or key LIKE prefix:%. */
+  listPluginIdsWithSecretKeyPrefix(prefix) {
+    const escaped = String(prefix).replace(/[%_\\]/g, (ch) => `\\${ch}`);
+    return this.db.prepare(`
+      SELECT DISTINCT plugin_id
+      FROM plugin_secrets
+      WHERE key = ? OR key LIKE ? ESCAPE '\\'
+    `).all(prefix, `${escaped}:%`).map((row) => row.plugin_id);
+  }
+
+  /**
+   * Promote leftover sync-provider-map:* secret rows into the host-owned binding
+   * table, then delete those legacy secret keys. Idempotent.
+   */
+  backfillSyncProviderBindingsFromLegacySecrets() {
+    const legacyPrefix = "sync-provider-map:";
+    const escaped = legacyPrefix.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+    const legacyRows = this.db.prepare(`
+      SELECT plugin_id, key
+      FROM plugin_secrets
+      WHERE key LIKE ? ESCAPE '\\'
+    `).all(`${escaped}%`);
+    let promoted = 0;
+    for (const row of legacyRows) {
+      const pluginId = row.plugin_id;
+      const key = row.key;
+      if (typeof pluginId !== "string" || typeof key !== "string") continue;
+      if (!key.startsWith(legacyPrefix)) continue;
+      const providerId = key.slice(legacyPrefix.length);
+      if (!providerId || providerId.includes("\0")) continue;
+      if (providerId !== pluginId && !providerId.startsWith(`${pluginId}.`)) {
+        continue;
+      }
+      this.upsertSyncProviderBinding(providerId, pluginId);
+      this.deleteSecret(pluginId, key);
+      promoted += 1;
+    }
+    return promoted;
+  }
+
+  /**
+   * Infer which plugin owns a sync provider from existing sync-credential*
+   * rows when no binding exists yet (schema upgrade / pre-binding installs).
+   * Prefers the longest plugin id that is a namespace prefix of providerId.
+   */
+  inferPluginIdForSyncProvider(providerId) {
+    if (typeof providerId !== "string" || providerId.length < 1) return undefined;
+    const pluginIds = this.listPluginIdsWithSecretKeyPrefix("sync-credential");
+    const matches = pluginIds.filter((pluginId) => (
+      typeof pluginId === "string"
+      && pluginId.length > 0
+      && (providerId === pluginId || providerId.startsWith(`${pluginId}.`))
+    ));
+    if (matches.length === 0) return undefined;
+    matches.sort((a, b) => b.length - a.length);
+    return matches[0];
   }
 
   recordSecurityAudit(pluginId, event, details) {

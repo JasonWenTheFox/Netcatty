@@ -443,3 +443,16 @@ test("existing overwrite stash is preserved across retry puts and cleared by pre
   assert.equal(store.getReference("com.example", "sync-credential"), undefined);
   database.close();
 });
+
+test("resolveSyncProviderPlugin infers ownership from sync-credential rows after upgrade", (context) => {
+  const database = createDatabase(context);
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+  });
+  store.set("com.example", "sync-credential", "pw");
+  assert.equal(database.getSyncProviderBinding("com.example.sync"), null);
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
+  database.close();
+});
