@@ -346,6 +346,12 @@ test("SFTP filter suppresses the post-composition onChange after external supers
   assert.match(toolbarSource, /resolveSupersededImeInputEvent/);
   assert.match(toolbarSource, /superseded\.ignoreEventValue/);
   assert.match(toolbarSource, /compositionExternallySuperseded:\s*filterCompositionSupersededRef\.current/);
+  // If no post-composition change arrives, disarm the latch after this turn so the
+  // next ordinary keystroke is not dropped as a stale composed echo.
+  assert.match(
+    toolbarSource,
+    /filterCompositionSupersededRef\.current = true;\s*setFilterDraft\(pane\.filter\);\s*window\.setTimeout\(\(\) => \{\s*filterCompositionSupersededRef\.current = false;\s*\}, 0\);/,
+  );
 });
 
 test("SFTP filter commit path clears the IME composing guard so clears/commits can't leave it stuck", () => {

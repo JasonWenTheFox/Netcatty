@@ -1095,6 +1095,8 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 // navigation sets filter to "" again, so filter-only checks miss it.
                 // Keep the supersede latch armed so a browser post-compositionend
                 // onChange cannot reassert the composed text with composing=false.
+                // Some IME paths never fire that follow-up change; disarm after this
+                // turn so the next ordinary keystroke is not treated as the stale echo.
                 const pathChangedDuringCompose =
                   (pane.connection?.currentPath ?? "") !== filterPathAtComposeStartRef.current;
                 if (
@@ -1104,6 +1106,9 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
                 ) {
                   filterCompositionSupersededRef.current = true;
                   setFilterDraft(pane.filter);
+                  window.setTimeout(() => {
+                    filterCompositionSupersededRef.current = false;
+                  }, 0);
                   return;
                 }
                 commitFilterValue(e.currentTarget.value);
