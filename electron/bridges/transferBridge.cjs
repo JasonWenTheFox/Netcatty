@@ -2418,9 +2418,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       sftp.open(filePath, resolveFlags(), (error, handle) => {
         if (settled) {
           // Cancel / channel error already settled (possibly via drain timeout).
-          // Late write OPEN (shared or isolated) still invalidates same-path
-          // writers and releases the gate (Codex P1 on 76015575).
-          if (!error && handle && isWriteOpen) {
+          // Shared/sudo late handles always close (read or write) so the long-
+          // lived session cannot leak. Isolated late write OPENs still run
+          // invalidation/unlink (Codex P1 on 76015575 / 298d155e).
+          if (!error && handle && (isWriteOpen || !disposeChannel)) {
             finishLateSharedWriteOpen(handle);
             return;
           }
