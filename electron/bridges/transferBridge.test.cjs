@@ -5385,13 +5385,14 @@ test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
       setTimeout(() => reject(new Error("retry transfer hung after prior OPEN settled")), 8000);
     }),
   ]);
-  // Retry should complete or fail cleanly — not hang on the path gate.
+  // Normal success is { transferId, totalBytes }; cancel/error also settle.
   assert.ok(
     retryResult
-    && (retryResult.success === true
+    && (
+      (retryResult.transferId && retryResult.error == null && retryResult.cancelled !== true)
       || retryResult.cancelled === true
       || retryResult.error
-      || retryResult.transferred != null),
+    ),
     `expected retry to settle after gate release, result=${JSON.stringify(retryResult)}`,
   );
   assert.equal(endCalls, 0, "shared sudo channel must not be ended");
