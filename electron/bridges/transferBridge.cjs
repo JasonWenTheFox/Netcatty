@@ -3002,9 +3002,9 @@ async function downloadFileResumableFast(
           // CLOSE (adds up to 2s on a dead channel). Best-effort close only.
           closeSftpHandle(sftp, remoteHandle).catch(() => {});
         } else {
-          // Success path on a shared channel: bound CLOSE so a hung callback
-          // cannot block lease release. Tag the watchdog so real server
-          // "timed out" CLOSE errors are not swallowed by message matching.
+          // Success path: bound CLOSE so a hung callback cannot block lease
+          // release. Tag the watchdog so real server "timed out" CLOSE errors
+          // are not swallowed by message matching.
           let closeTimeout = null;
           try {
             await Promise.race([
@@ -3020,9 +3020,16 @@ async function downloadFileResumableFast(
           } catch (error) {
             if (error?.sftpCloseTimedOut) {
               console.warn(
-                "[transferBridge] shared SFTP CLOSE timed out; abandoning remote handle",
+                "[transferBridge] SFTP CLOSE timed out; abandoning remote handle",
                 transfer.transferId || "",
+                disposeChannel ? "(isolated — dispose channel)" : "(shared — keep session)",
               );
+              // Shared/sudo: timeout is non-fatal (session stays alive).
+              // Isolated: mark unhealthy so downloadFile disposes instead of
+              // returning a possibly-dead channel to the pool.
+              if (disposeChannel) {
+                remoteCloseError = error;
+              }
             } else {
               remoteCloseError = error;
             }

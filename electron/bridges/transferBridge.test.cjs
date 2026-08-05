@@ -4400,6 +4400,104 @@ test("second concurrent sudo download uses stream while shared fast slot is busy
   }
 });
 
+test("isolated download CLOSE timeout disposes channel instead of returning it to the pool", async (t) => {
+  // Codex P2 on a3b11137: success-path CLOSE timeout with disposeChannel:true
+  // only logged and left remoteCloseError unset, so downloadFile released the
+  // isolated channel back to the pool without dispose.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-isolated-close-timeout-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.alloc(2 * TRANSFER_CHUNK_SIZE, 33);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = index % 173;
+  const targetPath = path.join(tempDir, "download.bin");
+
+  let openedChannels = 0;
+  let endCalls = 0;
+  let closeCalls = 0;
+  const makeIsolated = () => createFastSftp({
+    open(_remotePath, flags, callback) {
+      assert.equal(flags, "r");
+      callback(null, Buffer.from(`isolated-${openedChannels}`));
+    },
+    read(_handle, buffer, offset, length, position, callback) {
+      const slice = payload.subarray(position, position + length);
+      slice.copy(buffer, offset);
+      setImmediate(() => callback(null, slice.length));
+    },
+    close(_handle, _callback) {
+      closeCalls += 1;
+      // Never invoke callback — simulates a hung CLOSE on an isolated channel.
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    sftp: createFastSftp({
+      createReadStream() {
+        throw new Error("serial stream must not run when isolated concurrent READ succeeds");
+      },
+    }),
+    stat() {
+      return Promise.resolve({
+        size: payload.length,
+        mtimeMs: 1_000,
+        ctimeMs: 1_000,
+        mtime: 1,
+        ctime: 1,
+      });
+    },
+    client: {
+      sftp(callback) {
+        openedChannels += 1;
+        callback(null, makeIsolated());
+      },
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["source", client]]) });
+
+  const first = await transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "download-isolated-close-timeout",
+      sourcePath: "/tmp/download.bin",
+      targetPath,
+      sourceType: "sftp",
+      targetType: "local",
+      sourceSftpId: "source",
+      totalBytes: payload.length,
+      resumable: true,
+    },
+  );
+
+  assert.equal(first.error, undefined, first.error);
+  assert.ok(closeCalls >= 1, "expected isolated CLOSE to be attempted");
+  assert.ok(endCalls >= 1, "CLOSE timeout must dispose the isolated channel");
+  assert.deepEqual(await fs.promises.readFile(targetPath), payload);
+
+  // A follow-up download must open a fresh isolated channel, not reuse the timed-out one.
+  const targetPath2 = path.join(tempDir, "download-2.bin");
+  const second = await transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "download-isolated-close-timeout-2",
+      sourcePath: "/tmp/download.bin",
+      targetPath: targetPath2,
+      sourceType: "sftp",
+      targetType: "local",
+      sourceSftpId: "source",
+      totalBytes: payload.length,
+      resumable: true,
+    },
+  );
+  assert.equal(second.error, undefined, second.error);
+  assert.ok(openedChannels >= 2, `expected a new isolated channel after dispose, got ${openedChannels}`);
+  assert.deepEqual(await fs.promises.readFile(targetPath2), payload);
+});
+
 test("cancel during stalled shared sudo download OPEN settles without sftp.end()", async (t) => {
   // Codex P2 on 2c369403: disposeChannel:false made pre-OPEN abort a no-op while
   // openSftpHandle had no cancel reject, so cancel hung forever and held the lease.
