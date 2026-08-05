@@ -273,29 +273,24 @@ function createPluginHostService(options) {
       }
       return enabled;
     };
-    // Seed bindings as soon as the host service exists — before async
-    // manager.initialize() and before secret IPC can serve syncDeleteSecrets.
-    // hostBootstrap starts initialize() in the background; an early disconnect
-    // must already see retained bindings (Codex P2 on 0633d190).
+    // Live-provider seed must wait until PackageStore.recover() has restored
+    // missing plugin_versions. Construction-time seed can bind a stale owner
+    // against an incomplete catalog; post-recovery seed then skips it as
+    // existing (Codex P2 on f2b1b5d8). syncDeleteSecrets already awaits
+    // resolveManager() → package initialize, so cleanup sees the post-recovery
+    // seed without racing an early incomplete bind.
     const seedSyncBindings = () => {
       if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders !== "function") return;
       secretStore.backfillSyncProviderBindingsFromLiveProviders(
         collectInstalledSyncProviderCatalog(database),
       );
     };
-    try {
-      seedSyncBindings();
-    } catch {
-      // Best-effort; host construction must continue.
-    }
-    // PackageStore.recover() can add missing plugin_versions after construction
-    // seed; re-run after package initialize so recovered manifests count.
+    // PackageStore.recover() repopulates plugin_versions; only then promote
+    // legacy maps and seed live bindings (Codex P2 on dd7aad70 / f2b1b5d8).
     const originalPackageInitialize = packageStore.initialize.bind(packageStore);
     packageStore.initialize = async () => {
       const result = await originalPackageInitialize();
       try {
-        // Re-run legacy-map promote now that recovered package manifests are
-        // visible to the conflict checks (Codex P2 on dd7aad70).
         if (typeof database.backfillSyncProviderBindingsFromLegacySecrets === "function") {
           database.backfillSyncProviderBindingsFromLegacySecrets();
         }
