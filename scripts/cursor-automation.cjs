@@ -3200,6 +3200,18 @@ async function applyReadyForHumanHandoff({
     ...context.repo,
     issue_number: Number(issueNumber),
   });
+  const names = normalizeIssueLabelNames(issue.labels);
+  // Revalidate at apply time: a queued handoff must not undo a maintainer who
+  // already cleared the auto-close outcome and moved the issue elsewhere.
+  if (!names.some((name) => ISSUE_AUTO_CLOSE_HANDOFF_LABELS.has(name))) {
+    return {
+      issue,
+      labels: names,
+      commented: false,
+      skipped: true,
+      reason: 'auto-close handoff labels no longer present',
+    };
+  }
   return markNeedsHuman({
     github,
     context,
