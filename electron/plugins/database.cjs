@@ -902,6 +902,19 @@ class PluginDatabase {
       this.listPluginIdsWithSecretKeyPrefix("sync-credential")
         .filter((id) => typeof id === "string" && id.length > 0),
     );
+    // Same single-provider guard as live backfill: one shared sync-credential*
+    // row must not seed bindings for every historical map provider under that
+    // plugin (disconnecting a stale provider would wipe the live credentials).
+    /** @type {Map<string, Set<string>>} */
+    const providersByCredentialOwner = new Map();
+    for (const [providerId, candidates] of byProvider) {
+      for (const c of candidates) {
+        if (!credentialOwners.has(c.pluginId)) continue;
+        const set = providersByCredentialOwner.get(c.pluginId) || new Set();
+        set.add(providerId);
+        providersByCredentialOwner.set(c.pluginId, set);
+      }
+    }
     let promoted = 0;
     for (const [providerId, candidates] of byProvider) {
       // Any host row means a prior decision: active bind or explicit unbind
@@ -925,6 +938,9 @@ class PluginDatabase {
         continue;
       }
       const chosenOwner = uniqueCredentialOwners[0];
+      if ((providersByCredentialOwner.get(chosenOwner)?.size ?? 0) !== 1) {
+        continue;
+      }
       // Constructor-time map promote runs before hostService's installed-manifest
       // conflict check. Skip when another installed package would also claim this
       // provider (live nested plugin without credentials yet) so we do not bind
