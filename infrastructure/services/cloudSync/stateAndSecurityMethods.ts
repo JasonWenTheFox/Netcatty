@@ -9,8 +9,11 @@ import {
   isBuiltinCloudProvider,
   isOneDriveReauthRequiredMessage,
   providerConnectionStorageKey,
-  type ProviderConnection,
   type CloudProvider,
+  type MasterKeyConfig,
+  type ProviderConnection,
+  type SecurityState,
+  type SyncHistoryEntry,
 } from '../../../domain/sync';
 import { isPluginCloudProviderId } from '../../../domain/cloudProviderIds';
 import { createPluginSyncObjectStorage } from '../adapters/pluginSyncObjectStorage';
@@ -31,13 +34,6 @@ import {
   encryptProviderSecrets,
 } from '../../persistence/secureFieldAdapter';
 import type { CloudAdapter } from '../adapters';
-import type {
-  CloudProvider,
-  MasterKeyConfig,
-  ProviderConnection,
-  SecurityState,
-  SyncHistoryEntry,
-} from '../../../domain/sync';
 import type { SyncManagerState } from '../CloudSyncManager';
 import { getConvergentSyncLocalConfig } from '../convergentSyncConfig';
 
