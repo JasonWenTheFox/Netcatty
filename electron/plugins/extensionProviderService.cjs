@@ -40,11 +40,21 @@ const MAX_IMPORT_RECORDS = importerLimits.maxRecords;
 const MAX_IMPORT_RECORD_BYTES = importerLimits.maxRecordBytes;
 const SYNC_SECRET_CONFIG_KEYS = new Set(["password", "token", "secret", "apiKey", "accessToken"]);
 
-/** Drop known secret field names from required[] so stripped sync configs still validate. */
+/** Drop known secret / writeOnly field names from required[] so stripped sync configs still validate. */
 function schemaWithoutSyncSecretRequirements(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   if (!Array.isArray(schema.required)) return schema;
-  const required = schema.required.filter((name) => !SYNC_SECRET_CONFIG_KEYS.has(name));
+  const writeOnlyNames = new Set();
+  if (schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+    for (const [name, child] of Object.entries(schema.properties)) {
+      if (child && typeof child === "object" && !Array.isArray(child) && child.writeOnly === true) {
+        writeOnlyNames.add(name);
+      }
+    }
+  }
+  const required = schema.required.filter(
+    (name) => !SYNC_SECRET_CONFIG_KEYS.has(name) && !writeOnlyNames.has(name),
+  );
   if (required.length === schema.required.length) return schema;
   return { ...schema, required };
 }

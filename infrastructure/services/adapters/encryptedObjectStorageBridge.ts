@@ -37,6 +37,29 @@ function bytesToSyncedFile(bytes: Uint8Array): SyncedFile {
   return JSON.parse(raw) as SyncedFile;
 }
 
+/** Thrown when a conditional write is rejected (revision / precondition). */
+export class ConditionalWriteConflictError extends Error {
+  readonly code = 'conditional_write_conflict';
+
+  constructor(message = 'Encrypted object conditional write was rejected', options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ConditionalWriteConflictError';
+  }
+}
+
+export function isConditionalWriteConflictError(error: unknown): boolean {
+  if (error instanceof ConditionalWriteConflictError) return true;
+  if (!error || typeof error !== 'object') return false;
+  const maybe = error as { name?: unknown; code?: unknown; message?: unknown; data?: { pluginCode?: unknown } };
+  if (maybe.name === 'ConditionalWriteConflictError') return true;
+  if (maybe.code === 'conditional_write_conflict' || maybe.code === -32009 || maybe.code === 'failed_precondition') {
+    return true;
+  }
+  if (maybe.data?.pluginCode === 'failed_precondition') return true;
+  return typeof maybe.message === 'string'
+    && /failed[_ ]precondition|expectedRevision|revision mismatch|conditional write/i.test(maybe.message);
+}
+
 /**
  * Adapt a legacy CloudAdapter into EncryptedObjectStorage.
  * Uses a single default object key matching the historical vault file name.
@@ -257,12 +280,23 @@ export function encryptedObjectStorageAsCloudAdapter(
           );
         }
         const conditional = capabilities?.conditionalWrites === true;
-        const writeResult = await storage.writeObject(objectKey, bytes, {
-          ...(conditional && lastRevision !== undefined
-            ? { expectedRevision: lastRevision }
-            : {}),
-          signal: uploadOptions?.signal,
-        });
+        let writeResult: EncryptedObjectWriteResult;
+        try {
+          writeResult = await storage.writeObject(objectKey, bytes, {
+            ...(conditional && lastRevision !== undefined
+              ? { expectedRevision: lastRevision }
+              : {}),
+            signal: uploadOptions?.signal,
+          });
+        } catch (writeError) {
+          if (conditional && isConditionalWriteConflictError(writeError)) {
+            throw new ConditionalWriteConflictError(
+              writeError instanceof Error ? writeError.message : String(writeError),
+              { cause: writeError },
+            );
+          }
+          throw writeError;
+        }
         if (options.assumeVerifiedWrites === true) {
           // Backing adapter already verified (e.g. WebDAV pad+verify). Still honor
           // maxObjectBytes above and refresh revision from the write result.

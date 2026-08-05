@@ -745,6 +745,20 @@ class PluginDatabase {
       .run(pluginId, key);
   }
 
+  /** Delete all secrets whose key equals prefix or starts with `${prefix}:`. */
+  deleteSecretsByKeyPrefix(pluginId, prefix) {
+    const result = this.db.prepare(`
+      DELETE FROM plugin_secrets
+      WHERE plugin_id = ?
+        AND (key = ? OR key LIKE ? ESCAPE '\\')
+    `).run(
+      pluginId,
+      prefix,
+      `${String(prefix).replace(/[%_\\]/g, (ch) => `\\${ch}`)}:%`,
+    );
+    return Number(result?.changes) || 0;
+  }
+
   recordSecurityAudit(pluginId, event, details) {
     let detailsJson = JSON.stringify(details ?? {});
     const originalBytes = Buffer.byteLength(detailsJson);

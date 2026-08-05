@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { planPluginSyncCredential, pluginSyncSecretStoreKeys, syncConfigurationSchemaWithoutSecretRequirements } from './pluginSyncCredential.ts';
+import {
+  planPluginSyncCredential,
+  pluginSyncSecretStoreKeys,
+  syncConfigurationSchemaWithoutSecretRequirements,
+} from './pluginSyncCredential.ts';
 
 describe('planPluginSyncCredential', () => {
   it('extracts all secret keys and strips them from configuration', () => {
@@ -24,6 +28,30 @@ describe('planPluginSyncCredential', () => {
       endpoint: 'https://dav.example',
       username: 'alice',
     });
+  });
+
+  it('extracts writeOnly schema fields that are not well-known names', () => {
+    const plan = planPluginSyncCredential(
+      {
+        endpoint: 'https://dav.example',
+        appPassword: 'hidden',
+      },
+      {
+        configurationSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            endpoint: { type: 'string' },
+            appPassword: { type: 'string', writeOnly: true },
+          },
+          required: ['endpoint', 'appPassword'],
+        },
+      },
+    );
+    assert.equal(plan.secrets.length, 1);
+    assert.equal(plan.secrets[0]?.key, 'appPassword');
+    assert.equal(plan.secrets[0]?.secretKey, 'sync-credential:appPassword');
+    assert.deepEqual(plan.configuration, { endpoint: 'https://dav.example' });
   });
 
   it('passes through non-object configs unchanged', () => {
@@ -50,15 +78,16 @@ describe('planPluginSyncCredential', () => {
 });
 
 describe('syncConfigurationSchemaWithoutSecretRequirements', () => {
-  it('drops known secret keys from required', () => {
+  it('drops known secret keys and writeOnly fields from required', () => {
     const schema = {
       type: 'object',
       additionalProperties: false,
       properties: {
         endpoint: { type: 'string' },
         password: { type: 'string' },
+        appPassword: { type: 'string', writeOnly: true },
       },
-      required: ['endpoint', 'password'],
+      required: ['endpoint', 'password', 'appPassword'],
     };
     assert.deepEqual(syncConfigurationSchemaWithoutSecretRequirements(schema), {
       ...schema,
@@ -71,5 +100,6 @@ describe('pluginSyncSecretStoreKeys', () => {
   it('includes primary and secondary credential keys', () => {
     assert.ok(pluginSyncSecretStoreKeys().includes('sync-credential'));
     assert.ok(pluginSyncSecretStoreKeys().includes('sync-credential:token'));
+    assert.ok(pluginSyncSecretStoreKeys(['appPassword']).includes('sync-credential:appPassword'));
   });
 });

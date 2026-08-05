@@ -9,6 +9,8 @@ import {
   isBuiltinCloudProvider,
   isOneDriveReauthRequiredMessage,
   providerConnectionStorageKey,
+  type ProviderConnection,
+  type CloudProvider,
 } from '../../../domain/sync';
 import { isPluginCloudProviderId } from '../../../domain/cloudProviderIds';
 import { createPluginSyncObjectStorage } from '../adapters/pluginSyncObjectStorage';
@@ -110,6 +112,7 @@ export function loadInitialStateImpl(this: any): SyncManagerState {
         this.providerAuthRestoreState[pluginProviderId] = null;
       }
     }
+    enforceLegacySingleProviderConnected(providers);
 
     // Save device ID if new
     this.saveToStorage(SYNC_STORAGE_KEYS.DEVICE_ID, deviceId);
@@ -164,6 +167,41 @@ export function loadProviderConnectionImpl(this: any,provider: CloudProvider): P
       status, // Must be last to override any stored 'syncing' or 'error' status
     } as ProviderConnection;
   }
+
+/**
+ * Legacy (non-convergent) mode allows only one ready provider. After restart,
+ * retained plugin configs can race with a builtin the user switched to — keep
+ * config but force extras offline (same policy as setAvailablePluginSyncProviderIds).
+ */
+export function enforceLegacySingleProviderConnected(
+  providers: Record<string, ProviderConnection>,
+): void {
+  let convergentActive = false;
+  try {
+    convergentActive = getConvergentSyncLocalConfig().initialized === true;
+  } catch {
+    convergentActive = false;
+  }
+  if (convergentActive) return;
+
+  const readyIds = Object.entries(providers)
+    .filter(([, conn]) => conn != null && (conn.status === 'connected' || conn.status === 'syncing'))
+    .map(([id]) => id);
+  if (readyIds.length <= 1) return;
+
+  // Prefer a builtin (stable UI order), else first ready id.
+  const preferred = BUILTIN_CLOUD_PROVIDERS.find((id) => readyIds.includes(id))
+    ?? readyIds[0]!;
+  for (const id of readyIds) {
+    if (id === preferred) continue;
+    const conn = providers[id];
+    if (!conn) continue;
+    providers[id] = {
+      ...conn,
+      status: 'disconnected',
+    };
+  }
+}
 
 export function listRegisteredPluginProviderIdsImpl(this: any): string[] {
   const raw = this.loadFromStorage<unknown>(SYNC_STORAGE_KEYS.PLUGIN_CLOUD_PROVIDERS);

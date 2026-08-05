@@ -167,7 +167,10 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
       if (disconnectOtherProviders) {
         await disconnectOtherProviders(providerId as CloudProvider);
       }
-      const credentialPlan = planPluginSyncCredential(configuration);
+      const credentialPlan = planPluginSyncCredential(configuration, {
+        configurationSchema: pluginSyncProviders.find((entry) => entry.id === providerId)
+          ?.configurationSchema,
+      });
       let credential: { kind: 'secret'; id: string; key: string } | undefined;
       if (credentialPlan.secrets.length > 0) {
         const { putPluginSyncSecret } = await import(

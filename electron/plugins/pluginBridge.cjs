@@ -1077,15 +1077,22 @@ function registerPluginBridge(ipcMain, options) {
     }
     const keys = Array.isArray(payload?.keys) && payload.keys.length > 0
       ? payload.keys
-      : [
-        "sync-credential",
-        "sync-credential:token",
-        "sync-credential:secret",
-        "sync-credential:apiKey",
-        "sync-credential:accessToken",
-      ];
+      : null;
+    if (!keys) {
+      // Wipe every sync-credential* key (well-known + schema writeOnly fields).
+      if (typeof secretStore.deleteByKeyPrefix === "function") {
+        const deleted = secretStore.deleteByKeyPrefix(match.pluginId, "sync-credential");
+        return { deleted: Number(deleted) || 0 };
+      }
+    }
     let deleted = 0;
-    for (const rawKey of keys) {
+    for (const rawKey of keys ?? [
+      "sync-credential",
+      "sync-credential:token",
+      "sync-credential:secret",
+      "sync-credential:apiKey",
+      "sync-credential:accessToken",
+    ]) {
       if (typeof rawKey !== "string" || rawKey.length < 1) continue;
       const key = assertSecretKey(rawKey);
       try {

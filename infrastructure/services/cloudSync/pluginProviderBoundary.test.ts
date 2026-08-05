@@ -5,6 +5,7 @@ import { SYNC_STORAGE_KEYS } from '../../../domain/sync';
 import type { EncryptedObjectStorage } from '../../../domain/encryptedObjectStorage';
 import { DEFAULT_ENCRYPTED_SYNC_OBJECT_KEY } from '../../../domain/encryptedObjectStorage';
 import {
+  enforceLegacySingleProviderConnected,
   getConnectedAdapterImpl,
   listAvailablePluginSyncProviderIdsImpl,
   listRegisteredPluginProviderIdsImpl,
@@ -419,5 +420,23 @@ describe('createAdapter WebDAV production path', () => {
     assert.equal(a1.resourceId, '/netcatty-vault.json');
     const a2 = await getConnectedAdapterImpl.call(manager, 'webdav');
     assert.equal(a1, a2, 'must reuse cached adapter when isAuthenticated is true');
+  });
+
+  it('enforceLegacySingleProviderConnected keeps builtin and disconnects plugin', () => {
+    const providers: Record<string, ProviderConnection> = {
+      github: { provider: 'github', status: 'connected' },
+      'com.example.backup.sync': {
+        provider: 'com.example.backup.sync',
+        status: 'connected',
+        config: { endpoint: 'https://example.test' },
+      },
+    };
+    enforceLegacySingleProviderConnected(providers);
+    assert.equal(providers.github?.status, 'connected');
+    assert.equal(providers['com.example.backup.sync']?.status, 'disconnected');
+    assert.deepEqual(
+      providers['com.example.backup.sync']?.config,
+      { endpoint: 'https://example.test' },
+    );
   });
 });
