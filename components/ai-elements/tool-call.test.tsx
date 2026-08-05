@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   approvalArgsHaveExtraContext,
@@ -10,6 +13,11 @@ import {
   MAX_TOOL_COMMAND_TOOLTIP_CHARS,
   truncateToolCommandTooltip,
 } from './tool-call';
+
+const toolCallSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'tool-call.tsx'),
+  'utf8',
+);
 
 // Codex (SDK) emits command_execution.command as a STRING that wraps the real
 // command in `<shell> -lc '<full>'`. Under Skills + CLI the real command is a
@@ -181,4 +189,33 @@ test('isNestedInteractiveApprovalTarget ignores Enter on Copy/Expand review cont
   assert.equal(isNestedInteractiveApprovalTarget(plainSpan, card), false);
   assert.equal(isNestedInteractiveApprovalTarget(card, card), false);
   assert.equal(isNestedInteractiveApprovalTarget(null, card), false);
+});
+
+// Pending approvals with no display command (Codex file-change/permissions,
+// write tools with JSON-only args) only render the overflow args <pre>. Wheel /
+// trackpad scroll must re-arm idle the same way the command block does.
+test('args overflow block re-arms review timers on scroll/wheel while pending', () => {
+  assert.match(
+    toolCallSource,
+    /JSON\.stringify\(args,\s*null,\s*2\)[\s\S]{0,200}?<\/pre>/,
+  );
+  // Both review surfaces (command + args) wire markReviewing for continuous scroll.
+  const markReviewingScrollBindings = toolCallSource.match(
+    /onScroll=\{(?:isPendingApproval \? markReviewing : undefined|markReviewing)\}/g,
+  );
+  const markReviewingWheelBindings = toolCallSource.match(
+    /onWheel=\{(?:isPendingApproval \? markReviewing : undefined|markReviewing)\}/g,
+  );
+  assert.ok(
+    markReviewingScrollBindings && markReviewingScrollBindings.length >= 2,
+    'command and args overflow blocks must both call markReviewing onScroll',
+  );
+  assert.ok(
+    markReviewingWheelBindings && markReviewingWheelBindings.length >= 2,
+    'command and args overflow blocks must both call markReviewing onWheel',
+  );
+  assert.match(
+    toolCallSource,
+    /onScroll=\{isPendingApproval \? markReviewing : undefined\}[\s\S]{0,80}onWheel=\{isPendingApproval \? markReviewing : undefined\}[\s\S]{0,80}JSON\.stringify\(args/,
+  );
 });

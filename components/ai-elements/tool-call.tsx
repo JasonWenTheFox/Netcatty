@@ -609,7 +609,16 @@ export const ToolCall = ({
               <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/30 mb-1">
                 {showArgsAlongsideCommand ? t('ai.chat.approvalInvocation') : 'Arguments'}
               </div>
-              <pre className="max-h-64 overflow-auto text-[11px] font-mono text-muted-foreground/50 whitespace-pre [overflow-wrap:normal]">
+              {/*
+                Args-only approvals (Codex file-change/permissions, write tools with
+                JSON args) have no command pre — wheel/trackpad scroll must re-arm
+                idle the same way the command overflow block does.
+              */}
+              <pre
+                className="max-h-64 overflow-auto text-[11px] font-mono text-muted-foreground/50 whitespace-pre [overflow-wrap:normal]"
+                onScroll={isPendingApproval ? markReviewing : undefined}
+                onWheel={isPendingApproval ? markReviewing : undefined}
+              >
                 {JSON.stringify(args, null, 2)}
               </pre>
             </div>
