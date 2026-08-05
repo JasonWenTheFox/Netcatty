@@ -239,8 +239,10 @@ class PluginSecretStore {
         .filter((id) => typeof id === "string" && id.length > 0),
     );
     if (credentialOwners.size === 0) return 0;
-    /** @type {Map<string, Set<string>>} */
+    /** @type {Map<string, Set<string>>} pluginId -> provider ids it declares */
     const providersByPlugin = new Map();
+    /** @type {Map<string, Set<string>>} providerId -> plugins claiming it */
+    const pluginsByProvider = new Map();
     for (const entry of providers) {
       const pluginId = entry?.pluginId;
       const providerId = entry?.provider?.id ?? entry?.id;
@@ -251,11 +253,20 @@ class PluginSecretStore {
       const set = providersByPlugin.get(pluginId) || new Set();
       set.add(providerId);
       providersByPlugin.set(pluginId, set);
+      const claimants = pluginsByProvider.get(providerId) || new Set();
+      claimants.add(pluginId);
+      pluginsByProvider.set(providerId, claimants);
     }
     let promoted = 0;
     for (const [pluginId, providerIds] of providersByPlugin) {
       if (providerIds.size !== 1) continue;
       const providerId = [...providerIds][0];
+      // Two credential-backed plugins can both declare the same provider via
+      // nested namespaces (legacy disabled parent + live child). Binding the
+      // first writer would make a later missing-provider disconnect delete the
+      // wrong sync-credential* rows. Skip any cross-plugin claim conflict.
+      const claimants = pluginsByProvider.get(providerId);
+      if (!claimants || claimants.size !== 1) continue;
       // Skip active binds and explicit-unbind tombstones alike.
       if (typeof this.database.getSyncProviderBinding === "function"
         && this.database.getSyncProviderBinding(providerId)) {

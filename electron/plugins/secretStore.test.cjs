@@ -539,6 +539,16 @@ test("live provider backfill seeds bindings for v2 credential-only upgrades", (c
   );
   assert.equal(store.resolveSyncProviderPlugin("com.multi.old"), undefined);
   assert.equal(store.resolveSyncProviderPlugin("com.multi.new"), undefined);
+  // Cross-plugin claim on the same providerId must not bind the first writer.
+  store.set("com.example.sync", "sync-credential", "nested");
+  assert.equal(
+    store.backfillSyncProviderBindingsFromLiveProviders([
+      { pluginId: "com.example", provider: { id: "com.example.sync.foo" } },
+      { pluginId: "com.example.sync", provider: { id: "com.example.sync.foo" } },
+    ]),
+    0,
+  );
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync.foo"), undefined);
   database.close();
 });
 
