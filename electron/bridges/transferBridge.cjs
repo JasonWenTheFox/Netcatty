@@ -2373,7 +2373,61 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
   if (!pathGate) return runOpen();
   // Wait for any prior truncating OPEN on this path before issuing ours.
-  return pathGate.waitForPrior.then(runOpen, runOpen);
+  // The wait must be cancelable: a cancelled transfer must release its gate
+  // entry and settle drain without waiting forever on a stuck prior OPEN
+  // (lease/admission hang + blocking later same-path attempts).
+  return new Promise((resolve, reject) => {
+    let waiting = true;
+    const previousAbort = transfer.abort;
+
+    const abandonGateWait = (error) => {
+      if (!waiting) return;
+      waiting = false;
+      if (transfer.abort === wrappedAbort) {
+        transfer.abort = previousAbort;
+      }
+      pathGate.release();
+      if (resolveSharedWriteDrain) {
+        const resolveDrain = resolveSharedWriteDrain;
+        resolveSharedWriteDrain = null;
+        resolveDrain();
+      }
+      reject(error);
+    };
+
+    const wrappedAbort = () => {
+      try { previousAbort?.(); } catch { /* ignore */ }
+      transfer.cancelled = true;
+      abandonGateWait(new Error("Transfer cancelled"));
+    };
+    transfer.abort = wrappedAbort;
+
+    if (transfer.cancelled) {
+      abandonGateWait(new Error("Transfer cancelled"));
+      return;
+    }
+
+    const startOpen = () => {
+      if (!waiting) return;
+      waiting = false;
+      if (transfer.abort === wrappedAbort) {
+        transfer.abort = previousAbort;
+      }
+      if (transfer.cancelled) {
+        pathGate.release();
+        if (resolveSharedWriteDrain) {
+          const resolveDrain = resolveSharedWriteDrain;
+          resolveSharedWriteDrain = null;
+          resolveDrain();
+        }
+        reject(new Error("Transfer cancelled"));
+        return;
+      }
+      runOpen().then(resolve, reject);
+    };
+
+    pathGate.waitForPrior.then(startOpen, startOpen);
+  });
 }
 
 function closeSftpHandle(sftp, handle) {
