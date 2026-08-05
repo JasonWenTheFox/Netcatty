@@ -4330,8 +4330,9 @@ test("shared upload OPEN drain force-completes when cancel has no OPEN callback"
 
 test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
   // Codex P2 on af9cef2e / 0cda4a39 / cd57d960: cancel settle + drain
-  // force-complete must not hang, and a late truncating OPEN after that must
-  // close + unlink so stage cleanup cannot leave a recreate orphan.
+  // force-complete must not hang, and a late truncating OPEN on a generated
+  // stage after that must close + unlink so stage cleanup cannot leave a
+  // recreate orphan.
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-drain-timeout-"));
   t.after(async () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -4440,6 +4441,143 @@ test("shared upload OPEN drain survives cancel settle timeout", async (t) => {
     false,
     `expected no orphan staged upload, remaining=${[...remoteFiles.keys()].join(",")}`,
   );
+});
+
+test("in-place shared upload cancel does not unlink final target after late OPEN", async (t) => {
+  // Codex P1 on a9f748c8: cancel+truncating "w" unlinked filePath unconditionally,
+  // so late OPEN on an in-place/symlink destination could delete the final target.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-inplace-open-cancel-nounlink-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 53));
+  const targetPath = "/tmp/inplace-link.bin";
+  const existingPayload = Buffer.from("keep-me");
+
+  const remoteFiles = new Map([[targetPath, Buffer.from(existingPayload)]]);
+  const eventLog = [];
+  let releaseOpen = null;
+  let endCalls = 0;
+  const sharedSftp = createFastSftp({
+    lstat(remotePath, callback) {
+      const key = String(remotePath);
+      if (key.includes(".netcatty-backup-") || key.includes(".netcatty-upload-")) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        callback(error);
+        return;
+      }
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        callback(error);
+        return;
+      }
+      callback(null, {
+        size: remoteFiles.get(key).length,
+        mode: 0o120777,
+        isDirectory: () => false,
+        isSymbolicLink: () => true,
+      });
+    },
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      const key = String(remotePath);
+      assert.equal(key, targetPath, "in-place upload must OPEN the final target");
+      releaseOpen = () => {
+        remoteFiles.set(key, Buffer.alloc(0));
+        eventLog.push(`open-created:${key}`);
+        callback(null, Buffer.from(`handle:${key}`));
+      };
+    },
+    write() {
+      throw new Error("WRITE must not run after cancel during OPEN");
+    },
+    close(_handle, callback) {
+      eventLog.push("close");
+      callback(null);
+    },
+    unlink(remotePath, callback) {
+      const key = String(remotePath);
+      eventLog.push(`unlink:${key}`);
+      remoteFiles.delete(key);
+      callback(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      const key = String(remotePath);
+      eventLog.push(`delete:${key}`);
+      remoteFiles.delete(key);
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "upload-shared-inplace-open-cancel-nounlink";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+
+  const ready = await waitUntil(() => typeof releaseOpen === "function", 2000);
+  assert.ok(ready, "expected shared in-place write OPEN to stall");
+
+  await transferBridge.cancelTransfer(null, { transferId });
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("transfer hung after in-place cancel OPEN drain force-complete")), 5500);
+    }),
+  ]);
+  assert.match(result.error || "", /cancel/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+
+  releaseOpen?.();
+  const lateClose = await waitUntil(() => eventLog.includes("close"), 2000);
+  assert.ok(lateClose, `expected late OPEN close, log=${eventLog.join(",")}`);
+  assert.equal(
+    eventLog.some((entry) => entry.startsWith("unlink:")),
+    false,
+    `in-place cancel must not unlink final target, log=${eventLog.join(",")}`,
+  );
+  assert.equal(
+    eventLog.some((entry) => entry === `delete:${targetPath}`),
+    false,
+    `in-place cancel must not delete final target, log=${eventLog.join(",")}`,
+  );
+  assert.ok(remoteFiles.has(targetPath), "final in-place target must still exist after cancel");
 });
 
 test("shared upload OPEN drain survives channel error before OPEN callback", async (t) => {

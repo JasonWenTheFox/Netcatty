@@ -1555,7 +1555,9 @@ async function uploadFile(
   sendProgress,
   encoding = "utf-8",
   onBytesCommitted = null,
+  options = {},
 ) {
+  const generatedStagePath = options.generatedStagePath === true;
   if (isScpModeClient(client)) {
     transfer.pauseSupported = false;
     transfer.pauseUnavailableReason = "Pause is unavailable for SCP transfers";
@@ -1738,7 +1740,7 @@ async function uploadFile(
           fileSize,
           transfer,
           sendProgress,
-          { disposeChannel: true, onBytesCommitted },
+          { disposeChannel: true, onBytesCommitted, generatedStagePath },
         );
         concurrentIsolatedOk = true;
       } catch (err) {
@@ -1881,7 +1883,7 @@ async function uploadFile(
         fileSize,
         transfer,
         sendProgress,
-        { disposeChannel: false, onBytesCommitted },
+        { disposeChannel: false, onBytesCommitted, generatedStagePath },
       );
       sharedOk = true;
     } catch (err) {
@@ -1936,20 +1938,25 @@ async function uploadFile(
  * the remote stage. Channel-error and cancel-settle paths that never receive an
  * OPEN callback arm a short drain force-complete so a dead/stalled channel
  * cannot hold the transfer and SFTP lease forever. A late truncating `"w"` OPEN
- * after cancel still closes the handle and best-effort unlinks the path so
- * stage cleanup cannot race a recreate/orphan.
+ * after cancel still closes the handle and, when the path is an explicit
+ * generated stage (`generatedStagePath`), best-effort unlinks it so stage
+ * cleanup cannot race a recreate/orphan. In-place final targets are never
+ * unlinked here.
  *
- * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
+ * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null, generatedStagePath?: boolean }} [options]
  */
 function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}) {
   const disposeChannel = options.disposeChannel !== false;
   const abortChannel = typeof options.abortChannel === "function"
     ? options.abortChannel
     : null;
+  // Match sftpBridge.runFastPutOnChannel: only unlink planner-generated stages.
+  const generatedStagePath = options.generatedStagePath === true;
   // ssh2 string flags: "r" is read-only; anything else can create/truncate.
   const isWriteOpen = String(flags ?? "r") !== "r";
   const isTruncatingOpen = String(flags ?? "r") === "w";
   const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
+  const shouldUnlinkOnCancelOpen = generatedStagePath && isTruncatingOpen;
   let resolveSharedWriteDrain = null;
   if (trackSharedWriteDrain) {
     transfer.sharedWriteOpenDrain = new Promise((resolve) => {
@@ -2001,12 +2008,13 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     });
 
     // Late shared write OPEN after settle: close handle, and on cancel +
-    // truncating "w" also unlink so a force-completed drain / stage delete
-    // cannot leave a recreate orphan (Codex P2 on 0cda4a39 / cd57d960).
+    // generated truncating stage also unlink so a force-completed drain /
+    // stage delete cannot leave a recreate orphan (Codex P2 on 0cda4a39 /
+    // cd57d960). Never unlink in-place final targets (Codex P1 on a9f748c8).
     const finishLateSharedWriteOpen = (handle) => {
       const afterClose = () => {
         const finish = () => completeSharedWriteDrain();
-        if (transfer.cancelled && isTruncatingOpen) {
+        if (transfer.cancelled && shouldUnlinkOnCancelOpen) {
           unlinkSharedWritePathBestEffort().then(finish, finish);
           return;
         }
@@ -2038,7 +2046,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       // Shared write OPEN can truncate/create the remote path. A settle timeout
       // unblocks the transfer UX; sharedWriteOpenDrain stays pending until the
       // OPEN callback finishes (or drain force-complete) so cleanup usually
-      // waits. Late truncating opens still unlink after close if cancel won.
+      // waits. Late truncating generated stages still unlink after close if
+      // cancel won; in-place finals only close.
       if (!disposeChannel && isWriteOpen && !settled) {
         try { abortChannel?.(); } catch { /* ignore */ }
         if (!openDrainTimer) {
@@ -2101,9 +2110,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           };
           if (handle && !disposeChannel) {
             // Close before settle/drain so shared write cleanup runs after the
-            // truncating OPEN handle is released. Cancel + "w": unlink too so
-            // a staged recreate cannot survive if cleanup already raced.
-            if (isTruncatingOpen) {
+            // truncating OPEN handle is released. Cancel + generated stage
+            // "w": unlink too so a staged recreate cannot survive if cleanup
+            // already raced. In-place finals are close-only.
+            if (shouldUnlinkOnCancelOpen) {
               closeSftpHandle(sftp, handle)
                 .catch(() => {})
                 .then(() => unlinkSharedWritePathBestEffort())
@@ -2887,9 +2897,11 @@ async function runPausableConcurrentRanges({
 /**
  * Pipelined SFTP WRITE upload (same fanout as ssh2 fastPut).
  *
- * @param {{ disposeChannel?: boolean, onBytesCommitted?: (() => void) | null }} [options]
+ * @param {{ disposeChannel?: boolean, onBytesCommitted?: (() => void) | null, generatedStagePath?: boolean }} [options]
  *   disposeChannel — when true (isolated channel), end the SFTP subsystem on
  *   cancel/finish. When false (shared browse session), never call sftp.end().
+ *   generatedStagePath — when true, cancel may best-effort unlink this path
+ *   after a truncating OPEN; in-place finals must leave this false.
  */
 async function uploadFileConcurrent(
   localPath,
@@ -2901,6 +2913,7 @@ async function uploadFileConcurrent(
   options = {},
 ) {
   const disposeChannel = options.disposeChannel !== false;
+  const generatedStagePath = options.generatedStagePath === true;
   const checkpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
   let channelError = null;
   const onChannelError = (error) => {
@@ -2970,7 +2983,7 @@ async function uploadFileConcurrent(
       remotePath,
       checkpoint > 0 ? "r+" : "w",
       transfer,
-      { disposeChannel, abortChannel },
+      { disposeChannel, abortChannel, generatedStagePath },
     );
     if (channelError) throw channelError;
     if (transfer.cancelled) throw new Error("Transfer cancelled");
@@ -3034,8 +3047,8 @@ async function uploadFileConcurrent(
     // runRemoteUploadTransaction cannot clean up the stage before a late
     // truncating OPEN finishes (Codex P2 on 747847e7). openSftpHandleForTransfer
     // force-completes the drain if the OPEN callback never arrives; late cancel
-    // truncating opens also unlink after close so a force-complete cannot
-    // orphan a recreated stage.
+    // truncating opens on generated stages also unlink after close so a
+    // force-complete cannot orphan a recreated stage.
     const sharedWriteOpenDrain = transfer.sharedWriteOpenDrain;
     if (sharedWriteOpenDrain) {
       await sharedWriteOpenDrain.catch(() => {});
@@ -4319,6 +4332,7 @@ async function startTransferNow(event, payload, onProgress) {
             sendProgress,
             resolvedTargetEncoding,
             usesStage ? null : () => { transfer.completionCommitted = true; },
+            { generatedStagePath: usesStage },
           );
         },
       });
@@ -4747,6 +4761,7 @@ async function startTransferNow(event, payload, onProgress) {
               uploadProgress,
               resolvedTargetEncoding,
               usesStage ? null : () => { transfer.completionCommitted = true; },
+              { generatedStagePath: usesStage },
             );
           },
         });
