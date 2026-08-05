@@ -285,11 +285,10 @@ function createPluginHostService(options) {
           // Best-effort; startup must continue.
         }
       }
-      const result = await originalInitialize();
-      // Schema upgrades leave bindings empty until the next put. Seed from
-      // every installed package version manifest (active and inactive) when
-      // those plugins still hold sync-credential* rows. Active-only listing
-      // misses providers removed/renamed on upgrade while credentials remain.
+      // Seed bindings BEFORE startup activation. syncDeleteSecrets can run on
+      // the secret IPC path without waiting for manager.initialize(); if we
+      // only backfill after originalInitialize(), an early disconnect may see
+      // no binding and leave orphan sync-credential* rows (Codex P2).
       try {
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
           secretStore.backfillSyncProviderBindingsFromLiveProviders(
@@ -299,7 +298,7 @@ function createPluginHostService(options) {
       } catch {
         // Best-effort; startup must continue.
       }
-      return result;
+      return originalInitialize();
     };
     const terminalDataPipelineService = options.electron.MessageChannelMain
       ? new PluginTerminalDataPipelineService({
