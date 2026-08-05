@@ -2529,10 +2529,49 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     const startOpen = () => {
       if (!waiting) return;
       waiting = false;
+      // Keep cancel + channel-error wiring active through afterPathGate. A hung
+      // post-gate stage stat must still yield to cancel/channel death so the
+      // path gate and lease are not pinned forever (Codex P2 on f642580d).
+      let afterGateDone = false;
+      const releaseGateAndDrain = () => {
+        pathGate.release();
+        if (resolveSharedWriteDrain) {
+          const resolveDrain = resolveSharedWriteDrain;
+          resolveSharedWriteDrain = null;
+          resolveDrain();
+        }
+      };
+      const onChannelErrorDuringAfterGate = (error) => {
+        const err = error instanceof Error
+          ? error
+          : new Error(String(error?.message || error || "SFTP channel error"));
+        failAfterGate(err);
+      };
+      const detachAfterGateHooks = () => {
+        detachChannelErrorWhileWaiting();
+        try { sftp.removeListener?.("error", onChannelErrorDuringAfterGate); } catch { /* ignore */ }
+        if (transfer.abort === abortDuringAfterGate) {
+          transfer.abort = previousAbort;
+        }
+      };
+      const failAfterGate = (error) => {
+        if (afterGateDone) return;
+        afterGateDone = true;
+        detachAfterGateHooks();
+        releaseGateAndDrain();
+        reject(error instanceof Error ? error : new Error(String(error?.message || error)));
+      };
+      const abortDuringAfterGate = () => {
+        try { previousAbort?.(); } catch { /* ignore */ }
+        transfer.cancelled = true;
+        failAfterGate(new Error("Transfer cancelled"));
+      };
+
+      // Swap gate-wait channel listener for the after-gate one; keep cancel live.
       detachChannelErrorWhileWaiting();
-      if (transfer.abort === wrappedAbort) {
-        transfer.abort = previousAbort;
-      }
+      transfer.abort = abortDuringAfterGate;
+      try { sftp.on?.("error", onChannelErrorDuringAfterGate); } catch { /* ignore */ }
+
       // After waiting on a prior OPEN, re-validate resume checkpoints so a
       // truncating OPEN that landed while we waited cannot leave us writing
       // past a wiped stage (Codex P2 on 294b7a4b).
@@ -2540,26 +2579,17 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         ? Promise.resolve().then(() => options.afterPathGate())
         : Promise.resolve();
       afterGate.then(() => {
+        if (afterGateDone) return;
         if (transfer.cancelled) {
-          // Prior has resolved (or never existed); safe to release our gate now.
-          pathGate.release();
-          if (resolveSharedWriteDrain) {
-            const resolveDrain = resolveSharedWriteDrain;
-            resolveSharedWriteDrain = null;
-            resolveDrain();
-          }
-          reject(new Error("Transfer cancelled"));
+          failAfterGate(new Error("Transfer cancelled"));
           return;
         }
+        afterGateDone = true;
+        // Hand off to runOpen: drop after-gate hooks so OPEN owns abort/error.
+        detachAfterGateHooks();
         runOpen().then(resolve, reject);
       }, (err) => {
-        pathGate.release();
-        if (resolveSharedWriteDrain) {
-          const resolveDrain = resolveSharedWriteDrain;
-          resolveSharedWriteDrain = null;
-          resolveDrain();
-        }
-        reject(err instanceof Error ? err : new Error(String(err?.message || err)));
+        failAfterGate(err);
       });
     };
 
