@@ -184,10 +184,9 @@ class PluginSecretStore {
       throw new TypeError("Plugin id is invalid");
     }
     assertSecretKey(providerId);
-    if (
-      providerId !== pluginId
-      && !providerId.startsWith(`${pluginId}.`)
-    ) {
+    // Contribution provider ids live under the owning plugin namespace
+    // (`pluginId.`…); they are never equal to the plugin id itself.
+    if (!providerId.startsWith(`${pluginId}.`)) {
       throw new TypeError("Sync provider id is outside the plugin namespace");
     }
     if (typeof this.database.upsertSyncProviderBinding !== "function") {
@@ -204,7 +203,7 @@ class PluginSecretStore {
       if (
         typeof pluginId === "string"
         && pluginId.length > 0
-        && (providerId === pluginId || providerId.startsWith(`${pluginId}.`))
+        && providerId.startsWith(`${pluginId}.`)
       ) {
         return pluginId;
       }

@@ -526,6 +526,8 @@ test("inferPluginIdForSyncProvider prefers the longest namespace match with sync
     ["com.example", "sync-credential"],
     ["com.example.backup", "sync-credential"],
     ["com.other", "sync-credential"],
+    // A plugin whose id equals another provider id must not win inference.
+    ["com.example.sync", "sync-credential"],
   ]) {
     database.db.prepare(`
       INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
@@ -535,6 +537,11 @@ test("inferPluginIdForSyncProvider prefers the longest namespace match with sync
   assert.equal(
     database.inferPluginIdForSyncProvider("com.example.backup.sync"),
     "com.example.backup",
+  );
+  assert.equal(
+    database.inferPluginIdForSyncProvider("com.example.sync"),
+    "com.example",
+    "exact pluginId===providerId must not beat the owning plugin namespace",
   );
   assert.equal(database.inferPluginIdForSyncProvider("com.other.cloud"), "com.other");
   assert.equal(database.inferPluginIdForSyncProvider("com.missing.sync"), undefined);

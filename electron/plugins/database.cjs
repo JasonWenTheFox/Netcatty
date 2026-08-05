@@ -858,7 +858,7 @@ class PluginDatabase {
       if (!key.startsWith(legacyPrefix)) continue;
       const providerId = key.slice(legacyPrefix.length);
       if (!providerId || providerId.includes("\0")) continue;
-      if (providerId !== pluginId && !providerId.startsWith(`${pluginId}.`)) {
+      if (!providerId.startsWith(`${pluginId}.`)) {
         continue;
       }
       this.upsertSyncProviderBinding(providerId, pluginId);
@@ -871,7 +871,9 @@ class PluginDatabase {
   /**
    * Infer which plugin owns a sync provider from existing sync-credential*
    * rows when no binding exists yet (schema upgrade / pre-binding installs).
-   * Prefers the longest plugin id that is a namespace prefix of providerId.
+   * Prefers the longest plugin id whose `pluginId.` namespace prefixes providerId.
+   * Exact pluginId===providerId is not ownership: provider contribution ids live
+   * under the owning plugin namespace, and another plugin may share that id.
    */
   inferPluginIdForSyncProvider(providerId) {
     if (typeof providerId !== "string" || providerId.length < 1) return undefined;
@@ -879,7 +881,7 @@ class PluginDatabase {
     const matches = pluginIds.filter((pluginId) => (
       typeof pluginId === "string"
       && pluginId.length > 0
-      && (providerId === pluginId || providerId.startsWith(`${pluginId}.`))
+      && providerId.startsWith(`${pluginId}.`)
     ));
     if (matches.length === 0) return undefined;
     matches.sort((a, b) => b.length - a.length);
