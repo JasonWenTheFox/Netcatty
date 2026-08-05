@@ -227,10 +227,27 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
       c.secretAccessKey = (await encryptField(c.secretAccessKey)) ?? "";
       c.sessionToken = await encryptField(c.sessionToken);
       out.config = c;
-    } else if (!isBuiltin && !isPluginConfigEnvelope(out.config)) {
-      // Seal any JSON shape (including objects that happen to contain a key
-      // named like a legacy envelope marker) as one opaque blob.
-      const sealed = await encryptField(JSON.stringify(out.config));
+    } else if (!isBuiltin) {
+      // Always (re)seal opaque plugin config. An exact marker-shaped object may
+      // be either a trusted host envelope or plugin-owned JSON that collides
+      // with our key — try unwrap; on failure seal the whole value as opaque.
+      let toSeal: unknown = out.config;
+      if (isPluginConfigEnvelope(out.config) || isLegacyPluginConfigEnvelope(out.config)) {
+        const sealedValue = isPluginConfigEnvelope(out.config)
+          ? out.config[PLUGIN_CONFIG_ENVELOPE_KEY]
+          : out.config[LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY];
+        const plain = await decryptField(sealedValue);
+        if (plain != null && plain !== "") {
+          try {
+            toSeal = JSON.parse(plain);
+          } catch {
+            toSeal = out.config;
+          }
+        } else {
+          toSeal = out.config;
+        }
+      }
+      const sealed = await encryptField(JSON.stringify(toSeal));
       if (sealed) {
         out.config = {
           [PLUGIN_CONFIG_ENVELOPE_KEY]: sealed,
@@ -242,28 +259,45 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
   // Seal durable plugin credential refs as one opaque blob (same threat model
   // as plugin config: do not leave kind/id/key plaintext in localStorage).
   if (out.credential != null && typeof out.credential === "object") {
+    let toSeal: unknown = out.credential;
     if (isPluginCredentialEnvelope(out.credential)) {
-      // already sealed
-    } else {
-      const kind = (out.credential as { kind?: unknown }).kind;
-      const id = (out.credential as { id?: unknown }).id;
-      const key = (out.credential as { key?: unknown }).key;
-      if ((kind === "secret" || kind === "credential") && typeof id === "string" && id.length > 0) {
-        const normalized = {
-          kind,
-          id,
-          ...(typeof key === "string" ? { key } : {}),
-        };
-        const sealed = await encryptField(JSON.stringify(normalized));
-        if (sealed) {
-          out.credential = {
-            [PLUGIN_CREDENTIAL_ENVELOPE_KEY]: sealed,
-          } as unknown as ProviderConnection["credential"];
+      const plain = await decryptField(out.credential[PLUGIN_CREDENTIAL_ENVELOPE_KEY]);
+      if (plain != null && plain !== "") {
+        try {
+          toSeal = JSON.parse(plain);
+        } catch {
+          toSeal = out.credential;
         }
       } else {
-        // Drop leases / malformed shapes — never persist them at rest.
-        delete out.credential;
+        toSeal = out.credential;
       }
+    }
+    const kind = (toSeal as { kind?: unknown }).kind;
+    const id = (toSeal as { id?: unknown }).id;
+    const key = (toSeal as { key?: unknown }).key;
+    if ((kind === "secret" || kind === "credential") && typeof id === "string" && id.length > 0) {
+      const normalized = {
+        kind,
+        id,
+        ...(typeof key === "string" ? { key } : {}),
+      };
+      const sealed = await encryptField(JSON.stringify(normalized));
+      if (sealed) {
+        out.credential = {
+          [PLUGIN_CREDENTIAL_ENVELOPE_KEY]: sealed,
+        } as unknown as ProviderConnection["credential"];
+      }
+    } else if (isPluginCredentialEnvelope(toSeal)) {
+      // Marker-collision object that is not a durable ref — seal as opaque JSON.
+      const sealed = await encryptField(JSON.stringify(toSeal));
+      if (sealed) {
+        out.credential = {
+          [PLUGIN_CREDENTIAL_ENVELOPE_KEY]: sealed,
+        } as unknown as ProviderConnection["credential"];
+      }
+    } else {
+      // Drop leases / malformed shapes — never persist them at rest.
+      delete out.credential;
     }
   }
 
