@@ -5315,6 +5315,236 @@ test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
   assert.equal(endCalls, 0, "shared sudo channel must not be ended");
 });
 
+test("late shared OPEN unlink still cleans stage when same-id retry is in-place", async (t) => {
+  // Codex P2 on 39e20bfa: skip late unlink only when active.stagedRemote.path
+  // matches. A same-id in-place retry (symlink destination → writeInPlace)
+  // keeps resumable + targetPath but stagedRemote is null; a stale late OPEN
+  // on the leftover `.netcatty-<id>.part` must still unlink the orphan.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-open-late-unlink-inplace-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 61));
+  const targetPath = "/tmp/upload-late-unlink-inplace.bin";
+  const transferId = "upload-shared-open-late-unlink-inplace";
+  const deterministicStagePath = `/tmp/.upload-late-unlink-inplace.bin.netcatty-${transferId}.part`;
+
+  const remoteFiles = new Map();
+  // After the first attempt fails, the destination appears as a symlink so the
+  // retry is planned in-place (no stagedRemote).
+  let destinationIsSymlink = false;
+  const eventLog = [];
+  /** @type {null | (() => void)} */
+  let releaseFirstOpen = null;
+  let openGeneration = 0;
+  let endCalls = 0;
+  /** @type {null | (() => void)} */
+  let releaseRetryWrites = null;
+  const retryWritesReleased = new Promise((resolve) => {
+    releaseRetryWrites = resolve;
+  });
+  const sharedSftp = createFastSftp({
+    lstat(remotePath, callback) {
+      const key = String(remotePath);
+      if (destinationIsSymlink && key === targetPath) {
+        callback(null, {
+          size: 0,
+          mode: 0o120777,
+          isDirectory: () => false,
+          isSymbolicLink: () => true,
+        });
+        return;
+      }
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        callback(error);
+        return;
+      }
+      callback(null, {
+        size: remoteFiles.get(key).length,
+        mode: 0o100644,
+        isDirectory: () => false,
+        isSymbolicLink: () => false,
+      });
+    },
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      const key = String(remotePath);
+      openGeneration += 1;
+      const generation = openGeneration;
+      if (generation === 1) {
+        assert.equal(key, deterministicStagePath, "first attempt must OPEN deterministic resume stage");
+        releaseFirstOpen = () => {
+          if (!remoteFiles.has(key)) {
+            remoteFiles.set(key, Buffer.alloc(0));
+          }
+          eventLog.push(`open-created-1:${key}`);
+          callback(null, Buffer.from(`handle-1:${key}`));
+        };
+        return;
+      }
+      // In-place retry opens the final target, not the stage.
+      assert.equal(key, targetPath, "in-place retry must OPEN final target");
+      remoteFiles.set(key, Buffer.from("retry-inplace"));
+      eventLog.push(`open-created-${generation}:${key}`);
+      callback(null, Buffer.from(`handle-${generation}:${key}`));
+    },
+    write(handle, buffer, offset, length, position, callback) {
+      void retryWritesReleased.then(() => {
+        const key = String(handle).replace(/^handle-\d+:/, "");
+        const current = remoteFiles.get(key) || Buffer.alloc(0);
+        const end = position + length;
+        const next = Buffer.alloc(Math.max(current.length, end));
+        current.copy(next);
+        buffer.copy(next, position, offset, offset + length);
+        remoteFiles.set(key, next);
+        eventLog.push(`write:${key}:${length}@${position}`);
+        setImmediate(() => callback(null));
+      });
+    },
+    close(handle, callback) {
+      eventLog.push(`close:${String(handle)}`);
+      callback(null);
+    },
+    unlink(remotePath, callback) {
+      const key = String(remotePath);
+      eventLog.push(`unlink:${key}`);
+      remoteFiles.delete(key);
+      callback(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      const key = String(remotePath);
+      eventLog.push(`delete:${key}`);
+      remoteFiles.delete(key);
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const firstSender = createSender();
+  const firstRunning = transferBridge.startTransfer(
+    { sender: firstSender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: true,
+      skipAdmission: true,
+    },
+  );
+
+  const firstOpenReady = await waitUntil(() => typeof releaseFirstOpen === "function", 2000);
+  assert.ok(firstOpenReady, "expected first shared write OPEN to stall");
+
+  sharedSftp.emit("error", new Error("shared SFTP channel died before first OPEN callback"));
+
+  const firstResult = await Promise.race([
+    firstRunning,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("first transfer hung awaiting shared write OPEN drain after channel error")),
+        5000,
+      );
+    }),
+  ]);
+  assert.ok(firstResult.error, "expected first transfer to fail after channel error");
+  assert.match(firstResult.error, /shared SFTP channel died before first OPEN callback/i);
+
+  // Force the retry into writeInPlace (symlink) while still resumable.
+  destinationIsSymlink = true;
+  // Seed a leftover stage orphan the late OPEN would otherwise protect via
+  // resumable+targetPath heuristics.
+  remoteFiles.set(deterministicStagePath, Buffer.from("orphan-stage"));
+  transferBridge.clearPendingCancel(transferId);
+  const retrySender = createSender();
+  const retryRunning = transferBridge.startTransfer(
+    { sender: retrySender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      resumable: true,
+      skipAdmission: true,
+    },
+  );
+
+  const retryOpenReady = await waitUntil(
+    () => eventLog.some((entry) => entry.startsWith("open-created-2:")),
+    3000,
+  );
+  assert.ok(retryOpenReady, `expected in-place retry OPEN, log=${eventLog.join(",")}`);
+  assert.ok(
+    remoteFiles.has(deterministicStagePath),
+    "orphan stage must still exist before stale late OPEN",
+  );
+
+  // Stale late OPEN from attempt 1 on the stage path: must close + unlink even
+  // though a same-id resumable retry owns activeTransfers (in-place, no stage).
+  releaseFirstOpen?.();
+  const lateCleanup = await waitUntil(
+    () => eventLog.some((entry) => entry.startsWith("close:handle-1:"))
+      && eventLog.some((entry) => entry === `unlink:${deterministicStagePath}`),
+    2000,
+  );
+  assert.ok(
+    lateCleanup,
+    `expected late close+unlink of orphan stage under in-place retry, log=${eventLog.join(",")}`,
+  );
+  assert.equal(
+    remoteFiles.has(deterministicStagePath),
+    false,
+    "orphan stage must be unlinked when retry is not using it",
+  );
+  assert.ok(
+    remoteFiles.has(targetPath),
+    "in-place retry final target must not be unlinked",
+  );
+
+  releaseRetryWrites?.();
+  await transferBridge.cancelTransfer(null, { transferId });
+  const retryResult = await Promise.race([
+    retryRunning,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("retry transfer hung after cancel")), 5000);
+    }),
+  ]);
+  assert.ok(
+    retryResult.cancelled === true || /cancel/i.test(String(retryResult.error || "")),
+    `expected retry cancel settle, result=${JSON.stringify(retryResult)}`,
+  );
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+});
+
 test("sudo SFTP downloads prefer concurrent shared READ over serial createReadStream", async (t) => {
   // Sudo cannot open an isolated channel, so downloads used to fall straight to
   // createReadStream (1-in-flight READs → hundreds of KB/s). Uploads already

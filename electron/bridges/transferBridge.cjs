@@ -1961,10 +1961,11 @@ async function uploadFile(
  * generated stage (`generatedStagePath`), best-effort unlinks it so stage
  * cleanup cannot race a recreate/orphan. In-place final targets are never
  * unlinked here. Same-id retries that already re-own the active transfer
- * slot skip unlink only for reusable resume stages
- * (`.netcatty-<transferId>.part`); non-resumable `.netcatty-upload-*` paths
- * are unique per attempt and must still be unlinked so a stale late OPEN
- * cannot leave an orphan (Codex P2 on d19ecb88 / 7c446c7).
+ * slot skip unlink only when the retry's actual `stagedRemote.path` matches
+ * this OPEN path. Path-shape / resumable+targetPath heuristics are not used:
+ * an in-place retry leaves stagedRemote null while still looking "resumable",
+ * and a stale late OPEN on a leftover `.part` must still unlink (Codex P2 on
+ * 39e20bfa / 7c446c7 / d19ecb88).
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null, generatedStagePath?: boolean }} [options]
  */
@@ -1984,26 +1985,18 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // In-place finals never unlink.
   const shouldUnlinkLateGeneratedStage = generatedStagePath && isTruncatingOpen;
   // Re-check ownership at unlink time: a same-id retry may already own
-  // activeTransfers and the deterministic resume stage path. Only suppress
-  // unlink for that reusable path — not every generatedStagePath.
+  // activeTransfers. Only suppress unlink when the retry's *actual* staged
+  // remote path matches this OPEN path. Do not infer ownership from
+  // resumable+targetPath or path-shape alone — in-place retries keep
+  // resumable/targetPath while stagedRemote is null (e.g. symlink / no-lstat
+  // destinations), and a stale late OPEN on a leftover .part must still unlink.
   const canUnlinkLateGeneratedStageNow = () => {
     if (!shouldUnlinkLateGeneratedStage) return false;
     const transferId = transfer?.transferId;
     if (transferId == null || transferId === "") return true;
     const active = activeTransfers.get(transferId);
     if (active && active !== transfer) {
-      // Retry already owns this transfer id. Protect only the stage path that
-      // resumable retries actually reuse; unique non-resumable stage paths
-      // from the failed attempt must still be cleaned up.
       if (active.stagedRemote?.path && active.stagedRemote.path === filePath) {
-        return false;
-      }
-      if (active.resumable && active.targetPath) {
-        if (buildRemoteTransferStagePath(active.targetPath, transferId) === filePath) {
-          return false;
-        }
-      }
-      if (isReusableRemoteTransferStagePath(filePath, transferId)) {
         return false;
       }
       return true;
