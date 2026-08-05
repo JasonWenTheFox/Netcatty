@@ -248,14 +248,19 @@ class PluginSecretStore {
       const providerId = entry?.provider?.id ?? entry?.id;
       if (typeof pluginId !== "string" || pluginId.length < 1) continue;
       if (typeof providerId !== "string" || providerId.length < 1) continue;
-      if (!credentialOwners.has(pluginId)) continue;
       if (!providerId.startsWith(`${pluginId}.`)) continue;
-      const set = providersByPlugin.get(pluginId) || new Set();
-      set.add(providerId);
-      providersByPlugin.set(pluginId, set);
+      // Count every manifest claim for conflict detection — including live
+      // plugins that have not stored credentials yet. Binding only a
+      // credential-backed legacy parent would orphan credentials when a later
+      // disconnect prefers the live nested owner (Codex P2 on 8d64ea20).
       const claimants = pluginsByProvider.get(providerId) || new Set();
       claimants.add(pluginId);
       pluginsByProvider.set(providerId, claimants);
+      // Only credential-backed plugins are eligible to become the binding owner.
+      if (!credentialOwners.has(pluginId)) continue;
+      const set = providersByPlugin.get(pluginId) || new Set();
+      set.add(providerId);
+      providersByPlugin.set(pluginId, set);
     }
     let promoted = 0;
     for (const [pluginId, providerIds] of providersByPlugin) {
