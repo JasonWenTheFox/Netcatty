@@ -103,7 +103,13 @@ export const isDroppableVisualPayload = (content: string): boolean => {
       continue;
     }
     if (code === 0x7f) return false; // DEL
-    i++; // printable / UTF-8 byte → cell text
+    // 8-bit C1 controls (0x80–0x9F): CSI (0x9B), OSC (0x9D), DCS (0x90), …
+    // xterm accepts these as equivalents of the ESC-prefixed forms. Treat any
+    // C1 as un-droppable so title/mode/cursor side effects are never skipped
+    // when a frame is collapsed (C1 bytes would otherwise fall through as
+    // printable cell text).
+    if (code >= 0x80 && code <= 0x9f) return false;
+    i++; // printable / Unicode cell text
   }
   return true;
 };
@@ -154,7 +160,11 @@ export const viewportRepaintCoverage = (
       else if (final === "d") { row = (n0 ?? 1) - 1; clampRow(); }
       else if (final === "J") {
         const p = n0 ?? 0;
-        if (p === 2 || p === 3) { for (let r = 0; r < rows; r++) markRange(r, 0, cols - 1); }
+        // ED2 (p=2) clears the whole viewport and counts as coverage. ED3 (p=3)
+        // clears saved scrollback only — it must not mark viewport cells, or
+        // makesFullRepaint would let collapseAndSplit drop a prior visual frame
+        // whose content the ED3 successor never repaints.
+        if (p === 2) { for (let r = 0; r < rows; r++) markRange(r, 0, cols - 1); }
         else if (p === 0) { markRange(row, col, cols - 1); for (let r = row + 1; r < rows; r++) markRange(r, 0, cols - 1); }
         else if (p === 1) { for (let r = 0; r < row; r++) markRange(r, 0, cols - 1); markRange(row, 0, col); }
       } else if (final === "K") {

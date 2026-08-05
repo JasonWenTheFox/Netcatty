@@ -168,6 +168,30 @@ test("ED3 (clear scrollback) makes a frame un-droppable", () => {
   assert.equal(isDroppableVisualPayload("\x1b[1;1H\x1b[3Jrepaint"), false, "ED3 clears scrollback");
 });
 
+test("ED3 does not count as viewport coverage for full-repaint drops", () => {
+  const cols = 4;
+  const rows = 2;
+  // ED3 alone must not mark any viewport cells.
+  assert.equal(viewportRepaintCoverage("\x1b[3J", cols, rows), 0, "ED3 covers zero viewport cells");
+  assert.equal(makesFullRepaint("\x1b[3J", cols, rows), false, "ED3 is not a full viewport repaint");
+  // ED2 still covers the whole grid.
+  assert.equal(viewportRepaintCoverage("\x1b[2J", cols, rows), cols * rows, "ED2 covers the grid");
+  // A successor that only does ED3 must not justify dropping a prior visual frame.
+  const stale = frame("AAAAAAAA");
+  const ed3Only = frame("\x1b[3J");
+  const pred = (c: string) => makesFullRepaint(c, cols, rows);
+  assert.equal(collapseAndSplit(stale + ed3Only, pred).dropped, 0, "ED3 successor must not drop prior frame");
+});
+
+test("8-bit C1 controls make a frame un-droppable", () => {
+  // C1 CSI (0x9B) and OSC (0x9D) would otherwise fall through as printable text.
+  assert.equal(isDroppableVisualPayload("\x9b1;1Hplain"), false, "C1 CSI");
+  assert.equal(isDroppableVisualPayload("\x9d0;title\x07"), false, "C1 OSC");
+  assert.equal(isDroppableVisualPayload("hello\x90data\x9c"), false, "C1 DCS");
+  // Unicode cell text above the C1 range remains droppable.
+  assert.equal(isDroppableVisualPayload("café中文"), true, "printable Unicode cell text");
+});
+
 test("holds back a split sync opener as partial", () => {
   // Buffer ends mid-opener (ESC[?20); it must be held, not forwarded.
   const r = collapseAndSplit("hello\x1b[?20", always);
