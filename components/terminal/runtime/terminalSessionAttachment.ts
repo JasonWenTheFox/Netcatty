@@ -410,11 +410,21 @@ export const getFlowController = (
     });
     terminalFlowControllers.set(term, controller);
     setTerminalWriteQueueDropHandler(term, (bytes) => {
-      if (bytes <= 0) return;
-      controller?.written(bytes);
+      // Watchdog recovery only claims the active item's dropBytes. Small writes
+      // may have left ingress in the deferred IPC-ack buffer; a non-deferred
+      // write must not clear that buffer until it owns the ack, so a stall can
+      // still flush those earlier bytes here (without re-running flow.written —
+      // deferred writes already accounted them when they completed).
+      const deferredAck = clearDeferredTerminalWriteAck(term);
       const sessionId = ctx.sessionRef.current;
-      ackTerminalSessionFlow(ctx.terminalBackend, sessionId, bytes);
-      if (sessionId) {
+      if (bytes > 0) {
+        controller?.written(bytes);
+        ackTerminalSessionFlow(ctx.terminalBackend, sessionId, bytes);
+      }
+      if (deferredAck > 0) {
+        ackTerminalSessionFlow(ctx.terminalBackend, sessionId, deferredAck);
+      }
+      if (sessionId && (bytes > 0 || deferredAck > 0)) {
         flushTerminalSessionFlowAck(sessionId);
       }
     });
@@ -947,16 +957,15 @@ const writeSessionDataImmediate = (
       return;
     }
 
-    const deferredBeforeCallback = clearDeferredTerminalWriteAck(term);
-    const ackOnCallback = deferredBeforeCallback + ingressBytes;
+    // Do not clear deferred IPC acks until this callback owns flow-ack. Clearing
+    // early loses those bytes when the stall watchdog recovers the write: the
+    // write closure has already dropped them from the deferral buffer, and the
+    // late/no-op callback never flushes them — leaving the SSH channel paused.
     writePreparedDisplayData(() => {
       finishQueueItem();
       if (!commitFlowAckIfOwned()) return;
-      if (deferredBeforeCallback > 0) {
-        flushIpcAck(ackOnCallback);
-      } else {
-        flushIpcAck(ackOnCallback);
-      }
+      const deferredBeforeCallback = clearDeferredTerminalWriteAck(term);
+      flushIpcAck(deferredBeforeCallback + ingressBytes);
     });
   }, {
     dropBytes: ingressBytes,

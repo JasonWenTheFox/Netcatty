@@ -40,7 +40,10 @@ import {
   clearDeferredTerminalWriteAck,
   getDeferredTerminalWriteAckBytes,
 } from "./terminalWriteAckDeferral.ts";
-import { flushTerminalWriteQueueBypassingTimers } from "./terminalWriteQueue.ts";
+import {
+  flushTerminalWriteQueueBypassingTimers,
+  WRITE_QUEUE_STALL_TIMEOUT_MS,
+} from "./terminalWriteQueue.ts";
 import { prioritizeTerminalInput } from "./terminalOutputPipeline";
 import {
   createPromptLineBreakState,
@@ -1731,6 +1734,84 @@ test("writeSessionData flushes deferred IPC acks before small output can leave t
   assert.equal(mainPaused, false);
   assert.equal(mainUnackedBytes, 0);
   assert.equal(getDeferredTerminalWriteAckBytes(term), 0);
+  clearTerminalSessionFlowAck("session-1");
+});
+
+test("watchdog recovery flushes deferred IPC acks held for a stalled non-deferred write", async () => {
+  // Small writes batch IPC acks into the deferral buffer. A later large write
+  // used to clear that buffer before xterm's callback; if the callback is lost
+  // and the stall watchdog recovers, only the large write's dropBytes were
+  // acked — the cleared deferred total never reached main, leaving SSH paused.
+  clearTerminalSessionFlowAck("session-1");
+  let stallLarge = true;
+  const term = {
+    buffer: { active: { type: "normal" } },
+    write(data: string, callback?: () => void) {
+      if (stallLarge && data.length > XTERM_WRITE_CALLBACK_FAST_PATH_MAX_BYTES) {
+        // Lost xterm callback: accept the write, never invoke done.
+        return;
+      }
+      callback?.();
+    },
+    scrollToBottom() {},
+  } as unknown as XTerm;
+  let mainUnackedBytes = 0;
+  const ctx = {
+    ...createContext(false),
+    isVisibleRef: { current: true },
+    sessionRef: { current: "session-1" },
+    terminalBackend: {
+      ackSessionFlow: (_sessionId: string, bytes: number) => {
+        mainUnackedBytes = Math.max(0, mainUnackedBytes - bytes);
+      },
+    },
+  };
+  getFlowController(ctx as never, term);
+
+  const small = "s".repeat(64);
+  const smallCount = 3;
+  for (let i = 0; i < smallCount; i += 1) {
+    mainUnackedBytes += small.length;
+    writeSessionData(ctx as never, term, small);
+  }
+  flushTerminalWriteCoalescer(term);
+  // Drain small queue items so they complete (and defer IPC acks).
+  flushTerminalWriteQueueBypassingTimers(term);
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  flushTerminalWriteQueueBypassingTimers(term);
+
+  const deferredBeforeLarge = getDeferredTerminalWriteAckBytes(term);
+  assert.equal(deferredBeforeLarge, small.length * smallCount);
+
+  const large = "L".repeat(XTERM_WRITE_CALLBACK_FAST_PATH_MAX_BYTES + 1);
+  mainUnackedBytes += large.length;
+  writeSessionData(ctx as never, term, large);
+  flushTerminalWriteCoalescer(term);
+  // Start the large write (still no callback).
+  flushTerminalWriteQueueBypassingTimers(term);
+
+  // Deferred bytes must still be present until someone owns the ack.
+  assert.equal(
+    getDeferredTerminalWriteAckBytes(term),
+    deferredBeforeLarge,
+    "non-deferred write must not clear deferred acks before owning the claim",
+  );
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, WRITE_QUEUE_STALL_TIMEOUT_MS + 300);
+  });
+  stallLarge = false;
+
+  assert.equal(
+    getDeferredTerminalWriteAckBytes(term),
+    0,
+    "watchdog recovery must flush deferred IPC acks",
+  );
+  assert.equal(
+    mainUnackedBytes,
+    0,
+    "deferred + stalled write ingress must both reach main-process ACK",
+  );
   clearTerminalSessionFlowAck("session-1");
 });
 
