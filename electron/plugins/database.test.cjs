@@ -510,10 +510,10 @@ test("schema upgrade backfills bindings from legacy sync-provider-map secrets", 
 
   const database = new PluginDatabase(file);
   assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
-  assert.equal(
+  // Map rows are not reserved host keys — backfill must not delete them.
+  assert.ok(
     database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"),
-    null,
-    "legacy map secret must be removed after promotion",
+    "plugin secret rows must survive backfill",
   );
   assert.ok(database.getSecretByKey("com.example", "sync-credential"));
   database.close();
@@ -543,10 +543,9 @@ test("legacy map backfill does not overwrite an existing host binding", (context
     "com.example.sync",
     "existing binding must be preserved",
   );
-  assert.equal(
+  assert.ok(
     database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
-    null,
-    "stale legacy map secret is still cleaned up",
+    "must not delete plugin-owned secrets that share the map key prefix",
   );
   database.close();
 });
@@ -571,14 +570,31 @@ test("legacy map backfill prefers the longest plugin owner when maps conflict", 
     "com.example.sync",
     "longest namespace owner must win over parent map row",
   );
-  assert.equal(
-    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
-    null,
+  // Secrets are left in place; only the binding table is authoritative.
+  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"));
+  assert.ok(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"));
+  database.close();
+});
+
+test("legacy map backfill never deletes plugin secrets under the map key prefix", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-provider-map:com.example.custom",
+    "ref-plugin-owned",
+    Buffer.from("plugin-owned-payload"),
+    now,
+    now,
   );
-  assert.equal(
-    database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"),
-    null,
-  );
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
+  assert.equal(database.getSyncProviderBinding("com.example.custom")?.pluginId, "com.example");
+  const kept = database.getSecretByKey("com.example", "sync-provider-map:com.example.custom");
+  assert.ok(kept);
+  assert.deepEqual(kept.ciphertext, Buffer.from("plugin-owned-payload"));
   database.close();
 });
 
