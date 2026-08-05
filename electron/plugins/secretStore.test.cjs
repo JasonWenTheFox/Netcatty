@@ -312,7 +312,7 @@ test("overwrite stash restores previous plaintext and discard clears it", (conte
   });
   const first = store.set("com.example.one", "sync-credential", "good-password");
   assert.equal(store.resolve("com.example.one", first), "good-password");
-  const second = store.set("com.example.one", "sync-credential", "bad-password");
+  const second = store.set("com.example.one", "sync-credential", "bad-password", { stashPrevious: true });
   assert.equal(store.resolve("com.example.one", second), "bad-password");
   assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), true);
   const restored = store.getReference("com.example.one", "sync-credential");
@@ -320,12 +320,16 @@ test("overwrite stash restores previous plaintext and discard clears it", (conte
   assert.equal(store.resolve("com.example.one", first), "good-password");
   assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), false);
 
-  store.set("com.example.one", "sync-credential", "another-bad");
+  store.set("com.example.one", "sync-credential", "another-bad", { stashPrevious: true });
   store.clearOverwriteStash("com.example.one", "sync-credential");
   assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), false);
   assert.equal(
     store.resolve("com.example.one", store.getReference("com.example.one", "sync-credential")),
     "another-bad",
   );
+  // Ordinary secrets.set-style overwrites must not stash plaintext by default.
+  store.set("com.example.one", "api-key", "one");
+  store.set("com.example.one", "api-key", "two");
+  assert.equal(store.restoreOverwrite("com.example.one", "api-key"), false);
   database.close();
 });

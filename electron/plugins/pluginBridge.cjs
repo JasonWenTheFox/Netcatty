@@ -1058,7 +1058,12 @@ function registerPluginBridge(ipcMain, options) {
     const existing = typeof secretStore.getReference === "function"
       ? secretStore.getReference(match.pluginId, key)
       : null;
-    const stored = secretStore.set(match.pluginId, key, value);
+    const stored = typeof secretStore.set === "function"
+      ? secretStore.set(match.pluginId, key, value, { stashPrevious: true })
+      : null;
+    if (!stored) {
+      throw new Error("Plugin sync secret storage is unavailable");
+    }
     // Remember which plugin owns this provider so disconnect can clean secrets
     // after the contribution is gone (disabled/uninstalled).
     if (typeof secretStore.bindSyncProviderPlugin === "function") {

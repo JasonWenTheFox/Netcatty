@@ -80,7 +80,7 @@ class PluginSecretStore {
     if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) {
       throw new PluginRpcError(RPC_ERRORS.invalidArgument, "Plugin secret value is invalid or too large");
     }
-    const stashPrevious = options.stashPrevious !== false;
+    const stashPrevious = options.stashPrevious === true;
     if (stashPrevious) {
       const existing = this.getReference(pluginId, key);
       if (existing) {
