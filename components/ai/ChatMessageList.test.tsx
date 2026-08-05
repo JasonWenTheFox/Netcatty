@@ -159,6 +159,36 @@ test("ChatMessageList exposes jump navigation once there are enough user turns",
   assert.match(markup, /id="ai-chat-msg-u3"/);
 });
 
+test("jump pin release does not reset the loaded message tail", () => {
+  const source = readFileSync(new URL("./ChatMessageList.tsx", import.meta.url), "utf8");
+  const releaseHandler = source.match(
+    /const handleReleaseJumpPin = useCallback\(\(\) => \{[\s\S]*?\}, \[\]\);/,
+  )?.[0] ?? "";
+
+  assert.match(releaseHandler, /setActiveJumpMessageId\(null\)/);
+  assert.match(releaseHandler, /setPendingJumpMessageId\(null\)/);
+  assert.doesNotMatch(releaseHandler, /setRenderedTailCount/);
+});
+
+test("load earlier advances from the effective pinned tail", () => {
+  const source = readFileSync(new URL("./ChatMessageList.tsx", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /setRenderedTailCount\(\(count\) =>\s*Math\.max\(count, effectiveTailCount\) \+ MESSAGE_RENDER_STEP\)/,
+  );
+});
+
+test("jump pin ignores streaming isAtBottom flips and releases on scroll button", () => {
+  const jumpSource = readFileSync(new URL("./ChatJumpNav.tsx", import.meta.url), "utf8");
+  const listSource = readFileSync(new URL("./ChatMessageList.tsx", import.meta.url), "utf8");
+
+  assert.match(jumpSource, /isStreaming\?: boolean/);
+  assert.match(jumpSource, /if \(isStreaming\) return;/);
+  assert.match(jumpSource, /window\.setTimeout/);
+  assert.match(listSource, /isStreaming=\{\!\!isStreaming\}/);
+  assert.match(listSource, /<ConversationScrollButton onClick=\{handleReleaseJumpPin\} \/>/);
+});
+
 test("ChatMessageList renders Codex activities and actual usage", () => {
   const messages: ChatMessage[] = [{
     id: "assistant-activity",

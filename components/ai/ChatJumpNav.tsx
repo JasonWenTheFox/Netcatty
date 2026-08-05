@@ -12,6 +12,8 @@ import { cn } from '../../lib/utils';
 export interface ChatJumpNavProps {
   entries: ChatJumpEntry[];
   activeMessageId: string | null;
+  /** When true, ignore transient isAtBottom flips from streaming resize. */
+  isStreaming?: boolean;
   onSelect: (messageId: string) => void;
   /** Fired after the user leaves the jump target and returns to the bottom. */
   onReleasePin?: () => void;
@@ -20,6 +22,7 @@ export interface ChatJumpNavProps {
 const ChatJumpNav: React.FC<ChatJumpNavProps> = ({
   entries,
   activeMessageId,
+  isStreaming = false,
   onSelect,
   onReleasePin,
 }) => {
@@ -52,10 +55,23 @@ const ChatJumpNav: React.FC<ChatJumpNavProps> = ({
       leftBottomWhilePinnedRef.current = true;
       return;
     }
-    if (!leftBottomWhilePinnedRef.current) return;
-    leftBottomWhilePinnedRef.current = false;
-    onReleasePin?.();
-  }, [activeMessageId, isAtBottom, onReleasePin]);
+    if (leftBottomWhilePinnedRef.current) {
+      // Streaming content growth / smooth resize can flip isAtBottom without the
+      // user intending to leave the jump target; keep the pin until streaming ends
+      // or they explicitly scroll to bottom via the scroll button.
+      if (isStreaming) return;
+      leftBottomWhilePinnedRef.current = false;
+      onReleasePin?.();
+      return;
+    }
+    // Jump target was already in the bottom window, so the viewport never left
+    // isAtBottom. Clear the pin after scrollIntoView has had a chance to run.
+    if (isStreaming) return;
+    const timer = window.setTimeout(() => {
+      onReleasePin?.();
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [activeMessageId, isAtBottom, isStreaming, onReleasePin]);
 
   const handleSelect = useCallback((messageId: string) => {
     stopScroll();
