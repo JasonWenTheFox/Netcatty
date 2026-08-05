@@ -2292,12 +2292,9 @@ function isIssueAlreadyAdmitted(labels = []) {
 
 function labelsForReadyForHumanHandoff(existingLabels = []) {
   const existing = normalizeIssueLabelNames(existingLabels);
-  const drop = new Set([
-    'ready-for-agent',
-    'triage:already-available',
-    'triage:unclear',
-    'unclear',
-  ]);
+  // Keep triage:already-available / unclear as dispute signals so later author
+  // follow-ups stay on issue_followup instead of re-entering classify.
+  const drop = new Set(['ready-for-agent']);
   const preserved = existing.includes('triage:admitted')
     ? ['triage:admitted']
     : [];
@@ -2450,15 +2447,10 @@ function refineIssueCommentRoute(decision, {
 } = {}) {
   if (decision?.kind !== 'issue_followup' || hasOpenBotPull) return decision;
   const names = normalizeIssueLabelNames(labels);
-  // Already handed to a human (including reopen of auto-closed already-available
-  // after the outcome label was cleared) must stay on follow-up. Otherwise
-  // actionable author replies re-enter classify and can auto-close again.
-  if (
-    names.includes('triage:already-available') ||
-    names.includes('ready-for-human')
-  ) {
-    return decision;
-  }
+  // Disputed auto-close outcomes must stay on follow-up. Do not gate on
+  // ready-for-human alone — that label also covers feature_defer / other /
+  // implement failures that should still be allowed to re-enter classify.
+  if (names.includes('triage:already-available')) return decision;
   const simpleKind = classifySimpleIssueFollowup([{ body }]);
   if (simpleKind) return decision;
   return {

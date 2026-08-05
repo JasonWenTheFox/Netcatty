@@ -635,12 +635,30 @@ test('actionable author follow-ups without an open bot PR are reclassified', () 
     }),
     decision,
   );
-  // After reopen handoff drops triage:already-available, ready-for-human alone
-  // must still block reclassify → already_available auto-close.
+  // ready-for-human alone must NOT block reclassify (feature_defer / other /
+  // implement-failure handoffs still need actionable follow-ups to classify).
+  assert.deepEqual(
+    auto.refineIssueCommentRoute(decision, {
+      hasOpenBotPull: false,
+      labels: ['triage', 'triage:feature-defer', 'ready-for-human'],
+      body: '默认开启 X11 就可以，内置服务暂时不需要。',
+    }),
+    {
+      kind: 'issue_classify',
+      reason: 'actionable author follow-up without open automation PR',
+    },
+  );
+  // After reopen handoff, triage:already-available is preserved with
+  // ready-for-human so disputes cannot re-close via classify.
   assert.equal(
     auto.refineIssueCommentRoute(decision, {
       hasOpenBotPull: false,
-      labels: ['triage', 'triage:admitted', 'ready-for-human'],
+      labels: [
+        'triage',
+        'triage:admitted',
+        'triage:already-available',
+        'ready-for-human',
+      ],
       body: '我从 main build 了，还是一样，本地网络权限没有弹窗。',
     }),
     decision,
@@ -696,7 +714,7 @@ test('decideIssuesEventRoute skips bot reopen and hands auto-closed reopen to hu
   ]);
   assert.ok(handoff.includes('ready-for-human'));
   assert.ok(handoff.includes('triage:admitted'));
-  assert.ok(!handoff.includes('triage:already-available'));
+  assert.ok(handoff.includes('triage:already-available'));
   assert.ok(!handoff.includes('ready-for-agent'));
   assert.equal(auto.isIssueAlreadyAdmitted(['triage:admitted']), true);
   assert.equal(auto.isIssueAlreadyAdmitted(['bug', 'triage']), false);
@@ -1061,7 +1079,7 @@ test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', a
   assert.equal(created, 1);
   assert.ok(lastUpdate.labels.includes('ready-for-human'));
   assert.ok(lastUpdate.labels.includes('triage:admitted'));
-  assert.ok(!lastUpdate.labels.includes('triage:already-available'));
+  assert.ok(lastUpdate.labels.includes('triage:already-available'));
   assert.ok(!lastUpdate.labels.includes('ready-for-agent'));
 
   comments = [{
@@ -1113,7 +1131,7 @@ test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', a
   assert.equal(result.commented, true);
   assert.equal(update.state, 'open');
   assert.ok(update.labels.includes('ready-for-human'));
-  assert.ok(!update.labels.includes('triage:already-available'));
+  assert.ok(update.labels.includes('triage:already-available'));
   assert.match(commentBody, /cursor-reopen-handoff/);
   assert.match(commentBody, /重新打开/);
 });
