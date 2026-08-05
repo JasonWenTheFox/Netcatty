@@ -197,7 +197,6 @@ interface SftpPaneToolbarProps {
   handlePathKeyDown: (e: React.KeyboardEvent) => void;
   handlePathDoubleClick: () => void;
   handlePathSubmit: (pathOverride?: string) => void;
-  startTransition: React.TransitionStartFunction;
   getNextUntitledName: (existingNames: string[]) => string;
   setNewFileName: (value: string) => void;
   setFileNameError: (value: string | null) => void;
@@ -307,7 +306,6 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
   handlePathKeyDown,
   handlePathDoubleClick,
   handlePathSubmit,
-  startTransition,
   getNextUntitledName,
   setNewFileName,
   setFileNameError,
@@ -364,6 +362,15 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
         : draftValue,
     );
   }, [pane.filter]);
+
+  // The filter input only mounts while the bar is open, so a composition that is
+  // still active when the bar closes never fires `compositionend`. Clear the guard
+  // here; otherwise a stuck `true` would block every later commit to `onSetFilter`.
+  useEffect(() => {
+    if (!showFilterBar) {
+      filterComposingRef.current = false;
+    }
+  }, [showFilterBar]);
 
   const commitFilterValue = useCallback((value: string) => {
     setFilterDraft(value);

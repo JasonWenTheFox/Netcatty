@@ -140,7 +140,6 @@ test("toolbar renders one view-mode toggle instead of separate list and tree but
       handlePathKeyDown: () => {},
       handlePathDoubleClick: () => {},
       handlePathSubmit: () => {},
-      startTransition: (callback: () => void) => callback(),
       getNextUntitledName: () => "untitled",
       setNewFileName: () => {},
       setFileNameError: () => {},
@@ -219,7 +218,6 @@ test("toolbar exposes copy-current-path action for the active directory", () => 
       handlePathKeyDown: () => {},
       handlePathDoubleClick: () => {},
       handlePathSubmit: () => {},
-      startTransition: (callback: () => void) => callback(),
       getNextUntitledName: () => "untitled",
       setNewFileName: () => {},
       setFileNameError: () => {},
@@ -293,6 +291,15 @@ test("SFTP filter input guards CJK IME composition instead of deferring controll
   assert.doesNotMatch(
     toolbarSource,
     /onChange=\{\(e\) => startTransition\(\(\) => onSetFilter\(e\.target\.value\)\)\}/,
+  );
+});
+
+test("SFTP filter clears the IME composing guard when the filter bar closes so later commits are not stuck", () => {
+  // If the input unmounts mid-composition, compositionend never fires; the guard
+  // must be reset when the bar hides or every subsequent onSetFilter is blocked.
+  assert.match(
+    toolbarSource,
+    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;/,
   );
 });
 
