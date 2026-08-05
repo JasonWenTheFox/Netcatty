@@ -1956,7 +1956,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   const isWriteOpen = String(flags ?? "r") !== "r";
   const isTruncatingOpen = String(flags ?? "r") === "w";
   const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
-  const shouldUnlinkOnCancelOpen = generatedStagePath && isTruncatingOpen;
+  // Late truncating OPEN after settle (cancel or channel-error force-complete)
+  // must unlink generated stages so cleanup cannot leave a recreate orphan.
+  // In-place finals never unlink.
+  const shouldUnlinkLateGeneratedStage = generatedStagePath && isTruncatingOpen;
   let resolveSharedWriteDrain = null;
   if (trackSharedWriteDrain) {
     transfer.sharedWriteOpenDrain = new Promise((resolve) => {
@@ -2007,14 +2010,15 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }
     });
 
-    // Late shared write OPEN after settle: close handle, and on cancel +
-    // generated truncating stage also unlink so a force-completed drain /
-    // stage delete cannot leave a recreate orphan (Codex P2 on 0cda4a39 /
-    // cd57d960). Never unlink in-place final targets (Codex P1 on a9f748c8).
+    // Late shared write OPEN after settle: close handle, and for generated
+    // truncating stages also unlink so a force-completed drain / stage delete
+    // cannot leave a recreate orphan after cancel OR channel-error settle
+    // (Codex P2 on 0cda4a39 / cd57d960 / bd42c51c). Never unlink in-place
+    // final targets (Codex P1 on a9f748c8).
     const finishLateSharedWriteOpen = (handle) => {
       const afterClose = () => {
         const finish = () => completeSharedWriteDrain();
-        if (transfer.cancelled && shouldUnlinkOnCancelOpen) {
+        if (shouldUnlinkLateGeneratedStage) {
           unlinkSharedWritePathBestEffort().then(finish, finish);
           return;
         }
@@ -2113,7 +2117,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             // truncating OPEN handle is released. Cancel + generated stage
             // "w": unlink too so a staged recreate cannot survive if cleanup
             // already raced. In-place finals are close-only.
-            if (shouldUnlinkOnCancelOpen) {
+            if (shouldUnlinkLateGeneratedStage) {
               closeSftpHandle(sftp, handle)
                 .catch(() => {})
                 .then(() => unlinkSharedWritePathBestEffort())

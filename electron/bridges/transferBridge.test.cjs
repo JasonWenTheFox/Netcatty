@@ -4775,6 +4775,124 @@ test("shared upload OPEN drain force-completes when channel error has no OPEN ca
   assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
 });
 
+test("shared upload OPEN drain unlinks late staged OPEN after channel-error force-complete", async (t) => {
+  // Codex P2 on bd42c51c: late truncating OPEN after channel-error drain
+  // force-complete is not a cancel (`transfer.cancelled` false). Non-resumable
+  // staged uploads already cleaned the stage after the forced drain; the late
+  // "w" OPEN must still unlink the recreated `.netcatty-upload-*` orphan.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-shared-upload-open-channel-error-late-unlink-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, Buffer.alloc(TRANSFER_CHUNK_SIZE, 55));
+
+  const remoteFiles = new Map();
+  const eventLog = [];
+  let releaseOpen = null;
+  let endCalls = 0;
+  const sharedSftp = createFastSftp({
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      const key = String(remotePath);
+      releaseOpen = () => {
+        remoteFiles.set(key, Buffer.alloc(0));
+        eventLog.push(`open-created:${key}`);
+        callback(null, Buffer.from(`handle:${key}`));
+      };
+    },
+    write() {
+      throw new Error("WRITE must not run after channel error during OPEN");
+    },
+    close(_handle, callback) {
+      eventLog.push("close");
+      callback(null);
+    },
+    unlink(remotePath, callback) {
+      const key = String(remotePath);
+      eventLog.push(`unlink:${key}`);
+      remoteFiles.delete(key);
+      callback(null);
+    },
+    end() {
+      endCalls += 1;
+    },
+  });
+
+  const client = {
+    __netcattySudoMode: true,
+    sftp: sharedSftp,
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      const key = String(remotePath);
+      eventLog.push(`delete:${key}`);
+      remoteFiles.delete(key);
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "upload-shared-open-channel-error-late-unlink";
+  const running = transferBridge.startTransfer(
+    { sender },
+    {
+      transferId,
+      sourcePath: localPath,
+      targetPath: "/tmp/upload-channel-error-late-unlink.bin",
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: TRANSFER_CHUNK_SIZE,
+      // Non-resumable → cleanupStage runs after failure (no preserve-on-error).
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+
+  const ready = await waitUntil(() => typeof releaseOpen === "function", 2000);
+  assert.ok(ready, "expected shared write OPEN to stall");
+
+  sharedSftp.emit("error", new Error("shared SFTP channel died before OPEN callback"));
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error("transfer hung awaiting shared write OPEN drain after channel error")),
+        5000,
+      );
+    }),
+  ]);
+  assert.ok(result.error, "expected transfer to fail after channel error");
+  assert.match(result.error, /shared SFTP channel died before OPEN callback/i);
+  assert.equal(endCalls, 0, "shared sudo channel must not be ended");
+
+  // Late OPEN after drain force-complete — must close + unlink generated stage.
+  releaseOpen?.();
+  const lateCleanup = await waitUntil(
+    () => eventLog.includes("close") && eventLog.some((entry) => entry.startsWith("unlink:")),
+    2000,
+  );
+  assert.ok(lateCleanup, `expected late OPEN close+unlink after channel error, log=${eventLog.join(",")}`);
+  assert.equal(
+    [...remoteFiles.keys()].some((key) => key.includes(".netcatty-upload-")),
+    false,
+    `expected no orphan staged upload, remaining=${[...remoteFiles.keys()].join(",")}`,
+  );
+});
+
 test("sudo SFTP downloads prefer concurrent shared READ over serial createReadStream", async (t) => {
   // Sudo cannot open an isolated channel, so downloads used to fall straight to
   // createReadStream (1-in-flight READs → hundreds of KB/s). Uploads already
