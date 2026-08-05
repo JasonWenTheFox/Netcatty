@@ -3831,10 +3831,26 @@ jobs:
               issue_number: pull_number,
               per_page: 100,
             });
+            let notBefore = null;
+            try {
+              const { data: headCommit } = await github.rest.repos.getCommit({
+                ...context.repo,
+                ref: headSha,
+              });
+              notBefore =
+                headCommit.commit?.committer?.date ||
+                headCommit.commit?.author?.date ||
+                null;
+            } catch (err) {
+              core.warning(
+                `Could not load head commit time for ${headSha}: ${err.message || err}`,
+              );
+            }
             if (auto.shouldSkipExternalCodexRerequest({
               existingComments,
               headSha,
               ownActors: process.env.OWN_ACTORS,
+              notBefore,
             })) {
               core.notice(`@codex review was already requested for ${headSha}; skip duplicate.`);
               return;
@@ -5210,11 +5226,27 @@ jobs:
                 per_page: 100,
               },
             );
+            let notBefore = null;
+            try {
+              const { data: headCommit } = await github.rest.repos.getCommit({
+                ...context.repo,
+                ref: pr.head.sha,
+              });
+              notBefore =
+                headCommit.commit?.committer?.date ||
+                headCommit.commit?.author?.date ||
+                null;
+            } catch (err) {
+              core.warning(
+                `Could not load head commit time for ${pr.head.sha}: ${err.message || err}`,
+              );
+            }
             if (
               auto.shouldSkipExternalCodexRerequest({
                 existingComments: comments,
                 headSha: pr.head.sha,
                 ownActors: process.env.OWN_ACTORS,
+                notBefore,
               })
             ) {
               core.info(`Already re-requested Codex for ${pr.head.sha}`);
@@ -5362,12 +5394,28 @@ jobs:
             );
             const forceRetry =
               process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+            let notBefore = null;
+            try {
+              const { data: headCommit } = await github.rest.repos.getCommit({
+                ...context.repo,
+                ref: pr.head.sha,
+              });
+              notBefore =
+                headCommit.commit?.committer?.date ||
+                headCommit.commit?.author?.date ||
+                null;
+            } catch (err) {
+              core.warning(
+                `Could not load head commit time for ${pr.head.sha}: ${err.message || err}`,
+              );
+            }
             if (
               !forceRetry &&
               auto.shouldSkipExternalCodexRerequest({
                 existingComments: comments,
                 headSha: pr.head.sha,
                 ownActors: process.env.OWN_ACTORS,
+                notBefore,
               })
             ) {
               core.info(`Already re-requested Codex for ${pr.head.sha}`);

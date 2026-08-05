@@ -4142,6 +4142,7 @@ test('shouldSkipExternalCodexRerequest matches trusted head sha marker only', ()
 test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and plain requests', () => {
   const sha = 'deadbeefcafebabe000000000000000000000001';
   const short = sha.slice(0, 12);
+  const headPushedAt = '2026-08-05T14:00:00Z';
   // Automation request with head pin but no external marker still dedupes.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
@@ -4170,49 +4171,63 @@ test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and pla
     }),
     true,
   );
-  // Cursor bot plain @codex (no head pin) within the age window blocks own_rerequest.
-  const now = Date.parse('2026-08-05T14:00:00Z');
+  // Cursor bot plain @codex after the head was pushed blocks own_rerequest.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      now,
+      notBefore: headPushedAt,
       existingComments: [
         {
           user: { login: 'cursor[bot]' },
-          created_at: '2026-08-05T13:59:30Z',
+          created_at: '2026-08-05T14:00:30Z',
           body: '@codex review',
         },
       ],
     }),
     true,
   );
-  // Maintainer manual plain @codex also counts while fresh.
+  // Maintainer manual plain @codex after push also counts.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      now,
+      notBefore: headPushedAt,
       existingComments: [
         {
           user: { login: 'binaricat' },
-          created_at: '2026-08-05T13:59:50Z',
+          created_at: '2026-08-05T14:00:10Z',
           body: '@codex review',
         },
       ],
     }),
     true,
   );
-  // Stale plain request must not block a later synchronize after a new push.
+  // Plain request from before this head was pushed must not block re-request.
   assert.equal(
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      now,
+      notBefore: headPushedAt,
       existingComments: [
         {
           user: { login: 'binaricat' },
-          created_at: '2026-08-05T12:00:00Z',
+          created_at: '2026-08-05T13:59:00Z',
+          body: '@codex review',
+        },
+      ],
+    }),
+    false,
+  );
+  // Without notBefore, plain requests never suppress (need head pin/marker).
+  assert.equal(
+    auto.shouldSkipExternalCodexRerequest({
+      headSha: sha,
+      ownActors: 'binaricat',
+      existingComments: [
+        {
+          user: { login: 'cursor[bot]' },
+          created_at: '2026-08-05T14:00:30Z',
           body: '@codex review',
         },
       ],
@@ -4224,11 +4239,11 @@ test('shouldSkipExternalCodexRerequest also honors cursor-codex-head pin and pla
     auto.shouldSkipExternalCodexRerequest({
       headSha: sha,
       ownActors: 'binaricat',
-      now,
+      notBefore: headPushedAt,
       existingComments: [
         {
           user: { login: 'chatgpt-codex-connector[bot]' },
-          created_at: '2026-08-05T13:59:59Z',
+          created_at: '2026-08-05T14:00:59Z',
           body: "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `deadbeef`",
         },
       ],

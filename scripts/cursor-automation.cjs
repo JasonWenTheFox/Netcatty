@@ -1830,9 +1830,6 @@ function isCodexRequestDedupeAuthor(login, { ownActors } = {}) {
   return name === 'cursor[bot]' || name === 'cursor';
 }
 
-/** Default window for unpinned plain "@codex review" comments (no head marker). */
-const CODEX_PLAIN_REQUEST_DEDUPE_MAX_AGE_MS = 15 * 60 * 1000;
-
 /**
  * Skip posting another @codex review when this head was already requested.
  *
@@ -1844,22 +1841,35 @@ const CODEX_PLAIN_REQUEST_DEDUPE_MAX_AGE_MS = 15 * 60 * 1000;
  * Now skip when a trusted/dedupe author already requested this head via:
  * - external marker, or
  * - cursor-codex-head pin matching headSha, or
- * - recent plain @codex review with no head pin (race with own_rerequest).
+ * - plain @codex review with no head pin, but only if the comment is known to
+ *   be at/after the current head was pushed (`notBefore` / head commit time).
+ *   Age-only plain matching is intentionally not used: a plain request from
+ *   the previous head must not suppress re-request for a new synchronize.
  */
 function shouldSkipExternalCodexRerequest({
   existingComments = [],
   headSha,
   ownActors,
-  plainRequestMaxAgeMs = CODEX_PLAIN_REQUEST_DEDUPE_MAX_AGE_MS,
-  now = Date.now(),
+  /**
+   * ISO timestamp (or ms) of when the current head became current — typically
+   * the head commit author/committer date from the GitHub API. Required for
+   * plain unpinned @codex comments to count toward dedupe.
+   */
+  notBefore = null,
+  /** Optional clock skew slack when comparing plain request created_at. */
+  notBeforeSlackMs = 5_000,
 } = {}) {
   const want = String(headSha || '')
     .trim()
     .toLowerCase();
   if (!want) return false;
   const externalMarker = `<!-- cursor-external-codex:${sanitizeUntrustedText(want, 64)} -->`;
-  const maxAge = Math.max(0, Number(plainRequestMaxAgeMs) || 0);
-  const nowMs = Number(now) || Date.now();
+  const notBeforeMs = notBefore == null
+    ? null
+    : typeof notBefore === 'number'
+      ? notBefore
+      : Date.parse(String(notBefore));
+  const slack = Math.max(0, Number(notBeforeSlackMs) || 0);
 
   return existingComments.some((c) => {
     const login = c?.user?.login || c?.login;
@@ -1874,12 +1884,11 @@ function shouldSkipExternalCodexRerequest({
     const pinned = extractRequestedHeadSha(body);
     if (pinned && commitShasMatch(want, pinned)) return true;
 
-    // Plain "@codex review" with no head pin — only suppress near-concurrent
-    // doubles (Cursor bot / manual @ right after push). Older plain requests
-    // must not block a later synchronize after a new commit lands.
-    if (!pinned && maxAge > 0) {
+    // Plain "@codex review" with no head pin — only when the caller proves the
+    // comment is not from a previous head (notBefore = head commit time).
+    if (!pinned && notBeforeMs != null && Number.isFinite(notBeforeMs)) {
       const created = Date.parse(c?.created_at || '') || 0;
-      if (created > 0 && nowMs - created <= maxAge) return true;
+      if (created > 0 && created + slack >= notBeforeMs) return true;
     }
     return false;
   });
