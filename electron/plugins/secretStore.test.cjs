@@ -452,10 +452,39 @@ test("resolveSyncProviderPlugin does not infer ownership from credential prefixe
   });
   store.set("com.example", "sync-credential", "pw");
   assert.equal(database.getSyncProviderBinding("com.example.sync"), null);
-  // Without a binding (or legacy map backfill), credentials alone are not enough.
+  // Without a binding (or live-provider backfill), credentials alone are not enough.
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
   // Explicit bind still works for disconnect cleanup.
   store.bindSyncProviderPlugin("com.example", "com.example.sync");
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  database.close();
+});
+
+test("live provider backfill seeds bindings for v2 credential-only upgrades", (context) => {
+  const database = createDatabase(context);
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+  });
+  // Real schema-2 path: credentials exist, binding table empty, no map rows.
+  store.set("com.example", "sync-credential", "pw");
+  assert.equal(database.getSyncProviderBinding("com.example.sync"), null);
+  const promoted = store.backfillSyncProviderBindingsFromLiveProviders([
+    { pluginId: "com.example", provider: { id: "com.example.sync" } },
+    // No credentials under this plugin — skip.
+    { pluginId: "com.other", provider: { id: "com.other.cloud" } },
+    // Wrong namespace — skip without clobbering.
+    { pluginId: "com.example", provider: { id: "com.evil.sync" } },
+  ]);
+  assert.equal(promoted, 1);
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  assert.equal(store.resolveSyncProviderPlugin("com.other.cloud"), undefined);
+  // Idempotent when binding already exists.
+  assert.equal(
+    store.backfillSyncProviderBindingsFromLiveProviders([
+      { pluginId: "com.example", provider: { id: "com.example.sync" } },
+    ]),
+    0,
+  );
   database.close();
 });

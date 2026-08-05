@@ -227,7 +227,17 @@ function createPluginHostService(options) {
       } catch {
         // Hydration is best-effort; enable must still succeed.
       }
-      return originalOnPluginEnabled(pluginId);
+      const enabled = await originalOnPluginEnabled(pluginId);
+      try {
+        if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
+          const providers = contributionService.listProviders({ kind: "sync" })
+            .filter((entry) => entry?.pluginId === pluginId);
+          secretStore.backfillSyncProviderBindingsFromLiveProviders(providers);
+        }
+      } catch {
+        // Best-effort; enable must still succeed.
+      }
+      return enabled;
     };
     // Startup activation goes through contributionService.initialize() → #startPlugin
     // without onPluginEnabled. Hydrate every enabled plugin before that path runs.
@@ -241,7 +251,19 @@ function createPluginHostService(options) {
           // Best-effort; startup must continue.
         }
       }
-      return originalInitialize();
+      const result = await originalInitialize();
+      // Schema upgrades leave bindings empty until the next put. Seed from live
+      // contribution metadata when the plugin still has sync-credential* rows.
+      try {
+        if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
+          secretStore.backfillSyncProviderBindingsFromLiveProviders(
+            contributionService.listProviders({ kind: "sync" }),
+          );
+        }
+      } catch {
+        // Best-effort; startup must continue.
+      }
+      return result;
     };
     const terminalDataPipelineService = options.electron.MessageChannelMain
       ? new PluginTerminalDataPipelineService({

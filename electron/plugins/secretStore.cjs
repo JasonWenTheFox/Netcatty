@@ -210,10 +210,50 @@ class PluginSecretStore {
     }
     // Do not infer ownership from sync-credential* key prefixes: a parent
     // plugin id may namespace-prefix another plugin's provider and would cause
-    // disconnect to delete the wrong secrets. Pre-binding installs recover
-    // ownership via backfillSyncProviderBindingsFromLegacySecrets (legacy
-    // sync-provider-map:* rows) or the next successful put that binds.
+    // disconnect to delete the wrong secrets. Pre-binding installs recover via
+    // (1) backfillSyncProviderBindingsFromLegacySecrets for intermediate map
+    // rows, (2) backfillSyncProviderBindingsFromLiveProviders using host
+    // contribution metadata at startup, or (3) the next successful put.
     return undefined;
+  }
+
+  /**
+   * Seed missing provider→plugin bindings from live contribution metadata.
+   *
+   * Real schema-2 installs only stored `sync-credential*` secrets (no map rows
+   * and no binding table). After upgrade, use the host's provider catalog —
+   * never secret-key prefix guessing — so disconnect can still wipe credentials
+   * once the contribution disappears. Only binds when the owning plugin already
+   * has sync-credential* rows and no binding exists yet.
+   *
+   * @param {Array<{ pluginId?: string, id?: string, provider?: { id?: string } }>} providers
+   * @returns {number} number of newly written bindings
+   */
+  backfillSyncProviderBindingsFromLiveProviders(providers) {
+    if (!Array.isArray(providers)) return 0;
+    if (typeof this.database.listPluginIdsWithSecretKeyPrefix !== "function") return 0;
+    const credentialOwners = new Set(
+      this.database.listPluginIdsWithSecretKeyPrefix("sync-credential")
+        .filter((id) => typeof id === "string" && id.length > 0),
+    );
+    if (credentialOwners.size === 0) return 0;
+    let promoted = 0;
+    for (const entry of providers) {
+      const pluginId = entry?.pluginId;
+      const providerId = entry?.provider?.id ?? entry?.id;
+      if (typeof pluginId !== "string" || pluginId.length < 1) continue;
+      if (typeof providerId !== "string" || providerId.length < 1) continue;
+      if (!credentialOwners.has(pluginId)) continue;
+      if (!providerId.startsWith(`${pluginId}.`)) continue;
+      if (this.resolveSyncProviderPlugin(providerId)) continue;
+      try {
+        this.bindSyncProviderPlugin(pluginId, providerId);
+        promoted += 1;
+      } catch {
+        /* invalid contribution ids stay unbound */
+      }
+    }
+    return promoted;
   }
 
   unbindSyncProviderPlugin(pluginId, providerId) {
