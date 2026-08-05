@@ -2251,6 +2251,22 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }
     });
 
+
+    /** Close with 2s bound so a dead channel cannot pin the path gate. */
+    const boundCloseSftpHandle = (handle, thenFn) => {
+      let closed = false;
+      const finishClose = () => {
+        if (closed) return;
+        closed = true;
+        thenFn();
+      };
+      const closeTimer = setTimeout(finishClose, 2000);
+      closeSftpHandle(sftp, handle).then(
+        () => { clearTimeout(closeTimer); finishClose(); },
+        () => { clearTimeout(closeTimer); finishClose(); },
+      );
+    };
+
     // Late shared write OPEN after settle: close handle, and for generated
     // truncating stages also unlink so a force-completed drain / stage delete
     // cannot leave a recreate orphan after cancel OR channel-error settle
@@ -2273,21 +2289,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         finish();
       };
       if (handle) {
-        let closed = false;
-        const finishClose = () => {
-          if (closed) return;
-          closed = true;
-          afterClose();
-        };
-        const closeTimer = setTimeout(finishClose, 2000);
-        closeSftpHandle(sftp, handle).then(
-          () => { clearTimeout(closeTimer); finishClose(); },
-          () => { clearTimeout(closeTimer); finishClose(); },
-        );
+        boundCloseSftpHandle(handle, afterClose);
         return;
       }
       afterClose();
     };
+
 
     const settle = (fn, value) => {
       if (settled) return;
@@ -2405,13 +2412,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             // already raced. In-place finals are close-only. Same-id retries
             // that re-own activeTransfers skip unlink (resume stage reuse).
             if (canUnlinkLateGeneratedStageNow()) {
-              closeSftpHandle(sftp, handle)
-                .catch(() => {})
-                .then(() => unlinkSharedWritePathBestEffort())
-                .then(finishCancel, finishCancel);
+              // Bound close so a dead channel cannot pin the path gate forever
+              // when cancel wins before settle (Codex P2 on e6dfdc9e).
+              boundCloseSftpHandle(handle, () => {
+                unlinkSharedWritePathBestEffort().then(finishCancel, finishCancel);
+              });
               return;
             }
-            closeSftpHandle(sftp, handle).then(finishCancel, finishCancel);
+            boundCloseSftpHandle(handle, finishCancel);
             return;
           }
           finishCancel();
