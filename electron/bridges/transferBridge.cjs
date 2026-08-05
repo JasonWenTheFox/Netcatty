@@ -4164,6 +4164,11 @@ async function startTransferNow(event, payload, onProgress) {
     targetPath,
     sourceSftpId,
     targetSftpId,
+    // Host IDs must ride on the transfer object so path-gate keys stay host-
+    // scoped when a dedicated-resume opens a new sftpId (Codex P1 on d44886e6).
+    sourceHostId: payload.sourceHostId,
+    targetHostId: payload.targetHostId,
+    hostId: payload.hostId || payload.targetHostId || payload.sourceHostId,
     parentTaskId: payload.parentTaskId,
     directoryEntryIndex: payload.directoryEntryIndex,
     directoryEntryIdentity: payload.directoryEntryIdentity,
