@@ -2204,9 +2204,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     const previousAbort = transfer.abort;
     let pathGateReleased = false;
 
+    let pathGateForceTimer = null;
+    const clearPathGateForceTimer = () => {
+      if (!pathGateForceTimer) return;
+      clearTimeout(pathGateForceTimer);
+      pathGateForceTimer = null;
+    };
     const releasePathGate = () => {
       if (!pathGate || pathGateReleased) return;
       pathGateReleased = true;
+      clearPathGateForceTimer();
       pathGate.release();
     };
 
@@ -2226,10 +2233,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
     // OPEN wait may settle without a callback (channel error, or cancel settle
     // timeout). Force-complete the drain so cleanup/lease cannot hang, but
-    // NEVER release the path gate here: a still-in-flight truncating OPEN can
-    // land later and wipe a same-path retry that already wrote (Codex P1 on
+    // NEVER release the path gate here for shared channels: a still-in-flight
+    // truncating OPEN can land later and wipe a same-path retry (Codex P1 on
     // a0b2ce01 / late-unlink-retry). Gate is only released from the OPEN
-    // callback paths (success, error, late finishLateSharedWriteOpen).
+    // callback paths (success, error, late finishLateSharedWriteOpen), or via
+    // armPathGateForceRelease after isolated sftp.end() when the callback is
+    // never expected to arrive.
     const armSharedWriteDrainForceComplete = () => {
       if (!trackSharedWriteDrain || !resolveSharedWriteDrain || drainForceTimer) return;
       drainForceTimer = setTimeout(() => {
@@ -2238,6 +2247,17 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         // callback actually settles (or never, if the channel is dead — safer
         // than reusing a path that a stale truncating OPEN can still wipe).
         completeSharedWriteDrain();
+      }, 2000);
+    };
+
+    // Isolated write OPEN: after sftp.end() the OPEN callback may never fire.
+    // Force-release the path gate so same-path retries are not stuck forever,
+    // while late callbacks still run finishLateSharedWriteOpen (Codex P1).
+    const armPathGateForceRelease = () => {
+      if (!pathGate || pathGateReleased || pathGateForceTimer) return;
+      pathGateForceTimer = setTimeout(() => {
+        pathGateForceTimer = null;
+        releasePathGate();
       }, 2000);
     };
 
@@ -2342,17 +2362,22 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
     const abortDuringOpen = () => {
       transfer.cancelled = true;
-      // Shared write OPEN can truncate/create the remote path. A settle timeout
-      // unblocks the transfer UX; sharedWriteOpenDrain stays pending until the
-      // OPEN callback finishes (or drain force-complete) so cleanup usually
-      // waits. Late truncating generated stages still unlink after close if
-      // cancel won; in-place finals only close.
-      if (!disposeChannel && isWriteOpen && !settled) {
+      // Any write OPEN (shared or isolated) can truncate/create the remote path.
+      // A settle timeout unblocks the transfer UX; the path gate stays held until
+      // the OPEN callback finishes (or isolated force-release after end()) so a
+      // same-path retry cannot race a still-in-flight truncating OPEN (Codex P1
+      // on 76015575). Shared drain stays pending until callback/force-complete.
+      if (isWriteOpen && !settled) {
         try { abortChannel?.(); } catch { /* ignore */ }
         if (!openDrainTimer) {
           openDrainTimer = setTimeout(() => {
             settle(reject, new Error("Transfer cancelled"));
-            armSharedWriteDrainForceComplete();
+            if (trackSharedWriteDrain) {
+              armSharedWriteDrainForceComplete();
+            } else {
+              // Isolated: sftp.end() was requested; OPEN may never return.
+              armPathGateForceRelease();
+            }
           }, 2000);
         }
         return;
@@ -2361,21 +2386,21 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       // sftp.end() cannot win the promise with a channel-close error first.
       settle(reject, new Error("Transfer cancelled"));
       try { abortChannel?.(); } catch { /* ignore */ }
-      if (!trackSharedWriteDrain) {
-        completeSharedWriteDrain();
-        releasePathGate();
-      }
+      completeSharedWriteDrain();
+      releasePathGate();
     };
 
     const onOpenChannelError = (error) => {
       settle(reject, error || new Error("SFTP channel error"));
-      // Shared write: keep drain pending for a late OPEN close, but bound it so
-      // a dead channel that never invokes the OPEN callback cannot hang forever.
-      if (!trackSharedWriteDrain) {
+      // Write OPEN: keep path gate until OPEN callback (or isolated force-release).
+      // Shared drain also stays pending until callback/force-complete.
+      if (trackSharedWriteDrain) {
+        armSharedWriteDrainForceComplete();
+      } else if (isWriteOpen) {
+        armPathGateForceRelease();
+      } else {
         completeSharedWriteDrain();
         releasePathGate();
-      } else {
-        armSharedWriteDrainForceComplete();
       }
     };
 
@@ -2393,9 +2418,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       sftp.open(filePath, resolveFlags(), (error, handle) => {
         if (settled) {
           // Cancel / channel error already settled (possibly via drain timeout).
-          // Still close a late shared handle; cancel + truncating "w" also
-          // unlinks so a force-completed drain cannot orphan a recreated stage.
-          if (!error && handle && !disposeChannel) {
+          // Late write OPEN (shared or isolated) still invalidates same-path
+          // writers and releases the gate (Codex P1 on 76015575).
+          if (!error && handle && isWriteOpen) {
             finishLateSharedWriteOpen(handle);
             return;
           }
@@ -2421,7 +2446,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           const supersededErr = new Error("Transfer superseded");
           supersededErr.noTransferFallback = true;
           settle(reject, supersededErr);
-          if (handle && !disposeChannel) {
+          if (handle && isWriteOpen) {
             finishLateSharedWriteOpen(handle);
             return;
           }
