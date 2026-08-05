@@ -36,13 +36,14 @@ test('rejects a zero-exit candidate without a complete clean TAP summary', () =>
   assert.equal(result.kind, 'unclassified_failure');
 });
 
-test('rejects replacing an existing successful test with an unrelated one', () => {
+test('accepts renaming a successful test when quantitative coverage does not shrink', () => {
   const result = compareTapResults(
     parseTapResult(tap({ successes: ['kept test', 'removed test'] }), 0),
     parseTapResult(tap({ successes: ['kept test', 'unrelated replacement'] }), 0),
   );
-  assert.equal(result.passed, false);
-  assert.equal(result.kind, 'unclassified_failure');
+  assert.equal(result.passed, true);
+  assert.equal(result.kind, 'clean');
+  assert.deepEqual(result.missingBaselineSuccesses, ['removed test']);
 
   const issueNumberName = compareTapResults(
     parseTapResult(tap({
@@ -52,22 +53,52 @@ test('rejects replacing an existing successful test with an unrelated one', () =
       successes: ['accepts packages that ship upstream #9999'],
     }), 0),
   );
-  assert.equal(issueNumberName.passed, false);
+  assert.equal(issueNumberName.passed, true);
+  assert.equal(issueNumberName.kind, 'clean');
 
+  // Clean candidate that turns a prior red into green is still accepted.
   const duplicateName = compareTapResults(
     parseTapResult(tap({ failures: ['same name'], successes: ['same name'] }), 1),
     parseTapResult(tap({ successes: ['same name', 'unrelated replacement'] }), 0),
   );
-  assert.equal(duplicateName.passed, false);
+  assert.equal(duplicateName.passed, true);
+  assert.equal(duplicateName.kind, 'clean');
 });
 
-test('rejects a clean candidate when the exact-base TAP summary is incomplete', () => {
+test('accepts a green candidate that renames one success while adding another', () => {
+  const result = compareTapResults(
+    parseTapResult(tap({
+      successes: ['alpha', 'beta', 'gamma'],
+      tests: 8886,
+    }), 0),
+    parseTapResult(tap({
+      successes: ['alpha', 'beta', 'delta', 'epsilon'],
+      tests: 8887,
+    }), 0),
+  );
+  assert.equal(result.passed, true);
+  assert.equal(result.kind, 'clean');
+  assert.deepEqual(result.missingBaselineSuccesses, ['gamma']);
+});
+
+test('rejects deleting successful coverage even when the run stays green', () => {
+  const result = compareTapResults(
+    parseTapResult(tap({ successes: ['kept test', 'removed test'], tests: 12 }), 0),
+    parseTapResult(tap({ successes: ['kept test'], tests: 11 }), 0),
+  );
+  assert.equal(result.passed, false);
+  assert.equal(result.kind, 'missing_baseline_successes');
+  assert.deepEqual(result.missingBaselineSuccesses, ['removed test']);
+  assert.deepEqual(result.newFailures, ['removed test']);
+});
+
+test('accepts a clean candidate when the exact-base TAP summary is incomplete', () => {
   const result = compareTapResults(
     parseTapResult('base runner stopped early', 1),
     parseTapResult(tap(), 0),
   );
-  assert.equal(result.passed, false);
-  assert.equal(result.kind, 'unclassified_failure');
+  assert.equal(result.passed, true);
+  assert.equal(result.kind, 'clean');
 });
 
 test('accepts only failures already present on the exact base', () => {

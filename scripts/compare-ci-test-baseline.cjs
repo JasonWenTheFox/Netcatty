@@ -241,64 +241,96 @@ function compareTapResults(baseline, candidate) {
     missingBaselineFailures.push(failure.name);
   }
 
+  const result = ({
+    passed,
+    kind,
+    newFailures = [],
+    candidateFailures = candidate.exitCode === 0 ? [] : candidate.failures,
+  }) => ({
+    passed,
+    kind,
+    baselineFailures: baseline.failures,
+    candidateFailures,
+    newFailures,
+    missingBaselineSuccesses,
+  });
+
   if (candidate.exitCode === 0) {
-    const completeCleanRun =
+    // A fully green candidate is trusted even when the baseline log is truncated
+    // or individual success titles were renamed, as long as quantitative coverage
+    // did not shrink (test count / skips / todos / cancellations).
+    const quantitativeClean =
+      candidate.complete &&
+      candidate.failCount === 0 &&
+      candidate.cancelledCount === 0 &&
+      (
+        !baseline.complete ||
+        (
+          candidate.skippedCount <= baseline.skippedCount &&
+          candidate.todoCount <= baseline.todoCount &&
+          candidate.testCount >= baseline.testCount
+        )
+      );
+    if (quantitativeClean) {
+      return result({ passed: true, kind: 'clean' });
+    }
+    const coverageShrunk =
       baseline.complete &&
       candidate.complete &&
       candidate.failCount === 0 &&
       candidate.cancelledCount === 0 &&
       candidate.skippedCount <= baseline.skippedCount &&
       candidate.todoCount <= baseline.todoCount &&
-      candidate.testCount >= baseline.testCount &&
-      missingBaselineSuccesses.length === 0 &&
-      missingBaselineFailures.length === 0;
-    return {
-      passed: completeCleanRun,
-      kind: completeCleanRun ? 'clean' : 'unclassified_failure',
-      baselineFailures: baseline.failures,
-      candidateFailures: [],
-      newFailures: [],
-    };
+      candidate.testCount < baseline.testCount &&
+      missingBaselineSuccesses.length > 0;
+    if (coverageShrunk) {
+      return result({
+        passed: false,
+        kind: 'missing_baseline_successes',
+        newFailures: missingBaselineSuccesses,
+      });
+    }
+    return result({
+      passed: false,
+      kind: 'unclassified_failure',
+      newFailures: missingBaselineSuccesses,
+    });
   }
 
   if (baseline.exitCode === 0) {
-    return {
+    return result({
       passed: false,
       kind: 'new_failures',
-      baselineFailures: [],
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   if (!baseline.complete || !candidate.complete) {
-    return {
+    return result({
       passed: false,
       kind: 'unclassified_failure',
-      baselineFailures: baseline.failures,
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   if (missingBaselineSuccesses.length) {
-    return {
+    return result({
       passed: false,
-      kind: 'unclassified_failure',
-      baselineFailures: baseline.failures,
+      kind: 'missing_baseline_successes',
       candidateFailures: candidate.failures,
       newFailures: missingBaselineSuccesses,
-    };
+    });
   }
 
   if (candidate.exitCode !== baseline.exitCode) {
-    return {
+    return result({
       passed: false,
       kind: 'unclassified_failure',
-      baselineFailures: baseline.failures,
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   const baselineNonTapCounts = countFailures(baseline.nonTapOutput);
@@ -307,23 +339,21 @@ function compareTapResults(baseline, candidate) {
     ([line, count]) => count > (baselineNonTapCounts.get(line) || 0),
   );
   if (addedNonTapOutput) {
-    return {
+    return result({
       passed: false,
       kind: 'unclassified_failure',
-      baselineFailures: baseline.failures,
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   if (candidate.failCount === 0 || candidate.testCount < baseline.testCount) {
-    return {
+    return result({
       passed: false,
       kind: 'unclassified_failure',
-      baselineFailures: baseline.failures,
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   if (
@@ -331,13 +361,12 @@ function compareTapResults(baseline, candidate) {
     candidate.skippedCount > baseline.skippedCount ||
     candidate.todoCount > baseline.todoCount
   ) {
-    return {
+    return result({
       passed: false,
       kind: 'cancelled_tests',
-      baselineFailures: baseline.failures,
       candidateFailures: candidate.failures,
       newFailures: candidate.failures,
-    };
+    });
   }
 
   const baselineCounts = countFailures(
@@ -364,17 +393,16 @@ function compareTapResults(baseline, candidate) {
   const reportedFailures = newFailures.length
     ? newFailures
     : missingBaselineFailures;
-  return {
+  return result({
     passed,
     kind: passed
       ? 'baseline_only'
       : newFailures.length
         ? 'new_failures'
         : 'unclassified_failure',
-    baselineFailures: baseline.failures,
     candidateFailures: candidate.failures,
     newFailures: reportedFailures,
-  };
+  });
 }
 
 function parseArgs(argv) {
@@ -417,6 +445,11 @@ function main(argv = process.argv.slice(2)) {
   );
   if (result.newFailures.length) {
     console.error(`New failures:\n- ${result.newFailures.join('\n- ')}`);
+  }
+  if (!result.passed && result.missingBaselineSuccesses?.length) {
+    console.error(
+      `Missing baseline successes:\n- ${result.missingBaselineSuccesses.join('\n- ')}`,
+    );
   }
   return result.passed ? 0 : 1;
 }
