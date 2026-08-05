@@ -635,6 +635,14 @@ test('actionable author follow-ups without an open bot PR are reclassified', () 
     }),
     decision,
   );
+  assert.equal(
+    auto.refineIssueCommentRoute(decision, {
+      hasOpenBotPull: false,
+      labels: ['triage:unclear', 'unclear', 'ready-for-human'],
+      body: '补充：复现步骤是打开 Vault 再连局域网主机。',
+    }),
+    decision,
+  );
   // ready-for-human alone must NOT block reclassify (feature_defer / other /
   // implement-failure handoffs still need actionable follow-ups to classify).
   assert.deepEqual(

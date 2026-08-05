@@ -2447,10 +2447,13 @@ function refineIssueCommentRoute(decision, {
 } = {}) {
   if (decision?.kind !== 'issue_followup' || hasOpenBotPull) return decision;
   const names = normalizeIssueLabelNames(labels);
-  // Disputed auto-close outcomes must stay on follow-up. Do not gate on
-  // ready-for-human alone — that label also covers feature_defer / other /
-  // implement failures that should still be allowed to re-enter classify.
-  if (names.includes('triage:already-available')) return decision;
+  // Disputed auto-close outcomes (already_available / unclear) must stay on
+  // follow-up after reopen handoff. Do not gate on ready-for-human alone —
+  // that label also covers feature_defer / other / implement failures that
+  // should still be allowed to re-enter classify.
+  if (names.some((name) => ISSUE_AUTO_CLOSE_HANDOFF_LABELS.has(name))) {
+    return decision;
+  }
   const simpleKind = classifySimpleIssueFollowup([{ body }]);
   if (simpleKind) return decision;
   return {
