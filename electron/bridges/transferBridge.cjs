@@ -3423,6 +3423,12 @@ async function uploadFileConcurrent(
     }
     try { sftp.removeListener?.("error", onChannelError); } catch { /* ignore */ }
     if (remoteCloseError) throw remoteCloseError;
+    // After the drain barrier, a late stale OPEN may have zeroed the stage while
+    // this attempt already finished writing. Fail closed so promotion cannot
+    // rename a corrupt stage (Codex P1 on 2898c4c0).
+    if (!failed && !transfer.cancelled && transfer.staleOpenTruncatedStage) {
+      throw new Error("Remote stage truncated by stale OPEN");
+    }
   }
 }
 
@@ -4606,6 +4612,12 @@ async function startTransferNow(event, payload, onProgress) {
         signal: transfer.signal,
         assertCanPromote() {
           if (isTransferCancelled(transfer)) throw new Error("Transfer cancelled");
+          // Late force-completed OPEN "w" from a prior same-id attempt can
+          // truncate the stage after concurrent write finished; do not rename
+          // a zeroed/corrupt stage to the final path (Codex P1 on 2898c4c0).
+          if (transfer.staleOpenTruncatedStage) {
+            throw new Error("Remote stage truncated by stale OPEN");
+          }
         },
         commitPromotion() {
           transfer.completionCommitted = true;
@@ -5030,6 +5042,9 @@ async function startTransferNow(event, payload, onProgress) {
           signal: transfer.signal,
           assertCanPromote() {
             if (isTransferCancelled(transfer)) throw new Error("Transfer cancelled");
+            if (transfer.staleOpenTruncatedStage) {
+              throw new Error("Remote stage truncated by stale OPEN");
+            }
           },
           commitPromotion() {
             transfer.completionCommitted = true;
