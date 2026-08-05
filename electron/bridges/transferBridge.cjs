@@ -2110,14 +2110,18 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     : null;
   // Match sftpBridge.runFastPutOnChannel: only unlink planner-generated stages.
   const generatedStagePath = options.generatedStagePath === true;
+  // flags may be a getter so afterPathGate can shrink the resume checkpoint and
+  // switch r+ → w before the actual OPEN (Codex P2).
+  const resolveFlags = () => (typeof flags === "function" ? flags() : flags);
   // ssh2 string flags: "r" is read-only; anything else can create/truncate.
-  const isWriteOpen = String(flags ?? "r") !== "r";
-  const isTruncatingOpen = String(flags ?? "r") === "w";
+  // Treat function flags as write opens (caller only uses r+/w for transfers).
+  const isWriteOpen = typeof flags === "function" || String(flags ?? "r") !== "r";
+  const isTruncatingOpen = typeof flags !== "function" && String(flags ?? "r") === "w";
   const trackSharedWriteDrain = !disposeChannel && isWriteOpen;
-  // Path-gate all shared writes (including "r+" resume). A pending truncating
-  // OPEN "w" can still zero the stage after an "r+" retry has started writing
-  // (Codex P1 on 30308203).
-  const pathGate = trackSharedWriteDrain
+  // Path-gate EVERY write open (shared and isolated, "w" and "r+"). An isolated
+  // recovery OPEN must still wait for a stale shared truncating OPEN on the same
+  // host path (Codex P1 on 294b7a4b / 40db393f).
+  const pathGate = isWriteOpen
     ? beginTruncatingSharedWriteOpen(filePath, sharedWriteOpenSessionKey(sftp, transfer))
     : null;
   // Late truncating OPEN after settle (cancel or channel-error force-complete)
@@ -2367,7 +2371,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     sftp.on?.("error", onOpenChannelError);
 
     try {
-      sftp.open(filePath, flags, (error, handle) => {
+      sftp.open(filePath, resolveFlags(), (error, handle) => {
         if (settled) {
           // Cancel / channel error already settled (possibly via drain timeout).
           // Still close a late shared handle; cancel + truncating "w" also
@@ -2510,18 +2514,34 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (transfer.abort === wrappedAbort) {
         transfer.abort = previousAbort;
       }
-      if (transfer.cancelled) {
-        // Prior has resolved (or never existed); safe to release our gate now.
+      // After waiting on a prior OPEN, re-validate resume checkpoints so a
+      // truncating OPEN that landed while we waited cannot leave us writing
+      // past a wiped stage (Codex P2 on 294b7a4b).
+      const afterGate = typeof options.afterPathGate === "function"
+        ? Promise.resolve().then(() => options.afterPathGate())
+        : Promise.resolve();
+      afterGate.then(() => {
+        if (transfer.cancelled) {
+          // Prior has resolved (or never existed); safe to release our gate now.
+          pathGate.release();
+          if (resolveSharedWriteDrain) {
+            const resolveDrain = resolveSharedWriteDrain;
+            resolveSharedWriteDrain = null;
+            resolveDrain();
+          }
+          reject(new Error("Transfer cancelled"));
+          return;
+        }
+        runOpen().then(resolve, reject);
+      }, (err) => {
         pathGate.release();
         if (resolveSharedWriteDrain) {
           const resolveDrain = resolveSharedWriteDrain;
           resolveSharedWriteDrain = null;
           resolveDrain();
         }
-        reject(new Error("Transfer cancelled"));
-        return;
-      }
-      runOpen().then(resolve, reject);
+        reject(err instanceof Error ? err : new Error(String(err?.message || err)));
+      });
     };
 
     pathGate.waitForPrior.then(startOpen, startOpen);
@@ -3304,7 +3324,9 @@ async function uploadFileConcurrent(
 ) {
   const disposeChannel = options.disposeChannel !== false;
   const generatedStagePath = options.generatedStagePath === true;
-  const checkpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
+  // Mutable: may shrink after path-gate wait if a stale truncating OPEN wiped
+  // the stage while we were waiting (Codex P2 on 294b7a4b).
+  let checkpoint = Math.max(0, Math.min(transfer.checkpointBytes || 0, fileSize));
   let channelError = null;
   const onChannelError = (error) => {
     channelError = channelError || error;
@@ -3371,9 +3393,43 @@ async function uploadFileConcurrent(
     remoteHandle = await openSftpHandleForTransfer(
       sftp,
       remotePath,
-      checkpoint > 0 ? "r+" : "w",
+      // Getter so afterPathGate can shrink checkpoint and switch r+ → w.
+      () => (checkpoint > 0 ? "r+" : "w"),
       transfer,
-      { disposeChannel, abortChannel, generatedStagePath },
+      {
+        disposeChannel,
+        abortChannel,
+        generatedStagePath,
+        afterPathGate: async () => {
+          // Re-read durable stage size after waiting; a prior OPEN "w" may have
+          // truncated the file while we were queued (Codex P2).
+          if (checkpoint <= 0 || !transfer.stagedRemote) return;
+          try {
+            const staged = transfer.stagedRemote;
+            let size = null;
+            if (isScpModeClient(staged.client)) {
+              const st = await getScpBackendForClient(staged.client).stat(staged.path, {
+                encoding: staged.encoding,
+              });
+              size = Number(st?.size);
+            } else if (typeof staged.client?.stat === "function") {
+              const st = await staged.client.stat(
+                encodePathForSession(staged.sftpId, staged.path, staged.encoding),
+              );
+              size = Number(st?.size);
+            }
+            if (Number.isFinite(size) && size >= 0 && size < checkpoint) {
+              checkpoint = size;
+              transfer.checkpointBytes = size;
+              try {
+                sendProgress(size, fileSize, { force: true, checkpointBytes: size });
+              } catch { /* best-effort */ }
+            }
+          } catch {
+            // Missing stage → fall through; OPEN "w" or r+ will fail and retry.
+          }
+        },
+      },
     );
     if (channelError) throw channelError;
     if (transfer.cancelled) throw new Error("Transfer cancelled");
