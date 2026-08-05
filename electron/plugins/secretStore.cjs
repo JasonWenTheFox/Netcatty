@@ -218,13 +218,14 @@ class PluginSecretStore {
   }
 
   /**
-   * Seed missing provider→plugin bindings from live contribution metadata.
+   * Seed missing provider→plugin bindings from contribution metadata.
    *
-   * Real schema-2 installs only stored `sync-credential*` secrets (no map rows
-   * and no binding table). After upgrade, use the host's provider catalog —
-   * never secret-key prefix guessing — so disconnect can still wipe credentials
-   * once the contribution disappears. Only binds when the owning plugin already
-   * has sync-credential* rows and no binding exists yet.
+   * Real schema-2 installs only stored plugin-scoped `sync-credential*` rows
+   * (no per-provider ownership). After upgrade, seed a binding only when a
+   * plugin with credentials has exactly one sync provider id across the
+   * catalog: binding every historical/active provider would let disconnecting
+   * a stale provider wipe the shared credential prefix used by the live one.
+   * Multi-provider plugins wait for the next successful put (or map backfill).
    *
    * @param {Array<{ pluginId?: string, id?: string, provider?: { id?: string } }>} providers
    * @returns {number} number of newly written bindings
@@ -237,7 +238,8 @@ class PluginSecretStore {
         .filter((id) => typeof id === "string" && id.length > 0),
     );
     if (credentialOwners.size === 0) return 0;
-    let promoted = 0;
+    /** @type {Map<string, Set<string>>} */
+    const providersByPlugin = new Map();
     for (const entry of providers) {
       const pluginId = entry?.pluginId;
       const providerId = entry?.provider?.id ?? entry?.id;
@@ -245,6 +247,14 @@ class PluginSecretStore {
       if (typeof providerId !== "string" || providerId.length < 1) continue;
       if (!credentialOwners.has(pluginId)) continue;
       if (!providerId.startsWith(`${pluginId}.`)) continue;
+      const set = providersByPlugin.get(pluginId) || new Set();
+      set.add(providerId);
+      providersByPlugin.set(pluginId, set);
+    }
+    let promoted = 0;
+    for (const [pluginId, providerIds] of providersByPlugin) {
+      if (providerIds.size !== 1) continue;
+      const providerId = [...providerIds][0];
       if (this.resolveSyncProviderPlugin(providerId)) continue;
       try {
         this.bindSyncProviderPlugin(pluginId, providerId);

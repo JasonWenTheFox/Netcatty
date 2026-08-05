@@ -476,8 +476,7 @@ test("live provider backfill seeds bindings for v2 credential-only upgrades", (c
     { pluginId: "com.disabled", provider: { id: "com.disabled.sync" } },
     // No credentials under this plugin — skip.
     { pluginId: "com.other", provider: { id: "com.other.cloud" } },
-    // Wrong namespace — skip without clobbering.
-    { pluginId: "com.example", provider: { id: "com.evil.sync" } },
+    // Wrong namespace alone would be multi with sync below — still skip evil.
   ]);
   assert.equal(promoted, 2);
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
@@ -490,5 +489,16 @@ test("live provider backfill seeds bindings for v2 credential-only upgrades", (c
     ]),
     0,
   );
+  // Multi-provider plugins must not all bind from one shared credential row.
+  store.set("com.multi", "sync-credential", "shared");
+  assert.equal(
+    store.backfillSyncProviderBindingsFromLiveProviders([
+      { pluginId: "com.multi", provider: { id: "com.multi.old" } },
+      { pluginId: "com.multi", provider: { id: "com.multi.new" } },
+    ]),
+    0,
+  );
+  assert.equal(store.resolveSyncProviderPlugin("com.multi.old"), undefined);
+  assert.equal(store.resolveSyncProviderPlugin("com.multi.new"), undefined);
   database.close();
 });
