@@ -504,6 +504,39 @@ export function applyPluginImporterDestination(
     existingFingerprints.add(fingerprint);
     retainedImported.push(host);
   }
+  const retainedImportedIds = new Set(retainedImported.map((host) => host.id));
+  const droppedImported = importedHosts.filter((host) => !retainedImportedIds.has(host.id));
+  const collectHostCredentialIds = (hosts: ReadonlyArray<Host>): Set<string> => {
+    const ids = new Set<string>();
+    for (const host of hosts) {
+      if (host.identityId) ids.add(host.identityId);
+      if (host.telnetIdentityId) ids.add(host.telnetIdentityId);
+      if (host.identityFileId) ids.add(host.identityFileId);
+      const pluginCredentialId = host.pluginConnection?.credentialId;
+      if (pluginCredentialId) ids.add(pluginCredentialId);
+    }
+    return ids;
+  };
+  const keptCredentialIds = collectHostCredentialIds([...existingHosts, ...retainedImported]);
+  const droppedOnlyCredentialIds = new Set(
+    [...collectHostCredentialIds(droppedImported)].filter((id) => !keptCredentialIds.has(id)),
+  );
+  const nextIdentities = merged.identities.filter((identity) => !droppedOnlyCredentialIds.has(identity.id));
+  const keptIdentityKeyIds = new Set(
+    nextIdentities.flatMap((identity) => (identity.keyId ? [identity.keyId] : [])),
+  );
+  const prunedIdentityKeyIds = new Set(
+    merged.identities
+      .filter((identity) => droppedOnlyCredentialIds.has(identity.id))
+      .flatMap((identity) => (identity.keyId ? [identity.keyId] : [])),
+  );
+  const nextKeys = merged.keys.filter((key) => {
+    if (keptCredentialIds.has(key.id) || keptIdentityKeyIds.has(key.id)) return true;
+    if (droppedOnlyCredentialIds.has(key.id) || prunedIdentityKeyIds.has(key.id)) return false;
+    return true;
+  });
+  const prunedIdentityCount = merged.identities.length - nextIdentities.length;
+  const prunedKeyCount = merged.keys.length - nextKeys.length;
   const existingGroupSet = new Set([
     ...existingCustomGroups,
     ...existingHosts.flatMap((host) => host.group ? [host.group] : []),
@@ -521,12 +554,16 @@ export function applyPluginImporterDestination(
   return {
     ...merged,
     hosts: [...existingHosts, ...retainedImported],
+    identities: nextIdentities,
+    keys: nextKeys,
     customGroups,
     duplicateCount: merged.duplicateCount + collapsedHostCount,
     addedCount: merged.addedCount
       - previousAddedGroupCount
       + nextAddedGroupCount
-      - collapsedHostCount,
+      - collapsedHostCount
+      - prunedIdentityCount
+      - prunedKeyCount,
   };
 }
 

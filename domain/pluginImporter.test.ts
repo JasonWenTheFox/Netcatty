@@ -597,6 +597,66 @@ test('plugin importer destination skips imports that collide with existing hosts
   assert.equal(targeted.addedCount, 0);
 });
 
+test('plugin importer destination prunes orphan credentials for skipped colliding hosts', () => {
+  const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
+    kind: 'host',
+    value: {
+      label: 'Existing',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'Chosen',
+    },
+  } }]);
+  const importedDrafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'imported-identity',
+      label: 'Imported identity',
+      username: 'root',
+      authMethod: 'password',
+      password: 'secret',
+    } } },
+    { type: 'draft', draft: { kind: 'key', value: {
+      id: 'imported-key',
+      label: 'Imported key',
+      type: 'ED25519',
+      privateKey: 'private-key-material',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'Imported copy',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'lan',
+      identityId: 'imported-identity',
+      identityFileId: 'imported-key',
+    } } },
+  ]);
+  const merged = mergePluginImporterDrafts({
+    hosts: existingDrafts.hosts,
+    identities: [],
+    keys: [],
+    snippets: [],
+    customGroups: ['Chosen'],
+  }, importedDrafts);
+
+  assert.equal(merged.hosts.length, 2);
+  assert.equal(merged.identities.length, 1);
+  assert.equal(merged.keys.length, 1);
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    existingDrafts.hosts.length,
+    { mode: 'group', group: 'Chosen' },
+    ['Chosen'],
+  );
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.deepEqual(targeted.identities, []);
+  assert.deepEqual(targeted.keys, []);
+  assert.equal(targeted.addedCount, 0);
+});
+
 test('plugin importer does not count a host-owned destination group as newly added', () => {
   const existingDrafts = normalizePluginImporterRecords([{ type: 'draft', draft: {
     kind: 'host',
