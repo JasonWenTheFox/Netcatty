@@ -55,6 +55,9 @@ export function buildChatJumpEntries(
 
 /**
  * Expand the rendered tail window so a jump target is mounted in the DOM.
+ * Call again whenever the message list grows while the jump target remains
+ * active; a one-shot expand at jump time is not enough if the tail is
+ * `slice(-count)` and later appends would otherwise slide the window forward.
  */
 export function resolveTailCountForJumpTarget(
   visibleMessages: ReadonlyArray<{ id: string }>,

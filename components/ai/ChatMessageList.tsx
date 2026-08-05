@@ -374,9 +374,15 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
     [messages],
   );
 
-  const hiddenMessageCount = Math.max(0, visibleMessages.length - renderedTailCount);
+  // While a jump target is active, re-resolve the tail against the current list
+  // so streaming appends cannot slide the window past the selected message.
+  const effectiveTailCount = activeJumpMessageId
+    ? resolveTailCountForJumpTarget(visibleMessages, activeJumpMessageId, renderedTailCount)
+    : renderedTailCount;
+
+  const hiddenMessageCount = Math.max(0, visibleMessages.length - effectiveTailCount);
   const displayedMessages = hiddenMessageCount > 0
-    ? visibleMessages.slice(-renderedTailCount)
+    ? visibleMessages.slice(-effectiveTailCount)
     : visibleMessages;
 
   const jumpEntries = useMemo(

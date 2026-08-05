@@ -57,6 +57,15 @@ test('resolveTailCountForJumpTarget expands only when the target is outside the 
   assert.equal(resolveTailCountForJumpTarget(visible, 'missing', 2), 2);
 });
 
+test('resolveTailCountForJumpTarget grows with appends so a pinned target stays mounted', () => {
+  const before = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }];
+  const afterJump = resolveTailCountForJumpTarget(before, 'b', 2);
+  assert.equal(afterJump, 4);
+  // slice(-4) on a longer list would drop 'b' unless the count is re-resolved.
+  const afterAppend = [...before, { id: 'f' }, { id: 'g' }];
+  assert.equal(resolveTailCountForJumpTarget(afterAppend, 'b', afterJump), 6);
+});
+
 test('chatMessageDomId prefixes message ids for DOM anchors', () => {
   assert.equal(chatMessageDomId('msg-12'), 'ai-chat-msg-msg-12');
 });
