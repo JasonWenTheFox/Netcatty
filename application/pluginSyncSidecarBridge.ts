@@ -42,6 +42,8 @@ type ElectronSidecarApi = {
   applyPluginSyncSidecars?: (
     bundle: PluginSyncSidecarBundle | null | undefined,
   ) => Promise<unknown>;
+  /** True only when main process wired PluginSyncSidecarService. */
+  pluginHostReady?: () => boolean;
 };
 
 function getSidecarApi(): ElectronSidecarApi | null {
@@ -53,6 +55,25 @@ function getSidecarApi(): ElectronSidecarApi | null {
   }).netcatty
     ?? (window as Window & { electron?: ElectronSidecarApi }).electron;
   return bridge ?? null;
+}
+
+/**
+ * Whether the main-process sidecar service is wired. Version-change backups
+ * should wait for this (or a grace timeout) before latching, otherwise an
+ * early empty collect permanently skips plugin settings in the upgrade snapshot.
+ */
+export function isPluginSidecarHostReady(): boolean {
+  const api = getSidecarApi();
+  if (!api) return false;
+  if (typeof api.pluginHostReady === 'function') {
+    try {
+      return api.pluginHostReady() === true;
+    } catch {
+      return false;
+    }
+  }
+  // Older / test bridges without the probe: collect presence implies ready.
+  return typeof api.collectPluginSyncSidecars === 'function';
 }
 
 function readBundle(key: string): PluginSyncSidecarBundle | null {

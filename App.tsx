@@ -548,6 +548,9 @@ function App({ settings }: { settings: SettingsState }) {
   }, [buildCurrentSyncPayload]);
 
   const versionBackupAttemptedRef = useRef(false);
+  // Bumps when plugin contributions settle or the sidecar-host grace timer
+  // fires so version-change backups can wait for live sidecar collect.
+  const [pluginSidecarReadyTick, setPluginSidecarReadyTick] = useState(0);
   // Two-stage gate: once the vault has initialized we open the auto-sync
   // gate immediately — the hook's own hasMeaningfulSyncData guard and
   // the cross-window restore barrier prevent an empty-but-not-yet-
@@ -558,6 +561,25 @@ function App({ settings }: { settings: SettingsState }) {
       setStartupSyncSafetyReady(true);
     }
   }, [isVaultInitialized, startupSyncSafetyReady]);
+
+  useEffect(() => {
+    if (isPeerSessionWindow) return;
+    const bridge = netcattyBridge.get() as {
+      onPluginContributionsChanged?: (callback: () => void) => () => void;
+    } | null | undefined;
+    const unsubscribe = bridge?.onPluginContributionsChanged?.(() => {
+      setPluginSidecarReadyTick((v) => v + 1);
+    });
+    // Plugins stay gated off for many installs; still allow a version
+    // backup after a short grace so we do not wait forever for host ready.
+    const graceTimer = window.setTimeout(() => {
+      setPluginSidecarReadyTick((v) => v + 1);
+    }, 5_000);
+    return () => {
+      unsubscribe?.();
+      window.clearTimeout(graceTimer);
+    };
+  }, [isPeerSessionWindow]);
 
   // Retry the version-change backup as hosts/keys/snippets become
   // available. ensureVersionChangeBackup refuses to advance the stored
@@ -571,6 +593,13 @@ function App({ settings }: { settings: SettingsState }) {
     let cancelled = false;
     void (async () => {
       try {
+        const { isPluginSidecarHostReady } = await import('./application/pluginSyncSidecarBridge');
+        // Defer the one-shot upgrade snapshot until the sidecar host is
+        // wired (or the grace tick above has fired). Otherwise we latch a
+        // vault-only backup and permanently miss plugin settings.
+        if (!isPluginSidecarHostReady() && pluginSidecarReadyTick === 0) {
+          return;
+        }
         const payload = await buildCurrentSyncPayloadRef.current();
         if (cancelled) return;
         if (!hasMeaningfulSyncData(payload)) return;
@@ -594,7 +623,7 @@ function App({ settings }: { settings: SettingsState }) {
     return () => {
       cancelled = true;
     };
-  }, [isPeerSessionWindow, isVaultInitialized, hosts, keys, identities, proxyProfiles, snippets, customGroups, snippetPackages, notes, noteGroups, knownHosts]);
+  }, [isPeerSessionWindow, isVaultInitialized, hosts, keys, identities, proxyProfiles, snippets, customGroups, snippetPackages, notes, noteGroups, knownHosts, pluginSidecarReadyTick]);
 
   // Memoized "apply a remote payload safely" callback. Stable identity
   // across renders so useAutoSync's `syncNow` useCallback doesn't rebuild

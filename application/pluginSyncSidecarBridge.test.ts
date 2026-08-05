@@ -30,12 +30,35 @@ const { localStorageAdapter } = await import('../infrastructure/persistence/loca
 const {
   collectPluginSyncSidecarsFromHost,
   commitPluginSidecarsLastKnown,
+  isPluginSidecarHostReady,
 } = await import('./pluginSyncSidecarBridge.ts');
 const { hasMeaningfulCloudSyncData } = await import('./syncPayload.ts');
 
 test.beforeEach(() => {
   localStorage.clear();
   delete (globalThis as { window?: unknown }).window;
+});
+
+test('isPluginSidecarHostReady follows pluginHostReady probe when present', () => {
+  (globalThis as { window: unknown }).window = {
+    netcatty: {
+      pluginHostReady: () => true,
+      async collectPluginSyncSidecars() {
+        return { version: 1, entries: [] };
+      },
+    },
+  };
+  assert.equal(isPluginSidecarHostReady(), true);
+
+  (globalThis as { window: unknown }).window = {
+    netcatty: {
+      pluginHostReady: () => false,
+      async collectPluginSyncSidecars() {
+        return null;
+      },
+    },
+  };
+  assert.equal(isPluginSidecarHostReady(), false);
 });
 
 test('collect defers empty last-known until commit (empty-vault guard ignores last-known alone)', async () => {

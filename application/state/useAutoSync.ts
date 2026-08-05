@@ -558,13 +558,19 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     if (!remoteCheckDoneRef.current) {
       return;
     }
-    const currentHash = await getDataHashRef.current();
-    const hashDecision = resolveAutoSyncHashDecision({
-      currentHash,
-      lastSyncedHash: lastSyncedDataRef.current,
-      appliedSkipHash: skipNextSyncHashRef.current,
-    });
-    manager.setPendingLocalSync(hashDecision === 'sync');
+    try {
+      const currentHash = await getDataHashRef.current();
+      const hashDecision = resolveAutoSyncHashDecision({
+        currentHash,
+        lastSyncedHash: lastSyncedDataRef.current,
+        appliedSkipHash: skipNextSyncHashRef.current,
+      });
+      manager.setPendingLocalSync(hashDecision === 'sync');
+    } catch (error) {
+      // Sidecar collect can throw on host DB/runtime errors; leave the
+      // pending indicator unchanged rather than surfacing an unhandled rejection.
+      console.warn('[AutoSync] Failed to refresh pending local sync:', error);
+    }
   }, [convergentSyncPaused, enabled, sync.hasAnyConnectedProvider, sync.isUnlocked]);
 
   const refreshPendingLocalSyncRef = useRef(refreshPendingLocalSync);
@@ -870,7 +876,11 @@ export const useAutoSync = (config: AutoSyncConfig) => {
           isInitializedRef.current = true;
         }
         if (markCurrentDataSynced && (!hadInitialBaseline || inspectedRemoteChange)) {
-          lastSyncedDataRef.current = await getDataHashRef.current();
+          try {
+            lastSyncedDataRef.current = await getDataHashRef.current();
+          } catch (error) {
+            console.warn('[AutoSync] Failed to capture post-inspect baseline hash:', error);
+          }
         } else if (!markCurrentDataSynced) {
           lastSyncedDataRef.current = '';
         }
@@ -915,9 +925,13 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     const establishInitialBaseline = () => {
       isInitializedRef.current = true;
       void (async () => {
-        const currentHash = await getDataHash();
-        if (cancelled) return;
-        lastSyncedDataRef.current = currentHash;
+        try {
+          const currentHash = await getDataHash();
+          if (cancelled) return;
+          lastSyncedDataRef.current = currentHash;
+        } catch (error) {
+          console.warn('[AutoSync] Failed to establish sync baseline hash:', error);
+        }
       })();
     };
 
@@ -958,7 +972,13 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     syncTimeoutRef.current = setTimeout(() => {
       syncTimeoutRef.current = null;
       void (async () => {
-        const currentHash = await getDataHash();
+        let currentHash: string;
+        try {
+          currentHash = await getDataHash();
+        } catch (error) {
+          console.warn('[AutoSync] Failed to hash local vault before auto-sync:', error);
+          return;
+        }
         if (cancelled) return;
 
         // After a remote apply or merge, skip only that exact applied data.
