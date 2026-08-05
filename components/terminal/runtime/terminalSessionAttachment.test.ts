@@ -18,6 +18,7 @@ import {
   resolveAttachSnapshot,
   tryAttachSessionToTerminal,
   writeSessionData,
+  writeTerminalLine,
 } from "./terminalSessionAttachment.ts";
 import { getVisibleTerminalLineTimestampRows } from "./terminalLineTimestamps.ts";
 import { noteTerminalOutputPressureData } from "./terminalOutputPressure.ts";
@@ -1934,6 +1935,32 @@ test("writeSessionData does not wipe scrollback for delayed sync clears after re
   const output = writes.join("");
   assert.equal(output.includes("\x1b[3J"), false, output);
   assert.equal(output.includes("\x1b[H\x1b[2Jframe"), true, output);
+});
+
+test("writeTerminalLine flushes a held DEC 2026 partial before the lifecycle line", () => {
+  const { term, writes } = createFakeTerm();
+  const ctx = createContext(false);
+
+  // Open a synchronized frame without its closer — held by the frame gate.
+  writeSessionData(ctx as never, term, "\x1b[?2026h\x1b[1;1Hpartial-frame");
+  assert.equal(
+    writes.join(""),
+    "",
+    "incomplete frame must stay buffered until flush or fail-open",
+  );
+
+  // Session-exit style lifecycle line must not race a later fail-open release.
+  writeTerminalLine(ctx as never, term, "\r\n[session closed]");
+
+  const output = writes.join("");
+  const partialAt = output.indexOf("partial-frame");
+  const closedAt = output.indexOf("[session closed]");
+  assert.ok(partialAt >= 0, `expected held partial in output: ${JSON.stringify(output)}`);
+  assert.ok(closedAt >= 0, `expected exit line in output: ${JSON.stringify(output)}`);
+  assert.ok(
+    partialAt < closedAt,
+    `held frame must precede exit line (partial@${partialAt}, closed@${closedAt}): ${JSON.stringify(output)}`,
+  );
 });
 
 test("writeSessionData always uses ledger recording regardless of gutter toggle", () => {

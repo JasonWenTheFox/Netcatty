@@ -4,8 +4,10 @@ import type { Terminal as XTerm } from "@xterm/xterm";
 
 import {
   enqueueTerminalWrite,
+  isXtermWriteBufferIdle,
   setTerminalWriteQueueDropHandler,
   WRITE_QUEUE_STALL_TIMEOUT_MS,
+  type TerminalWriteSignal,
 } from "./terminalWriteQueue";
 
 /**
@@ -26,14 +28,35 @@ import {
  * keyboard goes dead.
  *
  * The queue must not depend solely on xterm's callback. A stall watchdog
- * force-completes an active item that has made no progress and has nothing
- * scheduled to make any, acknowledging its bytes so flow control recovers.
+ * force-completes an active item that has made no progress, has nothing
+ * scheduled, *and* whose xterm write buffer is idle — acknowledging its bytes
+ * once so flow control recovers without double-acking a late real callback.
  */
 
 const settle = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 const makeTerm = (): XTerm => ({}) as XTerm;
+
+type PendingBufferTerm = XTerm & {
+  _core: {
+    _writeBuffer: {
+      _pendingData: number;
+      _writeBuffer: Array<string | Uint8Array>;
+      _bufferOffset: number;
+    };
+  };
+};
+
+const makeBusyTerm = (pendingData: number): PendingBufferTerm => ({
+  _core: {
+    _writeBuffer: {
+      _pendingData: pendingData,
+      _writeBuffer: [],
+      _bufferOffset: 0,
+    },
+  },
+}) as PendingBufferTerm;
 
 test("a write whose callback never fires does not wedge the queue forever", async () => {
   const term = makeTerm();
@@ -42,7 +65,7 @@ test("a write whose callback never fires does not wedge the queue forever", asyn
   setTerminalWriteQueueDropHandler(term, (bytes) => dropped.push(bytes));
 
   // The first write simulates a lost xterm callback: it runs, but its `done`
-  // is never called.
+  // is never called. Term has no write buffer → treated as idle.
   enqueueTerminalWrite(term, 4096, () => { ran.push(0); });
 
   // Ordinary writes queued behind the stalled one.
@@ -114,4 +137,67 @@ test("a late callback after a watchdog recovery does not double-advance", async 
 
   assert.deepEqual(afterRecovery, [0, 1, 2, 3], "queue recovered before the late callback");
   assert.deepEqual(ran, [0, 1, 2, 3], "a late callback must not re-run or duplicate writes");
+});
+
+test("late callback after watchdog cannot re-claim flow ack (no double-ack)", async () => {
+  const term = makeTerm();
+  const dropped: number[] = [];
+  setTerminalWriteQueueDropHandler(term, (bytes) => dropped.push(bytes));
+
+  let signal: TerminalWriteSignal | undefined;
+  let stalledDone: (() => void) | undefined;
+  enqueueTerminalWrite(term, 4096, (done, sig) => {
+    signal = sig;
+    stalledDone = done;
+  }, { dropBytes: 4096 });
+
+  enqueueTerminalWrite(term, 10, (done) => { done(); });
+
+  await settle(WRITE_QUEUE_STALL_TIMEOUT_MS + 300);
+  assert.deepEqual(dropped, [4096], "watchdog claims and acks once");
+  assert.equal(signal?.isCancelled(), true);
+  assert.equal(
+    signal?.tryClaimFlowAck(), false,
+    "late path must not re-claim after watchdog"
+  );
+
+  // Late real callback still calls done; queue must ignore it.
+  stalledDone?.();
+  await settle(50);
+  assert.deepEqual(dropped, [4096], "no second onDropped from late done");
+});
+
+test("watchdog does not force-complete while xterm write buffer is still busy", async () => {
+  const term = makeBusyTerm(8192);
+  assert.equal(isXtermWriteBufferIdle(term), false);
+
+  const ran: number[] = [];
+  const dropped: number[] = [];
+  setTerminalWriteQueueDropHandler(term, (bytes) => dropped.push(bytes));
+
+  let release: (() => void) | undefined;
+  enqueueTerminalWrite(term, 4096, (done) => {
+    ran.push(0);
+    release = done;
+  });
+  enqueueTerminalWrite(term, 10, (done) => {
+    ran.push(1);
+    done();
+  });
+
+  // Well past one stall timeout: still busy inside xterm → must not recover yet.
+  await settle(WRITE_QUEUE_STALL_TIMEOUT_MS + 100);
+  assert.deepEqual(ran, [0], "must not advance while xterm is still parsing");
+  assert.deepEqual(dropped, [], "must not drop/ack a still-in-flight write");
+
+  // Buffer drains (xterm finished parse) but callback still missing → now recover.
+  term._core._writeBuffer._pendingData = 0;
+  await settle(WRITE_QUEUE_STALL_TIMEOUT_MS + 200);
+  assert.deepEqual(ran, [0, 1], "recovers once xterm is idle with no callback");
+  assert.deepEqual(dropped, [4096]);
+
+  // Late callback after recovery is a no-op for the queue.
+  release?.();
+  await settle(20);
+  assert.deepEqual(ran, [0, 1]);
 });

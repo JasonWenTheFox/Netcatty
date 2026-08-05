@@ -458,6 +458,13 @@ export const writeTerminalLine = (
   term: XTerm,
   data: string,
 ) => {
+  // Flush held DEC 2026 frames before lifecycle lines. Without this, a process
+  // that exits mid-frame leaves a fail-open timer armed; the timer would
+  // forward the older partial *after* `[session closed]`, reversing output
+  // order and potentially overwriting the exit message.
+  resetFrameGate(term, (buffer, ingress) => {
+    forwardSessionData(ctx, term, buffer, ingress);
+  });
   // Keep lifecycle/control lines ordered after all preceding PTY output.
   flushPendingTerminalOutputNow(term);
   const lineData = `${data}\r\n`;
@@ -756,7 +763,7 @@ const writeSessionDataImmediate = (
   const displayBytes = data.length;
   const bulkYieldAfter = shouldDegradeTerminalSideWork(term)
     && displayBytes >= XTERM_WRITE_CALLBACK_FAST_PATH_MAX_BYTES;
-  enqueueTerminalWrite(term, displayBytes, (done) => {
+  enqueueTerminalWrite(term, displayBytes, (done, signal) => {
     const shouldMeasurePerf = Boolean(writeOptions.perfTrace);
     const queueItemStartedAt = shouldMeasurePerf ? performance.now() : 0;
     const prepareStartedAt = shouldMeasurePerf ? performance.now() : 0;
@@ -915,10 +922,21 @@ const writeSessionDataImmediate = (
       );
     };
 
+    /**
+     * Flow accounting must be exclusive with the stall watchdog's onDropped
+     * path. When the watchdog force-completes a lost/late callback it claims
+     * first; a subsequent real xterm callback must not re-ack the same bytes.
+     */
+    const commitFlowAckIfOwned = (): boolean => {
+      if (!signal.tryClaimFlowAck()) return false;
+      flow.written(ingressBytes);
+      return true;
+    };
+
     if (deferFlowAck) {
       writePreparedDisplayData(() => {
         finishQueueItem();
-        flow.written(ingressBytes);
+        if (!commitFlowAckIfOwned()) return;
         const deferredTotal = accumulateDeferredTerminalWriteAck(term, ingressBytes);
         if (deferredTotal >= XTERM_WRITE_CALLBACK_BATCH_BYTES) {
           flushDeferredIpcAck();
@@ -933,7 +951,7 @@ const writeSessionDataImmediate = (
     const ackOnCallback = deferredBeforeCallback + ingressBytes;
     writePreparedDisplayData(() => {
       finishQueueItem();
-      flow.written(ingressBytes);
+      if (!commitFlowAckIfOwned()) return;
       if (deferredBeforeCallback > 0) {
         flushIpcAck(ackOnCallback);
       } else {

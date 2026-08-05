@@ -14,21 +14,42 @@ export const WRITE_QUEUE_TURN_BUDGET_MS = 10;
 
 /**
  * How long an active queue item may make no progress, with nothing scheduled to
- * make any, before it is force-completed.
+ * make any, before the stall watchdog considers recovering it.
  *
  * The completion of an item depends on its write closure invoking the callback
  * it is handed, which in the real pipeline is wired to xterm's
  * `term.write(data, cb)`. A lost `cb` — xterm accepting and parsing a write yet
  * never firing its callback — would otherwise wedge the queue permanently.
  *
- * Set above any legitimate single-write callback latency (a callback fires
- * within a frame or two) yet short enough that a recovered stall reads as a
- * brief hitch rather than a second-long freeze. The watchdog additionally fires
- * only when nothing is scheduled, so a slow-but-progressing queue is never
- * disturbed. Aligned with {@link LARGE_WRITE_FLUSH_WATCHDOG_MS} in the session
+ * The watchdog is *not* time-only: it only force-completes when xterm's internal
+ * write buffer is idle (drained). A slow parse that still holds pending data
+ * re-arms the timer instead of treating the write as dropped. That keeps
+ * legitimate multi-hundred-ms callbacks from defeating backpressure.
+ *
+ * Set above any legitimate single-write callback latency once xterm is idle,
+ * yet short enough that a recovered stall reads as a brief hitch rather than a
+ * freeze. Aligned with {@link LARGE_WRITE_FLUSH_WATCHDOG_MS} in the session
  * write path, which guards the same kind of stuck-write condition.
  */
 export const WRITE_QUEUE_STALL_TIMEOUT_MS = 250;
+
+/**
+ * Signal handed to each write closure so flow-control acknowledgement is
+ * exclusive between the normal completion path and the stall-watchdog /
+ * drop-handler path. Callers that perform `flow.written` / IPC ack must claim
+ * via {@link TerminalWriteSignal.tryClaimFlowAck} before acknowledging.
+ */
+export type TerminalWriteSignal = {
+  /** True after the queue force-completed or aborted this item. */
+  isCancelled: () => boolean;
+  /**
+   * Claim exclusive ownership of flow-control ack for this step's dropBytes.
+   * Returns true only once — either the normal completion path or the
+   * watchdog/drop path may claim it. Prevents double-ack when a late xterm
+   * callback arrives after watchdog recovery.
+   */
+  tryClaimFlowAck: () => boolean;
+};
 
 export type TerminalWriteQueueOptions = {
   onDropped?: (bytes: number) => void;
@@ -51,8 +72,54 @@ type QueuedWrite = {
 type QueuedWriteStep = {
   bytes: number;
   dropBytes: number;
-  write: (done: () => void) => void;
+  write: (done: () => void, signal: TerminalWriteSignal) => void;
   yieldAfter: boolean;
+  /** Set once when this step's dropBytes are acknowledged (normal or drop path). */
+  flowAckClaimed: boolean;
+};
+
+/** xterm.js private write-buffer shape used only to detect an idle drain. */
+type XTermWithPrivateWriteBuffer = XTerm & {
+  _core?: {
+    _writeBuffer?: {
+      _bufferOffset?: number;
+      _pendingData?: number;
+      _writeBuffer?: Array<string | Uint8Array>;
+    };
+  };
+};
+
+/**
+ * True when xterm has no queued input left to parse. A missing private API
+ * (tests / future xterm) is treated as idle so recovery still works; a
+ * positive pending count means a write is still in flight and must not be
+ * force-completed on elapsed time alone.
+ */
+export const isXtermWriteBufferIdle = (term: XTerm): boolean => {
+  const writeBuffer = (term as XTermWithPrivateWriteBuffer)._core?._writeBuffer;
+  if (!writeBuffer) return true;
+
+  if (
+    typeof writeBuffer._pendingData === "number"
+    && Number.isFinite(writeBuffer._pendingData)
+    && writeBuffer._pendingData > 0
+  ) {
+    return false;
+  }
+
+  const buffer = writeBuffer._writeBuffer;
+  if (!Array.isArray(buffer) || buffer.length === 0) return true;
+  const offset = typeof writeBuffer._bufferOffset === "number"
+    && Number.isFinite(writeBuffer._bufferOffset)
+    ? Math.max(0, writeBuffer._bufferOffset)
+    : 0;
+  return offset >= buffer.length;
+};
+
+const tryClaimStepFlowAck = (step: QueuedWriteStep): boolean => {
+  if (step.flowAckClaimed) return false;
+  step.flowAckClaimed = true;
+  return true;
 };
 
 type TerminalWriteQueue = {
@@ -115,25 +182,37 @@ const clearStallWatchdog = (queue: TerminalWriteQueue): void => {
 };
 
 /**
- * Unacknowledged bytes of a stalled item: the dispatched-but-uncompleted step
- * and everything after it. Steps before it already fired their callbacks (and
- * with them `flow.written`), so counting the whole item would double-ack them.
- * `nextIndex` points one past the dispatched step, hence `nextIndex - 1`.
+ * Claim and sum unacknowledged dropBytes of a stalled item: the
+ * dispatched-but-uncompleted step and everything after it. Steps before it
+ * already claimed via their write closures, so counting the whole item would
+ * double-ack them. `nextIndex` points one past the dispatched step, hence
+ * `nextIndex - 1`. Claiming here makes a late real callback's
+ * {@link TerminalWriteSignal.tryClaimFlowAck} return false.
  */
-const unackedBytesOf = (item: QueuedWrite): number => {
+const claimUnackedBytesOf = (item: QueuedWrite): number => {
   const from = Math.max(0, item.nextIndex - 1);
-  const remaining = item.steps
-    .slice(from)
-    .reduce((sum, step) => sum + step.dropBytes, 0);
-  return remaining > 0 ? remaining : item.dropBytes;
+  const steps = item.steps.slice(from);
+  if (steps.length === 0) {
+    // No step slots (shouldn't happen for a real item); fall back to item total
+    // only when nothing has been claimed yet via steps.
+    return item.dropBytes;
+  }
+  let unacked = 0;
+  for (const step of steps) {
+    if (tryClaimStepFlowAck(step)) {
+      unacked += step.dropBytes;
+    }
+  }
+  return unacked;
 };
 
 /**
  * Arm a watchdog against a lost write callback wedging the queue. It fires only
  * when the same item is still active, has made no progress since it was armed,
- * and has nothing scheduled to advance it — a genuine stall, never a
- * slow-but-progressing drain. On fire it acknowledges the item's unacked bytes
- * (so flow control resumes) and advances the queue.
+ * has nothing scheduled to advance it, *and* xterm's write buffer is idle — a
+ * genuine lost-callback stall, never a slow-but-progressing parse. On fire it
+ * claims the item's unacked bytes (so flow control resumes once, not twice when
+ * a late callback arrives) and advances the queue.
  */
 const armStallWatchdog = (
   term: XTerm,
@@ -157,9 +236,16 @@ const armStallWatchdog = (
       // it advance. Not a stall — leave it be.
       return;
     }
-    const unacked = unackedBytesOf(item);
-    // Mark cancelled so a late real callback becomes a no-op, then advance.
+    if (!isXtermWriteBufferIdle(term)) {
+      // xterm is still parsing this write. Elapsed time alone is not evidence of
+      // a lost callback — re-arm and wait for a real drain or real progress.
+      armStallWatchdog(term, queue, item);
+      return;
+    }
+    // Mark cancelled so a late real callback becomes a queue no-op, claim flow
+    // ack so the late path cannot double-ack, then advance.
     item.cancelled = true;
+    const unacked = claimUnackedBytesOf(item);
     queue.active = undefined;
     queue.drainBytes = 0;
     if (unacked > 0) {
@@ -320,6 +406,10 @@ const runQueuedWrite = (
 
     let callbackCalledSynchronously = false;
     let insideWrite = true;
+    const signal: TerminalWriteSignal = {
+      isCancelled: () => item.cancelled,
+      tryClaimFlowAck: () => tryClaimStepFlowAck(step),
+    };
     const continueAfterStep = (): void => {
       // A completed step is progress: re-arm the stall watchdog against the new
       // step so a lost callback on a *later* step of a multi-step item is
@@ -354,7 +444,7 @@ const runQueuedWrite = (
         return;
       }
       continueAfterStep();
-    });
+    }, signal);
     insideWrite = false;
     if (callbackCalledSynchronously) {
       continueAfterStep();
@@ -492,7 +582,7 @@ export const flushTerminalWriteQueueBypassingTimers = (term: XTerm): boolean => 
 export const enqueueTerminalWrite = (
   term: XTerm,
   bytes: number,
-  write: (done: () => void) => void,
+  write: (done: () => void, signal: TerminalWriteSignal) => void,
   options: TerminalWriteQueueOptions = {},
 ): void => {
   const queue = getOrCreateQueue(term);
@@ -510,7 +600,13 @@ export const enqueueTerminalWrite = (
   queue.pending.push({
     bytes,
     dropBytes,
-    steps: [{ bytes, dropBytes, write, yieldAfter: Boolean(options.yieldAfter) }],
+    steps: [{
+      bytes,
+      dropBytes,
+      write,
+      yieldAfter: Boolean(options.yieldAfter),
+      flowAckClaimed: false,
+    }],
     nextIndex: 0,
     cancelled: false,
     yieldAfter: Boolean(options.yieldAfter),
