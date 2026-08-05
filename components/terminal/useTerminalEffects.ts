@@ -8,10 +8,10 @@ import { isMacPlatform } from '../../lib/utils';
 import { resolveXTermScrollback } from '../../infrastructure/config/xtermPerformance';
 import {
   createMacOptionForcedSelectionMouseEvent,
+  createRightClickMouseTrackingPressClaim,
   shouldInterceptMouseTrackingContextMenu,
   shouldReplayShiftMouseSelectionAsMacOption,
   shouldStopRightClickMouseTrackingMouseUp,
-  shouldStopShiftRightClickMouseTrackingMouseDown,
 } from './runtime/middleClickBehavior';
 import {
   hasOpenAppDialog,
@@ -1570,6 +1570,8 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     const el = containerRef.current;
     if (!el) return;
 
+    const rightClickPressClaim = createRightClickMouseTrackingPressClaim();
+
     const handleContextMenuCapture = (e: MouseEvent) => {
       if (!shouldInterceptMouseTrackingContextMenu({
         event: e,
@@ -1603,7 +1605,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     };
 
     const handleMouseDownCapture = (e: MouseEvent) => {
-      if (shouldStopShiftRightClickMouseTrackingMouseDown({
+      if (rightClickPressClaim.noteMouseDown({
         event: e,
         mouseTracking: mouseTrackingRef.current,
         status: statusRef.current,
@@ -1634,10 +1636,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     const handleMouseUpCapture = (e: MouseEvent) => {
       if (shouldStopRightClickMouseTrackingMouseUp({
         event: e,
-        mouseTracking: mouseTrackingRef.current,
-        status: statusRef.current,
-        rightClickBehavior: terminalSettingsRef.current?.rightClickBehavior,
-        forceMenuInAlternateScreen: terminalSettingsRef.current?.showContextMenuOverFullscreenApps,
+        claimedMatchingMouseDown: rightClickPressClaim.consumeMouseUpClaim(e),
       })) {
         e.stopImmediatePropagation();
       }
