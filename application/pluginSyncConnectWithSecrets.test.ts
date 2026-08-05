@@ -106,6 +106,7 @@ describe('storePluginSyncSecretsThenConnect', () => {
 
   it('keeps overwritten secrets when reconnect connect rejects', async () => {
     const deletedKeys: string[][] = [];
+    const restoredKeys: string[][] = [];
     await assert.rejects(
       () => storePluginSyncSecretsThenConnect({
         providerId: 'plugin:sync.example',
@@ -120,6 +121,10 @@ describe('storePluginSyncSecretsThenConnect', () => {
           deletedKeys.push([...keys]);
           return { deleted: keys.length };
         },
+        restoreSecrets: async ({ keys }) => {
+          restoredKeys.push([...keys]);
+          return { restored: keys.length };
+        },
         connect: async () => {
           throw new Error('auth failed');
         },
@@ -127,5 +132,6 @@ describe('storePluginSyncSecretsThenConnect', () => {
       /auth failed/,
     );
     assert.deepEqual(deletedKeys, []);
+    assert.deepEqual(restoredKeys, [['sync-credential']]);
   });
 });

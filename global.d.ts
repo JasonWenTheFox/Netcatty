@@ -439,6 +439,11 @@ declare global {
       providerId: string;
       keys?: string[];
     }): Promise<{ deleted: number }>;
+    pluginSyncRestoreSecrets?(request: {
+      providerId: string;
+      keys: string[];
+      discard?: boolean;
+    }): Promise<{ restored: number; discarded?: number }>;
     collectPluginSyncSidecars?(): Promise<unknown>;
     applyPluginSyncSidecars?(bundle: unknown): Promise<{ applied: boolean; count?: number; entries?: unknown }>;
     pluginHostReady?(): boolean;

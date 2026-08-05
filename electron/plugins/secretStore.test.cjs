@@ -301,3 +301,31 @@ test("credential lease resolution cannot return plaintext after operation cancel
   leaseStore.shutdown();
   database.close();
 });
+
+test("overwrite stash restores previous plaintext and discard clears it", (context) => {
+  const database = createDatabase(context);
+  let random = 0;
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+    randomBytes: () => Buffer.alloc(24, ++random),
+  });
+  const first = store.set("com.example.one", "sync-credential", "good-password");
+  assert.equal(store.resolve("com.example.one", first), "good-password");
+  const second = store.set("com.example.one", "sync-credential", "bad-password");
+  assert.equal(store.resolve("com.example.one", second), "bad-password");
+  assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), true);
+  const restored = store.getReference("com.example.one", "sync-credential");
+  assert.equal(restored.id, first.id, "restore must keep the prior SecretRef id");
+  assert.equal(store.resolve("com.example.one", first), "good-password");
+  assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), false);
+
+  store.set("com.example.one", "sync-credential", "another-bad");
+  store.clearOverwriteStash("com.example.one", "sync-credential");
+  assert.equal(store.restoreOverwrite("com.example.one", "sync-credential"), false);
+  assert.equal(
+    store.resolve("com.example.one", store.getReference("com.example.one", "sync-credential")),
+    "another-bad",
+  );
+  database.close();
+});

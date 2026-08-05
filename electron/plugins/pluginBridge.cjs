@@ -46,6 +46,7 @@ const CHANNELS = Object.freeze({
   syncDeleteObject: "netcatty:plugins:sync-delete-object",
   syncPutSecret: "netcatty:plugins:sync-put-secret",
   syncDeleteSecrets: "netcatty:plugins:sync-delete-secrets",
+  syncRestoreSecrets: "netcatty:plugins:sync-restore-secrets",
   syncSidecarsCollect: "netcatty:plugins:sync-sidecars-collect",
   syncSidecarsApply: "netcatty:plugins:sync-sidecars-apply",
   hostAvailableSync: "netcatty:plugins:host-available-sync",
@@ -1124,6 +1125,50 @@ function registerPluginBridge(ipcMain, options) {
       }
     }
     return { deleted };
+  });
+
+  ipcMain.handle(CHANNELS.syncRestoreSecrets, async (event, payload) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted plugin management sender");
+    if (!secretStore) {
+      throw new Error("Plugin sync secret restore is unavailable");
+    }
+    if (!extensionProviderService) throw new Error("Plugin sync Providers are unavailable");
+    const providerId = payload?.providerId;
+    if (typeof providerId !== "string" || providerId.length < 1) {
+      throw new TypeError("Sync provider ID is invalid");
+    }
+    const keys = Array.isArray(payload?.keys) ? payload.keys : [];
+    if (keys.length < 1) return { restored: 0, discarded: 0 };
+    const providers = extensionProviderService.listProviders({ kind: "sync" });
+    const match = Array.isArray(providers)
+      ? providers.find((entry) => entry?.provider?.id === providerId || entry?.id === providerId)
+      : null;
+    let pluginId = match && typeof match.pluginId === "string" ? match.pluginId : null;
+    if (!pluginId && typeof secretStore.resolveSyncProviderPlugin === "function") {
+      pluginId = secretStore.resolveSyncProviderPlugin(providerId) ?? null;
+    }
+    if (!pluginId) return { restored: 0, discarded: 0 };
+    const discard = payload?.discard === true;
+    let restored = 0;
+    let discarded = 0;
+    for (const rawKey of keys) {
+      if (typeof rawKey !== "string" || rawKey.length < 1) continue;
+      const key = assertSecretKey(rawKey);
+      try {
+        if (discard) {
+          if (typeof secretStore.clearOverwriteStash === "function") {
+            secretStore.clearOverwriteStash(pluginId, key);
+            discarded += 1;
+          }
+        } else if (typeof secretStore.restoreOverwrite === "function"
+          && secretStore.restoreOverwrite(pluginId, key)) {
+          restored += 1;
+        }
+      } catch {
+        /* best-effort restore/discard */
+      }
+    }
+    return { restored, discarded };
   });
 
   handlePassive(CHANNELS.credentialCatalogUpdate, 0, async (_activeManager, payload) => {

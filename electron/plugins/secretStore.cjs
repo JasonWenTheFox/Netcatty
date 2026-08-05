@@ -31,10 +31,17 @@ function assertSecretRef(secret) {
 }
 
 class PluginSecretStore {
+  /** @type {Map<string, { value: string, secretRef: string }>} */
+  #overwriteStash = new Map();
+
   constructor(options) {
     this.database = options.database;
     this.safeStorage = options.safeStorage ?? null;
     this.randomBytes = options.randomBytes ?? randomBytes;
+  }
+
+  #stashKey(pluginId, key) {
+    return `${pluginId}\0${key}`;
   }
 
   #assertAvailable() {
@@ -67,11 +74,26 @@ class PluginSecretStore {
     return record;
   }
 
-  set(pluginId, key, value) {
+  set(pluginId, key, value, options = {}) {
     this.#assertAvailable();
     assertSecretKey(key);
     if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) {
       throw new PluginRpcError(RPC_ERRORS.invalidArgument, "Plugin secret value is invalid or too large");
+    }
+    const stashPrevious = options.stashPrevious !== false;
+    if (stashPrevious) {
+      const existing = this.getReference(pluginId, key);
+      if (existing) {
+        try {
+          this.#overwriteStash.set(this.#stashKey(pluginId, key), {
+            value: this.resolve(pluginId, existing),
+            // Keep the prior SecretRef id so saved provider connections still resolve.
+            secretRef: existing.id,
+          });
+        } catch {
+          /* keep going; restore may be unavailable for this key */
+        }
+      }
     }
     const secretRef = this.randomBytes(24).toString("base64url");
     const ciphertext = this.safeStorage.encryptString(value);
@@ -82,8 +104,40 @@ class PluginSecretStore {
     return Object.freeze({ kind: "secret", id: secretRef, key });
   }
 
+  /**
+   * Restore the plaintext (and SecretRef id) stashed by the last overwrite.
+   * Returns true when a stashed value was written back.
+   */
+  restoreOverwrite(pluginId, key) {
+    this.#assertAvailable();
+    assertSecretKey(key);
+    const stashKey = this.#stashKey(pluginId, key);
+    const previous = this.#overwriteStash.get(stashKey);
+    if (!previous || typeof previous.value !== "string" || typeof previous.secretRef !== "string") {
+      return false;
+    }
+    this.#overwriteStash.delete(stashKey);
+    const ciphertext = this.safeStorage.encryptString(previous.value);
+    if (!Buffer.isBuffer(ciphertext) || ciphertext.byteLength < 1) {
+      throw new PluginRpcError(RPC_ERRORS.unavailable, "OS-backed plugin secret encryption failed");
+    }
+    this.database.upsertSecret({
+      pluginId,
+      key,
+      secretRef: previous.secretRef,
+      ciphertext,
+    });
+    return true;
+  }
+
+  clearOverwriteStash(pluginId, key) {
+    assertSecretKey(key);
+    this.#overwriteStash.delete(this.#stashKey(pluginId, key));
+  }
+
   delete(pluginId, key) {
     assertSecretKey(key);
+    this.#overwriteStash.delete(this.#stashKey(pluginId, key));
     this.database.deleteSecret(pluginId, key);
   }
 
