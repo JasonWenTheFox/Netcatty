@@ -195,8 +195,8 @@ export function mergePluginSyncSidecarsThreeWay(params: {
     if (!kind) continue;
 
     if (kind !== 'settings') {
-      // Baselines: LWW between local and remote; preserve orphans.
-      // preferCloud / preferLocal still apply when both sides present.
+      // Baselines: LWW between local and remote; always preserve local orphans
+      // (device-local CRDT/account merge bases must survive preferCloud).
       if (l && r) {
         if (strategy === 'preferCloud') out.push(r);
         else if (strategy === 'preferLocal') out.push(l);
@@ -221,7 +221,8 @@ export function mergePluginSyncSidecarsThreeWay(params: {
     }
     // both deleted
     if (b && !l && !r) continue;
-    // only local / only remote additions
+    // only local / only remote additions — keep local-only so preferCloud does
+    // not delete unsynced local settings on the subsequent local apply path.
     if (!b && l && !r) {
       out.push(l);
       continue;

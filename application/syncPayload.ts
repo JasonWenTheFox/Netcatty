@@ -22,6 +22,7 @@ import type {
 import {
   CLOUD_SYNC_PAYLOAD_ENTITY_KEYS,
   SYNC_PAYLOAD_ENTITY_KEYS,
+  SYNC_STORAGE_KEYS,
   hasSyncPayloadEntityData,
   type SyncPayload,
 } from '../domain/sync';
@@ -122,17 +123,36 @@ export interface SyncableVaultData {
 }
 
 /**
- * Returns true when the payload contains any meaningful user data worth
- * protecting or syncing.
+ * Returns true when the payload carries plugin sidecar data worth syncing.
+ * Non-empty entries always count. An explicit empty bundle is only meaningful
+ * when last-known previously held entries (a real reset to push) — otherwise
+ * ordinary `{entries:[]}` collects from an empty plugin host would bypass the
+ * empty-vault upload guard.
  */
 function hasMeaningfulPluginSidecars(payload: SyncPayload): boolean {
-  return Boolean(
-    payload.pluginSidecars
-    && Array.isArray(payload.pluginSidecars.entries)
-    && payload.pluginSidecars.entries.length > 0,
-  );
+  if (
+    !payload.pluginSidecars
+    || !Array.isArray(payload.pluginSidecars.entries)
+  ) {
+    return false;
+  }
+  if (payload.pluginSidecars.entries.length > 0) return true;
+  if (!Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) return false;
+  try {
+    const lastKnown = localStorageAdapter.read<{ entries?: unknown[] }>(
+      SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
+    );
+    return Array.isArray(lastKnown?.entries) && lastKnown.entries.length > 0;
+  } catch {
+    return false;
+  }
 }
 
+/**
+ * Returns true when a payload contains entities, settings, or meaningful
+ * plugin sidecars worth syncing / protecting with empty-vault guards.
+ * Local-only trust records are intentionally ignored by the cloud variant.
+ */
 export function hasMeaningfulSyncData(payload: SyncPayload): boolean {
   if (hasSyncPayloadEntityData(payload, SYNC_PAYLOAD_ENTITY_KEYS)) return true;
 
@@ -997,7 +1017,7 @@ export function buildLocalVaultPayload(
   // (sync). Callers that can await should use buildLocalVaultPayloadAsync.
   try {
     const raw = localStorageAdapter.read<{ version?: number; entries?: unknown }>(
-      'netcatty_plugin_sidecars_last_known_v1',
+      SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
     );
     if (raw && Array.isArray(raw.entries)) {
       return withPluginSyncSidecars(base, {

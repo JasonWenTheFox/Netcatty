@@ -10,6 +10,7 @@ const {
   excludeSecretPluginSettingsFromSidecars,
   mergePluginSyncSidecars,
   parseSettingsSidecarKey,
+  resolveSettingsSidecarTarget,
   isCloudSyncablePluginSetting,
 } = require("./pluginSyncSidecarHelpers.cjs");
 
@@ -161,11 +162,9 @@ class PluginSyncSidecarService {
       // Older sidecars may encode an obsolete scope after a plugin update;
       // recreating that scope would leave duplicate rows that collection
       // republishes. Application scope always uses the fixed "application" id.
-      const targetScope = typeof field.scope === "string" && field.scope.length > 0
-        ? field.scope
-        : parsed.scope;
-      const targetScopeId = targetScope === "application" ? "application" : parsed.scopeId;
-      const nextKey = `${parsed.settingId}\0${targetScope}\0${targetScopeId}`;
+      const target = resolveSettingsSidecarTarget(field, parsed);
+      if (!target) continue;
+      const { targetScope, targetScopeId, nextKey } = target;
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(
@@ -274,11 +273,21 @@ class PluginSyncSidecarService {
       if (!parsed) continue;
       const field = declared.find((item) => item.id === parsed.settingId);
       if (!field || !isCloudSyncablePluginSetting(field)) continue;
-      const targetScope = typeof field.scope === "string" && field.scope.length > 0
-        ? field.scope
-        : parsed.scope;
-      const targetScopeId = targetScope === "application" ? "application" : parsed.scopeId;
-      const nextKey = `${parsed.settingId}\0${targetScope}\0${targetScopeId}`;
+      const target = resolveSettingsSidecarTarget(field, parsed);
+      if (!target) continue;
+      const { targetScope, targetScopeId, nextKey } = target;
+      // Do not overwrite a newer local edit that has not been collected yet.
+      if (typeof this.database.listSettings === "function") {
+        const localRows = this.database.listSettings(pluginId);
+        const local = localRows.find((row) => (
+          row.settingId === parsed.settingId
+          && row.scope === targetScope
+          && row.scopeId === targetScopeId
+        ));
+        if (local && Number(local.updatedAt) > Number(entry.updatedAt)) {
+          continue;
+        }
+      }
       if (typeof this.contributionService?.updateSetting === "function") {
         try {
           await this.contributionService.updateSetting(

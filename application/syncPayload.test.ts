@@ -52,6 +52,8 @@ const {
   SYNCABLE_SETTING_STORAGE_KEYS,
 } = await import("./syncPayload.ts");
 const storageKeys = await import("../infrastructure/config/storageKeys.ts");
+const { SYNC_STORAGE_KEYS } = await import("../domain/sync.ts");
+const { localStorageAdapter } = await import("../infrastructure/persistence/localStorageAdapter.ts");
 
 const knownHost = (id = "kh-1"): KnownHost => ({
   id,
@@ -839,6 +841,7 @@ test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful"
     }),
     true,
   );
+  // Empty bundle alone must not bypass the empty-vault upload guard.
   assert.equal(
     hasMeaningfulCloudSyncData({
       hosts: [],
@@ -850,6 +853,63 @@ test("hasMeaningfulCloudSyncData treats non-empty plugin sidecars as meaningful"
       pluginSidecars: { version: 1, entries: [] },
     }),
     false,
+  );
+  assert.equal(
+    hasMeaningfulCloudSyncData({
+      hosts: [],
+      keys: [],
+      identities: [],
+      snippets: [],
+      customGroups: [],
+      syncedAt: 1,
+    }),
+    false,
+  );
+});
+
+test("hasMeaningfulCloudSyncData treats empty sidecars as meaningful only after a prior non-empty last-known", () => {
+  const previous = localStorageAdapter.read(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN);
+  try {
+    localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, {
+      version: 1,
+      entries: [{
+        pluginId: "com.example.p",
+        kind: "settings",
+        key: "k",
+        value: 1,
+        updatedAt: 1,
+      }],
+    });
+    assert.equal(
+      hasMeaningfulCloudSyncData({
+        hosts: [],
+        keys: [],
+        identities: [],
+        snippets: [],
+        customGroups: [],
+        syncedAt: 1,
+        pluginSidecars: { version: 1, entries: [] },
+      }),
+      true,
+    );
+  } finally {
+    if (previous == null) localStorageAdapter.remove(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN);
+    else localStorageAdapter.write(SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN, previous);
+  }
+});
+
+test("plugin sidecar storage keys stay aligned between sync domain and storageKeys registry", () => {
+  assert.equal(
+    storageKeys.STORAGE_KEY_PLUGIN_SIDECARS_LAST_KNOWN,
+    SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN,
+  );
+  assert.equal(
+    storageKeys.STORAGE_KEY_PLUGIN_SIDECARS_PENDING_REMOTE,
+    SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_PENDING_REMOTE,
+  );
+  assert.equal(
+    storageKeys.STORAGE_KEY_AVAILABLE_PLUGIN_SYNC_PROVIDERS,
+    SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS,
   );
 });
 

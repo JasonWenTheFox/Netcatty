@@ -12,13 +12,17 @@ import type {
   EncryptedObjectStorageCapabilities,
   EncryptedObjectWriteResult,
 } from '../../../domain/encryptedObjectStorage';
+import type { PluginSyncCredentialRef as DurablePluginSyncCredentialRef } from '../../../domain/sync';
 
-/** Host-owned secret/credential reference from SyncConnectPayload. */
-export type PluginSyncCredentialRef = {
-  kind: 'secret' | 'credential' | 'secretLease';
-  id: string;
-  key?: string;
-};
+/**
+ * SyncConnectPayload.credential — includes one-shot leases for live connect.
+ * Durable reconnect persistence only keeps secret/credential refs (see domain).
+ */
+export type PluginSyncCredentialRef =
+  | DurablePluginSyncCredentialRef
+  | { kind: 'secret-lease'; id: string; key?: string; operationId?: string; expiresAt?: number };
+
+export type { DurablePluginSyncCredentialRef };
 
 export interface PluginSyncProviderHost {
   connectSync(

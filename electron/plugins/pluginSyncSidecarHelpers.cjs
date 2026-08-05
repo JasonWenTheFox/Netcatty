@@ -28,6 +28,31 @@ function parseSettingsSidecarKey(key) {
   return { settingId, scope, scopeId };
 }
 
+/**
+ * Map a settings sidecar key onto the currently declared scope coordinates.
+ * Returns null when the declared scope cannot be remapped safely (e.g. host
+ * scope without a fresh host id).
+ */
+function resolveSettingsSidecarTarget(field, parsed) {
+  const targetScope = typeof field?.scope === "string" && field.scope.length > 0
+    ? field.scope
+    : parsed.scope;
+  let targetScopeId = parsed.scopeId;
+  if (targetScope === "application") {
+    targetScopeId = "application";
+  } else if (targetScope === "device") {
+    // parseSettingsSidecarKey guarantees a non-empty scopeId when parsed is set.
+    targetScopeId = parsed.scope === "device" ? parsed.scopeId : "device";
+  } else if (targetScope !== parsed.scope) {
+    return null;
+  }
+  return {
+    targetScope,
+    targetScopeId,
+    nextKey: settingsSidecarKey(parsed.settingId, targetScope, targetScopeId),
+  };
+}
+
 function collectPluginSyncSidecars(input) {
   const now = input.now ?? Date.now();
   const entries = [];
@@ -156,5 +181,6 @@ module.exports = {
   isPluginSyncSidecarKind,
   mergePluginSyncSidecars,
   parseSettingsSidecarKey,
+  resolveSettingsSidecarTarget,
   settingsSidecarKey,
 };

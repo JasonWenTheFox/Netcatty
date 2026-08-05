@@ -6,16 +6,17 @@
  */
 
 import type { PluginSyncSidecarBundle } from '../domain/pluginSyncSidecar';
+import { SYNC_STORAGE_KEYS } from '../domain/sync';
 import { localStorageAdapter } from '../infrastructure/persistence/localStorageAdapter';
 
 /** Ordinary upload fallback when collect cannot reach the host. */
-const LAST_KNOWN_SIDECARS_KEY = 'netcatty_plugin_sidecars_last_known_v1';
+const LAST_KNOWN_SIDECARS_KEY = SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_LAST_KNOWN;
 /**
  * Remote apply that could not reach the host DB. Distinct from last-known so
  * a later collect does not re-apply a stale post-collect snapshot over newer
  * local plugin settings.
  */
-const PENDING_REMOTE_SIDECARS_KEY = 'netcatty_plugin_sidecars_pending_remote_v1';
+const PENDING_REMOTE_SIDECARS_KEY = SYNC_STORAGE_KEYS.PLUGIN_SIDECARS_PENDING_REMOTE;
 const HOST_UNAVAILABLE_MARKER = 'PLUGIN_SIDECAR_HOST_UNAVAILABLE';
 
 export class PluginSidecarHostUnavailableError extends Error {
@@ -223,12 +224,21 @@ export async function applyPluginSyncSidecarsFromHost(
         writeLastKnownSidecars({ version: 1, entries: collected.entries });
         return;
       }
-      // Collect returned a non-authoritative shape — leave prior last-known so
-      // a later offline upload cannot drop preserved missing-plugin rows.
+      // Apply already committed; collect shape was non-authoritative. Align
+      // last-known with the applied remote so offline uploads cannot resurrect
+      // pre-apply rows, then return successfully — throwing here would leave
+      // the interrupted-vault-apply sentinel after vault/settings already landed.
+      writeLastKnownSidecars(normalized);
       return;
     } catch {
-      // Apply already committed on the host. Do not replace last-known with the
-      // unmerged remote bundle (that would discard preserved local rows).
+      // Apply already committed. Keep last-known aligned with the applied remote.
+      // Trade-off: missing-plugin rows preserved in the host DB but omitted from
+      // the remote snapshot are not reflected until a later successful collect.
+      try {
+        writeLastKnownSidecars(normalized);
+      } catch {
+        // last-known write failure is secondary; apply already succeeded.
+      }
       return;
     }
   }

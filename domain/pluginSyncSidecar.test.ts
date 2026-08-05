@@ -222,4 +222,37 @@ describe('pluginSyncSidecar', () => {
     assert.equal(merged.length, 1);
     assert.equal(merged[0].value, 'light');
   });
+
+  it('preferCloud keeps local-only settings and baseline orphans', () => {
+    const localOnly: PluginSyncSidecarEntry = {
+      pluginId,
+      kind: 'settings',
+      key: `${pluginId}.theme\0application\0application`,
+      value: 'local-new',
+      updatedAt: 50,
+    };
+    const baseline: PluginSyncSidecarEntry = {
+      pluginId,
+      kind: 'account_baseline',
+      key: 'account',
+      value: { id: 'local-acct' },
+      updatedAt: 40,
+    };
+    const remoteBaseline: PluginSyncSidecarEntry = {
+      pluginId,
+      kind: 'crdt_baseline',
+      key: 'crdt',
+      value: { clock: 1 },
+      updatedAt: 30,
+    };
+    const merged = mergePluginSyncSidecarsThreeWay({
+      base: [],
+      local: [localOnly, baseline],
+      remote: [remoteBaseline],
+      strategy: 'preferCloud',
+    });
+    assert.equal(merged.some((item) => item.key === localOnly.key), true);
+    assert.equal(merged.some((item) => item.kind === 'account_baseline'), true);
+    assert.equal(merged.some((item) => item.kind === 'crdt_baseline'), true);
+  });
 });

@@ -284,6 +284,50 @@ test("hydrateInstalledPluginSettings applies retained sidecars through contribut
   );
 });
 
+test("hydrateInstalledPluginSettings skips sidecars older than local settings", async (context) => {
+  const database = tempDb(context);
+  database.setSetting(
+    "com.example.sync",
+    "com.example.sync.theme",
+    "application",
+    "application",
+    "local-newer",
+    20,
+  );
+  database.setSyncSidecar(
+    "com.example.sync",
+    "settings",
+    "com.example.sync.theme\0application\0application",
+    "from-cloud-stale",
+    9,
+  );
+  const updates = [];
+  const service = new PluginSyncSidecarService({
+    database,
+    contributionService: {
+      snapshot() {
+        return {
+          plugins: [{
+            id: "com.example.sync",
+            settings: [
+              { id: "com.example.sync.theme", secret: false, sync: true, scope: "application" },
+            ],
+          }],
+        };
+      },
+      async updateSetting(pluginId, settingId, value, scopeId) {
+        updates.push({ pluginId, settingId, value, scopeId });
+      },
+    },
+  });
+  await service.hydrateInstalledPluginSettings("com.example.sync");
+  assert.equal(updates.length, 0);
+  assert.equal(
+    database.getSetting("com.example.sync", "com.example.sync.theme", "application", "application"),
+    "local-newer",
+  );
+});
+
 test("applyFromSync empty remote bundle wipes missing-plugin retained rows", async (context) => {
   const database = tempDb(context);
   database.setSyncSidecar("com.missing.plugin", "settings", "com.missing.plugin.x\0application\0application", "old", 1);

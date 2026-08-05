@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_SECURITY_AUDIT_DETAILS_BYTES = 16 * 1024;
 const MAX_SECURITY_AUDIT_RECORDS_PER_PLUGIN = 1_000;
 const REQUIRED_SCHEMA_COLUMNS = Object.freeze({
@@ -164,12 +164,12 @@ class PluginDatabase {
           );
           CREATE INDEX plugin_sync_sidecars_lookup
             ON plugin_sync_sidecars(plugin_id, kind, key);
-          PRAGMA user_version = 1;
+          PRAGMA user_version = 2;
         `);
       });
     } else if (version === 1) {
       // Pre-sidecar schema-1 databases only created the original tables.
-      // Ensure the non-cascade sidecar table exists in place (AGENTS.md storage migrations).
+      // Migrate in place to schema 2 with the non-cascade sidecar table.
       this.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS plugin_sync_sidecars (
@@ -182,6 +182,7 @@ class PluginDatabase {
           );
           CREATE INDEX IF NOT EXISTS plugin_sync_sidecars_lookup
             ON plugin_sync_sidecars(plugin_id, kind, key);
+          PRAGMA user_version = 2;
         `);
       });
     }

@@ -158,9 +158,15 @@ export function decryptProxyProfiles(profiles: ProxyProfile[]): Promise<ProxyPro
  */
 const PLUGIN_CONFIG_ENVELOPE_KEY = "__netcatty_plugin_config_v1" as const;
 const LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY = "__encryptedPluginConfig" as const;
+/** At-rest envelope for ProviderConnection.credential (opaque refs only). */
+const PLUGIN_CREDENTIAL_ENVELOPE_KEY = "__netcatty_plugin_credential_v1" as const;
 
 type PluginConfigEnvelope = {
   [PLUGIN_CONFIG_ENVELOPE_KEY]: string;
+};
+
+type PluginCredentialEnvelope = {
+  [PLUGIN_CREDENTIAL_ENVELOPE_KEY]: string;
 };
 
 function isPluginConfigEnvelope(value: unknown): value is PluginConfigEnvelope {
@@ -180,6 +186,15 @@ function isLegacyPluginConfigEnvelope(value: unknown): value is { __encryptedPlu
   return keys.length === 1
     && keys[0] === LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY
     && typeof record[LEGACY_PLUGIN_CONFIG_ENVELOPE_KEY] === "string";
+}
+
+function isPluginCredentialEnvelope(value: unknown): value is PluginCredentialEnvelope {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return keys.length === 1
+    && keys[0] === PLUGIN_CREDENTIAL_ENVELOPE_KEY
+    && typeof record[PLUGIN_CREDENTIAL_ENVELOPE_KEY] === "string";
 }
 
 export async function encryptProviderSecrets(conn: ProviderConnection): Promise<ProviderConnection> {
@@ -220,6 +235,34 @@ export async function encryptProviderSecrets(conn: ProviderConnection): Promise<
         out.config = {
           [PLUGIN_CONFIG_ENVELOPE_KEY]: sealed,
         } as ProviderConnection["config"];
+      }
+    }
+  }
+
+  // Seal durable plugin credential refs as one opaque blob (same threat model
+  // as plugin config: do not leave kind/id/key plaintext in localStorage).
+  if (out.credential != null && typeof out.credential === "object") {
+    if (isPluginCredentialEnvelope(out.credential)) {
+      // already sealed
+    } else {
+      const kind = (out.credential as { kind?: unknown }).kind;
+      const id = (out.credential as { id?: unknown }).id;
+      const key = (out.credential as { key?: unknown }).key;
+      if ((kind === "secret" || kind === "credential") && typeof id === "string" && id.length > 0) {
+        const normalized = {
+          kind,
+          id,
+          ...(typeof key === "string" ? { key } : {}),
+        };
+        const sealed = await encryptField(JSON.stringify(normalized));
+        if (sealed) {
+          out.credential = {
+            [PLUGIN_CREDENTIAL_ENVELOPE_KEY]: sealed,
+          } as unknown as ProviderConnection["credential"];
+        }
+      } else {
+        // Drop leases / malformed shapes — never persist them at rest.
+        delete out.credential;
       }
     }
   }
@@ -267,6 +310,34 @@ export async function decryptProviderSecrets(conn: ProviderConnection): Promise<
         } catch {
           // leave sealed if corrupt
         }
+      }
+    }
+  }
+
+  if (isPluginCredentialEnvelope(out.credential)) {
+    const plain = await decryptField(out.credential[PLUGIN_CREDENTIAL_ENVELOPE_KEY]);
+    if (plain != null && plain !== "") {
+      try {
+        const parsed = JSON.parse(plain) as {
+          kind?: unknown;
+          id?: unknown;
+          key?: unknown;
+        };
+        if (
+          (parsed.kind === "secret" || parsed.kind === "credential")
+          && typeof parsed.id === "string"
+          && parsed.id.length > 0
+        ) {
+          out.credential = {
+            kind: parsed.kind,
+            id: parsed.id,
+            ...(typeof parsed.key === "string" ? { key: parsed.key } : {}),
+          };
+        } else {
+          delete out.credential;
+        }
+      } catch {
+        // leave sealed if corrupt
       }
     }
   }

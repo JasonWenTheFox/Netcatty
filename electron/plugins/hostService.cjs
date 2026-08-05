@@ -229,6 +229,20 @@ function createPluginHostService(options) {
       }
       return originalOnPluginEnabled(pluginId);
     };
+    // Startup activation goes through contributionService.initialize() → #startPlugin
+    // without onPluginEnabled. Hydrate every enabled plugin before that path runs.
+    const originalInitialize = contributionService.initialize.bind(contributionService);
+    contributionService.initialize = async () => {
+      for (const plugin of database.listPlugins()) {
+        if (!plugin?.enabled || typeof plugin.id !== "string") continue;
+        try {
+          await syncSidecarService.hydrateInstalledPluginSettings(plugin.id);
+        } catch {
+          // Best-effort; startup must continue.
+        }
+      }
+      return originalInitialize();
+    };
     const terminalDataPipelineService = options.electron.MessageChannelMain
       ? new PluginTerminalDataPipelineService({
           contributionService,

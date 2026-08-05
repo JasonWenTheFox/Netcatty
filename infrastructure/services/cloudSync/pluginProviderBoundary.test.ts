@@ -98,6 +98,9 @@ function createManagerHarness(storage: Map<string, unknown>): ManagerHarness {
 describe('plugin provider manager boundary', () => {
   it('loads registered plugin providers into initial state and keeps them across restart', () => {
     const storage = memoryStorage();
+    // Seed device identity so loadInitialStateImpl never touches browser globals.
+    storage.set(SYNC_STORAGE_KEYS.DEVICE_ID, 'test-device');
+    storage.set(SYNC_STORAGE_KEYS.DEVICE_NAME, 'Test Device');
     const manager = createManagerHarness(storage);
     registerPluginProviderIdImpl.call(manager, 'com.example.backup.sync');
     storage.set('netcatty_provider_plugin_v1:com.example.backup.sync', {

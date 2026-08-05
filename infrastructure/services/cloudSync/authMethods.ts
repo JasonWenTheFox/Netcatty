@@ -18,6 +18,7 @@ import type {
   SyncPayload,
   WebDAVConfig,
 } from '../../../domain/sync';
+import { normalizeDurablePluginSyncCredentialRef } from '../../../domain/sync';
 import { isPluginCloudProviderId } from '../../../domain/cloudProviderIds';
 import type {
   ProviderSyncAnchor,
@@ -416,6 +417,10 @@ export async function connectPluginProviderImpl(
       provider: providerId,
       status: 'connected',
       config: configuration as ProviderConnection['config'],
+      ...((() => {
+        const ref = normalizeDurablePluginSyncCredentialRef(credential);
+        return ref ? { credential: ref } : {};
+      })()),
       account,
       resourceId: resourceId || undefined,
     };
@@ -423,10 +428,13 @@ export async function connectPluginProviderImpl(
     await this.saveProviderConnection(providerId, this.state.providers[providerId]);
     // Preserve merge base / anchors when reconnecting the same account+resource
     // and configuration; clear when backend identity or config changes.
+    const previousCredentialFp = `${previous?.credential?.kind ?? ''}\0${previous?.credential?.id ?? ''}\0${previous?.credential?.key ?? ''}`;
+    const nextCredentialFp = `${this.state.providers[providerId].credential?.kind ?? ''}\0${this.state.providers[providerId].credential?.id ?? ''}\0${this.state.providers[providerId].credential?.key ?? ''}`;
     if (
       previousAccountId !== nextAccountId
       || previousResource !== nextResource
       || previousConfigFp !== nextConfigFp
+      || previousCredentialFp !== nextCredentialFp
     ) {
       clearProviderMergeStateImpl.call(this, providerId);
     }

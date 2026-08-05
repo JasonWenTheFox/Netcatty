@@ -43,6 +43,16 @@ const SYNC_HISTORY_STORAGE_KEY = 'netcatty_sync_history_v1';
 
 /** Ensure per-provider sequence counters exist (dynamic plugins arrive late). */
 function ensureProviderSeqCounters(manager: any, provider: CloudProvider): void {
+  // Lightweight test harnesses may omit the maps entirely; initialize before indexing.
+  if (manager.providerDecryptSeq == null || typeof manager.providerDecryptSeq !== 'object') {
+    manager.providerDecryptSeq = {};
+  }
+  if (manager.providerWriteSeq == null || typeof manager.providerWriteSeq !== 'object') {
+    manager.providerWriteSeq = {};
+  }
+  if (manager.providerDecrypted == null || typeof manager.providerDecrypted !== 'object') {
+    manager.providerDecrypted = {};
+  }
   if (manager.providerDecryptSeq[provider] == null || Number.isNaN(manager.providerDecryptSeq[provider])) {
     manager.providerDecryptSeq[provider] = 0;
   }
@@ -163,11 +173,9 @@ export function listRegisteredPluginProviderIdsImpl(this: any): string[] {
     .sort();
 }
 
-const AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY = 'netcatty_available_plugin_sync_providers_v1';
-
 export function listAvailablePluginSyncProviderIdsImpl(this: any): string[] {
   if (typeof this.loadFromStorage !== 'function') return [];
-  const raw = this.loadFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY) as unknown;
+  const raw = this.loadFromStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS) as unknown;
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((id: unknown): id is string => typeof id === 'string' && isPluginCloudProviderId(id))
@@ -178,16 +186,16 @@ export function markPluginSyncProviderAvailableImpl(this: any, provider: CloudPr
   if (!isPluginCloudProviderId(provider)) return;
   const next = new Set(listAvailablePluginSyncProviderIdsImpl.call(this));
   next.add(provider);
-  this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, [...next].sort());
+  this.saveToStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS, [...next].sort());
 }
 
 export function markPluginSyncProviderUnavailableImpl(this: any, provider: CloudProvider): void {
   if (!isPluginCloudProviderId(provider)) return;
   const next = listAvailablePluginSyncProviderIdsImpl.call(this).filter((id) => id !== provider);
   if (next.length === 0) {
-    this.removeFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY);
+    this.removeFromStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS);
   } else {
-    this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, next);
+    this.saveToStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS, next);
   }
 }
 
@@ -206,9 +214,9 @@ export function setAvailablePluginSyncProviderIdsImpl(
     providerIds.filter((id): id is string => typeof id === 'string' && isPluginCloudProviderId(id)),
   )].sort();
   if (next.length === 0) {
-    this.removeFromStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY);
+    this.removeFromStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS);
   } else {
-    this.saveToStorage(AVAILABLE_PLUGIN_SYNC_PROVIDERS_KEY, next);
+    this.saveToStorage(SYNC_STORAGE_KEYS.AVAILABLE_PLUGIN_SYNC_PROVIDERS, next);
   }
   if (!this.state?.providers) return;
   let changed = false;
@@ -546,8 +554,10 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
         const nextTokens = next.tokens;
         const nextConfig = next.config;
         const adapter = this.adapters.get(provider);
-        // Config may be a valid falsy scalar — only null/undefined means absent.
-        if (nextTokens == null && nextConfig == null) {
+        // Config may be a valid falsy scalar including JSON null — presence is
+        // property existence (matches hasProviderConnectionData).
+        const hasConfigProperty = Object.prototype.hasOwnProperty.call(next, 'config');
+        if (nextTokens == null && !hasConfigProperty && next.credential == null) {
           if (adapter) {
             adapter.signOut();
             this.adapters.delete(provider);
@@ -567,11 +577,29 @@ export function handleStorageEventImpl(this: any, event: StorageEvent): void {
         const configChanged =
           JSON.stringify(prev.config ?? null) !== JSON.stringify(nextConfig ?? null);
 
+        const prevCredential = prev.credential;
+        const nextCredential = next.credential;
+        const credentialChanged =
+          (prevCredential?.kind ?? null) !== (nextCredential?.kind ?? null)
+          || (prevCredential?.id ?? null) !== (nextCredential?.id ?? null)
+          || (prevCredential?.key ?? null) !== (nextCredential?.key ?? null);
+
         const resourceChanged = (adapter?.resourceId || null) !== (next.resourceId || null);
 
-        if (adapter && (tokenChanged || configChanged || resourceChanged)) {
+        if (adapter && (tokenChanged || configChanged || credentialChanged || resourceChanged)) {
           adapter.signOut();
           this.adapters.delete(provider);
+        }
+        // Credential identity changes invalidate merge anchors the same way
+        // config/resource changes do on the connect path (authMethods).
+        if (credentialChanged) {
+          try {
+            this.removeFromStorage(this.syncBaseKey(provider));
+            this.removeFromStorage(this.convergentProviderBaselineKey(provider));
+            this.clearSyncAnchor(provider);
+          } catch {
+            // Best-effort; adapter eviction above already forces reconnect.
+          }
         }
 
         this.notifyStateChange();
@@ -619,7 +647,7 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
     // Config may be a valid scalar including JSON null — presence is property existence.
     const hasConfigProperty = connection != null
       && Object.prototype.hasOwnProperty.call(connection, 'config');
-    if (tokens == null && !hasConfigProperty) {
+    if (tokens == null && !hasConfigProperty && connection?.credential == null) {
       throw new Error('Provider not connected');
     }
 
@@ -649,6 +677,7 @@ export async function getConnectedAdapterImpl(this: any,provider: CloudProvider)
         providerId,
         host,
         configuration,
+        credential: connection?.credential,
       });
     };
 

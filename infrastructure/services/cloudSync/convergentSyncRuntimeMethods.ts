@@ -517,18 +517,45 @@ export async function syncConvergentProvidersUnlockedImpl(
       || Object.prototype.hasOwnProperty.call(inputPayload, 'pluginSidecars')
       ? { version: 1 as const, entries: mergedSidecars }
       : inputPayload.pluginSidecars;
-    const sidecarFingerprint = (bundle: typeof pluginSidecars) =>
-      JSON.stringify(
-        (bundle?.entries ?? [])
-          .map((e) => [e.pluginId, e.kind, e.key, e.updatedAt, e.value])
-          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-      );
-    const localSidecarFp = sidecarFingerprint(pluginSidecars);
-    const remoteSidecarMismatch = usable.some((runtime) => {
-      if (runtime.error) return false;
+    const sidecarFingerprint = (
+      bundle: typeof pluginSidecars,
+      payload?: SyncPayload | null,
+    ) => {
+      const present = payload
+        ? Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')
+        : bundle != null && Array.isArray(bundle.entries);
+      const entries = (bundle?.entries ?? [])
+        .map((e) => [e.pluginId, e.kind, e.key, e.updatedAt, e.value] as const)
+        .sort((a, b) => {
+          if (a[0] !== b[0]) return String(a[0]).localeCompare(String(b[0]));
+          if (a[1] !== b[1]) return String(a[1]).localeCompare(String(b[1]));
+          return String(a[2]).localeCompare(String(b[2]));
+        });
+      // Empty present and empty absent both fingerprint as empty so devices
+      // do not ping-pong uploading omitted vs explicit-empty markers.
+      if (entries.length === 0) {
+        return JSON.stringify({ present: false, version: null, entries: [] });
+      }
+      return JSON.stringify({
+        present,
+        version: present ? (bundle?.version ?? 1) : null,
+        entries,
+      });
+    };
+    const localSidecarFp = sidecarFingerprint(
+      pluginSidecars,
+      Object.prototype.hasOwnProperty.call(inputPayload, 'pluginSidecars') || mergedSidecars.length > 0
+        ? { ...inputPayload, pluginSidecars }
+        : inputPayload,
+    );
+    const providerSidecarMismatch = (runtime: { provider: string }) => {
       const decoded = preflightVerified.get(runtime.provider);
       if (!decoded) return true; // no preflight match → need upload
-      return sidecarFingerprint(decoded.payload?.pluginSidecars) !== localSidecarFp;
+      return sidecarFingerprint(decoded.payload?.pluginSidecars, decoded.payload) !== localSidecarFp;
+    };
+    const remoteSidecarMismatch = usable.some((runtime) => {
+      if (runtime.error) return false;
+      return providerSidecarMismatch(runtime);
     });
     const needsUpload = usable.some((runtime) => (
       !runtime.error && !preflightVerified.has(runtime.provider)
@@ -542,7 +569,7 @@ export async function syncConvergentProvidersUnlockedImpl(
     await Promise.all(usable.map(async (runtime) => {
       // Upload when CRDT preflight missed OR sidecars diverge for this provider.
       if (runtime.error) return;
-      if (preflightVerified.has(runtime.provider) && !remoteSidecarMismatch) return;
+      if (preflightVerified.has(runtime.provider) && !providerSidecarMismatch(runtime)) return;
       if (!outgoingPayload) return;
       try {
         const remoteVersion = runtime.latestRemote?.meta.version ?? this.state.localVersion;
