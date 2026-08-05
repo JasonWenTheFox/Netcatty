@@ -294,12 +294,13 @@ test("SFTP filter input guards CJK IME composition instead of deferring controll
   );
 });
 
-test("SFTP filter clears the IME composing guard when the filter bar closes so later commits are not stuck", () => {
+test("SFTP filter clears the IME composing guard and resyncs the draft when the filter bar closes", () => {
   // If the input unmounts mid-composition, compositionend never fires; the guard
-  // must be reset when the bar hides or every subsequent onSetFilter is blocked.
+  // must be reset (or every later onSetFilter is blocked) and the draft resynced to
+  // the committed filter so a reopened bar never shows stale, uncommitted text.
   assert.match(
     toolbarSource,
-    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;/,
+    /if \(!showFilterBar\) \{\s*filterComposingRef\.current = false;\s*setFilterDraft\(pane\.filter\);/,
   );
 });
 

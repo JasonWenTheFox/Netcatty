@@ -365,12 +365,14 @@ export const SftpPaneToolbar: React.FC<SftpPaneToolbarProps> = React.memo(({
 
   // The filter input only mounts while the bar is open, so a composition that is
   // still active when the bar closes never fires `compositionend`. Clear the guard
-  // here; otherwise a stuck `true` would block every later commit to `onSetFilter`.
+  // (otherwise a stuck `true` blocks every later commit) and resync the draft to the
+  // committed filter so a reopened bar never shows stale, uncommitted text.
   useEffect(() => {
     if (!showFilterBar) {
       filterComposingRef.current = false;
+      setFilterDraft(pane.filter);
     }
-  }, [showFilterBar]);
+  }, [showFilterBar, pane.filter]);
 
   const commitFilterValue = useCallback((value: string) => {
     setFilterDraft(value);
