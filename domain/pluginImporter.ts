@@ -474,11 +474,29 @@ export function applyPluginImporterDestination(
   existingHostCount: number,
   destination?: VaultImportDestination,
   existingCustomGroups: ReadonlyArray<string> = [],
+  existingCounts: {
+    identities?: number;
+    keys?: number;
+  } = {},
 ): PluginImporterMergeResult {
   if (!destination || destination.mode === 'preserve') return merged;
   const splitAt = Math.max(0, Math.min(existingHostCount, merged.hosts.length));
   const existingHosts = merged.hosts.slice(0, splitAt);
   const importedHosts = merged.hosts.slice(splitAt);
+  const existingIdentityCount = Math.max(
+    0,
+    Math.min(existingCounts.identities ?? 0, merged.identities.length),
+  );
+  const existingKeyCount = Math.max(
+    0,
+    Math.min(existingCounts.keys ?? 0, merged.keys.length),
+  );
+  const existingIdentityIds = new Set(
+    merged.identities.slice(0, existingIdentityCount).map((identity) => identity.id),
+  );
+  const existingKeyIds = new Set(
+    merged.keys.slice(0, existingKeyCount).map((key) => key.id),
+  );
   const targeted = applyVaultImportDestination({
     hosts: importedHosts,
     groups: [],
@@ -521,16 +539,25 @@ export function applyPluginImporterDestination(
   const droppedOnlyCredentialIds = new Set(
     [...collectHostCredentialIds(droppedImported)].filter((id) => !keptCredentialIds.has(id)),
   );
-  const nextIdentities = merged.identities.filter((identity) => !droppedOnlyCredentialIds.has(identity.id));
+  // Only prune credentials introduced by this import. Remapped duplicates that
+  // point at pre-existing vault identities/keys must stay in the vault.
+  const nextIdentities = merged.identities.filter((identity) => (
+    existingIdentityIds.has(identity.id)
+    || !droppedOnlyCredentialIds.has(identity.id)
+  ));
   const keptIdentityKeyIds = new Set(
     nextIdentities.flatMap((identity) => (identity.keyId ? [identity.keyId] : [])),
   );
   const prunedIdentityKeyIds = new Set(
     merged.identities
-      .filter((identity) => droppedOnlyCredentialIds.has(identity.id))
+      .filter((identity) => (
+        !existingIdentityIds.has(identity.id)
+        && droppedOnlyCredentialIds.has(identity.id)
+      ))
       .flatMap((identity) => (identity.keyId ? [identity.keyId] : [])),
   );
   const nextKeys = merged.keys.filter((key) => {
+    if (existingKeyIds.has(key.id)) return true;
     if (keptCredentialIds.has(key.id) || keptIdentityKeyIds.has(key.id)) return true;
     if (droppedOnlyCredentialIds.has(key.id) || prunedIdentityKeyIds.has(key.id)) return false;
     return true;

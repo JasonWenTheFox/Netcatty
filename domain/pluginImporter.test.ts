@@ -649,12 +649,75 @@ test('plugin importer destination prunes orphan credentials for skipped collidin
     existingDrafts.hosts.length,
     { mode: 'group', group: 'Chosen' },
     ['Chosen'],
+    { identities: 0, keys: 0 },
   );
 
   assert.equal(targeted.hosts.length, 1);
   assert.deepEqual(targeted.identities, []);
   assert.deepEqual(targeted.keys, []);
   assert.equal(targeted.addedCount, 0);
+});
+
+test('plugin importer destination keeps existing credentials remapped onto skipped hosts', () => {
+  const existingDrafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'existing-identity',
+      label: 'Existing identity',
+      username: 'root',
+      authMethod: 'password',
+      password: 'vault-secret',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'Existing',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'Chosen',
+      identityId: 'existing-identity',
+    } } },
+  ]);
+  const existingIdentityId = existingDrafts.identities[0]?.id;
+  assert.ok(existingIdentityId);
+  const importedDrafts = normalizePluginImporterRecords([
+    { type: 'draft', draft: { kind: 'identity', value: {
+      id: 'imported-identity',
+      label: 'Duplicate identity',
+      username: 'root',
+      authMethod: 'password',
+      password: 'vault-secret',
+    } } },
+    { type: 'draft', draft: { kind: 'host', value: {
+      label: 'Imported copy',
+      hostname: '10.10.10.10',
+      port: 22,
+      username: 'root',
+      group: 'lan',
+      identityId: 'imported-identity',
+    } } },
+  ]);
+  const merged = mergePluginImporterDrafts({
+    hosts: existingDrafts.hosts,
+    identities: existingDrafts.identities,
+    keys: [],
+    snippets: [],
+    customGroups: ['Chosen'],
+  }, importedDrafts);
+
+  assert.equal(merged.identities.length, 1);
+  assert.equal(merged.identities[0]?.id, existingIdentityId);
+  assert.equal(merged.duplicateCount >= 1, true);
+
+  const targeted = applyPluginImporterDestination(
+    merged,
+    existingDrafts.hosts.length,
+    { mode: 'group', group: 'Chosen' },
+    ['Chosen'],
+    { identities: existingDrafts.identities.length, keys: 0 },
+  );
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.equal(targeted.identities.length, 1);
+  assert.equal(targeted.identities[0]?.id, existingIdentityId);
 });
 
 test('plugin importer does not count a host-owned destination group as newly added', () => {
