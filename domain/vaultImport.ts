@@ -349,13 +349,19 @@ const dedupeHosts = (
       existing.authPolicyVersion = host.authPolicyVersion;
       existing.useSshAgent = host.useSshAgent;
     }
-    // Carry over referenced vault credentials when the retained draft is bare.
-    if (!existing.identityId && host.identityId) existing.identityId = host.identityId;
-    if (!existing.telnetIdentityId && host.telnetIdentityId) {
-      existing.telnetIdentityId = host.telnetIdentityId;
-    }
-    if (!existing.identityFileId && host.identityFileId) {
-      existing.identityFileId = host.identityFileId;
+    // Only graft referenced credentials onto a retained host that has no auth
+    // source yet. Otherwise identity auth can override an existing key path.
+    const retainedHasCredentialSource = Boolean(
+      existing.identityId
+      || existing.telnetIdentityId
+      || existing.identityFileId
+      || existing.identityFilePaths?.some((path) => path.trim())
+      || (typeof existing.password === "string" && existing.password.length > 0)
+    );
+    if (!retainedHasCredentialSource) {
+      if (host.identityId) existing.identityId = host.identityId;
+      if (host.telnetIdentityId) existing.telnetIdentityId = host.telnetIdentityId;
+      if (host.identityFileId) existing.identityFileId = host.identityFileId;
     }
     if (existing.group == null && host.group != null) existing.group = host.group;
     if (existing.label === existing.hostname && host.label && host.label !== host.hostname) {

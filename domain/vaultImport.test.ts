@@ -338,6 +338,32 @@ test("applyVaultImportDestination merges referenced credentials onto the retaine
   assert.equal(targeted.hosts[0]?.identityFileId, "key-1");
 });
 
+test("applyVaultImportDestination does not override retained key auth with identity refs", () => {
+  const imported = importVaultHostsFromText("csv", [
+    "Groups,Label,Hostname,Port,Username,KeyPath",
+    "lan,direct,10.10.10.10,22,root,~/.ssh/id_ed25519",
+    "lan-proxy,via-socks,10.10.10.10,22,root,",
+  ].join("\n"));
+  const [first, second] = imported.hosts;
+  assert.ok(first && second);
+  const withRefs = {
+    ...imported,
+    hosts: [
+      first,
+      { ...second, identityId: "identity-1" },
+    ],
+  };
+
+  const targeted = applyVaultImportDestination(withRefs, {
+    mode: "group",
+    group: "Imported/July",
+  });
+
+  assert.equal(targeted.hosts.length, 1);
+  assert.deepEqual(targeted.hosts[0]?.identityFilePaths, ["~/.ssh/id_ed25519"]);
+  assert.equal(targeted.hosts[0]?.identityId, undefined);
+});
+
 test("CSV import keeps working when KeyPath and Passphrase columns are absent", () => {
   const result = importVaultHostsFromText(
     "csv",
