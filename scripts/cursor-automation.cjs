@@ -2450,9 +2450,15 @@ function refineIssueCommentRoute(decision, {
 } = {}) {
   if (decision?.kind !== 'issue_followup' || hasOpenBotPull) return decision;
   const names = normalizeIssueLabelNames(labels);
-  // Disputes against auto-closed "already available" stay on follow-up so we
-  // hand off to a human instead of re-closing via classify.
-  if (names.includes('triage:already-available')) return decision;
+  // Already handed to a human (including reopen of auto-closed already-available
+  // after the outcome label was cleared) must stay on follow-up. Otherwise
+  // actionable author replies re-enter classify and can auto-close again.
+  if (
+    names.includes('triage:already-available') ||
+    names.includes('ready-for-human')
+  ) {
+    return decision;
+  }
   const simpleKind = classifySimpleIssueFollowup([{ body }]);
   if (simpleKind) return decision;
   return {

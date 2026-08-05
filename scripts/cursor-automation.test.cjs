@@ -635,6 +635,16 @@ test('actionable author follow-ups without an open bot PR are reclassified', () 
     }),
     decision,
   );
+  // After reopen handoff drops triage:already-available, ready-for-human alone
+  // must still block reclassify → already_available auto-close.
+  assert.equal(
+    auto.refineIssueCommentRoute(decision, {
+      hasOpenBotPull: false,
+      labels: ['triage', 'triage:admitted', 'ready-for-human'],
+      body: '我从 main build 了，还是一样，本地网络权限没有弹窗。',
+    }),
+    decision,
+  );
 });
 
 test('decideIssuesEventRoute skips bot reopen and hands auto-closed reopen to humans', () => {
