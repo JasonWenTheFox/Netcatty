@@ -2212,12 +2212,13 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (!trackSharedWriteDrain || !resolveSharedWriteDrain || drainForceTimer) return;
       drainForceTimer = setTimeout(() => {
         drainForceTimer = null;
-        // Free the transfer/lease. Also release the path gate so later same-path
-        // uploads are not stuck forever when the OPEN callback never arrives
-        // (dead shared channel). Late OPEN still invalidates an accepted retry
-        // via staleOpenTruncatedStage (Codex P2 on f45f6a77).
+        // Free the transfer/lease, but keep the path gate held until the OPEN
+        // callback settles (late path releases it). Releasing here lets a
+        // same-id retry OPEN the stage while the stale OPEN is still pending
+        // (Codex P1 on 9d87df6c). If the callback never arrives, free after a
+        // long grace so a dead channel cannot pin same-path uploads forever.
         completeSharedWriteDrain();
-        releasePathGate();
+        setTimeout(() => releasePathGate(), 30000);
       }, 2000);
     };
 
