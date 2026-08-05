@@ -380,3 +380,31 @@ test("sync provider bindings live outside plugin secrets and reject namespace mi
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
   database.close();
 });
+
+test("failed restoreOverwrite keeps stash for retry", (context) => {
+  const database = createDatabase(context);
+  let failEncrypt = false;
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => {
+      if (failEncrypt) return Buffer.alloc(0);
+      return Buffer.from(`sealed:${Buffer.from(value).toString("base64")}`);
+    },
+    decryptString: (value) => {
+      const encoded = value.toString().slice("sealed:".length);
+      return Buffer.from(encoded, "base64").toString();
+    },
+  };
+  const store = new PluginSecretStore({ database, safeStorage });
+  const first = store.set("com.example", "sync-credential", "good-password");
+  store.set("com.example", "sync-credential", "bad-password", { stashPrevious: true });
+  failEncrypt = true;
+  assert.throws(
+    () => store.restoreOverwrite("com.example", "sync-credential"),
+    (error) => error.code === RPC_ERRORS.unavailable,
+  );
+  failEncrypt = false;
+  assert.equal(store.restoreOverwrite("com.example", "sync-credential"), true);
+  assert.equal(store.resolve("com.example", first), "good-password");
+  database.close();
+});

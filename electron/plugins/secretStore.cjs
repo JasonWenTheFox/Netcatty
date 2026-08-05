@@ -125,7 +125,6 @@ class PluginSecretStore {
     if (!previous || typeof previous.value !== "string" || typeof previous.secretRef !== "string") {
       return false;
     }
-    this.#overwriteStash.delete(stashKey);
     const ciphertext = this.safeStorage.encryptString(previous.value);
     if (!Buffer.isBuffer(ciphertext) || ciphertext.byteLength < 1) {
       throw new PluginRpcError(RPC_ERRORS.unavailable, "OS-backed plugin secret encryption failed");
@@ -136,6 +135,9 @@ class PluginSecretStore {
       secretRef: previous.secretRef,
       ciphertext,
     });
+    // Drop the stash only after the prior value is durably written so a failed
+    // encrypt/upsert can still be retried.
+    this.#overwriteStash.delete(stashKey);
     return true;
   }
 
