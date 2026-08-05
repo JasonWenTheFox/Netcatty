@@ -1930,6 +1930,9 @@ async function uploadFile(
  * Channel `error` while OPEN is pending must reject here: callers only check
  * recorded channelError after this await returns, so a dead channel that never
  * invokes the OPEN callback would otherwise hang the transfer and SFTP lease.
+ * Shared write opens ("w" / "r+" / …) defer cancel settle until the OPEN
+ * callback (or a drain timeout) so callers cannot clean up a remote stage
+ * before a late truncating OPEN recreates it.
  *
  * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
  */
@@ -1938,14 +1941,21 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   const abortChannel = typeof options.abortChannel === "function"
     ? options.abortChannel
     : null;
+  // ssh2 string flags: "r" is read-only; anything else can create/truncate.
+  const isWriteOpen = String(flags ?? "r") !== "r";
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let openDrainTimer = null;
     const previousAbort = transfer.abort;
 
     const settle = (fn, value) => {
       if (settled) return;
       settled = true;
+      if (openDrainTimer) {
+        clearTimeout(openDrainTimer);
+        openDrainTimer = null;
+      }
       if (transfer.abort === abortDuringOpen) {
         transfer.abort = previousAbort;
       }
@@ -1955,6 +1965,19 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
 
     const abortDuringOpen = () => {
       transfer.cancelled = true;
+      // Shared write OPEN can truncate/create the remote path. Defer settle so
+      // runRemoteUploadTransaction cleanup cannot delete the stage before a
+      // late OPEN recreates it (Codex P2 on a7f96c94). abortChannel is a no-op
+      // on shared sessions, so ordering vs end() does not apply here.
+      if (!disposeChannel && isWriteOpen && !settled) {
+        try { abortChannel?.(); } catch { /* ignore */ }
+        if (!openDrainTimer) {
+          openDrainTimer = setTimeout(() => {
+            settle(reject, new Error("Transfer cancelled"));
+          }, 2000);
+        }
+        return;
+      }
       // Settle before abortChannel so a synchronous OPEN callback from
       // sftp.end() cannot win the promise with a channel-close error first.
       settle(reject, new Error("Transfer cancelled"));
@@ -1988,10 +2011,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           return;
         }
         if (transfer.cancelled) {
+          const finishCancel = () => settle(reject, new Error("Transfer cancelled"));
           if (handle && !disposeChannel) {
-            closeSftpHandle(sftp, handle).catch(() => {});
+            // Close before settle so shared write cleanup runs after the
+            // truncating OPEN handle is released.
+            closeSftpHandle(sftp, handle).then(finishCancel, finishCancel);
+            return;
           }
-          settle(reject, new Error("Transfer cancelled"));
+          finishCancel();
           return;
         }
         settle(resolve, handle);
