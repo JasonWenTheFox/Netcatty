@@ -132,6 +132,33 @@ test("ChatMessageList only renders the recent message batch by default", () => {
   assert.match(markup, /message-59/);
 });
 
+test("ChatMessageList exposes jump navigation once there are enough user turns", () => {
+  const messages: ChatMessage[] = [
+    { id: "u1", role: "user", content: "first turn", timestamp: 1 },
+    { id: "a1", role: "assistant", content: "ok", timestamp: 2 },
+    { id: "u2", role: "user", content: "second turn", timestamp: 3 },
+    { id: "a2", role: "assistant", content: "ok", timestamp: 4 },
+    { id: "u3", role: "user", content: "third turn", timestamp: 5 },
+    { id: "a3", role: "assistant", content: "ok", timestamp: 6 },
+  ];
+
+  const markup = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      { locale: "en" },
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(ChatMessageList, { messages }),
+      ),
+    ),
+  );
+
+  assert.match(markup, /aria-label="Jump to message"/);
+  assert.match(markup, /id="ai-chat-msg-u1"/);
+  assert.match(markup, /id="ai-chat-msg-u3"/);
+});
+
 test("ChatMessageList renders Codex activities and actual usage", () => {
   const messages: ChatMessage[] = [{
     id: "assistant-activity",

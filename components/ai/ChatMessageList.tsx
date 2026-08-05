@@ -73,6 +73,12 @@ import {
   getAIPanelProfilerProps,
   isAIPanelDiagnosticPartHidden,
 } from './aiPanelDiagnostics';
+import {
+  buildChatJumpEntries,
+  chatMessageDomId,
+  resolveTailCountForJumpTarget,
+} from '../../domain/chatJumpNav';
+import ChatJumpNav from './ChatJumpNav';
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
@@ -354,9 +360,13 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   const hideMarkdown = isAIPanelDiagnosticPartHidden('markdown', hiddenParts);
   const hideToolCalls = isAIPanelDiagnosticPartHidden('toolcalls', hiddenParts);
   const [renderedTailCount, setRenderedTailCount] = useState(MESSAGE_RENDER_BATCH);
+  const [activeJumpMessageId, setActiveJumpMessageId] = useState<string | null>(null);
+  const [pendingJumpMessageId, setPendingJumpMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     setRenderedTailCount(MESSAGE_RENDER_BATCH);
+    setActiveJumpMessageId(null);
+    setPendingJumpMessageId(null);
   }, [activeSessionId]);
 
   const visibleMessages = useMemo(
@@ -368,6 +378,28 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
   const displayedMessages = hiddenMessageCount > 0
     ? visibleMessages.slice(-renderedTailCount)
     : visibleMessages;
+
+  const jumpEntries = useMemo(
+    () => buildChatJumpEntries(visibleMessages, {
+      emptyLabel: t('ai.chat.jumpUntitled'),
+    }),
+    [t, visibleMessages],
+  );
+
+  const handleJumpToMessage = useCallback((messageId: string) => {
+    setActiveJumpMessageId(messageId);
+    setRenderedTailCount((count) =>
+      resolveTailCountForJumpTarget(visibleMessages, messageId, count));
+    setPendingJumpMessageId(messageId);
+  }, [visibleMessages]);
+
+  useEffect(() => {
+    if (!pendingJumpMessageId) return;
+    const target = document.getElementById(chatMessageDomId(pendingJumpMessageId));
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setPendingJumpMessageId(null);
+  }, [displayedMessages, pendingJumpMessageId]);
 
   const resolvedToolCallIds = new Set(
     displayedMessages
@@ -591,7 +623,11 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
           const isThisStreaming = isStreaming && isLastAssistant;
 
           return (
-            <Message key={message.id} from={message.role}>
+            <Message
+              key={message.id}
+              id={chatMessageDomId(message.id)}
+              from={message.role}
+            >
               <MessageContent from={message.role}>
                 {/* Thinking block */}
                 {!isUser && message.thinking && (
@@ -833,6 +869,11 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
           </div>
         )}
       </ConversationContent>
+      <ChatJumpNav
+        entries={jumpEntries}
+        activeMessageId={activeJumpMessageId}
+        onSelect={handleJumpToMessage}
+      />
       <ConversationScrollButton />
     </Conversation>
 
