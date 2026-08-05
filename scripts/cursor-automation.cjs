@@ -2451,10 +2451,15 @@ function refineIssueCommentRoute(decision, {
   if (decision?.kind !== 'issue_followup' || hasOpenBotPull) return decision;
   const names = normalizeIssueLabelNames(labels);
   // Disputed auto-close outcomes (already_available / unclear) must stay on
-  // follow-up after reopen handoff. Do not gate on ready-for-human alone —
-  // that label also covers feature_defer / other / implement failures that
-  // should still be allowed to re-enter classify.
-  if (names.some((name) => ISSUE_AUTO_CLOSE_HANDOFF_LABELS.has(name))) {
+  // follow-up after author reopen handoff so classify cannot auto-close again.
+  // Maintainer @bot mentions are explicit re-triage requests and must still
+  // re-enter classify even when those dispute labels remain.
+  // Do not gate on ready-for-human alone — that label also covers
+  // feature_defer / other / implement failures that should reclassify.
+  if (
+    names.some((name) => ISSUE_AUTO_CLOSE_HANDOFF_LABELS.has(name))
+    && decision.reason !== 'maintainer mentioned issue bot'
+  ) {
     return decision;
   }
   const simpleKind = classifySimpleIssueFollowup([{ body }]);
@@ -2463,7 +2468,9 @@ function refineIssueCommentRoute(decision, {
     kind: 'issue_classify',
     reason: hasOpenRelatedPull
       ? 'actionable author follow-up with trusted related PR'
-      : 'actionable author follow-up without open automation PR',
+      : decision.reason === 'maintainer mentioned issue bot'
+        ? 'actionable maintainer bot mention without open automation PR'
+        : 'actionable author follow-up without open automation PR',
   };
 }
 
