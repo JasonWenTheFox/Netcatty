@@ -2423,19 +2423,21 @@ function decideIssueCommentRoute({
   }
 
   const isManaged = names.some((name) => ISSUE_FOLLOWUP_LABELS.has(name));
-  if (isAuthor && isManaged) {
-    return {
-      kind: 'issue_followup',
-      reason: 'author follow-up on managed issue',
-    };
-  }
   const trustedAssociation = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(
     String(commenterAssociation || '').toUpperCase(),
   );
+  // Prefer maintainer @bot over plain author follow-up so maintainers who also
+  // filed the issue can still force re-triage (incl. auto-closed disputes).
   if (isManaged && trustedAssociation && mentionsIssueBot(body, botLogins)) {
     return {
       kind: 'issue_followup',
       reason: 'maintainer mentioned issue bot',
+    };
+  }
+  if (isAuthor && isManaged) {
+    return {
+      kind: 'issue_followup',
+      reason: 'author follow-up on managed issue',
     };
   }
 
