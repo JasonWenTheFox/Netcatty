@@ -273,6 +273,19 @@ function createPluginHostService(options) {
       }
       return enabled;
     };
+    // Seed bindings as soon as the host service exists — before async
+    // manager.initialize() and before secret IPC can serve syncDeleteSecrets.
+    // hostBootstrap starts initialize() in the background; an early disconnect
+    // must already see retained bindings (Codex P2 on 0633d190).
+    try {
+      if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
+        secretStore.backfillSyncProviderBindingsFromLiveProviders(
+          collectInstalledSyncProviderCatalog(database),
+        );
+      }
+    } catch {
+      // Best-effort; host construction must continue.
+    }
     // Startup activation goes through contributionService.initialize() → #startPlugin
     // without onPluginEnabled. Hydrate every enabled plugin before that path runs.
     const originalInitialize = contributionService.initialize.bind(contributionService);
@@ -285,10 +298,7 @@ function createPluginHostService(options) {
           // Best-effort; startup must continue.
         }
       }
-      // Seed bindings BEFORE startup activation. syncDeleteSecrets can run on
-      // the secret IPC path without waiting for manager.initialize(); if we
-      // only backfill after originalInitialize(), an early disconnect may see
-      // no binding and leave orphan sync-credential* rows (Codex P2).
+      // Re-seed after any package catalog changes during init.
       try {
         if (typeof secretStore.backfillSyncProviderBindingsFromLiveProviders === "function") {
           secretStore.backfillSyncProviderBindingsFromLiveProviders(
