@@ -31,6 +31,7 @@ import {
   sanitizePortForwardingRulesForSync,
   shouldPromptCloudVaultRecovery,
 } from '../syncPayload';
+import { commitPluginSidecarsLastKnown } from '../pluginSyncSidecarBridge';
 import { readInterruptedVaultApply } from '../localVaultBackups';
 import {
   STORAGE_KEY_VAULT_RESTORE_IN_PROGRESS_UNTIL,
@@ -455,6 +456,13 @@ export const useAutoSync = (config: AutoSyncConfig) => {
           }
           throw new Error(result.error || t('sync.autoSync.syncFailed'));
         }
+      }
+
+      // Commit collected sidecars (including authoritative empty resets) only
+      // after a successful upload so the empty-vault guard can still see the
+      // prior non-empty last-known during buildPayload → hasMeaningful checks.
+      if (Object.prototype.hasOwnProperty.call(payload, 'pluginSidecars')) {
+        commitPluginSidecarsLastKnown(payload.pluginSidecars ?? { version: 1, entries: [] });
       }
 
       lastSyncedDataRef.current = dataHash;

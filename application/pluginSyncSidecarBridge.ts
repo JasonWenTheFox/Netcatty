@@ -182,8 +182,31 @@ export async function collectPluginSyncSidecarsFromHost(): Promise<PluginSyncSid
     version: 1,
     entries: bundle.entries,
   };
-  writeLastKnownSidecars(normalized);
+  // Defer overwriting a non-empty last-known with an authoritative empty collect.
+  // useAutoSync runs hasMeaningfulCloudSyncData() after buildPayload/collect; if
+  // we erased last-known here, a deliberate plugin-only reset (entries → [])
+  // would look like an empty vault and be blocked. Commit the empty cache after
+  // a successful upload via commitPluginSidecarsLastKnown().
+  const previous = readLastKnownSidecars();
+  const previousHadEntries = Array.isArray(previous?.entries) && previous.entries.length > 0;
+  if (!(previousHadEntries && normalized.entries.length === 0)) {
+    writeLastKnownSidecars(normalized);
+  }
   return normalized;
+}
+
+/**
+ * Persist the sidecar bundle that was just successfully synced (or applied).
+ * Clears a deferred non-empty last-known after an empty reset upload.
+ */
+export function commitPluginSidecarsLastKnown(
+  bundle: PluginSyncSidecarBundle | null | undefined,
+): void {
+  if (!bundle || !Array.isArray(bundle.entries)) {
+    writeLastKnownSidecars({ version: 1, entries: [] });
+    return;
+  }
+  writeLastKnownSidecars({ version: 1, entries: bundle.entries });
 }
 
 export async function applyPluginSyncSidecarsFromHost(

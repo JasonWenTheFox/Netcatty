@@ -128,6 +128,10 @@ export interface SyncableVaultData {
  * when last-known previously held entries (a real reset to push) — otherwise
  * ordinary `{entries:[]}` collects from an empty plugin host would bypass the
  * empty-vault upload guard.
+ *
+ * Collect deliberately keeps a prior non-empty last-known when returning an
+ * empty bundle, so this check still sees the reset evidence before upload;
+ * commitPluginSidecarsLastKnown() clears it after a successful sync.
  */
 function hasMeaningfulPluginSidecars(payload: SyncPayload): boolean {
   if (
