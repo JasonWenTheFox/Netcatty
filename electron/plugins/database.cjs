@@ -213,9 +213,10 @@ class PluginDatabase {
       });
     }
     this.#assertSchemaLayout();
-    // Recover provider ownership for pre-binding credentials (and any leftover
-    // sync-provider-map:* secret rows from an intermediate build).
-    this.backfillSyncProviderBindingsFromLegacySecrets();
+    // Legacy-map backfill is deferred until PackageStore.recover() has finished
+    // (hostService seeds after package initialize). Running here would promote
+    // sole map candidates before recovered manifests are visible, then skip
+    // re-evaluation because bindings already exist (Codex P2 on cded4c8a).
   }
 
   #assertSchemaLayout() {

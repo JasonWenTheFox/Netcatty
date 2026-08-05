@@ -509,6 +509,8 @@ test("schema upgrade backfills bindings from legacy sync-provider-map secrets", 
   seed.close();
 
   const database = new PluginDatabase(file);
+  // Constructor no longer promotes; hostService seeds after package recovery.
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
   assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
   // Consumed map marker so later unbind + reopen cannot re-promote.
   assert.equal(
