@@ -131,6 +131,15 @@ export const shouldStopShiftRightClickMouseTrackingMouseDown = ({
   && event.button === 2
   && (event.shiftKey || forcesMenuOverMouseTracking({ rightClickBehavior, forceMenuInAlternateScreen }));
 
+// Pair mouseup with mousedown ownership. When Netcatty claims the press
+// (Shift / fullscreen-apps menu), also swallow the release so xterm never
+// reports a lone button-up. When the TUI owns the press (Herdr, tmux menus,
+// vim, ...), the release must reach xterm too - otherwise the app stays stuck
+// with the right button held and mouse UI dies until restart (#2721).
+export const shouldStopRightClickMouseTrackingMouseUp = (
+  state: ShiftRightClickMouseDownCaptureState,
+): boolean => shouldStopShiftRightClickMouseTrackingMouseDown(state);
+
 export const createMacOptionForcedSelectionMouseEvent = (event: MouseEvent): MouseEvent =>
   markShiftSelectionReplayMouseEvent(new MouseEvent(event.type, {
     bubbles: event.bubbles,

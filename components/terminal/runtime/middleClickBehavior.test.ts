@@ -10,6 +10,7 @@ import {
   resolveMiddleClickBehavior,
   shouldInterceptMouseTrackingContextMenu,
   shouldReplayShiftMouseSelectionAsMacOption,
+  shouldStopRightClickMouseTrackingMouseUp,
   shouldStopShiftRightClickMouseTrackingMouseDown,
 } from "./middleClickBehavior";
 
@@ -292,6 +293,50 @@ test("Shift right-click mousedown capture is limited to connected mouse tracking
         button: 0,
         shiftKey: true,
       } as MouseEvent,
+      mouseTracking: true,
+      status: "connected",
+    }),
+    false,
+  );
+});
+
+test("right-click mouseup reaches mouse-tracking apps when Netcatty did not claim the press", () => {
+  // Herdr / Terminal.app: button-down was delivered, so button-up must be too.
+  // Swallowing mouseup leaves the TUI stuck thinking the right button is held (#2721).
+  assert.equal(
+    shouldStopRightClickMouseTrackingMouseUp({
+      event: { button: 2, shiftKey: false } as MouseEvent,
+      mouseTracking: true,
+      status: "connected",
+      rightClickBehavior: "context-menu",
+      forceMenuInAlternateScreen: false,
+    }),
+    false,
+  );
+});
+
+test("right-click mouseup is stopped only when Netcatty claimed the matching mousedown", () => {
+  assert.equal(
+    shouldStopRightClickMouseTrackingMouseUp({
+      event: { button: 2, shiftKey: true } as MouseEvent,
+      mouseTracking: true,
+      status: "connected",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldStopRightClickMouseTrackingMouseUp({
+      event: { button: 2, shiftKey: false } as MouseEvent,
+      mouseTracking: true,
+      status: "connected",
+      rightClickBehavior: "context-menu",
+      forceMenuInAlternateScreen: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldStopRightClickMouseTrackingMouseUp({
+      event: { button: 0, shiftKey: false } as MouseEvent,
       mouseTracking: true,
       status: "connected",
     }),
