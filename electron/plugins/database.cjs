@@ -924,7 +924,35 @@ class PluginDatabase {
       if (uniqueCredentialOwners.length !== 1) {
         continue;
       }
-      this.upsertSyncProviderBinding(providerId, uniqueCredentialOwners[0]);
+      const chosenOwner = uniqueCredentialOwners[0];
+      // Constructor-time map promote runs before hostService's installed-manifest
+      // conflict check. Skip when another installed package would also claim this
+      // provider (live nested plugin without credentials yet) so we do not bind
+      // a legacy parent that later disconnect cannot clear (Codex P2 on 5bc1b60d).
+      let hasManifestConflict = false;
+      try {
+        const versions = typeof this.listInstalledVersions === "function"
+          ? this.listInstalledVersions()
+          : [];
+        for (const version of versions) {
+          const pluginId = version?.pluginId;
+          if (typeof pluginId !== "string" || pluginId === chosenOwner) continue;
+          for (const provider of version.manifest?.contributes?.providers ?? []) {
+            if (provider?.kind !== "sync") continue;
+            if (provider.id === providerId) {
+              hasManifestConflict = true;
+              break;
+            }
+          }
+          if (hasManifestConflict) break;
+        }
+      } catch {
+        /* ignore catalog probe failures */
+      }
+      if (hasManifestConflict) {
+        continue;
+      }
+      this.upsertSyncProviderBinding(providerId, chosenOwner);
       // Consume legacy map markers for this provider so a later unbind + reopen
       // cannot re-promote from leftover secrets. Only delete namespaced map keys
       // we accepted as candidates (not arbitrary plugin secrets). Consume all
