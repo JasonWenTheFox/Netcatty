@@ -1902,11 +1902,69 @@ async function uploadFile(
   throw error;
 }
 
-function openSftpHandle(sftp, filePath, flags) {
+/**
+ * Open a remote SFTP handle while transfer.abort can reject the wait without
+ * depending on sftp.end(). Isolated channels still pass abortChannel that ends
+ * the subsystem; shared/sudo channels pass a no-op end path and only reject.
+ * A late OPEN handle after cancel is closed best-effort when disposeChannel is
+ * false so the shared session does not leak handles.
+ *
+ * @param {{ disposeChannel?: boolean, abortChannel?: (() => void) | null }} [options]
+ */
+function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}) {
+  const disposeChannel = options.disposeChannel !== false;
+  const abortChannel = typeof options.abortChannel === "function"
+    ? options.abortChannel
+    : null;
+
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const previousAbort = transfer.abort;
+
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (transfer.abort === abortDuringOpen) {
+        transfer.abort = previousAbort;
+      }
+      fn(value);
+    };
+
+    const abortDuringOpen = () => {
+      transfer.cancelled = true;
+      // Settle before abortChannel so a synchronous OPEN callback from
+      // sftp.end() cannot win the promise with a channel-close error first.
+      settle(reject, new Error("Transfer cancelled"));
+      try { abortChannel?.(); } catch { /* ignore */ }
+    };
+
+    if (transfer.cancelled) {
+      reject(new Error("Transfer cancelled"));
+      return;
+    }
+
+    transfer.abort = abortDuringOpen;
+
     sftp.open(filePath, flags, (error, handle) => {
-      if (error) reject(error);
-      else resolve(handle);
+      if (settled) {
+        // Cancel already rejected the wait; close a late handle on shared sessions.
+        if (!error && handle && !disposeChannel) {
+          closeSftpHandle(sftp, handle).catch(() => {});
+        }
+        return;
+      }
+      if (error) {
+        settle(reject, error);
+        return;
+      }
+      if (transfer.cancelled) {
+        if (handle && !disposeChannel) {
+          closeSftpHandle(sftp, handle).catch(() => {});
+        }
+        settle(reject, new Error("Transfer cancelled"));
+        return;
+      }
+      settle(resolve, handle);
     });
   });
 }
@@ -2619,8 +2677,9 @@ async function uploadFileConcurrent(
     channelError = channelError || error;
   };
   sftp.on?.("error", onChannelError);
-  // Install cancel before OPEN so a stalled remote open can still end an
-  // isolated channel (runPausableConcurrentRanges would install this later).
+  // Install cancel before OPEN so a stalled remote open can still settle:
+  // isolated channels end the subsystem; shared/sudo reject OPEN without end().
+  // (runPausableConcurrentRanges would install abort later, after OPEN.)
   const abortChannel = () => {
     if (disposeChannel) {
       try { sftp.end?.(); } catch { /* ignore */ }
@@ -2676,7 +2735,13 @@ async function uploadFileConcurrent(
       digestHandle = await fs.promises.open(ephemeralDigestPath, "r");
     }
     if (transfer.cancelled) throw new Error("Transfer cancelled");
-    remoteHandle = await openSftpHandle(sftp, remotePath, checkpoint > 0 ? "r+" : "w");
+    remoteHandle = await openSftpHandleForTransfer(
+      sftp,
+      remotePath,
+      checkpoint > 0 ? "r+" : "w",
+      transfer,
+      { disposeChannel, abortChannel },
+    );
     if (channelError) throw channelError;
     if (transfer.cancelled) throw new Error("Transfer cancelled");
 
@@ -2810,8 +2875,9 @@ async function downloadFileResumableFast(
     channelError = channelError || error;
   };
   sftp.on?.("error", onChannelError);
-  // Install cancel before OPEN so a stalled remote open can still end an
-  // isolated channel (runPausableConcurrentRanges would install this later).
+  // Install cancel before OPEN so a stalled remote open can still settle:
+  // isolated channels end the subsystem; shared/sudo reject OPEN without end().
+  // (runPausableConcurrentRanges would install abort later, after OPEN.)
   const abortChannel = () => {
     if (disposeChannel) {
       try { sftp.end?.(); } catch { /* ignore */ }
@@ -2828,7 +2894,13 @@ async function downloadFileResumableFast(
   let failed = false;
   try {
     if (transfer.cancelled) throw new Error("Transfer cancelled");
-    remoteHandle = await openSftpHandle(sftp, remotePath, "r");
+    remoteHandle = await openSftpHandleForTransfer(
+      sftp,
+      remotePath,
+      "r",
+      transfer,
+      { disposeChannel, abortChannel },
+    );
     if (channelError) throw channelError;
     if (transfer.cancelled) throw new Error("Transfer cancelled");
     localHandle = await fs.promises.open(localPath, checkpoint > 0 ? "r+" : "w+");
