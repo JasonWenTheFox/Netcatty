@@ -12,6 +12,7 @@ import { planPluginSyncConnect, hasPluginProviderStoredConfig } from '../../doma
 import { planPluginSyncCredential, syncConfigurationSchemaWithoutSecretRequirements } from '../../domain/pluginSyncCredential';
 import { pluginConfigurationMatchesSchema } from '../../domain/pluginConfigurationSchema';
 import type { useCloudSync } from '../../application/state/useCloudSync';
+import { storePluginSyncSecretsThenConnect } from '../../application/pluginSyncConnectWithSecrets';
 import { cleanOneDriveErrorMessage, isProviderReadyForSync } from '../../domain/sync';
 import { pluginExtensionBridge } from '../../application/state/pluginExtensionBridge';
 import { cn } from '../../lib/utils';
@@ -171,32 +172,43 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
         configurationSchema: pluginSyncProviders.find((entry) => entry.id === providerId)
           ?.configurationSchema,
       });
-      let credential: { kind: 'secret'; id: string; key: string } | undefined;
+      const stored = sync.providers[providerId]?.credential;
+      const existingCredential =
+        stored
+        && typeof stored === 'object'
+        && stored.kind === 'secret'
+        && typeof stored.id === 'string'
+          ? stored as { kind: 'secret'; id: string; key: string }
+          : undefined;
       if (credentialPlan.secrets.length > 0) {
-        const { putPluginSyncSecret } = await import(
+        const { putPluginSyncSecret, deletePluginSyncSecrets } = await import(
           '../../infrastructure/services/adapters/pluginSyncIpcHost'
         );
-        for (const secret of credentialPlan.secrets) {
-          const ref = await putPluginSyncSecret({
-            providerId,
-            key: secret.secretKey,
+        // Put secrets before connect; roll back just-created keys if connect fails
+        // so a rejected password/token is not left readable in plugin_secrets.
+        await storePluginSyncSecretsThenConnect({
+          providerId,
+          secrets: credentialPlan.secrets.map((secret) => ({
+            secretKey: secret.secretKey,
             value: secret.value,
-          });
-          // SyncConnectPayload.credential carries the primary (first) secret;
-          // additional secrets remain addressable via secrets.get(key).
-          if (!credential) credential = ref;
-        }
+          })),
+          putSecret: putPluginSyncSecret,
+          deleteSecrets: deletePluginSyncSecrets,
+          connect: async (credential) => {
+            await sync.connectPluginProvider(
+              providerId,
+              credentialPlan.configuration,
+              credential,
+            );
+          },
+        });
       } else {
-        const stored = sync.providers[providerId]?.credential;
-        if (stored && typeof stored === 'object' && stored.kind === 'secret' && typeof stored.id === 'string') {
-          credential = stored as { kind: 'secret'; id: string; key: string };
-        }
+        await sync.connectPluginProvider(
+          providerId,
+          credentialPlan.configuration,
+          existingCredential,
+        );
       }
-      await sync.connectPluginProvider(
-        providerId,
-        credentialPlan.configuration,
-        credential,
-      );
       toast.success(t('cloudSync.connect.plugin.success'));
       return true;
     } catch (error) {
