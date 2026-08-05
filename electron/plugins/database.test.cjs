@@ -551,6 +551,37 @@ test("legacy map backfill does not overwrite an existing host binding", (context
   database.close();
 });
 
+test("legacy map backfill prefers the longest plugin owner when maps conflict", (context) => {
+  const database = createDatabase(context);
+  const now = Date.now();
+  // Insert parent first so row order would favor the shorter owner if ungrouped.
+  for (const [pluginId, key] of [
+    ["com.example", "sync-provider-map:com.example.sync.foo"],
+    ["com.example.sync", "sync-provider-map:com.example.sync.foo"],
+  ]) {
+    database.db.prepare(`
+      INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(pluginId, key, `ref-${pluginId}`, Buffer.from("sealed"), now, now);
+  }
+  const promoted = database.backfillSyncProviderBindingsFromLegacySecrets();
+  assert.equal(promoted, 1);
+  assert.equal(
+    database.getSyncProviderBinding("com.example.sync.foo")?.pluginId,
+    "com.example.sync",
+    "longest namespace owner must win over parent map row",
+  );
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
+    null,
+  );
+  assert.equal(
+    database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"),
+    null,
+  );
+  database.close();
+});
+
 test("inferPluginIdForSyncProvider never guesses from credential key prefixes", (context) => {
   const database = createDatabase(context);
   const now = Date.now();

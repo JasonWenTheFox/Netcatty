@@ -841,6 +841,11 @@ class PluginDatabase {
   /**
    * Promote leftover sync-provider-map:* secret rows into the host-owned binding
    * table, then delete those legacy secret keys. Idempotent.
+   *
+   * Multiple plugins may still hold map rows for the same provider (parent +
+   * real owner). Group by provider, never overwrite an existing host binding,
+   * and when unbound pick the longest pluginId namespace match so a shorter
+   * parent cannot win just because SQLite returned it first.
    */
   backfillSyncProviderBindingsFromLegacySecrets() {
     const legacyPrefix = "sync-provider-map:";
@@ -850,7 +855,8 @@ class PluginDatabase {
       FROM plugin_secrets
       WHERE key LIKE ? ESCAPE '\\'
     `).all(`${escaped}%`);
-    let promoted = 0;
+    /** @type {Map<string, Array<{ pluginId: string, key: string }>>} */
+    const byProvider = new Map();
     for (const row of legacyRows) {
       const pluginId = row.plugin_id;
       const key = row.key;
@@ -861,18 +867,35 @@ class PluginDatabase {
       if (!providerId.startsWith(`${pluginId}.`)) {
         continue;
       }
-      // Never overwrite a host binding that already exists. A leftover parent
-      // map row (e.g. com.example has sync-provider-map:com.example.sync.foo
-      // while com.example.sync already owns that provider) would otherwise
-      // steal ownership on every open.
+      const list = byProvider.get(providerId) || [];
+      list.push({ pluginId, key });
+      byProvider.set(providerId, list);
+    }
+    let promoted = 0;
+    for (const [providerId, candidates] of byProvider) {
+      // Never overwrite a host binding that already exists.
       const existing = this.getSyncProviderBinding(providerId);
       if (existing && typeof existing.pluginId === "string" && existing.pluginId.length > 0) {
-        this.deleteSecret(pluginId, key);
+        for (const { pluginId, key } of candidates) {
+          this.deleteSecret(pluginId, key);
+        }
         continue;
       }
-      this.upsertSyncProviderBinding(providerId, pluginId);
-      this.deleteSecret(pluginId, key);
-      promoted += 1;
+      // Strongest owner = longest pluginId namespace prefix.
+      const ranked = [...candidates].sort((a, b) => b.pluginId.length - a.pluginId.length);
+      const winner = ranked[0];
+      const winnerLength = winner.pluginId.length;
+      const tied = ranked.filter((c) => c.pluginId.length === winnerLength);
+      // Same-length distinct plugin ids for one provider is ambiguous; clean up
+      // secrets but do not invent a binding.
+      const uniqueWinners = [...new Set(tied.map((c) => c.pluginId))];
+      if (uniqueWinners.length === 1) {
+        this.upsertSyncProviderBinding(providerId, uniqueWinners[0]);
+        promoted += 1;
+      }
+      for (const { pluginId, key } of candidates) {
+        this.deleteSecret(pluginId, key);
+      }
     }
     return promoted;
   }
