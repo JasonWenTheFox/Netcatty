@@ -23,7 +23,7 @@ function installLocalStorage(): LocalStorageMock {
   return localStorage;
 }
 
-installLocalStorage();
+const localStorage = installLocalStorage();
 
 const { SYNC_STORAGE_KEYS } = await import('../domain/sync.ts');
 const { localStorageAdapter } = await import('../infrastructure/persistence/localStorageAdapter.ts');
