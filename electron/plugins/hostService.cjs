@@ -294,6 +294,11 @@ function createPluginHostService(options) {
     packageStore.initialize = async () => {
       const result = await originalPackageInitialize();
       try {
+        // Re-run legacy-map promote now that recovered package manifests are
+        // visible to the conflict checks (Codex P2 on dd7aad70).
+        if (typeof database.backfillSyncProviderBindingsFromLegacySecrets === "function") {
+          database.backfillSyncProviderBindingsFromLegacySecrets();
+        }
         seedSyncBindings();
       } catch {
         // Best-effort
