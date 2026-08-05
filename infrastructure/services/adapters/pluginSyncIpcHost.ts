@@ -103,7 +103,7 @@ type ElectronPluginSyncApi = {
     providerId: string;
     key: string;
     value: string;
-  }) => Promise<{ kind: 'secret'; id: string; key: string }>;
+  }) => Promise<{ kind: 'secret'; id: string; key: string; created?: boolean }>;
   pluginSyncDeleteSecrets?: (params: {
     providerId: string;
     keys?: string[];
@@ -387,7 +387,7 @@ export async function putPluginSyncSecret(params: {
   providerId: string;
   key?: string;
   value: string;
-}): Promise<{ kind: 'secret'; id: string; key: string }> {
+}): Promise<{ kind: 'secret'; id: string; key: string; created?: boolean }> {
   const api = getPluginSyncApi();
   if (typeof api?.pluginSyncPutSecret !== 'function') {
     throw new Error('Plugin sync secret storage is unavailable');

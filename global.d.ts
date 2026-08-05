@@ -434,7 +434,7 @@ declare global {
       providerId: string;
       key: string;
       value: string;
-    }): Promise<{ kind: 'secret'; id: string; key: string }>;
+    }): Promise<{ kind: 'secret'; id: string; key: string; created?: boolean }>;
     pluginSyncDeleteSecrets?(request: {
       providerId: string;
       keys?: string[];

@@ -1,6 +1,8 @@
 /**
  * Persist plugin sync secrets then connect; roll back just-created secrets if
  * connect (or a later put) fails so bad passwords are not left in OS storage.
+ * Overwritten keys are kept on failure so a reconnect that rejects does not
+ * delete the previously working credential still referenced by the connection.
  */
 
 export type PluginSyncSecretRef = { kind: 'secret'; id: string; key: string };
@@ -8,6 +10,11 @@ export type PluginSyncSecretRef = { kind: 'secret'; id: string; key: string };
 export interface PluginSyncConnectSecretInput {
   secretKey: string;
   value: string;
+}
+
+export interface PluginSyncPutSecretResult extends PluginSyncSecretRef {
+  /** False when the durable (plugin,key) row already existed and was overwritten. */
+  created?: boolean;
 }
 
 export interface StorePluginSyncSecretsThenConnectParams {
@@ -19,7 +26,7 @@ export interface StorePluginSyncSecretsThenConnectParams {
     providerId: string;
     key: string;
     value: string;
-  }) => Promise<PluginSyncSecretRef>;
+  }) => Promise<PluginSyncPutSecretResult>;
   deleteSecrets: (params: {
     providerId: string;
     keys: string[];
@@ -42,7 +49,11 @@ export async function storePluginSyncSecretsThenConnect(
           key: secret.secretKey,
           value: secret.value,
         });
-        createdKeys.push(secret.secretKey);
+        // Only roll back keys that did not exist before this attempt. Deleting an
+        // overwritten key would also remove the prior working credential.
+        if (ref.created !== false) {
+          createdKeys.push(secret.secretKey);
+        }
         // SyncConnectPayload.credential carries the primary (first) secret;
         // additional secrets remain addressable via secrets.get(key).
         if (!credential) credential = ref;

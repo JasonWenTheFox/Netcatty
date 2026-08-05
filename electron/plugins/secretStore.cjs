@@ -96,6 +96,38 @@ class PluginSecretStore {
     return this.database.deleteSecretsByKeyPrefix(pluginId, prefix);
   }
 
+  /**
+   * Durable providerId → pluginId binding so disconnect can wipe sync secrets
+   * after the contribution disappears (disabled/uninstalled plugin).
+   */
+  syncProviderBindingKey(providerId) {
+    return `sync-provider-map:${assertSecretKey(providerId)}`;
+  }
+
+  bindSyncProviderPlugin(pluginId, providerId) {
+    const key = this.syncProviderBindingKey(providerId);
+    if (this.getReference(pluginId, key)) return;
+    this.set(pluginId, key, pluginId);
+  }
+
+  resolveSyncProviderPlugin(providerId) {
+    const key = this.syncProviderBindingKey(providerId);
+    if (typeof this.database.findSecretsByKey === "function") {
+      const rows = this.database.findSecretsByKey(key);
+      const pluginId = rows?.[0]?.pluginId;
+      return typeof pluginId === "string" && pluginId.length > 0 ? pluginId : undefined;
+    }
+    return undefined;
+  }
+
+  unbindSyncProviderPlugin(pluginId, providerId) {
+    try {
+      this.delete(pluginId, this.syncProviderBindingKey(providerId));
+    } catch {
+      /* ignore missing binding */
+    }
+  }
+
   resolve(pluginId, secret) {
     this.#assertAvailable();
     const record = this.getRecordByReference(pluginId, secret);

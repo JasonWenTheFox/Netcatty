@@ -759,6 +759,14 @@ class PluginDatabase {
     return Number(result?.changes) || 0;
   }
 
+  /** Find secret rows by exact key across all plugins (sync provider cleanup). */
+  findSecretsByKey(key) {
+    return this.db.prepare(`
+      SELECT plugin_id, key, secret_ref, ciphertext, created_at, updated_at
+      FROM plugin_secrets WHERE key = ?
+    `).all(key).map((row) => this.#mapSecret(row));
+  }
+
   recordSecurityAudit(pluginId, event, details) {
     let detailsJson = JSON.stringify(details ?? {});
     const originalBytes = Buffer.byteLength(detailsJson);

@@ -1054,7 +1054,20 @@ function registerPluginBridge(ipcMain, options) {
     if (!match || typeof match.pluginId !== "string") {
       throw new Error(`Plugin sync provider is unavailable: ${providerId}`);
     }
-    return secretStore.set(match.pluginId, key, value);
+    const existing = typeof secretStore.getReference === "function"
+      ? secretStore.getReference(match.pluginId, key)
+      : null;
+    const stored = secretStore.set(match.pluginId, key, value);
+    // Remember which plugin owns this provider so disconnect can clean secrets
+    // after the contribution is gone (disabled/uninstalled).
+    if (typeof secretStore.bindSyncProviderPlugin === "function") {
+      try {
+        secretStore.bindSyncProviderPlugin(match.pluginId, providerId);
+      } catch {
+        /* binding is best-effort; credential write already succeeded */
+      }
+    }
+    return Object.freeze({ ...stored, created: !existing });
   });
 
   ipcMain.handle(CHANNELS.syncDeleteSecrets, async (event, payload) => {
@@ -1071,8 +1084,12 @@ function registerPluginBridge(ipcMain, options) {
     const match = Array.isArray(providers)
       ? providers.find((entry) => entry?.provider?.id === providerId || entry?.id === providerId)
       : null;
-    if (!match || typeof match.pluginId !== "string") {
-      // Provider may already be uninstalled; treat as no-op cleanup.
+    let pluginId = match && typeof match.pluginId === "string" ? match.pluginId : null;
+    if (!pluginId && typeof secretStore.resolveSyncProviderPlugin === "function") {
+      pluginId = secretStore.resolveSyncProviderPlugin(providerId) ?? null;
+    }
+    if (!pluginId) {
+      // No live contribution and no retained binding — nothing to delete.
       return { deleted: 0 };
     }
     const keys = Array.isArray(payload?.keys) && payload.keys.length > 0
@@ -1080,10 +1097,14 @@ function registerPluginBridge(ipcMain, options) {
       : null;
     if (!keys) {
       // Wipe every sync-credential* key (well-known + schema writeOnly fields).
+      let deleted = 0;
       if (typeof secretStore.deleteByKeyPrefix === "function") {
-        const deleted = secretStore.deleteByKeyPrefix(match.pluginId, "sync-credential");
-        return { deleted: Number(deleted) || 0 };
+        deleted = Number(secretStore.deleteByKeyPrefix(pluginId, "sync-credential")) || 0;
       }
+      if (typeof secretStore.unbindSyncProviderPlugin === "function") {
+        secretStore.unbindSyncProviderPlugin(pluginId, providerId);
+      }
+      return { deleted };
     }
     let deleted = 0;
     for (const rawKey of keys ?? [
@@ -1096,7 +1117,7 @@ function registerPluginBridge(ipcMain, options) {
       if (typeof rawKey !== "string" || rawKey.length < 1) continue;
       const key = assertSecretKey(rawKey);
       try {
-        secretStore.delete(match.pluginId, key);
+        secretStore.delete(pluginId, key);
         deleted += 1;
       } catch {
         /* ignore missing / unavailable keys */
