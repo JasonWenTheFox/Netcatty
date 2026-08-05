@@ -627,6 +627,69 @@ test('actionable author follow-ups without an open bot PR are reclassified', () 
     }),
     decision,
   );
+  assert.equal(
+    auto.refineIssueCommentRoute(decision, {
+      hasOpenBotPull: false,
+      labels: ['triage:already-available', 'triage:admitted'],
+      body: '我从 main build 了，还是一样，本地网络权限没有弹窗。',
+    }),
+    decision,
+  );
+});
+
+test('decideIssuesEventRoute skips bot reopen and hands auto-closed reopen to humans', () => {
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({ action: 'opened', labels: [] }),
+    { kind: 'issue_classify', reason: 'issues:opened' },
+  );
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({
+      action: 'reopened',
+      labels: ['bug', 'triage'],
+      actorLogin: 'alice',
+    }),
+    { kind: 'issue_classify', reason: 'issues:reopened' },
+  );
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({
+      action: 'reopened',
+      labels: ['triage:admitted', 'triage:already-available'],
+      actorLogin: 'netcatty-bot',
+    }),
+    { kind: 'skip', reason: 'bot reopen of managed issue' },
+  );
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({
+      action: 'reopened',
+      labels: ['triage:admitted', 'triage:already-available'],
+      actorLogin: 'binaricat',
+    }),
+    {
+      kind: 'ready_for_human_handoff',
+      reason: 'human reopen of auto-closed triage',
+    },
+  );
+  assert.deepEqual(
+    auto.decideIssuesEventRoute({
+      action: 'reopened',
+      labels: ['triage:admitted', 'ready-for-human', 'triage'],
+      actorLogin: 'binaricat',
+    }),
+    { kind: 'skip', reason: 'reopen of already-admitted issue' },
+  );
+  const handoff = auto.labelsForReadyForHumanHandoff([
+    'bug',
+    'triage',
+    'triage:admitted',
+    'triage:already-available',
+    'ready-for-agent',
+  ]);
+  assert.ok(handoff.includes('ready-for-human'));
+  assert.ok(handoff.includes('triage:admitted'));
+  assert.ok(!handoff.includes('triage:already-available'));
+  assert.ok(!handoff.includes('ready-for-agent'));
+  assert.equal(auto.isIssueAlreadyAdmitted(['triage:admitted']), true);
+  assert.equal(auto.isIssueAlreadyAdmitted(['bug', 'triage']), false);
 });
 
 test('decideIssueCommentRoute accepts maintainer @bot and ignores untrusted bystanders', () => {
@@ -947,6 +1010,7 @@ test('protected path reports replace stale data and ignore ordinary source files
 
 test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', async () => {
   let created = 0;
+  let lastUpdate = null;
   let comments = [{
     user: { login: 'mallory' },
     body: '<!-- cursor-implement-failure:base=abc;kind=no_changes -->',
@@ -954,8 +1018,21 @@ test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', a
   const github = {
     rest: {
       issues: {
-        get: async () => ({ data: { number: 42, labels: [] } }),
-        update: async () => ({ data: {} }),
+        get: async () => ({
+          data: {
+            number: 42,
+            state: 'open',
+            labels: [
+              { name: 'triage:already-available' },
+              { name: 'triage:admitted' },
+              { name: 'ready-for-agent' },
+            ],
+          },
+        }),
+        update: async (args) => {
+          lastUpdate = args;
+          return { data: {} };
+        },
         listComments: Symbol('listComments'),
         createComment: async () => { created += 1; return { data: {} }; },
       },
@@ -972,6 +1049,10 @@ test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', a
   const first = await auto.markNeedsHuman(args);
   assert.equal(first.commented, true);
   assert.equal(created, 1);
+  assert.ok(lastUpdate.labels.includes('ready-for-human'));
+  assert.ok(lastUpdate.labels.includes('triage:admitted'));
+  assert.ok(!lastUpdate.labels.includes('triage:already-available'));
+  assert.ok(!lastUpdate.labels.includes('ready-for-agent'));
 
   comments = [{
     user: { login: 'netcatty-bot' },
@@ -980,6 +1061,51 @@ test('markNeedsHuman ignores forged dedupe markers from untrusted commenters', a
   const second = await auto.markNeedsHuman(args);
   assert.equal(second.commented, false);
   assert.equal(created, 1);
+});
+
+test('applyReadyForHumanHandoff reopens auto-closed issues without re-triage', async () => {
+  let update = null;
+  let commentBody = '';
+  const github = {
+    rest: {
+      issues: {
+        get: async () => ({
+          data: {
+            number: 2673,
+            state: 'closed',
+            title: '[Bug] 不能连接本地网络',
+            body: '本地网络权限',
+            labels: [
+              { name: 'triage' },
+              { name: 'triage:admitted' },
+              { name: 'triage:already-available' },
+            ],
+          },
+        }),
+        update: async (args) => {
+          update = args;
+          return { data: {} };
+        },
+        listComments: Symbol('listComments'),
+        createComment: async (args) => {
+          commentBody = args.body;
+          return { data: {} };
+        },
+      },
+    },
+    paginate: async () => [],
+  };
+  const result = await auto.applyReadyForHumanHandoff({
+    github,
+    context: { repo: { owner: 'binaricat', repo: 'Netcatty' } },
+    issueNumber: 2673,
+  });
+  assert.equal(result.commented, true);
+  assert.equal(update.state, 'open');
+  assert.ok(update.labels.includes('ready-for-human'));
+  assert.ok(!update.labels.includes('triage:already-available'));
+  assert.match(commentBody, /cursor-reopen-handoff/);
+  assert.match(commentBody, /重新打开/);
 });
 
 test('workflow cleans source labels after eligible PR close and dedupes clean notices', () => {
@@ -1000,6 +1126,14 @@ test('workflow cleans source labels after eligible PR close and dedupes clean no
   assert.match(workflow, /does not currently close issue/);
   assert.match(workflow, /findOpenPullForIssue/);
   assert.match(workflow, /refineIssueCommentRoute/);
+  assert.match(
+    workflow,
+    /refineIssueCommentRoute\(decision, \{\n\s+hasOpenBotPull: Boolean\(pull\),\n\s+hasOpenRelatedPull: Boolean\(relatedPull\),\n\s+body: comment\.body,\n\s+labels,/,
+  );
+  assert.match(workflow, /decideIssuesEventRoute/);
+  assert.match(workflow, /kind == 'ready_for_human_handoff'/);
+  assert.match(workflow, /applyReadyForHumanHandoff/);
+  assert.match(workflow, /REOPEN_HANDOFF_MARKER/);
   assert.match(workflow, /issueNumber: issue\.number,\n\s+includeRelated: true/);
   assert.match(workflow, /reconcile_closed_handoffs:/);
   assert.match(workflow, /shouldRetryIssueHandoff/);
@@ -1018,6 +1152,8 @@ test('workflow cleans source labels after eligible PR close and dedupes clean no
     route,
     /sameRepo\s*&&\s*\n\s*context\.payload\.action === 'closed'/,
   );
+  assert.match(route, /decideIssuesEventRoute/);
+  assert.match(route, /ready_for_human_handoff:/);
   assert.match(workflow, /Follow-up changed before the simple reply; dispatched a fresh review/);
   assert.match(workflow, /is merged; skipped stale follow-up handoff state changes/);
   assert.match(workflow, /trusted_comment_bodies/);
