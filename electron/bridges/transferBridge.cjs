@@ -290,6 +290,45 @@ function isReusableRemoteTransferStagePath(filePath, transferId) {
 }
 
 /**
+ * True when an OPEN path refers to the same remote stage as `stagedRemote`.
+ *
+ * OPEN may receive a session-encoded Buffer (non-utf8 / non-ascii) while
+ * stagedRemote.path stays the logical string. Compare both representations.
+ *
+ * @param {string | Buffer | null | undefined} openPath
+ * @param {{ path?: string, sftpId?: string, encoding?: string } | null | undefined} stagedRemote
+ */
+function remoteOpenPathMatchesStaged(openPath, stagedRemote) {
+  const logical = stagedRemote?.path;
+  if (openPath == null || logical == null || logical === "") return false;
+  if (openPath === logical) return true;
+  let encoded = logical;
+  if (stagedRemote.sftpId) {
+    try {
+      encoded = encodePathForSession(
+        stagedRemote.sftpId,
+        logical,
+        stagedRemote.encoding,
+      );
+    } catch {
+      encoded = logical;
+    }
+  }
+  if (openPath === encoded) return true;
+  if (Buffer.isBuffer(openPath) && Buffer.isBuffer(encoded)) {
+    return openPath.equals(encoded);
+  }
+  // OPEN Buffer vs logical/encoded string (utf-8/ascii encodePath returns string).
+  if (Buffer.isBuffer(openPath) && typeof encoded === "string") {
+    return openPath.equals(Buffer.from(encoded));
+  }
+  if (typeof openPath === "string" && Buffer.isBuffer(encoded)) {
+    return encoded.equals(Buffer.from(openPath));
+  }
+  return false;
+}
+
+/**
  * Reconcile a claimed resume offset with durable staged bytes.
  *
  * Progress events update checkpointBytes as soon as data is handed to the write
@@ -1990,13 +2029,15 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   // resumable+targetPath or path-shape alone — in-place retries keep
   // resumable/targetPath while stagedRemote is null (e.g. symlink / no-lstat
   // destinations), and a stale late OPEN on a leftover .part must still unlink.
+  // Compare in the same representation: OPEN filePath may be a session-encoded
+  // Buffer while stagedRemote.path is the logical string.
   const canUnlinkLateGeneratedStageNow = () => {
     if (!shouldUnlinkLateGeneratedStage) return false;
     const transferId = transfer?.transferId;
     if (transferId == null || transferId === "") return true;
     const active = activeTransfers.get(transferId);
     if (active && active !== transfer) {
-      if (active.stagedRemote?.path && active.stagedRemote.path === filePath) {
+      if (remoteOpenPathMatchesStaged(filePath, active.stagedRemote)) {
         return false;
       }
       return true;
@@ -5818,4 +5859,5 @@ module.exports = {
   _assertSourceMetadataUnchangedForTests: assertSourceMetadataUnchanged,
   _assertDownloadSourceAfterTransferForTests: assertDownloadSourceAfterTransfer,
   _assertLocalDownloadMatchesRemotePrefixForTests: assertLocalDownloadMatchesRemotePrefix,
+  _remoteOpenPathMatchesStagedForTests: remoteOpenPathMatchesStaged,
 };

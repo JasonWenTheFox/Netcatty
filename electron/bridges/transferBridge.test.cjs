@@ -5315,6 +5315,49 @@ test("late shared OPEN unlink skips same-id retry resume stage", async (t) => {
   assert.equal(endCalls, 0, "shared sudo channel must not be ended");
 });
 
+test("remoteOpenPathMatchesStaged compares logical and encoded OPEN paths", () => {
+  // Codex: filePath can be a session-encoded Buffer while stagedRemote.path is
+  // the logical string — strict === would fail and wrongly allow unlink of the
+  // retry-owned stage.
+  const match = transferBridge._remoteOpenPathMatchesStagedForTests;
+  assert.equal(typeof match, "function");
+  const logical = "/tmp/.upload.bin.netcatty-tid.part";
+  assert.equal(
+    match(logical, { path: logical, sftpId: null }),
+    true,
+    "identical logical strings match",
+  );
+  assert.equal(
+    match(Buffer.from(logical), { path: logical, sftpId: null }),
+    true,
+    "OPEN Buffer of logical path matches staged logical path",
+  );
+  assert.equal(
+    match(Buffer.from(logical), {
+      path: logical,
+      sftpId: "missing-session",
+      encoding: "utf-8",
+    }),
+    true,
+    "utf-8 encode of logical path still matches OPEN Buffer",
+  );
+  assert.equal(
+    match("/tmp/other.part", { path: logical, sftpId: null }),
+    false,
+    "different paths must not match",
+  );
+  assert.equal(
+    match(logical, null),
+    false,
+    "missing stagedRemote must not match",
+  );
+  assert.equal(
+    match(logical, { path: "" }),
+    false,
+    "empty staged path must not match",
+  );
+});
+
 test("late shared OPEN unlink still cleans stage when same-id retry is in-place", async (t) => {
   // Codex P2 on 39e20bfa: skip late unlink only when active.stagedRemote.path
   // matches. A same-id in-place retry (symlink destination → writeInPlace)
