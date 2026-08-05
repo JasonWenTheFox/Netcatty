@@ -4527,13 +4527,18 @@ async function startTransferNow(event, payload, onProgress) {
   };
 
   const sendError = (error) => {
-    cleanupTransfer();
     const message = error?.message || String(error);
-    // Same-id retries supersede the previous attempt's late OPEN path. Worker
-    // fan-out maps transfer:error as cancelled only for /cancel/ messages; emit
-    // cancelled channel for superseded so the live retry is not marked failed
-    // (Codex P2 on d777a66a).
-    const cancelled = /cancel/i.test(message) || /superseded/i.test(message);
+    const superseded = /superseded/i.test(message);
+    // If a same-id retry already owns activeTransfers, this is a stale attempt.
+    // Do not emit terminal cancelled/failed for that transferId or the live
+    // retry is stuck cancelled in the transfer center (Codex P2 on dbfb411a).
+    const liveOwner = activeTransfers.get(transferId);
+    const isStaleSuperseded = superseded && liveOwner && liveOwner !== transfer;
+    cleanupTransfer();
+    if (isStaleSuperseded) {
+      return;
+    }
+    const cancelled = /cancel/i.test(message) || superseded;
     if (cancelled) {
       sender.send("netcatty:transfer:cancelled", { transferId, error: message });
       broadcastGlobalTransferEvent({
