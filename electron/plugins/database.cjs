@@ -856,14 +856,14 @@ class PluginDatabase {
    * Promote leftover sync-provider-map:* secret rows into the host-owned binding
    * table. Idempotent.
    *
-   * Rows under this key prefix are not reserved host internals — plugins may
-   * also store ordinary secrets with the same key shape via secrets.set. So this
-   * migration only *reads* candidate rows to seed missing bindings; it never
-   * deletes plugin_secrets. Multiple plugins may hold map rows for the same
-   * provider (parent + real owner): group by provider, never overwrite an
-   * existing host binding (including empty-plugin_id unbind tombstones), and
-   * when unbound pick the longest pluginId namespace match so a shorter parent
-   * cannot win just because SQLite returned it first.
+   * Host map keys under this prefix are migration markers from an intermediate
+   * build (pluginId-namespaced provider ids only). After a successful promote,
+   * those map rows are deleted so constructor-time backfill cannot resurrect a
+   * binding after the user disconnects/unbinds. Multiple plugins may hold map
+   * rows for the same provider (parent + real owner): group by provider, never
+   * overwrite an existing host binding (including empty-plugin_id unbind
+   * tombstones), and when unbound pick the longest pluginId namespace match so a
+   * shorter parent cannot win just because SQLite returned it first.
    */
   backfillSyncProviderBindingsFromLegacySecrets() {
     const legacyPrefix = "sync-provider-map:";
@@ -907,6 +907,12 @@ class PluginDatabase {
         continue;
       }
       this.upsertSyncProviderBinding(providerId, uniqueWinners[0]);
+      // Consume legacy map markers for this provider so a later unbind + reopen
+      // cannot re-promote from leftover secrets. Only delete namespaced map keys
+      // we accepted as candidates (not arbitrary plugin secrets).
+      for (const candidate of candidates) {
+        this.deleteSecret(candidate.pluginId, candidate.key);
+      }
       promoted += 1;
     }
     return promoted;

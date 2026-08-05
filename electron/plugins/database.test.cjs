@@ -510,10 +510,11 @@ test("schema upgrade backfills bindings from legacy sync-provider-map secrets", 
 
   const database = new PluginDatabase(file);
   assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
-  // Map rows are not reserved host keys — backfill must not delete them.
-  assert.ok(
+  // Consumed map marker so later unbind + reopen cannot re-promote.
+  assert.equal(
     database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"),
-    "plugin secret rows must survive backfill",
+    null,
+    "promoted map markers must be deleted",
   );
   assert.ok(database.getSecretByKey("com.example", "sync-credential"));
   database.close();
@@ -543,9 +544,10 @@ test("legacy map backfill does not overwrite an existing host binding", (context
     "com.example.sync",
     "existing binding must be preserved",
   );
+  // Skipped promote leaves non-winning map rows in place (only winners are consumed).
   assert.ok(
     database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"),
-    "must not delete plugin-owned secrets that share the map key prefix",
+    "non-promoted leftover map rows stay until unbind consumes them",
   );
   database.close();
 });
@@ -570,13 +572,13 @@ test("legacy map backfill prefers the longest plugin owner when maps conflict", 
     "com.example.sync",
     "longest namespace owner must win over parent map row",
   );
-  // Secrets are left in place; only the binding table is authoritative.
-  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"));
-  assert.ok(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"));
+  // All candidate map markers for the promoted provider are consumed.
+  assert.equal(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync.foo"), null);
+  assert.equal(database.getSecretByKey("com.example.sync", "sync-provider-map:com.example.sync.foo"), null);
   database.close();
 });
 
-test("legacy map backfill never deletes plugin secrets under the map key prefix", (context) => {
+test("legacy map backfill deletes promoted map markers so unbind cannot resurrect", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
   database.db.prepare(`
@@ -592,33 +594,49 @@ test("legacy map backfill never deletes plugin secrets under the map key prefix"
   );
   assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
   assert.equal(database.getSyncProviderBinding("com.example.custom")?.pluginId, "com.example");
-  const kept = database.getSecretByKey("com.example", "sync-provider-map:com.example.custom");
-  assert.ok(kept);
-  assert.deepEqual(kept.ciphertext, Buffer.from("plugin-owned-payload"));
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.custom"),
+    null,
+    "promoted map markers must be deleted to stop post-unbind resurrection",
+  );
+  // Non-map secrets under the same plugin are untouched.
+  database.db.prepare(`
+    INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "com.example",
+    "sync-credential",
+    "ref-cred-keep",
+    Buffer.from("cred"),
+    now,
+    now,
+  );
+  assert.ok(database.getSecretByKey("com.example", "sync-credential"));
   database.close();
 });
 
 test("legacy map backfill does not resurrect after explicit unbind tombstone", (context) => {
   const database = createDatabase(context);
   const now = Date.now();
+  // Pre-seed a leftover map after an explicit empty-plugin_id unbind tombstone.
+  database.upsertSyncProviderBinding("com.example.sync", "");
   database.db.prepare(`
     INSERT INTO plugin_secrets(plugin_id, key, secret_ref, ciphertext, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(
     "com.example",
     "sync-provider-map:com.example.sync",
-    "ref-legacy-map",
+    "ref-leftover-map",
     Buffer.from("sealed"),
     now,
     now,
   );
-  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
-  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "com.example");
-  // Explicit disconnect tombstones the host row without deleting map secrets.
-  database.upsertSyncProviderBinding("com.example.sync", "");
   assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
-  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
-  assert.ok(database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"));
+  assert.equal(
+    database.getSyncProviderBinding("com.example.sync")?.pluginId,
+    "",
+    "empty-plugin_id unbind tombstone must block re-promotion",
+  );
   database.close();
 });
 

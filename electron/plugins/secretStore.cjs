@@ -178,6 +178,7 @@ class PluginSecretStore {
    * Durable providerId → pluginId binding so disconnect can wipe sync secrets
    * after the contribution disappears (disabled/uninstalled plugin).
    * Stored in a host-owned table, not plugin-writable secrets.
+   * Overwrites any prior empty-plugin_id unbind tombstone.
    */
   bindSyncProviderPlugin(pluginId, providerId) {
     if (typeof pluginId !== "string" || pluginId.length < 1) {
@@ -285,6 +286,27 @@ class PluginSecretStore {
       && existing.pluginId !== pluginId
     ) {
       return;
+    }
+    // Consume leftover intermediate-build map markers so they cannot re-seed
+    // a binding if the tombstone is ever cleared. Delete under this plugin and
+    // any residual map rows for the same provider across plugins.
+    const mapKey = `sync-provider-map:${providerId}`;
+    if (typeof this.database.deleteSecret === "function") {
+      try {
+        this.database.deleteSecret(pluginId, mapKey);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (typeof this.database.findSecretsByKey === "function" && typeof this.database.deleteSecret === "function") {
+      for (const row of this.database.findSecretsByKey(mapKey) || []) {
+        if (typeof row?.pluginId !== "string" || typeof row?.key !== "string") continue;
+        try {
+          this.database.deleteSecret(row.pluginId, row.key);
+        } catch {
+          /* ignore */
+        }
+      }
     }
     // Tombstone with empty plugin_id so leftover sync-provider-map:* secret
     // rows cannot re-promote this provider on the next database open.

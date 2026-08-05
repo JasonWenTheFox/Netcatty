@@ -380,11 +380,40 @@ test("sync provider bindings live outside plugin secrets and reject namespace mi
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
   // Tombstone remains so legacy map backfill cannot resurrect after disconnect.
   assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
+  // Unbind also consumes map markers (including attacker leftovers).
+  assert.equal(
+    database.getSecretByKey("com.attacker", "sync-provider-map:com.example.sync"),
+    null,
+  );
   assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
   // Reconnect clears the tombstone.
   store.bindSyncProviderPlugin("com.example", "com.example.sync");
   assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  database.close();
+});
+
+test("unbind deletes owner map markers and blocks legacy re-promotion", (context) => {
+  const database = createDatabase(context);
+  const store = new PluginSecretStore({
+    database,
+    safeStorage: fakeSafeStorage(),
+  });
+  // Simulate intermediate-build map row that backfill would otherwise promote.
+  store.set("com.example", "sync-provider-map:com.example.sync", "com.example");
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 1);
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), "com.example");
+  assert.equal(
+    database.getSecretByKey("com.example", "sync-provider-map:com.example.sync"),
+    null,
+    "promote consumes the map marker",
+  );
+  // User disconnects; reintroduce a map row as if something wrote it back.
+  store.unbindSyncProviderPlugin("com.example", "com.example.sync");
+  store.set("com.example", "sync-provider-map:com.example.sync", "com.example");
+  assert.equal(database.backfillSyncProviderBindingsFromLegacySecrets(), 0);
+  assert.equal(store.resolveSyncProviderPlugin("com.example.sync"), undefined);
+  assert.equal(database.getSyncProviderBinding("com.example.sync")?.pluginId, "");
   database.close();
 });
 
