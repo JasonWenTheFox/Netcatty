@@ -824,12 +824,19 @@ test("syncAllProviders smart-merge strips device-bound enc:v1 secrets before upl
   Buffer.from("v10", "utf8").copy(completeBlob, 0);
   const ENC = `enc:v1:${completeBlob.toString("base64")}`;
   const checkedRemote = remoteFile("github", 5, 500);
-  const localPayload = payload("local-only");
+  const localPayload = {
+    ...payload("shared"),
+    hosts: [{
+      ...payload("shared").hosts[0]!,
+      password: "kept-secret",
+    }],
+  };
   const remotePoisoned: SyncPayload = {
-    ...payload("remote-only"),
+    ...payload("shared"),
     hosts: [
       {
-        ...payload("remote-only").hosts[0]!,
+        ...payload("shared").hosts[0]!,
+        label: "remote-label",
         password: ENC,
       },
     ],
@@ -866,7 +873,13 @@ test("syncAllProviders smart-merge strips device-bound enc:v1 secrets before upl
       updateProviderStatus: () => {},
       emit: () => {},
       checkProviderConflict: async () => ({ conflict: true, remoteFile: checkedRemote }),
-      loadSyncBase: async () => payload("base"),
+      loadSyncBase: async () => ({
+        ...payload("shared"),
+        hosts: [{
+          ...payload("shared").hosts[0]!,
+          password: "kept-secret",
+        }],
+      }),
       uploadToProvider: async (
         _provider: CloudProvider,
         _adapter: unknown,
@@ -883,9 +896,11 @@ test("syncAllProviders smart-merge strips device-bound enc:v1 secrets before upl
     const results = await syncAllProvidersImpl.call(manager, localPayload);
     assert.equal(results.get("github")?.success, true);
     assert.equal(uploaded.length, 1);
-    const remoteHost = uploaded[0]?.hosts.find((host) => host.id === "remote-only");
-    assert.ok(remoteHost);
-    assert.equal(remoteHost?.password, undefined);
+    const sharedHost = uploaded[0]?.hosts.find((host) => host.id === "shared");
+    assert.ok(sharedHost);
+    // Local/base usable secret must survive; remote non-secret edits can still apply.
+    assert.equal(sharedHost?.password, "kept-secret");
+    assert.equal(sharedHost?.label, "remote-label");
   } finally {
     EncryptionService.decryptPayload = originalDecryptPayload;
     EncryptionService.encryptPayload = originalEncryptPayload;

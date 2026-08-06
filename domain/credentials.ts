@@ -32,6 +32,29 @@ const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
 /** Minimum decoded ciphertext size for a complete Chromium AES-GCM blob. */
 const MIN_SAFE_STORAGE_CIPHERTEXT_BYTES = 31;
 
+/**
+ * Renderer-safe base64 decode length. Avoids Node `Buffer` which is unavailable
+ * in Electron windows with `nodeIntegration: false`.
+ */
+const decodedBase64ByteLength = (payload: string): number => {
+  try {
+    if (typeof atob === "function") {
+      return atob(payload).length;
+    }
+  } catch {
+    // fall through
+  }
+  // Node / test environments without atob.
+  if (typeof Buffer !== "undefined") {
+    try {
+      return Buffer.from(payload, "base64").byteLength;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
+};
+
 export const isEncryptedCredentialPlaceholder = (
   value: string | undefined | null,
 ): value is string => {
@@ -43,12 +66,7 @@ export const isEncryptedCredentialPlaceholder = (
   if (!SAFE_STORAGE_BASE64_HEADER_PREFIXES.some((prefix) => payload.startsWith(prefix))) {
     return false;
   }
-  try {
-    const decoded = Buffer.from(payload, "base64");
-    return decoded.byteLength >= MIN_SAFE_STORAGE_CIPHERTEXT_BYTES;
-  } catch {
-    return false;
-  }
+  return decodedBase64ByteLength(payload) >= MIN_SAFE_STORAGE_CIPHERTEXT_BYTES;
 };
 
 /**
@@ -183,3 +201,153 @@ export const stripSyncPayloadEncryptedCredentials = (
     groupConfigs: groupConfigs ?? payload.groupConfigs,
   };
 };
+
+const usableCredential = (value: string | undefined): string | undefined => {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (isEncryptedCredentialPlaceholder(value)) return undefined;
+  return value;
+};
+
+const pickUsableCredential = (
+  ...candidates: Array<string | undefined>
+): string | undefined => {
+  for (const candidate of candidates) {
+    const usable = usableCredential(candidate);
+    if (usable !== undefined) return usable;
+  }
+  return undefined;
+};
+
+/**
+ * Before three-way merge, replace device-bound enc:v1 secrets on the remote
+ * snapshot with usable local/base values when available. Stripping those
+ * fields to undefined would make merge treat them as remote-only deletions of
+ * good secrets. Final upload still runs stripSyncPayloadEncryptedCredentials.
+ */
+export const healPoisonedRemoteSecretsForMerge = (
+  remote: SyncPayload,
+  local: SyncPayload,
+  base: SyncPayload | null | undefined,
+): SyncPayload => {
+  const localHosts = new Map(local.hosts.map((host) => [host.id, host]));
+  const baseHosts = new Map((base?.hosts ?? []).map((host) => [host.id, host]));
+  const hosts = remote.hosts.map((host) => {
+    const localHost = localHosts.get(host.id);
+    const baseHost = baseHosts.get(host.id);
+    const next = { ...host };
+    if (isEncryptedCredentialPlaceholder(next.password)) {
+      const healed = pickUsableCredential(localHost?.password, baseHost?.password);
+      if (healed !== undefined) next.password = healed;
+      else delete next.password;
+    }
+    if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
+      const healed = pickUsableCredential(localHost?.telnetPassword, baseHost?.telnetPassword);
+      if (healed !== undefined) next.telnetPassword = healed;
+      else delete next.telnetPassword;
+    }
+    if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
+      const healed = pickUsableCredential(
+        localHost?.proxyConfig?.password,
+        baseHost?.proxyConfig?.password,
+      );
+      if (healed !== undefined) {
+        next.proxyConfig = { ...next.proxyConfig, password: healed };
+      } else {
+        const { password: _removed, ...proxyRest } = next.proxyConfig;
+        next.proxyConfig = proxyRest;
+      }
+    }
+    return next;
+  });
+
+  const localKeys = new Map(local.keys.map((key) => [key.id, key]));
+  const baseKeys = new Map((base?.keys ?? []).map((key) => [key.id, key]));
+  const keys = remote.keys.map((key) => {
+    const localKey = localKeys.get(key.id);
+    const baseKey = baseKeys.get(key.id);
+    const next = { ...key };
+    if (isEncryptedCredentialPlaceholder(next.privateKey)) {
+      next.privateKey = pickUsableCredential(localKey?.privateKey, baseKey?.privateKey) ?? "";
+    }
+    if (isEncryptedCredentialPlaceholder(next.passphrase)) {
+      const healed = pickUsableCredential(localKey?.passphrase, baseKey?.passphrase);
+      if (healed !== undefined) next.passphrase = healed;
+      else delete next.passphrase;
+    }
+    return next;
+  });
+
+  const localIdentities = new Map((local.identities ?? []).map((identity) => [identity.id, identity]));
+  const baseIdentities = new Map((base?.identities ?? []).map((identity) => [identity.id, identity]));
+  const identities = remote.identities?.map((identity) => {
+    if (!isEncryptedCredentialPlaceholder(identity.password)) return identity;
+    const healed = pickUsableCredential(
+      localIdentities.get(identity.id)?.password,
+      baseIdentities.get(identity.id)?.password,
+    );
+    if (healed !== undefined) return { ...identity, password: healed };
+    const next = { ...identity };
+    delete next.password;
+    return next;
+  });
+
+  const localProfiles = new Map((local.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
+  const baseProfiles = new Map((base?.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
+  const proxyProfiles = remote.proxyProfiles?.map((profile) => {
+    if (!isEncryptedCredentialPlaceholder(profile.config.password)) return profile;
+    const healed = pickUsableCredential(
+      localProfiles.get(profile.id)?.config.password,
+      baseProfiles.get(profile.id)?.config.password,
+    );
+    if (healed !== undefined) {
+      return { ...profile, config: { ...profile.config, password: healed } };
+    }
+    const { password: _removed, ...configRest } = profile.config;
+    return { ...profile, config: configRest };
+  });
+
+  const localGroupConfigs = new Map((local.groupConfigs ?? []).map((config) => [config.path, config]));
+  const baseGroupConfigs = new Map((base?.groupConfigs ?? []).map((config) => [config.path, config]));
+  const groupConfigs = remote.groupConfigs?.map((config) => {
+    const localConfig = localGroupConfigs.get(config.path);
+    const baseConfig = baseGroupConfigs.get(config.path);
+    const next = { ...config };
+    let changed = false;
+    if (isEncryptedCredentialPlaceholder(next.password)) {
+      const healed = pickUsableCredential(localConfig?.password, baseConfig?.password);
+      if (healed !== undefined) next.password = healed;
+      else delete next.password;
+      changed = true;
+    }
+    if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
+      const healed = pickUsableCredential(localConfig?.telnetPassword, baseConfig?.telnetPassword);
+      if (healed !== undefined) next.telnetPassword = healed;
+      else delete next.telnetPassword;
+      changed = true;
+    }
+    if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
+      const healed = pickUsableCredential(
+        localConfig?.proxyConfig?.password,
+        baseConfig?.proxyConfig?.password,
+      );
+      if (healed !== undefined) {
+        next.proxyConfig = { ...next.proxyConfig, password: healed };
+      } else {
+        const { password: _removed, ...proxyRest } = next.proxyConfig;
+        next.proxyConfig = proxyRest;
+      }
+      changed = true;
+    }
+    return changed ? next : config;
+  });
+
+  return {
+    ...remote,
+    hosts,
+    keys,
+    identities: identities ?? remote.identities,
+    proxyProfiles: proxyProfiles ?? remote.proxyProfiles,
+    groupConfigs: groupConfigs ?? remote.groupConfigs,
+  };
+};
+

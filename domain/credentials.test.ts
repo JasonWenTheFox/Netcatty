@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   findSyncPayloadEncryptedCredentialPaths,
+  healPoisonedRemoteSecretsForMerge,
   isEncryptedCredentialPlaceholder,
   stripSyncPayloadEncryptedCredentials,
 } from "./credentials.ts";
@@ -64,4 +65,27 @@ test("stripSyncPayloadEncryptedCredentials clears device-bound placeholders for 
   assert.equal(stripped.hosts[0]?.password, undefined);
   assert.equal(stripped.keys[0]?.privateKey, "");
   assert.equal(findSyncPayloadEncryptedCredentialPaths(stripped).length, 0);
+});
+
+test("healPoisonedRemoteSecretsForMerge keeps usable local passwords over remote enc:v1", () => {
+  const remote = samplePayload();
+  const local = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      password: "local-secret",
+    }],
+    keys: [{
+      ...samplePayload().keys[0]!,
+      privateKey: "LOCAL_PRIVATE_KEY",
+    }],
+  });
+  const base = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      password: "base-secret",
+    }],
+  });
+  const healed = healPoisonedRemoteSecretsForMerge(remote, local, base);
+  assert.equal(healed.hosts[0]?.password, "local-secret");
+  assert.equal(healed.keys[0]?.privateKey, "LOCAL_PRIVATE_KEY");
 });

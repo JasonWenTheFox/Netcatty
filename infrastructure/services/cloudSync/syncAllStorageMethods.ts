@@ -7,7 +7,7 @@ import {
 import packageJson from '../../../package.json';
 import { EncryptionService } from '../EncryptionService';
 import { mergeSyncPayloads } from '../../../domain/syncMerge';
-import { stripSyncPayloadEncryptedCredentials } from '../../../domain/credentials';
+import { stripSyncPayloadEncryptedCredentials, healPoisonedRemoteSecretsForMerge } from '../../../domain/credentials';
 import {
   SYNC_SNAPSHOT_LIMIT,
   summarizeSyncChanges,
@@ -304,11 +304,14 @@ export async function syncAllProvidersImpl(this: any,
           let merged = payload;
           for (const c of conflicts) {
             const providerBase = await this.loadSyncBase(c.provider as CloudProvider);
-            const remotePayload = stripSyncPayloadEncryptedCredentials(
-              await EncryptionService.decryptPayload(
-                c.check!.remoteFile!,
-                this.masterPassword,
-              ),
+            const remoteRaw = await EncryptionService.decryptPayload(
+              c.check!.remoteFile!,
+              this.masterPassword,
+            );
+            const remotePayload = healPoisonedRemoteSecretsForMerge(
+              remoteRaw,
+              merged,
+              providerBase,
             );
             assertSyncSecurityGeneration(this, syncSecurityGeneration);
             const result = mergeSyncPayloads(providerBase, merged, remotePayload);

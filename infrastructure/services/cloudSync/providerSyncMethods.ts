@@ -4,7 +4,7 @@
 import packageJson from '../../../package.json';
 import { EncryptionService } from '../EncryptionService';
 import { mergeSyncPayloads } from '../../../domain/syncMerge';
-import { stripSyncPayloadEncryptedCredentials } from '../../../domain/credentials';
+import { stripSyncPayloadEncryptedCredentials, healPoisonedRemoteSecretsForMerge } from '../../../domain/credentials';
 import { summarizeSyncChanges, withSyncReliabilityMeta } from '../../../domain/syncReliability';
 import { detectSuspiciousShrink, type ShrinkFinding } from '../../../domain/syncGuards';
 import { resolveCloudSyncConflictAction } from '../../../domain/syncStrategy';
@@ -457,11 +457,9 @@ export async function syncToProviderImpl(this: any,
         try {
           let remotePayload: SyncPayload;
           try {
-            remotePayload = stripSyncPayloadEncryptedCredentials(
-              await EncryptionService.decryptPayload(
-                checkResult.remoteFile,
-                this.masterPassword,
-              ),
+            remotePayload = await EncryptionService.decryptPayload(
+              checkResult.remoteFile,
+              this.masterPassword,
             );
             remotePayloadForConflict = remotePayload;
           } catch (decryptError) {
@@ -470,6 +468,8 @@ export async function syncToProviderImpl(this: any,
           assertSyncSecurityGeneration(this, syncSecurityGeneration);
           const base = await this.loadSyncBase(provider);
           baseForConflict = base;
+          remotePayload = healPoisonedRemoteSecretsForMerge(remotePayload, payload, base);
+          remotePayloadForConflict = remotePayload;
           const mergeResult = mergeSyncPayloads(base, payload, remotePayload);
           const mergedPayload = withSyncReliabilityMeta(
             stripSyncPayloadEncryptedCredentials(mergeResult.payload),
