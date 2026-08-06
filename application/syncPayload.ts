@@ -1161,11 +1161,14 @@ export async function prepareLocalVaultPayloadApply(
     ) => Promise<() => Promise<void>>;
   } = {},
 ): Promise<() => Promise<void>> {
+  // Sanitize once so vault import and convergent replica commit share the
+  // same portable secrets view (no device-bound enc:v1 leftovers).
+  const sanitizedPayload = stripSyncPayloadEncryptedCredentials(payload);
   const prepareConvergentRestore = dependencies.prepareConvergentRestore
     ?? prepareRestoredPayloadConvergentWrites;
-  const commitConvergentRestore = await prepareConvergentRestore(payload);
+  const commitConvergentRestore = await prepareConvergentRestore(sanitizedPayload);
   return async () => {
-    await applyPayload(payload, importers, { includeLocalOnlyData: true });
+    await applyPayload(sanitizedPayload, importers, { includeLocalOnlyData: true });
     await commitConvergentRestore();
   };
 }

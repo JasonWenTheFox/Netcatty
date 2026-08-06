@@ -820,7 +820,9 @@ test("syncToProvider preserves a merged payload discovered by a non-target provi
 test("syncAllProviders smart-merge strips device-bound enc:v1 secrets before upload", async () => {
   const originalDecryptPayload = EncryptionService.decryptPayload;
   const originalEncryptPayload = EncryptionService.encryptPayload;
-  const ENC = `enc:v1:${Buffer.from("v10:stale-remote", "utf8").toString("base64")}`;
+  const completeBlob = Buffer.alloc(31, 0);
+  Buffer.from("v10", "utf8").copy(completeBlob, 0);
+  const ENC = `enc:v1:${completeBlob.toString("base64")}`;
   const checkedRemote = remoteFile("github", 5, 500);
   const localPayload = payload("local-only");
   const remotePoisoned: SyncPayload = {

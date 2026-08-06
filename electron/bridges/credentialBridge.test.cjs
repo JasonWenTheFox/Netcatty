@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   ENC_PREFIX,
+  MIN_SAFE_STORAGE_CIPHERTEXT_BYTES,
   encryptCredentialValue,
   decryptCredentialValue,
   looksLikeEncryptedCredential,
@@ -16,36 +17,53 @@ function fakeSafeStorage({ decryptThrows = false } = {}) {
     encryptString(plaintext) {
       const id = `cipher-${nextId++}`;
       blobs.set(id, plaintext);
-      // Mimic Chromium v10 header so base64 starts with "djEw"
-      return Buffer.from(`v10:${id}:${plaintext}`, "utf8");
+      // Pad to a complete AES-GCM-sized blob (prefix + nonce + tag).
+      const body = Buffer.alloc(MIN_SAFE_STORAGE_CIPHERTEXT_BYTES, 0);
+      Buffer.from("v10", "utf8").copy(body, 0);
+      Buffer.from(id, "utf8").copy(body, 3);
+      blobs.set(body.toString("base64"), plaintext);
+      return body;
     },
     decryptString(buffer) {
       if (decryptThrows) throw new Error("decrypt failed");
-      const decoded = Buffer.from(buffer).toString("utf8");
-      if (!decoded.startsWith("v10:")) throw new Error("bad header");
-      const parts = decoded.split(":");
-      const id = parts[1];
-      if (!blobs.has(id)) throw new Error("unknown cipher");
-      return blobs.get(id);
+      const key = Buffer.from(buffer).toString("base64");
+      if (!blobs.has(key)) throw new Error("unknown cipher");
+      return blobs.get(key);
     },
   };
 }
 
-test("looksLikeEncryptedCredential accepts v10 safeStorage payloads", () => {
-  const ciphertext = Buffer.from("v10:payload", "utf8").toString("base64");
-  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${ciphertext}`), true);
+function completeCiphertextPlaceholder(seed = "stale-key-material") {
+  const body = Buffer.alloc(MIN_SAFE_STORAGE_CIPHERTEXT_BYTES, 0);
+  Buffer.from("v10", "utf8").copy(body, 0);
+  Buffer.from(seed, "utf8").copy(body, 3);
+  return `${ENC_PREFIX}${body.toString("base64")}`;
+}
+
+test("looksLikeEncryptedCredential accepts complete v10 safeStorage payloads", () => {
+  assert.equal(looksLikeEncryptedCredential(completeCiphertextPlaceholder()), true);
 });
 
-test("looksLikeEncryptedCredential rejects coincidental enc:v1 prefix without safeStorage header", () => {
+test("looksLikeEncryptedCredential rejects header-only enc:v1 payloads", () => {
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}djEw`), false);
   assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}not-real-ciphertext`), false);
   assert.equal(looksLikeEncryptedCredential("password"), false);
 });
 
-test("encrypt leaves undecryptable enc:v1 ciphertext unchanged instead of wrapping again", () => {
+test("encrypt leaves undecryptable complete enc:v1 ciphertext unchanged instead of wrapping again", () => {
   const storage = fakeSafeStorage({ decryptThrows: true });
-  const stale = `${ENC_PREFIX}${Buffer.from("v10:stale-key-material", "utf8").toString("base64")}`;
+  const stale = completeCiphertextPlaceholder("stale-key-material");
   const result = encryptCredentialValue(stale, storage);
   assert.equal(result, stale);
+});
+
+test("encrypt encrypts header-only enc:v1 coincidence instead of leaving it plaintext", () => {
+  const storage = fakeSafeStorage();
+  const coincidence = `${ENC_PREFIX}djEw`;
+  const result = encryptCredentialValue(coincidence, storage);
+  assert.notEqual(result, coincidence);
+  assert.ok(result.startsWith(ENC_PREFIX));
+  assert.equal(decryptCredentialValue(result, storage), coincidence);
 });
 
 test("encrypt still encrypts coincidental plaintext that starts with enc:v1:", () => {
@@ -67,6 +85,6 @@ test("encrypt round-trips plaintext and does not double-encrypt", () => {
 
 test("decrypt returns ciphertext unchanged when safeStorage cannot decrypt", () => {
   const storage = fakeSafeStorage({ decryptThrows: true });
-  const stale = `${ENC_PREFIX}${Buffer.from("v10:stale", "utf8").toString("base64")}`;
+  const stale = completeCiphertextPlaceholder("stale");
   assert.equal(decryptCredentialValue(stale, storage), stale);
 });

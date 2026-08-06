@@ -1497,6 +1497,51 @@ test("prepareLocalVaultPayloadApply does not import until the prepared callback 
   assert.deepEqual(calls, ["prepare", "import", "commit"]);
 });
 
+test("prepareLocalVaultPayloadApply sanitizes enc:v1 before convergent prepare and apply", async () => {
+  const completeBlob = Buffer.alloc(31, 0);
+  Buffer.from("v10", "utf8").copy(completeBlob, 0);
+  const ENC = `enc:v1:${completeBlob.toString("base64")}`;
+  const preparedPayloads: SyncPayload[] = [];
+  const imported: Array<Record<string, unknown>> = [];
+
+  const applyPreparedPayload = await prepareLocalVaultPayloadApply({
+    hosts: [{
+      id: "h1",
+      label: "prod",
+      hostname: "prod.example",
+      username: "root",
+      password: ENC,
+      port: 22,
+      os: "linux",
+      group: "",
+      tags: [],
+      protocol: "ssh",
+    }],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    syncedAt: 1,
+  }, {
+    importVaultData: (json) => {
+      imported.push(JSON.parse(json) as Record<string, unknown>);
+    },
+  }, {
+    prepareConvergentRestore: async (payload) => {
+      preparedPayloads.push(payload);
+      return async () => undefined;
+    },
+  });
+
+  await applyPreparedPayload();
+
+  assert.equal(preparedPayloads.length, 1);
+  assert.equal(preparedPayloads[0]?.hosts[0]?.password, undefined);
+  assert.equal(imported.length, 1);
+  const hosts = imported[0]?.hosts as Array<{ password?: string }> | undefined;
+  assert.equal(hosts?.[0]?.password, undefined);
+});
+
 test("applyLocalVaultPayload leaves local data untouched when convergent preparation fails", async () => {
   let imported = false;
   const payload: SyncPayload = {

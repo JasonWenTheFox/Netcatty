@@ -7,7 +7,9 @@ import {
 } from "./credentials.ts";
 import type { SyncPayload } from "./sync.ts";
 
-const ENC = `enc:v1:${Buffer.from("v10:stale", "utf8").toString("base64")}`;
+const completeBlob = Buffer.alloc(31, 0);
+Buffer.from("v10", "utf8").copy(completeBlob, 0);
+const ENC = `enc:v1:${completeBlob.toString("base64")}`;
 
 function samplePayload(overrides: Partial<SyncPayload> = {}): SyncPayload {
   return {
@@ -44,8 +46,12 @@ function samplePayload(overrides: Partial<SyncPayload> = {}): SyncPayload {
   };
 }
 
-test("isEncryptedCredentialPlaceholder detects v10 device-bound ciphertext", () => {
+test("isEncryptedCredentialPlaceholder detects complete v10 device-bound ciphertext", () => {
   assert.equal(isEncryptedCredentialPlaceholder(ENC), true);
+});
+
+test("isEncryptedCredentialPlaceholder rejects header-only enc:v1 payloads", () => {
+  assert.equal(isEncryptedCredentialPlaceholder("enc:v1:djEw"), false);
 });
 
 test("findSyncPayloadEncryptedCredentialPaths reports host and key secrets", () => {

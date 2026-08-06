@@ -12,9 +12,11 @@ const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
  * - macOS/Linux: plaintext bytes start with "v10" or "v11"
  * - Windows (legacy DPAPI blob): leading bytes are 0x01 0x00 0x00 0x00
  *
- * We validate the base64 payload starts with one of these header signatures
- * instead of relying only on prefix+length heuristics. This greatly reduces
- * false positives for plaintext credentials that happen to start with "enc:v1:".
+ * We require a known header AND a complete-enough decoded blob (AES-GCM
+ * minimum: prefix 3 + nonce 12 + tag 16 = 31 bytes). Header-only base64 such
+ * as `enc:v1:djEw` must not be treated as ciphertext.
+ *
+ * Keep in sync with electron/bridges/credentialBridge.cjs.
  *
  * References:
  * - components/os_crypt/sync/os_crypt_mac.mm (kObfuscationPrefixV10 = "v10")
@@ -27,6 +29,9 @@ const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
   "AQAAAA", // 0x01 0x00 0x00 0x00 (DPAPI blob header)
 ] as const;
 
+/** Minimum decoded ciphertext size for a complete Chromium AES-GCM blob. */
+const MIN_SAFE_STORAGE_CIPHERTEXT_BYTES = 31;
+
 export const isEncryptedCredentialPlaceholder = (
   value: string | undefined | null,
 ): value is string => {
@@ -35,8 +40,15 @@ export const isEncryptedCredentialPlaceholder = (
   }
   const payload = value.slice(CREDENTIAL_ENCRYPTION_PREFIX.length);
   if (!payload || !BASE64_RE.test(payload)) return false;
-
-  return SAFE_STORAGE_BASE64_HEADER_PREFIXES.some((prefix) => payload.startsWith(prefix));
+  if (!SAFE_STORAGE_BASE64_HEADER_PREFIXES.some((prefix) => payload.startsWith(prefix))) {
+    return false;
+  }
+  try {
+    const decoded = Buffer.from(payload, "base64");
+    return decoded.byteLength >= MIN_SAFE_STORAGE_CIPHERTEXT_BYTES;
+  } catch {
+    return false;
+  }
 };
 
 /**
