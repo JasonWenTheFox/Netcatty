@@ -315,7 +315,9 @@ function throwIfLocalTreeCancelled(isCancelled) {
   }
 }
 
-async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCancelled) {
+const LOCAL_TREE_ENTRY_BATCH_SIZE = 64;
+
+async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCancelled, onEntries) {
   const rootStat = await fs.promises.stat(rootPath);
   if (!rootStat.isDirectory()) {
     throw new Error("Selected path is not a directory");
@@ -326,13 +328,28 @@ async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCanc
   claimLocalTreeDirectory(traversalBudget);
   const rootName = path.basename(rootPath);
   const rootRealPath = await fs.promises.realpath(rootPath);
-  const entries = [{
+  const rootEntry = {
     localPath: rootPath,
     relativePath: rootName,
     type: "directory",
     size: rootStat.size,
     lastModified: rootStat.mtime.getTime(),
-  }];
+  };
+  // When streaming batches, avoid retaining the full tree in memory for 100k+
+  // drops. Callers that only need the complete array still get it below.
+  const retainAll = typeof onEntries !== "function";
+  const entries = retainAll ? [rootEntry] : null;
+  let pendingBatch = [rootEntry];
+  const flushBatch = (force = false) => {
+    if (typeof onEntries !== "function") return;
+    if (!force && pendingBatch.length < LOCAL_TREE_ENTRY_BATCH_SIZE) return;
+    if (pendingBatch.length === 0) return;
+    const batch = pendingBatch;
+    pendingBatch = [];
+    onEntries(batch);
+  };
+  flushBatch(true);
+
   const queue = [{
     localPath: rootPath,
     relativePath: rootName,
@@ -409,13 +426,15 @@ async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCanc
         // Cyclic links cannot be represented by a finite copied tree. Skip the
         // loop itself instead of misreporting it as a file that later fails.
         if (child.isCycle) continue;
-        entries.push({
+        const row = {
           localPath: child.childPath,
           relativePath: child.childRelativePath,
           type: child.isDirectory ? "directory" : "file",
           size: child.stat.size,
           lastModified: child.stat.mtime.getTime(),
-        });
+        };
+        if (retainAll) entries.push(row);
+        pendingBatch.push(row);
         if (child.isDirectory) {
           directoryCount += 1;
           queue.push({
@@ -427,13 +446,15 @@ async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCanc
           fileCount += 1;
         }
       }
+      flushBatch();
       reportProgress();
     }
   }
 
   throwIfLocalTreeCancelled(isCancelled);
+  flushBatch(true);
   reportProgress(true);
-  return entries;
+  return retainAll ? entries : [];
 }
 
 async function listLocalTree(event, payload) {
@@ -467,12 +488,25 @@ async function listLocalTree(event, payload) {
       }
     }
     : undefined;
+  const entriesChannel = typeof payload?.entriesChannel === "string" && payload.entriesChannel
+    ? payload.entriesChannel
+    : null;
+  const onEntries = entriesChannel
+    ? (batch) => {
+      try {
+        event.sender.send(entriesChannel, batch);
+      } catch {
+        // Renderer may have gone away mid-scan.
+      }
+    }
+    : undefined;
   try {
     return await collectLocalTreeEntries(
       payload.path,
       payload.limits || {},
       onProgress,
       () => cancelled,
+      onEntries,
     );
   } finally {
     if (cancelChannel && electronIpcMain) {

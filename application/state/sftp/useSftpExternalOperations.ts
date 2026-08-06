@@ -15,6 +15,7 @@ import {
   UploadResult,
   startUploadScanningTask,
 } from "../../../lib/uploadService";
+import { uploadLocalFoldersProgressively } from "../../../lib/progressiveFolderUpload";
 import {
   captureDropPayload,
   formatDropScanLabel,
@@ -34,6 +35,7 @@ export type { UploadResult };
 
 type LocalTreeScanOptions = {
   onProgress?: (progress: { fileCount: number; directoryCount: number; entryCount: number }) => void;
+  onEntries?: (entries: LocalTreeListEntry[]) => void;
   abortSignal?: AbortSignal;
 };
 
@@ -974,9 +976,15 @@ export const useSftpExternalOperations = (
         ),
       );
 
+      const pathBackedFolderRoots = dropPayload.roots
+        .filter((root) => root.isDirectory && !!root.localPath)
+        .map((root) => ({ name: root.name, localPath: root.localPath! }));
+      const canProgressiveUpload = pathBackedFolderRoots.length > 0
+        && !!bridge.listLocalTree
+        && !useCompressedUpload;
       const needsDeepScan = dropPayload.roots.some((root) => root.isDirectory);
       const scanLabel = formatDropScanLabel(dropPayload.roots);
-      // Instant feedback: scanning row appears before any tree walk / session work.
+      // Instant feedback: scanning / parent row appears before work begins.
       const scanningTask = needsDeepScan
         ? startUploadScanningTask(callbacks, crypto.randomUUID(), { label: scanLabel })
         : null;
@@ -989,6 +997,111 @@ export const useSftpExternalOperations = (
         scanAbort.abort();
         if (scanningTask?.isOpen()) scanningTask.cancel();
       });
+
+      // Path-backed folders (no compressed upload): edge-scan + edge-transfer.
+      // Open the SFTP session first, then stream discovery batches into upload
+      // workers so the first files start while the rest of the tree is still walking.
+      if (canProgressiveUpload) {
+        const runProgressive = async (forceReconnect = false): Promise<UploadResult[]> => {
+          const { sftpId, release } = await resolveRemoteSftpId(side, { forceReconnect });
+          const livePane = getActivePane(side) ?? pane;
+          if (!livePane.connection) {
+            release();
+            throw new Error("No active connection");
+          }
+          const uploadPaneId = livePane.id;
+          const liveTargetPath = targetPath || livePane.connection.currentPath;
+          const connectHost = resolveUploadConnectHost(uploadPaneId, livePane.connection.isLocal);
+          const uploadBridge = createUploadBridge(connectHost);
+          const liveCallbacks = livePane.connection.id === pane.connection.id
+            && liveTargetPath === uploadTargetPath
+            ? callbacks
+            : bindUploadControllerCallbacks(
+              controller,
+              createUploadCallbacks(
+                livePane.connection.id,
+                liveTargetPath,
+                livePane.connection.isLocal ? undefined : livePane.connection.hostId,
+                livePane.connection.isLocal ? undefined : connectionCacheKeyMapRef.current.get(livePane.connection.id),
+                livePane.connection.isLocal ? undefined : livePane.connection.hostLabel,
+              ),
+            );
+
+          const parentTaskIds = new Map<string, string>();
+          if (scanningTask && pathBackedFolderRoots.length === 1) {
+            parentTaskIds.set(pathBackedFolderRoots[0].name, scanningTask.taskId);
+            // Keep the scanning row as the folder parent (do not dismiss it).
+            scanningTask.complete = () => {
+              /* no-op: progressive path settles via onTaskCompleted/Cancelled */
+            };
+          } else if (scanningTask?.isOpen()) {
+            scanningTask.complete();
+          }
+
+          try {
+            if (controller.isCancelled()) {
+              scanningTask?.cancel();
+              return [{ fileName: "", success: false, cancelled: true }];
+            }
+            const results = await uploadLocalFoldersProgressively(
+              pathBackedFolderRoots,
+              {
+                targetPath: liveTargetPath,
+                sftpId,
+                targetHostId: livePane.connection.isLocal ? undefined : livePane.connection.hostId,
+                isLocal: livePane.connection.isLocal,
+                bridge: uploadBridge,
+                joinPath,
+                callbacks: liveCallbacks,
+                parentTaskIds,
+                abortSignal: scanAbort.signal,
+                listLocalTree: (localPath, treeOptions) => listLocalTreeWithAbort(bridge, localPath, {
+                  ...treeOptions,
+                  abortSignal: scanAbort.signal,
+                }),
+              },
+              controller,
+            );
+            if (clearDirCacheEntry && targetPath) {
+              clearDirCacheEntry(livePane.connection.id, liveTargetPath);
+            }
+            if (liveTargetPath === livePane.connection.currentPath) {
+              await refresh(side, { tabId: uploadPaneId });
+            }
+            return results;
+          } finally {
+            release();
+          }
+        };
+
+        try {
+          return await runProgressive(false);
+        } catch (error) {
+          if (isSessionError(error) && ensureRemoteSftpId) {
+            logger.warn("[SFTP] Progressive upload session lost; reconnecting once", error);
+            try {
+              return await runProgressive(true);
+            } catch (retryError) {
+              if (isUploadScanCancelled(controller, retryError)) {
+                scanningTask?.cancel();
+                return [{ fileName: "", success: false, cancelled: true }];
+              }
+              if (scanningTask?.isOpen()) scanningTask.fail(retryError);
+              throw retryError;
+            }
+          }
+          if (isUploadScanCancelled(controller, error)) {
+            scanningTask?.cancel();
+            return [{ fileName: "", success: false, cancelled: true }];
+          }
+          if (scanningTask?.isOpen()) scanningTask.fail(error);
+          logger.error("[SFTP] Progressive folder upload failed:", error);
+          throw error;
+        } finally {
+          detachScanCancel();
+          unregisterUploadController(controller);
+        }
+      }
 
       let capturedEntries: DropEntry[] = [];
       try {

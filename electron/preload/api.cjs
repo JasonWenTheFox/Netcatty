@@ -878,14 +878,18 @@ function createPreloadApi(ctx) {
   },
   listLocalTree: async (path, options = {}) => {
     const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
+    const onEntries = typeof options?.onEntries === "function" ? options.onEntries : null;
     const token = typeof options?.scanId === "string" && options.scanId
       ? options.scanId
       : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const progressChannel = onProgress
       ? `netcatty:local:tree-progress:${token}`
       : undefined;
+    const entriesChannel = onEntries
+      ? `netcatty:local:tree-entries:${token}`
+      : undefined;
     const cancelChannel = `netcatty:local:tree-cancel:${token}`;
-    const handler = onProgress && progressChannel
+    const progressHandler = onProgress && progressChannel
       ? (_event, stats) => {
         try {
           onProgress(stats);
@@ -894,19 +898,35 @@ function createPreloadApi(ctx) {
         }
       }
       : null;
-    if (handler && progressChannel) {
-      ipcRenderer.on(progressChannel, handler);
+    const entriesHandler = onEntries && entriesChannel
+      ? (_event, batch) => {
+        try {
+          onEntries(batch);
+        } catch {
+          // Ignore batch handler errors so the scan can finish.
+        }
+      }
+      : null;
+    if (progressHandler && progressChannel) {
+      ipcRenderer.on(progressChannel, progressHandler);
+    }
+    if (entriesHandler && entriesChannel) {
+      ipcRenderer.on(entriesChannel, entriesHandler);
     }
     try {
       return await ipcRenderer.invoke("netcatty:local:tree", {
         path,
         progressChannel,
+        entriesChannel,
         cancelChannel,
         limits: options?.limits,
       });
     } finally {
-      if (handler && progressChannel) {
-        ipcRenderer.removeListener(progressChannel, handler);
+      if (progressHandler && progressChannel) {
+        ipcRenderer.removeListener(progressChannel, progressHandler);
+      }
+      if (entriesHandler && entriesChannel) {
+        ipcRenderer.removeListener(entriesChannel, entriesHandler);
       }
     }
   },

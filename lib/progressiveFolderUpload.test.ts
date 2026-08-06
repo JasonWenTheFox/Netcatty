@@ -1,0 +1,177 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { uploadLocalFoldersProgressively } from "./progressiveFolderUpload.ts";
+import { UploadController } from "./uploadController.ts";
+import type { LocalTreeListEntry } from "./sftpFileUtils.ts";
+
+test("progressive folder upload starts file transfers before the tree walk finishes", async () => {
+  const events: string[] = [];
+  let releaseSecondBatch: (() => void) | null = null;
+  const secondBatchGate = new Promise<void>((resolve) => {
+    releaseSecondBatch = resolve;
+  });
+
+  const listLocalTree = async (
+    _path: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs",
+        relativePath: "docs",
+        type: "directory",
+        size: 0,
+        lastModified: 1,
+      },
+      {
+        localPath: "/tmp/docs/a.txt",
+        relativePath: "docs/a.txt",
+        type: "file",
+        size: 3,
+        lastModified: 1,
+      },
+    ]);
+    events.push("batch1");
+    // First file should be uploadable while we still "discover" more.
+    await secondBatchGate;
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs/b.txt",
+        relativePath: "docs/b.txt",
+        type: "file",
+        size: 4,
+        lastModified: 2,
+      },
+    ]);
+    events.push("batch2");
+    return [];
+  };
+
+  const transferred: string[] = [];
+  const controller = new UploadController();
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [{ name: "docs", localPath: "/tmp/docs" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.sourcePath);
+          events.push(`upload:${payload.sourcePath}`);
+          if (payload.sourcePath.endsWith("a.txt")) {
+            // Let the second discovery batch proceed only after the first upload started.
+            releaseSecondBatch?.();
+          }
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+      callbacks: {
+        onTaskCreated: (task) => events.push(`created:${task.fileName}`),
+        onTaskCompleted: (taskId) => events.push(`completed:${taskId.slice(0, 8)}`),
+        onTaskProgress: (taskId, progress) => {
+          events.push(`progress:${progress.transferred}/${progress.total}:${progress.phase ?? ""}`);
+        },
+      },
+    },
+    controller,
+  );
+
+  const results = await uploadPromise;
+  assert.equal(results.filter((row) => row.success).length, 2);
+  assert.deepEqual(transferred, ["/tmp/docs/a.txt", "/tmp/docs/b.txt"]);
+  // First upload must happen before the second discovery batch finishes.
+  const uploadA = events.indexOf("upload:/tmp/docs/a.txt");
+  const batch2 = events.indexOf("batch2");
+  assert.ok(uploadA >= 0 && batch2 >= 0, "expected both upload and batch events");
+  assert.ok(uploadA < batch2, "first file must upload while scan still running");
+});
+
+test("progressive folder upload stops enqueueing children after cancel", async () => {
+  const controller = new UploadController();
+  const createdChildren: string[] = [];
+  let entriesCb: ((entries: LocalTreeListEntry[]) => void) | null = null;
+
+  const listLocalTree = async (
+    _path: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+      abortSignal?: AbortSignal;
+    },
+  ) => {
+    entriesCb = options.onEntries ?? null;
+    options.onEntries?.([
+      {
+        localPath: "/tmp/big/a.txt",
+        relativePath: "big/a.txt",
+        type: "file",
+        size: 1,
+        lastModified: 1,
+      },
+    ]);
+    // Wait until cancelled.
+    await new Promise<void>((resolve) => {
+      if (options.abortSignal?.aborted) {
+        resolve();
+        return;
+      }
+      options.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+    return [];
+  };
+
+  const abort = new AbortController();
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [{ name: "big", localPath: "/tmp/big" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      abortSignal: abort.signal,
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          // Cancel as soon as the first child begins.
+          await controller.cancel();
+          abort.abort();
+          // Push more discovered files after cancel — workers must not create more children.
+          entriesCb?.([
+            {
+              localPath: "/tmp/big/b.txt",
+              relativePath: "big/b.txt",
+              type: "file",
+              size: 1,
+              lastModified: 1,
+            },
+            {
+              localPath: "/tmp/big/c.txt",
+              relativePath: "big/c.txt",
+              type: "file",
+              size: 1,
+              lastModified: 1,
+            },
+          ]);
+          return { transferId: payload.transferId, cancelled: true };
+        },
+      },
+      listLocalTree,
+      callbacks: {
+        onTaskCreated: (task) => {
+          if (!task.isDirectory) createdChildren.push(task.fileName);
+        },
+      },
+    },
+    controller,
+  );
+
+  await uploadPromise;
+  // At most the in-flight child should have been created.
+  assert.ok(createdChildren.length <= 1, `expected no post-cancel flood, got ${createdChildren.join(",")}`);
+});

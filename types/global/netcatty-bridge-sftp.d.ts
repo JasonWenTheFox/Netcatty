@@ -151,6 +151,14 @@ declare global {
           directoryCount: number;
           entryCount: number;
         }) => void;
+        /** Stream discovered rows while the walk continues (edge-scan/upload). */
+        onEntries?: (entries: Array<{
+          localPath: string;
+          relativePath: string;
+          type: 'file' | 'directory';
+          size: number;
+          lastModified: number;
+        }>) => void;
         /** Renderer-generated ID used by cancelLocalTreeScan. */
         scanId?: string;
         limits?: {
