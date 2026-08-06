@@ -336,15 +336,32 @@ function remoteOpenPathMatchesStaged(openPath, stagedRemote) {
  * if the stale OPEN lands after the retry has begun writing, the server
  * truncates the retry stage and a later size check can promote sparse data
  * (Codex P1 on 42a27ef7). Wait for any prior OPEN on the path to settle before
- * issuing another truncating OPEN; release on OPEN callback and on drain
- * force-complete so a dead channel cannot block retries forever.
+ * issuing another truncating OPEN; release on OPEN callback so a late truncating
+ * OPEN cannot race a retry. When an OPEN dies without a callback, fail() poisons
+ * the entry so later waiters reject promptly (fail-closed) instead of hanging
+ * forever on waitForPrior (#2755 / Codex P2 on dca41093).
  *
- * @type {Map<string, { promise: Promise<void>, resolve: () => void, released: boolean }>}
+ * @type {Map<string, {
+ *   promise: Promise<void>,
+ *   resolve: () => void,
+ *   reject: (err: Error) => void,
+ *   released: boolean,
+ *   failed: boolean,
+ *   failError: Error | null,
+ * }>}
  */
 const truncatingSharedWriteOpenGates = new Map();
 /** @type {WeakMap<object, string>} */
 const truncatingSharedWriteSftpKeys = new WeakMap();
 let truncatingSharedWriteSftpSeq = 0;
+
+function createPoisonedWriteOpenPathGateError(message) {
+  const err = new Error(
+    message || "Prior write OPEN never settled; path gate is fail-closed",
+  );
+  err.noTransferFallback = true;
+  return err;
+}
 
 function sharedWriteOpenPathKey(filePath) {
   if (Buffer.isBuffer(filePath)) return `b:${filePath.toString("hex")}`;
@@ -387,25 +404,47 @@ function sharedWriteOpenSessionKey(sftp, transfer) {
 /**
  * @param {string | Buffer} filePath
  * @param {string} [sessionKey]
- * @returns {{ waitForPrior: Promise<void>, release: () => void }}
+ * @returns {{ waitForPrior: Promise<void>, release: () => void, fail: (err?: Error) => void }}
  */
 function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
   const key = `${sessionKey}|${sharedWriteOpenPathKey(filePath)}`;
   const prior = truncatingSharedWriteOpenGates.get(key);
+
+  // Poisoned prior: keep the fail-closed barrier. Do not replace the map entry
+  // with a fresh waiter that could release and let a later OPEN race a still-
+  // pending truncate. New callers fail promptly on waitForPrior.
+  if (prior?.failed) {
+    const err = prior.failError || createPoisonedWriteOpenPathGateError();
+    return {
+      waitForPrior: Promise.reject(err),
+      release: () => {},
+      fail: () => {},
+    };
+  }
+
   const waitForPrior = prior && !prior.released
     ? prior.promise
     : Promise.resolve();
 
   let resolve;
-  const promise = new Promise((r) => {
-    resolve = r;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+  // Avoid unhandledRejection when nobody awaits yet (fail before waiters attach).
+  promise.catch(() => {});
   const entry = {
     promise,
     resolve: () => {
       resolve();
     },
+    reject: (err) => {
+      reject(err);
+    },
     released: false,
+    failed: false,
+    failError: null,
   };
   truncatingSharedWriteOpenGates.set(key, entry);
 
@@ -415,10 +454,25 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     if (truncatingSharedWriteOpenGates.get(key) === entry) {
       truncatingSharedWriteOpenGates.delete(key);
     }
+    // Already failed: promise rejected; just drop the barrier once OPEN settled.
+    if (entry.failed) return;
     entry.resolve();
   };
 
-  return { waitForPrior, release };
+  const fail = (error) => {
+    if (entry.released || entry.failed) return;
+    const err = error instanceof Error
+      ? error
+      : createPoisonedWriteOpenPathGateError(String(error?.message || error || ""));
+    if (!err.noTransferFallback) err.noTransferFallback = true;
+    entry.failed = true;
+    entry.failError = err;
+    // Keep entry in the map so later beginTruncatingSharedWriteOpen sees failed
+    // and rejects promptly without clearing the fail-closed barrier.
+    entry.reject(err);
+  };
+
+  return { waitForPrior, release, fail };
 }
 
 /**
@@ -1970,11 +2024,20 @@ async function uploadFile(
             };
             const timer = setTimeout(() => {
               // Fail closed: do not fall through to another writer on the
-              // same stage while a truncating OPEN may still land.
+              // same stage while a truncating OPEN may still land. Poison the
+              // shared path gate so a later same-path upload fails promptly
+              // instead of awaiting the unresolved entry forever (Codex P2).
               const err = new Error(
                 "Timed out waiting for prior write OPEN to settle before fastPut",
               );
               err.noTransferFallback = true;
+              try {
+                transfer._failPendingWriteOpenPathGate?.(
+                  createPoisonedWriteOpenPathGateError(
+                    "Prior write OPEN never settled; path gate is fail-closed",
+                  ),
+                );
+              } catch { /* ignore */ }
               finish(reject, err);
             }, 2000);
             const onAbort = () => {
@@ -2189,7 +2252,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     : null;
   // Expose a promise that resolves when this OPEN's path gate is released so
   // same-transfer fallbacks (fastPut) can wait instead of racing a still-
-  // pending truncating OPEN (Codex P1 on 7872a304).
+  // pending truncating OPEN (Codex P1 on 7872a304). Also expose fail so a
+  // fail-closed fastPut timeout can poison the shared path gate for later
+  // same-path waiters (Codex P2 on dca41093).
   if (pathGate && transfer && typeof transfer === "object") {
     let resolvePathGate;
     const pending = new Promise((resolve) => { resolvePathGate = resolve; });
@@ -2200,6 +2265,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         transfer.pendingWriteOpenPathGate = null;
       }
       transfer._resolvePendingWriteOpenPathGate = null;
+      transfer._failPendingWriteOpenPathGate = null;
+    };
+    transfer._failPendingWriteOpenPathGate = (error) => {
+      try { pathGate.fail?.(error); } catch { /* ignore */ }
     };
   }
   // Re-check ownership at unlink time: a same-id retry may already own
@@ -2721,7 +2790,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       });
     };
 
-    pathGate.waitForPrior.then(startOpen, startOpen);
+    pathGate.waitForPrior.then(
+      startOpen,
+      (err) => {
+        const error = err instanceof Error
+          ? err
+          : createPoisonedWriteOpenPathGateError(String(err?.message || err || ""));
+        if (!error.noTransferFallback) error.noTransferFallback = true;
+        abandonGateWait(error);
+      },
+    );
   });
 }
 
