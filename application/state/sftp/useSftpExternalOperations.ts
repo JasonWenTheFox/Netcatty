@@ -1003,23 +1003,24 @@ export const useSftpExternalOperations = (
             scanningTask.fail(error);
           }
         }
+        detachScanCancel();
         unregisterUploadController(controller);
         if (controller.isCancelled() || /cancel/i.test(error instanceof Error ? error.message : String(error))) {
           return [{ fileName: "", success: false, cancelled: true }];
         }
         logger.error("[SFTP] Failed to read dropped files:", error);
         throw error;
-      } finally {
-        detachScanCancel();
       }
 
       if (controller.isCancelled()) {
         scanningTask?.cancel();
+        detachScanCancel();
         unregisterUploadController(controller);
         return [{ fileName: "", success: false, cancelled: true }];
       }
       if (capturedEntries.length === 0) {
         scanningTask?.complete();
+        detachScanCancel();
         unregisterUploadController(controller);
         return [];
       }
@@ -1131,6 +1132,7 @@ export const useSftpExternalOperations = (
         logger.error("[SFTP] Upload failed:", error);
         throw error;
       } finally {
+        detachScanCancel();
         unregisterUploadController(controller);
       }
     },
