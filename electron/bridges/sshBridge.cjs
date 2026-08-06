@@ -68,7 +68,7 @@ const {
   createStartSessionApi,
   resolveSshConnectionTimeouts,
 } = require("./sshBridge/startSession.cjs");
-const { ensureMacLocalNetworkAccess } = require("./macLocalNetworkAccess.cjs");
+const { ensureMacLocalNetworkAccess, attachMacLocalNetworkProbeResult } = require("./macLocalNetworkAccess.cjs");
 
 function quoteShellArg(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
@@ -599,6 +599,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
         port: jump.port || 22,
         knownHosts: options.knownHosts,
         verifyHostKeys: jump.verifyHostKeys ?? options.verifyHostKeys,
+        bootEpoch: options.bootEpoch,
       });
       attachSshDebugLogger(connOpts, sshDiagnosticLogger);
       logSshAlgorithms("Jump host", connOpts.algorithms, {
@@ -624,6 +625,8 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           hostname: hopLabel,
           initialPassphrase: jump.passphrase,
           passphraseSignal: options._passphraseSignal,
+          sessionId: options.sessionId,
+          bootEpoch: options.bootEpoch,
           logPrefix: `[Chain] Hop ${i + 1}:`,
           onPassphrasePromptShown: () => sendProgress(
             i + 1, totalHops + 1, hopLabel, "auth-attempt", "waiting for user input...",
@@ -651,6 +654,8 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           hostname: hopLabel,
           initialPassphrase: jump.passphrase,
           passphraseSignal: options._passphraseSignal,
+          sessionId: options.sessionId,
+          bootEpoch: options.bootEpoch,
           logPrefix: `[Chain] Hop ${i + 1}:`,
           onPassphrasePromptShown: () => sendProgress(
             i + 1, totalHops + 1, hopLabel, "auth-attempt", "waiting for user input...",
@@ -694,7 +699,11 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
             keyLabel,
             hopLabel,
             false,
-            { signal: options._passphraseSignal }
+            {
+              signal: options._passphraseSignal,
+              sessionId: options.sessionId,
+              bootEpoch: options.bootEpoch,
+            }
           );
           sendProgress(i + 1, totalHops + 1, hopLabel, 'auth-attempt', 'user responded');
           if (result?.passphrase) {
@@ -846,6 +855,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           password: jump.password,
           logPrefix: `[Chain] Hop ${i + 1}/${totalHops}`,
           scope: keyboardInteractiveScope,
+          bootEpoch: options.bootEpoch,
           getAuthBanner: () => authBanner,
           shouldSkipAutoFill: () => shouldSkipKiPasswordAutoFill(hopAuthPhase),
           onAutoFill: () => sendProgress(
@@ -1207,7 +1217,12 @@ async function startSSHSessionWithRetries(event, options, pendingDialState) {
           // Request passphrases from user
           const passphraseResult = await requestPassphrasesForEncryptedKeys(
             event.sender,
-            options.hostname
+            options.hostname,
+            {
+              signal: options._passphraseSignal,
+              sessionId: options.sessionId,
+              bootEpoch: options.bootEpoch,
+            },
           );
 
           // If user cancelled, don't retry even if some keys were unlocked
@@ -1304,6 +1319,9 @@ async function startSSHSessionWrapper(event, options) {
   let sourceReuseState = options.sourceSessionId && options.reuseTransport !== false
     ? { attempted: false, session: null }
     : null;
+  const sessionId = options.sessionId || require("node:crypto").randomUUID();
+  const { registerPendingBootAbort, clearPendingBootAbort } = require("./sessionBootEpoch.cjs");
+  const passphraseAbortController = registerPendingBootAbort(sessionId, options.bootEpoch);
   if (options.sourceSessionId && options.reuseTransport !== false) {
     const sourceAtRequest = findReusableSession(sessions, options.sourceSessionId);
     if (sourceAtRequest?.connRef) {
@@ -1318,11 +1336,15 @@ async function startSSHSessionWrapper(event, options) {
     }
   }
   try {
-    // Main-process LAN probe so macOS Local Network TCC attributes to Netcatty
-    // before the (possibly worker-hosted) SSH dial. See #2663 / TN3179.
-    await ensureMacLocalNetworkAccess(options);
+    // Main-process UDP Local Network probe (TN3179 discard-port connect) so
+    // TCC attributes to Netcatty before the (possibly worker-hosted) SSH dial.
+    // See #2663 / #2673. Carry the resolved first-hop address so direct-start
+    // annotation (no terminal worker) still sees split-DNS LAN evidence.
+    const probeResult = await ensureMacLocalNetworkAccess(options);
     return await startSSHSessionWithRetries(event, {
-      ...options,
+      ...attachMacLocalNetworkProbeResult(options, probeResult),
+      sessionId,
+      _passphraseSignal: passphraseAbortController.signal,
       ...(sourceReuseState ? { _sourceReuseState: sourceReuseState } : {}),
     }, pendingDialState);
   } catch (err) {
@@ -1331,6 +1353,7 @@ async function startSSHSessionWrapper(event, options) {
     }
     throw err;
   } finally {
+    clearPendingBootAbort(sessionId, passphraseAbortController);
     if (sourcePinHolder) releaseConnectionRef(sourcePinHolder);
   }
 }
@@ -1399,13 +1422,23 @@ const {
  */
 function registerWorkerHandle(ipcMain, terminalWorkerManager, channel) {
   ipcMain.handle(channel, async (event, payload) => {
-    // SSH sessions run in utilityProcess; probe LAN access from the main
+    // SSH sessions run in utilityProcess; UDP-probe LAN access from the main
     // process first so macOS can show the Local Network privacy alert for
-    // the Netcatty app bundle instead of silently denying the helper (#2663).
+    // the Netcatty app bundle instead of silently denying the helper
+    // (#2663 / #2673 / TN3179). Mark the payload so the worker skips a
+    // second hold / probe in its own process.
+    let workerPayload = payload;
     if (channel === "netcatty:start") {
-      await ensureMacLocalNetworkAccess(payload);
+      const probeResult = await ensureMacLocalNetworkAccess(payload);
+      workerPayload = {
+        ...attachMacLocalNetworkProbeResult(
+          payload && typeof payload === "object" ? payload : {},
+          probeResult,
+        ),
+        _macLocalNetworkMainProbed: true,
+      };
     }
-    return terminalWorkerManager.request(channel, payload, {
+    return terminalWorkerManager.request(channel, workerPayload, {
       webContentsId: event?.sender?.id,
     });
   });
