@@ -94,7 +94,8 @@ function userVisibleSshErrorMessage(err, options = {}) {
   const firstHop = resolveFirstTcpEndpoint(options);
   return annotateMacLocalNetworkErrorMessage(err?.message || String(err || ""), {
     hostname: options.hostname || options.host,
-    firstHopHostname: firstHop.hostname,
+    firstHopHostname: firstHop.skipProbe ? "" : firstHop.hostname,
+    skipProbe: firstHop.skipProbe === true,
   });
 }
 

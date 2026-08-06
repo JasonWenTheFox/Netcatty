@@ -337,6 +337,19 @@ test("annotateMacLocalNetworkErrorMessage ignores .local targets behind a public
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage ignores .local targets behind ProxyCommand", () => {
+  const message = "Network is unreachable";
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "nas.local",
+      firstHopHostname: "",
+      skipProbe: true,
+    }),
+    message,
+  );
+});
+
 function createFakeUdpSocket({ onConnect, onError } = {}) {
   class FakeUdpSocket extends EventEmitter {
     constructor() {
@@ -470,8 +483,8 @@ test("createMacLocalNetworkAccessGate shares one timeout across udp4 and udp6 fa
     probeHoldMs: 5,
     setTimer: (fn, ms) => {
       safetyTimeouts.push(ms);
-      // First family burns part of the shared budget before failing.
-      if (safetyTimeouts.length === 1) now += 200;
+      // First family burns its reserved slice before failing.
+      if (safetyTimeouts.length === 1) now += ms;
       queueMicrotask(fn);
       return { ms };
     },
@@ -498,8 +511,9 @@ test("createMacLocalNetworkAccessGate shares one timeout across udp4 and udp6 fa
   }
 
   assert.equal(safetyTimeouts.length, 2);
-  assert.equal(safetyTimeouts[0], 500);
-  assert.equal(safetyTimeouts[1], 300);
+  // Budget is split so udp6 always gets an attempt.
+  assert.equal(safetyTimeouts[0], 250);
+  assert.equal(safetyTimeouts[1], 250);
 });
 
 test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async () => {

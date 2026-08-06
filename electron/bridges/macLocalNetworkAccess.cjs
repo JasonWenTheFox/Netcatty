@@ -274,6 +274,17 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   if (!looksLikeHostUnreachableMessage(text)) return text;
   if (text.includes("Local Network")) return text;
 
+  // ProxyCommand owns the dial outside Electron — never treat the vault
+  // target as a direct LAN hop just because firstHopHostname is empty.
+  if (options.skipProbe === true) {
+    const remotes = extractRemoteUnreachableAddresses(text);
+    const touchesLan = remotes.some((value) => (
+      isLocalNetworkHostname(value) || isLocalMdnsName(value)
+    ));
+    if (!touchesLan) return text;
+    return `${text}\n\n${LOCAL_NETWORK_HINT}`;
+  }
+
   const firstHop = String(options.firstHopHostname || "").trim();
   const targetHost = String(options.hostname || options.host || "").trim();
   const normalizeHost = (value) => stripIpBrackets(value).toLowerCase();
@@ -378,10 +389,16 @@ function createMacLocalNetworkAccessGate(options = {}) {
     const totalMs = Number.isFinite(budgetMs) ? Math.max(0, Math.round(budgetMs)) : probeTimeoutMs;
     if (totalMs <= 0) return;
     const deadlineAt = Date.now() + totalMs;
-    for (const udpType of types) {
+    for (let index = 0; index < types.length; index += 1) {
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) return;
-      const connected = await runUdpProbeOnce(hostname, udpType, remainingMs);
+      const familiesLeft = types.length - index;
+      // Split the residual budget so a stalled udp4 resolve cannot consume
+      // the entire window before the udp6 fallback for IPv6-only .local hosts.
+      const sliceMs = familiesLeft > 1
+        ? Math.max(1, Math.floor(remainingMs / familiesLeft))
+        : remainingMs;
+      const connected = await runUdpProbeOnce(hostname, types[index], sliceMs);
       if (connected) return;
     }
   }
@@ -455,7 +472,8 @@ function createMacLocalNetworkAccessGate(options = {}) {
       return annotateMacLocalNetworkErrorMessage(message, {
         platform,
         hostname: connectOptions.hostname || connectOptions.host,
-        firstHopHostname: endpoint.hostname,
+        firstHopHostname: endpoint.skipProbe ? "" : endpoint.hostname,
+        skipProbe: endpoint.skipProbe === true,
       });
     },
   };
