@@ -485,6 +485,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   /** Connected wake for multi-tab snippet fan-out (reattaches session listeners). */
   const wakeHibernatedRuntimeForConnectedRef = useRef<(() => Promise<boolean>) | null>(null);
   const reconnectWakeInFlightRef = useRef(false);
+  // When a hibernated reconnect wake is invalidated: 'dispose' for unmount/
+  // session teardown (orphan runtime must go), 'keep' for Disconnect so the
+  // pane retains an xterm instance and can reconnect without being remounted.
+  const reconnectWakeInvalidateModeRef = useRef<"dispose" | "keep">("dispose");
   const reconnectWakeTokenRef = useRef<symbol | null>(null);
   const manualReconnectRequestRef = useRef<() => void>(() => {});
   const terminalDataCapturedRef = useRef(false);
@@ -506,6 +510,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }, [onSessionExit]);
 
   useEffect(() => () => {
+    reconnectWakeInvalidateModeRef.current = "dispose";
     reconnectWakeTokenRef.current = null;
   }, [sessionId]);
 
@@ -3120,7 +3125,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     reconnectPreparationTokenRef.current = null;
     restoreCwdIntentRef.current = null;
     // A hibernated reconnect may still be waking the runtime; invalidate that
-    // continuation so it cannot re-arm boot after this disconnect.
+    // continuation so it cannot re-arm boot after this disconnect. Keep any
+    // runtime already created — wakeHibernatedRuntime clears hibernatedRef
+    // before returning, and disposing here would leave no term and no
+    // hibernation marker, permanently blocking later Reconnect.
+    reconnectWakeInvalidateModeRef.current = "keep";
     reconnectWakeTokenRef.current = null;
     reconnectWakeInFlightRef.current = false;
     // Cancel closes the tab (effect cleanup flips boot-active). Disconnect keeps
@@ -3211,7 +3220,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       updateStatus("connecting");
       void wakeForReconnect().then((woke) => {
         if (reconnectWakeTokenRef.current !== wakeToken) {
-          disposeRuntimeOnly();
+          reconnectWakeInFlightRef.current = false;
+          if (reconnectWakeInvalidateModeRef.current === "dispose") {
+            disposeRuntimeOnly();
+          }
           return;
         }
         reconnectWakeTokenRef.current = null;
@@ -3223,7 +3235,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         updateStatus("disconnected");
       }).catch(() => {
         if (reconnectWakeTokenRef.current !== wakeToken) {
-          disposeRuntimeOnly();
+          reconnectWakeInFlightRef.current = false;
+          if (reconnectWakeInvalidateModeRef.current === "dispose") {
+            disposeRuntimeOnly();
+          }
           return;
         }
         reconnectWakeTokenRef.current = null;
