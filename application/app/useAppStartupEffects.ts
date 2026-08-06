@@ -423,7 +423,33 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
             });
           },
         );
-        if (result?.cancelled || result?.error === "Transfer cancelled") {
+        // Same-id retry stole ownership; wait for the live owner's terminal
+        // status instead of treating this invoke as completed (Codex P2).
+        if (result?.superseded === true) {
+          const deadline = Date.now() + 30 * 60 * 1000;
+          for (;;) {
+            const latest = sftpTransferCenterStore.getSnapshot().tasks.find((candidate) => candidate.id === task.id);
+            const status = latest?.status;
+            if (status === "completed" || status === "cancelled" || status === "failed") {
+              if (status === "failed") {
+                throw new Error(latest?.error || "Transfer failed");
+              }
+              if (status === "cancelled") {
+                sftpTransferCenterStore.ingestBackgroundEvent({
+                  type: "cancelled",
+                  transferId: task.id,
+                  endedAt: Date.now(),
+                });
+              }
+              // completed: events already applied; cancelled handled above.
+              break;
+            }
+            if (Date.now() > deadline) {
+              throw new Error("Transfer superseded wait timed out");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        } else if (result?.cancelled || result?.error === "Transfer cancelled") {
           sftpTransferCenterStore.ingestBackgroundEvent({ type: "cancelled", transferId: task.id, endedAt: Date.now() });
         } else if (result?.error) {
           throw new Error(result.error);
