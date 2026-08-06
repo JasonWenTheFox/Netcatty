@@ -116,7 +116,14 @@ test("resolveFirstTcpEndpoint prefers the first jump proxy over session proxy an
     }),
     { hostname: "192.168.0.50", port: 8080 },
   );
-  // Jump-level command proxy is not a TCP host; fall through to session proxy.
+  // Active ProxyCommand is terminal: do not fall through to LAN hostnames.
+  assert.deepEqual(
+    resolveFirstTcpEndpoint({
+      hostname: "nas.local",
+      proxy: { type: "command", command: "nc -X connect" },
+    }),
+    { hostname: "", port: 0, skipProbe: true, reason: "command-proxy" },
+  );
   assert.deepEqual(
     resolveFirstTcpEndpoint({
       hostname: "10.0.0.9",
@@ -126,8 +133,74 @@ test("resolveFirstTcpEndpoint prefers the first jump proxy over session proxy an
         proxy: { type: "command", command: "nc -X connect" },
       }],
     }),
-    { hostname: "192.168.0.2", port: 1080 },
+    { hostname: "", port: 0, skipProbe: true, reason: "command-proxy" },
   );
+});
+
+test("createMacLocalNetworkAccessGate skips probing when ProxyCommand owns the first hop", async () => {
+  let creates = 0;
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("must not probe past ProxyCommand");
+      },
+    },
+  });
+  const result = await gate.ensureAccess({
+    hostname: "nas.local",
+    port: 22,
+    proxy: { type: "command", command: "cloudflared access ssh" },
+  });
+  assert.deepEqual(result, { skipped: true, reason: "command-proxy" });
+  assert.equal(creates, 0);
+});
+
+test("createMacLocalNetworkAccessGate shares one deadline across DNS and UDP probe", async () => {
+  const safetyTimeouts = [];
+  let now = 5_000;
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeTimeoutMs: 500,
+    probeHoldMs: 5,
+    setTimer: (fn, ms) => {
+      safetyTimeouts.push(ms);
+      // DNS success clears its timer; only fire later UDP hang timers.
+      if (safetyTimeouts.length > 1) queueMicrotask(fn);
+      return { ms };
+    },
+    clearTimer() {},
+    lookup: async () => {
+      now += 200;
+      return [{ address: "192.168.7.37", family: 4 }];
+    },
+    dgram: {
+      createSocket() {
+        class HangSocket extends EventEmitter {
+          connect() {}
+          close() {}
+        }
+        return new HangSocket();
+      },
+    },
+  });
+
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    await gate.ensureAccess({ hostname: "dev-viet", port: 22 });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  // DNS armed with the full budget; UDP families inherit only the remainder.
+  assert.ok(safetyTimeouts.includes(500), `expected DNS budget arm, got ${JSON.stringify(safetyTimeouts)}`);
+  const udpBudgets = safetyTimeouts.filter((ms) => ms !== 500);
+  assert.ok(udpBudgets.length >= 1, `expected UDP budget arm(s), got ${JSON.stringify(safetyTimeouts)}`);
+  assert.ok(udpBudgets.every((ms) => ms <= 300), `UDP budgets should be residual, got ${JSON.stringify(udpBudgets)}`);
 });
 
 test("resolveLanProbeTarget keeps LAN literals and .local names", async () => {

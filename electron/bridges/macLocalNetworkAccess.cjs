@@ -115,9 +115,17 @@ function isLocalMdnsName(hostname) {
  * First TCP hop the local process will open for this SSH dial.
  * Prefer the first jump's HTTP/SOCKS proxy when set (sshBridge hop wiring),
  * else the session-level proxy, else the first jump host, else the target.
- * Command proxies are skipped because they do not dial a TCP host we own.
+ * An active ProxyCommand is terminal: Electron never dials the TCP host
+ * itself, so callers should skip the Local Network probe entirely.
  */
 function resolveFirstTcpEndpoint(options = {}) {
+  const commandProxySkip = (proxy) => {
+    if (!proxy || typeof proxy !== "object") return null;
+    if (proxy.type !== "command") return null;
+    if (!String(proxy.command || "").trim()) return null;
+    return { hostname: "", port: 0, skipProbe: true, reason: "command-proxy" };
+  };
+
   const endpointFromProxy = (proxy, fallbackPort = 1080) => {
     if (!proxy || typeof proxy !== "object") return null;
     if (proxy.type === "command") return null;
@@ -132,11 +140,14 @@ function resolveFirstTcpEndpoint(options = {}) {
 
   const jumpHosts = Array.isArray(options.jumpHosts) ? options.jumpHosts : [];
   const firstJump = jumpHosts.length > 0 ? (jumpHosts[0] || {}) : null;
-  const jumpProxyEndpoint = firstJump
-    ? endpointFromProxy(firstJump.proxy || firstJump.proxyConfig || null)
-    : null;
+  const jumpProxy = firstJump ? (firstJump.proxy || firstJump.proxyConfig || null) : null;
+  const jumpCommandSkip = commandProxySkip(jumpProxy);
+  if (jumpCommandSkip) return jumpCommandSkip;
+  const jumpProxyEndpoint = endpointFromProxy(jumpProxy);
   if (jumpProxyEndpoint) return jumpProxyEndpoint;
 
+  const sessionCommandSkip = commandProxySkip(options.proxy || null);
+  if (sessionCommandSkip) return sessionCommandSkip;
   const sessionProxyEndpoint = endpointFromProxy(options.proxy || null);
   if (sessionProxyEndpoint) return sessionProxyEndpoint;
 
@@ -362,9 +373,11 @@ function createMacLocalNetworkAccessGate(options = {}) {
     });
   }
 
-  async function runUdpProbe(hostname) {
+  async function runUdpProbe(hostname, budgetMs = probeTimeoutMs) {
     const types = pickUdpTypes(hostname);
-    const deadlineAt = Date.now() + probeTimeoutMs;
+    const totalMs = Number.isFinite(budgetMs) ? Math.max(0, Math.round(budgetMs)) : probeTimeoutMs;
+    if (totalMs <= 0) return;
+    const deadlineAt = Date.now() + totalMs;
     for (const udpType of types) {
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) return;
@@ -383,13 +396,18 @@ function createMacLocalNetworkAccessGate(options = {}) {
     }
 
     const endpoint = resolveFirstTcpEndpoint(connectOptions);
+    if (endpoint.skipProbe === true) {
+      return { skipped: true, reason: endpoint.reason || "command-proxy" };
+    }
     if (!endpoint.hostname) {
       return { skipped: true, reason: "not-local-network" };
     }
 
+    // One wall-clock budget covers DNS resolution + UDP family attempts.
+    const deadlineAt = Date.now() + probeTimeoutMs;
     const target = await resolveLanProbeTarget(endpoint.hostname, {
       lookup,
-      timeoutMs: probeTimeoutMs,
+      timeoutMs: Math.max(0, deadlineAt - Date.now()),
       setTimer,
       clearTimer,
     });
@@ -400,13 +418,18 @@ function createMacLocalNetworkAccessGate(options = {}) {
     const key = probeKey(target.hostname);
     if (probedKeys.has(key)) return { skipped: true, reason: "cached" };
 
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      return { skipped: true, reason: "timeout" };
+    }
+
     const pending = inFlight.get(key);
     if (pending) {
       await pending;
       return { skipped: true, reason: "in-flight" };
     }
 
-    const probe = runUdpProbe(target.hostname).finally(() => {
+    const probe = runUdpProbe(target.hostname, remainingMs).finally(() => {
       inFlight.delete(key);
       probedKeys.add(key);
     });
