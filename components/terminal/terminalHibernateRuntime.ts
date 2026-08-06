@@ -295,14 +295,6 @@ export type ApplyHibernateWakeOptions = {
   deferWebgl?: boolean;
 };
 
-const scheduleIdle = (callback: () => void): void => {
-  if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(() => callback(), { timeout: 500 });
-    return;
-  }
-  setTimeout(callback, 0);
-};
-
 export async function applyHibernateWakeToTerminal(
   term: XTerm,
   runtime: XTermRuntime,
@@ -313,7 +305,15 @@ export async function applyHibernateWakeToTerminal(
   const viewport = payload.viewportSnapshot ?? payload.snapshot;
   const scrollback = payload.scrollbackSnapshot ?? "";
 
-  await writeTerminalReplaySequence(term, [viewport, payload.pendingBuffer], replayOptions);
+  // Replay older scrollback before the viewport. Appending scrollback after the
+  // viewport (or deferring it to idle) lets a finite xterm scrollback cap trim
+  // the just-restored newest rows — exactly the #2762 "end of output vanished"
+  // failure. Chunking already yields to the event loop for large buffers.
+  await writeTerminalReplaySequence(
+    term,
+    [scrollback, viewport, payload.pendingBuffer],
+    replayOptions,
+  );
 
   if (!options.deferWebgl) {
     runtime.ensureWebglRenderer();
@@ -322,12 +322,6 @@ export async function applyHibernateWakeToTerminal(
 
   if (payload.alternateScreen) {
     refreshTerminalViewport(term);
-  }
-
-  if (scrollback) {
-    scheduleIdle(() => {
-      void writeTerminalPayloadChunked(term, scrollback, replayOptions);
-    });
   }
 }
 

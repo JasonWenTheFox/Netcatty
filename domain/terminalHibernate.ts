@@ -162,9 +162,9 @@ export function shouldSkipHibernateForAltScreen(
 export type TerminalHibernateWakePayload = {
   /** Full serialized terminal state (legacy combined snapshot). */
   snapshot: string;
-  /** Visible viewport rows for fast first paint during wake. */
+  /** Visible viewport rows restored after scrollback during wake. */
   viewportSnapshot?: string;
-  /** Older scrollback rows replayed lazily after viewport + pending. */
+  /** Older scrollback rows replayed before viewport + pending. */
   scrollbackSnapshot?: string;
   pendingBuffer: string;
   /** True when the pane was hibernated while a full-screen app owned the alt buffer. */
