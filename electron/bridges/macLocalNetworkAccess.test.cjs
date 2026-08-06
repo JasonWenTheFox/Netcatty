@@ -501,3 +501,35 @@ test("createMacLocalNetworkAccessGate skips when main process already probed", a
   assert.deepEqual(result, { skipped: true, reason: "main-probed" });
   assert.equal(creates, 0);
 });
+
+test("createMacLocalNetworkAccessGate bounds hostname DNS lookup by the probe timeout", async () => {
+  let creates = 0;
+  const timeouts = [];
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeTimeoutMs: 500,
+    probeHoldMs: 5,
+    setTimer: (fn, ms) => {
+      timeouts.push(ms);
+      queueMicrotask(fn);
+      return { ms };
+    },
+    clearTimer() {},
+    lookup: () => new Promise(() => {
+      // Never resolves - must be aborted by the probe timeout budget.
+    }),
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("must not probe after DNS timeout");
+      },
+    },
+  });
+
+  const result = await gate.ensureAccess({ hostname: "slow-dns.example", port: 22 });
+
+  assert.deepEqual(result, { skipped: true, reason: "not-local-network" });
+  assert.equal(creates, 0);
+  assert.ok(timeouts.includes(500), `expected DNS timeout arm, got ${JSON.stringify(timeouts)}`);
+});

@@ -165,8 +165,32 @@ async function resolveLanProbeTarget(hostname, options = {}) {
   if (net.isIP(cleaned)) return null;
 
   const lookup = options.lookup || defaultLookup;
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(0, Math.round(options.timeoutMs))
+    : DEFAULT_PROBE_TIMEOUT_MS;
+  const setTimer = options.setTimer || setTimeout;
+  const clearTimer = options.clearTimer || clearTimeout;
+
   try {
-    const results = await lookup(cleaned, { all: true, verbatim: true });
+    const results = await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimer(timer);
+        fn(value);
+      };
+      if (timeoutMs > 0) {
+        timer = setTimer(() => finish(reject, Object.assign(new Error("LAN probe DNS timeout"), {
+          code: "ETIMEDOUT",
+        })), timeoutMs);
+      }
+      Promise.resolve()
+        .then(() => lookup(cleaned, { all: true, verbatim: true }))
+        .then((value) => finish(resolve, value))
+        .catch((err) => finish(reject, err));
+    });
     const list = Array.isArray(results) ? results : results ? [results] : [];
     for (const entry of list) {
       const address = typeof entry === "string" ? entry : entry?.address;
@@ -175,7 +199,7 @@ async function resolveLanProbeTarget(hostname, options = {}) {
       }
     }
   } catch {
-    // DNS failure is not fatal; skip the probe and let SSH report its own error.
+    // DNS failure / timeout is not fatal; skip the probe and let SSH dial.
   }
   return null;
 }
@@ -297,7 +321,12 @@ function createMacLocalNetworkAccessGate(options = {}) {
       return { skipped: true, reason: "not-local-network" };
     }
 
-    const target = await resolveLanProbeTarget(endpoint.hostname, { lookup });
+    const target = await resolveLanProbeTarget(endpoint.hostname, {
+      lookup,
+      timeoutMs: probeTimeoutMs,
+      setTimer,
+      clearTimer,
+    });
     if (!target) {
       return { skipped: true, reason: "not-local-network" };
     }
