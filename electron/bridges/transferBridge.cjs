@@ -736,7 +736,10 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
       // Open timeout invalidates the physical transport in boundedSshExec. Do not
       // continue into SFTP on this dead session — propagate so the caller fails
       // closed instead of hanging/failing obscurely on a poisoned channel.
+      // Mark noTransferFallback so downloadFile's isolated→shared catch does not
+      // retry verification/body transfer on the invalidated transport.
       if (error?.code === "SSH_EXEC_OPEN_TIMEOUT") {
+        error.noTransferFallback = true;
         throw error;
       }
     }

@@ -3905,7 +3905,7 @@ test("growing-download prefix verification propagates digest open timeouts", asy
         sshDigestOpeningTimeoutMs: 30,
       },
     ),
-    (error) => error?.code === "SSH_EXEC_OPEN_TIMEOUT",
+    (error) => error?.code === "SSH_EXEC_OPEN_TIMEOUT" && error?.noTransferFallback === true,
   );
   assert.equal(rangeReads, 0, "open timeout must not fall through onto a poisoned session");
 });
