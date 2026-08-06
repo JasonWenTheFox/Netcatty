@@ -295,6 +295,24 @@ export type ApplyHibernateWakeOptions = {
   deferWebgl?: boolean;
 };
 
+/**
+ * Resolve the pre-pending history bytes to replay on hibernate wake.
+ * Prefer the coherent full snapshot: SerializeAddon range slices omit a
+ * trailing newline at the boundary, so concatenating scrollback+viewport can
+ * merge the seam lines. Fall back to scrollback → viewport when snapshot is
+ * empty (still never viewport-first — that evicts newest rows under a finite
+ * scrollback cap; #2762).
+ */
+export function resolveHibernateWakeHistory(payload: TerminalHibernateWakePayload): string {
+  if (payload.snapshot) return payload.snapshot;
+  const viewport = payload.viewportSnapshot ?? "";
+  const scrollback = payload.scrollbackSnapshot ?? "";
+  if (!scrollback) return viewport;
+  if (!viewport) return scrollback;
+  if (/\r?\n$/.test(scrollback)) return `${scrollback}${viewport}`;
+  return `${scrollback}\r\n${viewport}`;
+}
+
 export async function applyHibernateWakeToTerminal(
   term: XTerm,
   runtime: XTermRuntime,
@@ -302,16 +320,14 @@ export async function applyHibernateWakeToTerminal(
   options: ApplyHibernateWakeOptions = {},
 ): Promise<void> {
   const replayOptions = options.replayOptions;
-  const viewport = payload.viewportSnapshot ?? payload.snapshot;
-  const scrollback = payload.scrollbackSnapshot ?? "";
+  const history = resolveHibernateWakeHistory(payload);
 
-  // Replay older scrollback before the viewport. Appending scrollback after the
-  // viewport (or deferring it to idle) lets a finite xterm scrollback cap trim
-  // the just-restored newest rows — exactly the #2762 "end of output vanished"
-  // failure. Chunking already yields to the event loop for large buffers.
+  // Chunked writes already yield to the event loop for large buffers. Do not
+  // idle-append older scrollback after the viewport: under a finite xterm
+  // scrollback cap that trims the just-restored newest rows (#2762).
   await writeTerminalReplaySequence(
     term,
-    [scrollback, viewport, payload.pendingBuffer],
+    [history, payload.pendingBuffer],
     replayOptions,
   );
 

@@ -3,12 +3,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import xterm from "@xterm/xterm";
+import serializeMod from "@xterm/addon-serialize";
 import type { Terminal as XTerm } from "@xterm/xterm";
 
-import { applyHibernateWakeToTerminal } from "./terminalHibernateRuntime.ts";
+import {
+  applyHibernateWakeToTerminal,
+  resolveHibernateWakeHistory,
+} from "./terminalHibernateRuntime.ts";
 import { writeTerminalPayloadChunked } from "./terminalReplay.ts";
 
 const { Terminal } = xterm;
+const { SerializeAddon } = serializeMod;
 
 const readActiveBufferText = (term: XTerm): string => {
   const buffer = term.buffer.active;
@@ -39,7 +44,43 @@ test("writeTerminalPayloadChunked splits large buffers (shipped wake helper)", a
   assert.equal(writes.join(""), payload);
 });
 
-test("applyHibernateWakeToTerminal replays scrollback before viewport without idle append", async () => {
+test("resolveHibernateWakeHistory prefers the coherent full snapshot", () => {
+  assert.equal(
+    resolveHibernateWakeHistory({
+      snapshot: "FULL",
+      viewportSnapshot: "VIEW",
+      scrollbackSnapshot: "SCROLL",
+      pendingBuffer: "",
+      alternateScreen: false,
+    }),
+    "FULL",
+  );
+});
+
+test("resolveHibernateWakeHistory falls back to scrollback before viewport with a seam newline", () => {
+  assert.equal(
+    resolveHibernateWakeHistory({
+      snapshot: "",
+      viewportSnapshot: "VIEWPORT_END\r\n",
+      scrollbackSnapshot: "SCROLLBACK_START",
+      pendingBuffer: "",
+      alternateScreen: false,
+    }),
+    "SCROLLBACK_START\r\nVIEWPORT_END\r\n",
+  );
+  assert.equal(
+    resolveHibernateWakeHistory({
+      snapshot: "",
+      viewportSnapshot: "VIEWPORT_END\r\n",
+      scrollbackSnapshot: "SCROLLBACK_START\r\n",
+      pendingBuffer: "",
+      alternateScreen: false,
+    }),
+    "SCROLLBACK_START\r\nVIEWPORT_END\r\n",
+  );
+});
+
+test("applyHibernateWakeToTerminal replays snapshot then pending without idle append", async () => {
   const writes: string[] = [];
   const term = {
     rows: 24,
@@ -65,24 +106,22 @@ test("applyHibernateWakeToTerminal replays scrollback before viewport without id
   };
 
   try {
-    const viewport = "VIEWPORT_END\r\n";
-    const scrollback = "SCROLLBACK_START\r\n";
+    const snapshot = "SCROLLBACK_START\r\nVIEWPORT_END\r\n";
     const pending = "PENDING_TAIL\r\n";
     await applyHibernateWakeToTerminal(
       term,
       runtime as never,
       {
-        snapshot: `${scrollback}${viewport}`,
-        viewportSnapshot: viewport,
-        scrollbackSnapshot: scrollback,
+        snapshot,
+        viewportSnapshot: "VIEWPORT_END\r\n",
+        scrollbackSnapshot: "SCROLLBACK_START\r\n",
         pendingBuffer: pending,
         alternateScreen: false,
       },
       { replayOptions: { chunkBytes: 8_192 } },
     );
 
-    const joined = writes.join("");
-    assert.equal(joined, `${scrollback}${viewport}${pending}`);
+    assert.equal(writes.join(""), `${snapshot}${pending}`);
     assert.equal(
       idleScheduled,
       false,
@@ -98,50 +137,70 @@ test("applyHibernateWakeToTerminal replays scrollback before viewport without id
   }
 });
 
-test("hibernate wake keeps the newest viewport rows under a finite scrollback cap", async () => {
-  // #2762: appending older scrollback after viewport under scrollback=N evicts the
-  // newest rows (the just-restored viewport). Replay must be scrollback → viewport.
+test("hibernate wake keeps newest rows from a SerializeAddon snapshot under a finite scrollback cap", async () => {
+  // #2762: idle-appending older scrollback after viewport under scrollback=N
+  // evicts the newest rows. Prefer the full SerializeAddon snapshot.
   const rows = 5;
-  const scrollbackCap = 10;
+  const scrollbackCap = 8;
+  const source = new Terminal({
+    cols: 40,
+    rows,
+    scrollback: 50,
+    allowProposedApi: true,
+  });
+  const serializeAddon = new SerializeAddon();
+  source.loadAddon(serializeAddon);
+
+  const olderLines = Array.from({ length: 20 }, (_, index) => `old-${index}`);
+  const newestLines = Array.from({ length: rows }, (_, index) => `new-${index}`);
+  await writeAndWait(source, `${olderLines.join("\r\n")}\r\n${newestLines.join("\r\n")}\r\n`);
+
+  const snapshot = serializeAddon.serialize();
+  const bufferLength = source.buffer.active.length;
+  const viewportStart = Math.max(0, bufferLength - rows);
+  const scrollbackSnapshot = serializeAddon.serialize({
+    range: { start: Math.max(0, viewportStart - 20), end: viewportStart - 1 },
+  });
+  const viewportSnapshot = serializeAddon.serialize({
+    range: { start: viewportStart, end: bufferLength - 1 },
+  });
+  source.dispose();
+
+  // Range concat is not byte-identical to the full snapshot (missing seam newline).
+  assert.notEqual(scrollbackSnapshot + viewportSnapshot, snapshot);
+
   const term = new Terminal({
     cols: 40,
     rows,
     scrollback: scrollbackCap,
     allowProposedApi: true,
   });
-
   const runtime = {
     ensureWebglRenderer: () => {},
     clearTextureAtlas: () => {},
   };
 
   try {
-    const olderLines = Array.from({ length: scrollbackCap }, (_, index) => `old-${index}`);
-    const newestLines = Array.from({ length: rows }, (_, index) => `new-${index}`);
-    const scrollback = `${olderLines.join("\r\n")}\r\n`;
-    const viewport = `${newestLines.join("\r\n")}\r\n`;
-
     await applyHibernateWakeToTerminal(
       term,
       runtime as never,
       {
-        snapshot: `${scrollback}${viewport}`,
-        viewportSnapshot: viewport,
-        scrollbackSnapshot: scrollback,
+        snapshot,
+        viewportSnapshot,
+        scrollbackSnapshot,
         pendingBuffer: "",
         alternateScreen: false,
       },
       { replayOptions: { chunkBytes: 1024 } },
     );
 
-    // Drain any stray idle work the old buggy path might have scheduled.
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     const text = readActiveBufferText(term);
     for (const line of newestLines) {
       assert.match(text, new RegExp(line), `newest viewport line missing after wake: ${line}`);
     }
-    assert.match(text, /old-/, "some older scrollback should still be present");
+    assert.doesNotMatch(text, /new-0new-1/, "seam must not merge adjacent snapshot lines");
   } finally {
     term.dispose();
   }
@@ -159,7 +218,6 @@ test("wrong wake order (viewport then scrollback append) drops newest rows under
   });
 
   try {
-    // Overflow by a full viewport so every newest row is trimmed as oldest.
     const olderLines = Array.from({ length: scrollbackCap + rows }, (_, index) => `old-${index}`);
     const newestLines = Array.from({ length: rows }, (_, index) => `new-${index}`);
     await writeAndWait(term, `${newestLines.join("\r\n")}\r\n`);
@@ -178,11 +236,13 @@ test("wrong wake order (viewport then scrollback append) drops newest rows under
     term.dispose();
   }
 });
-test("hibernate runtime source replays scrollback before viewport on the wake path", () => {
+
+test("hibernate runtime source prefers resolveHibernateWakeHistory on the wake path", () => {
   const source = readFileSync(new URL("./terminalHibernateRuntime.ts", import.meta.url), "utf8");
+  assert.match(source, /export function resolveHibernateWakeHistory/);
   assert.match(
     source,
-    /writeTerminalReplaySequence\(\s*term,\s*\[\s*scrollback,\s*viewport,\s*payload\.pendingBuffer\s*\]/,
+    /writeTerminalReplaySequence\(\s*term,\s*\[\s*history,\s*payload\.pendingBuffer\s*\]/,
   );
   assert.doesNotMatch(
     source,
