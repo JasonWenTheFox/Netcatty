@@ -123,3 +123,29 @@ test("healPoisonedSecretsForMerge heals local poison from remote then base", () 
   assert.equal(healed.hosts[0]?.password, "remote-secret");
   assert.equal(healed.keys[0]?.privateKey, "BASE_PRIVATE_KEY");
 });
+
+test("healPoisonedSecretsForMerge preserves explicit preferred credential deletions", () => {
+  const poisoned = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      label: "renamed-on-poisoned-device",
+      password: ENC,
+    }],
+  });
+  const preferred = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      label: "renamed-on-poisoned-device",
+      password: undefined,
+    }],
+  });
+  const fallback = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      password: "base-secret",
+    }],
+  });
+  const healed = healPoisonedSecretsForMerge(poisoned, preferred, fallback);
+  assert.equal(healed.hosts[0]?.password, undefined);
+  assert.equal(healed.hosts[0]?.label, "renamed-on-poisoned-device");
+});

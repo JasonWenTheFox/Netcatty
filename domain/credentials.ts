@@ -229,14 +229,25 @@ const usableCredential = (value: string | undefined): string | undefined => {
   return value;
 };
 
-const pickUsableCredential = (
-  ...candidates: Array<string | undefined>
+/**
+ * Resolve a poisoned secret against preferred then fallback.
+ *
+ * If the preferred *entity* exists, an empty/missing preferred secret is an
+ * explicit deletion and must win over fallback/base. Only when preferred is
+ * also poisoned (or the preferred entity is absent) may we revive from base.
+ */
+const healPoisonedCredential = (
+  preferredEntity: unknown,
+  preferredValue: string | undefined,
+  fallbackValue: string | undefined,
 ): string | undefined => {
-  for (const candidate of candidates) {
-    const usable = usableCredential(candidate);
-    if (usable !== undefined) return usable;
+  if (preferredEntity) {
+    if (isEncryptedCredentialPlaceholder(preferredValue)) {
+      return usableCredential(fallbackValue);
+    }
+    return usableCredential(preferredValue);
   }
-  return undefined;
+  return usableCredential(fallbackValue);
 };
 
 /**
@@ -244,6 +255,9 @@ const pickUsableCredential = (
  * with usable values from `preferred` then `fallback`. Used for both remote
  * and local sides so a poisoned field cannot win the entity-level merge and
  * delete a still-usable secret from the other side / base.
+ *
+ * Explicit preferred-side deletions (empty/absent secrets on a present entity)
+ * are authoritative and are not revived from base.
  */
 export const healPoisonedSecretsForMerge = (
   poisoned: SyncPayload,
@@ -257,17 +271,26 @@ export const healPoisonedSecretsForMerge = (
     const fallbackHost = fallbackHosts.get(host.id);
     const next = { ...host };
     if (isEncryptedCredentialPlaceholder(next.password)) {
-      const healed = pickUsableCredential(preferredHost?.password, fallbackHost?.password);
+      const healed = healPoisonedCredential(
+        preferredHost,
+        preferredHost?.password,
+        fallbackHost?.password,
+      );
       if (healed !== undefined) next.password = healed;
       else delete next.password;
     }
     if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
-      const healed = pickUsableCredential(preferredHost?.telnetPassword, fallbackHost?.telnetPassword);
+      const healed = healPoisonedCredential(
+        preferredHost,
+        preferredHost?.telnetPassword,
+        fallbackHost?.telnetPassword,
+      );
       if (healed !== undefined) next.telnetPassword = healed;
       else delete next.telnetPassword;
     }
     if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
-      const healed = pickUsableCredential(
+      const healed = healPoisonedCredential(
+        preferredHost,
         preferredHost?.proxyConfig?.password,
         fallbackHost?.proxyConfig?.password,
       );
@@ -288,10 +311,18 @@ export const healPoisonedSecretsForMerge = (
     const fallbackKey = fallbackKeys.get(key.id);
     const next = { ...key };
     if (isEncryptedCredentialPlaceholder(next.privateKey)) {
-      next.privateKey = pickUsableCredential(preferredKey?.privateKey, fallbackKey?.privateKey) ?? "";
+      next.privateKey = healPoisonedCredential(
+        preferredKey,
+        preferredKey?.privateKey,
+        fallbackKey?.privateKey,
+      ) ?? "";
     }
     if (isEncryptedCredentialPlaceholder(next.passphrase)) {
-      const healed = pickUsableCredential(preferredKey?.passphrase, fallbackKey?.passphrase);
+      const healed = healPoisonedCredential(
+        preferredKey,
+        preferredKey?.passphrase,
+        fallbackKey?.passphrase,
+      );
       if (healed !== undefined) next.passphrase = healed;
       else delete next.passphrase;
     }
@@ -302,8 +333,10 @@ export const healPoisonedSecretsForMerge = (
   const fallbackIdentities = new Map((fallback?.identities ?? []).map((identity) => [identity.id, identity]));
   const identities = poisoned.identities?.map((identity) => {
     if (!isEncryptedCredentialPlaceholder(identity.password)) return identity;
-    const healed = pickUsableCredential(
-      preferredIdentities.get(identity.id)?.password,
+    const preferredIdentity = preferredIdentities.get(identity.id);
+    const healed = healPoisonedCredential(
+      preferredIdentity,
+      preferredIdentity?.password,
       fallbackIdentities.get(identity.id)?.password,
     );
     if (healed !== undefined) return { ...identity, password: healed };
@@ -316,8 +349,10 @@ export const healPoisonedSecretsForMerge = (
   const fallbackProfiles = new Map((fallback?.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
   const proxyProfiles = poisoned.proxyProfiles?.map((profile) => {
     if (!isEncryptedCredentialPlaceholder(profile.config.password)) return profile;
-    const healed = pickUsableCredential(
-      preferredProfiles.get(profile.id)?.config.password,
+    const preferredProfile = preferredProfiles.get(profile.id);
+    const healed = healPoisonedCredential(
+      preferredProfile,
+      preferredProfile?.config.password,
       fallbackProfiles.get(profile.id)?.config.password,
     );
     if (healed !== undefined) {
@@ -335,19 +370,28 @@ export const healPoisonedSecretsForMerge = (
     const next = { ...config };
     let changed = false;
     if (isEncryptedCredentialPlaceholder(next.password)) {
-      const healed = pickUsableCredential(preferredConfig?.password, fallbackConfig?.password);
+      const healed = healPoisonedCredential(
+        preferredConfig,
+        preferredConfig?.password,
+        fallbackConfig?.password,
+      );
       if (healed !== undefined) next.password = healed;
       else delete next.password;
       changed = true;
     }
     if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
-      const healed = pickUsableCredential(preferredConfig?.telnetPassword, fallbackConfig?.telnetPassword);
+      const healed = healPoisonedCredential(
+        preferredConfig,
+        preferredConfig?.telnetPassword,
+        fallbackConfig?.telnetPassword,
+      );
       if (healed !== undefined) next.telnetPassword = healed;
       else delete next.telnetPassword;
       changed = true;
     }
     if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
-      const healed = pickUsableCredential(
+      const healed = healPoisonedCredential(
+        preferredConfig,
         preferredConfig?.proxyConfig?.password,
         fallbackConfig?.proxyConfig?.password,
       );
