@@ -9,7 +9,7 @@
  * (#1040), but SSH sessions normally run inside Electron's utilityProcess
  * (terminal worker). Connections from that helper often fail with
  * EHOSTUNREACH without ever registering "Netcatty" under
- * System Settings → Privacy & Security → Local Network — so the user never
+ * System Settings -> Privacy & Security -> Local Network - so the user never
  * gets a prompt and has nothing to toggle.
  *
  * Before the worker opens a LAN socket, the main process performs Apple's
@@ -32,7 +32,7 @@ const DEFAULT_PROBE_HOLD_MS = 500;
 /** IANA discard service - Apple's TN3179 sample uses this port for the trigger. */
 const DISCARD_PORT = 9;
 const LOCAL_NETWORK_HINT =
-  "macOS may be blocking Local Network access. Open System Settings → Privacy & Security → Local Network, enable Netcatty, then reconnect.";
+  "macOS may be blocking Local Network access. Open System Settings -> Privacy & Security -> Local Network, enable Netcatty, then reconnect.";
 
 const defaultLookup = dns.promises.lookup.bind(dns.promises);
 
@@ -72,7 +72,7 @@ function isIpv6LocalNetworkAddress(hostname) {
   if (net.isIP(hostname) !== 6) return false;
   const lower = hostname.toLowerCase();
   if (lower.startsWith("::ffff:")) {
-    // IPv4-mapped IPv6 — classify the embedded v4 address.
+    // IPv4-mapped IPv6 - classify the embedded v4 address.
     return isLocalNetworkHostname(lower.slice("::ffff:".length));
   }
   const hextet = ipv6FirstHextet(lower);
@@ -109,6 +109,24 @@ function isLocalMdnsName(hostname) {
   if (!cleaned || cleaned === "localhost") return false;
   if (net.isIP(cleaned)) return false;
   return cleaned.endsWith(".local");
+}
+
+/**
+ * Hostnames that commonly denote a LAN-side hop even when they are not
+ * literal RFC1918 addresses or mDNS `.local` names (e.g. bastion.lan).
+ */
+function isPrivateDnsLanName(hostname) {
+  if (hostname == null) return false;
+  const cleaned = stripIpBrackets(hostname).toLowerCase().replace(/\.$/, "");
+  if (!cleaned || cleaned === "localhost") return false;
+  if (net.isIP(cleaned)) return false;
+  return /\.(lan|internal|intranet|localdomain|home|corp|private)$/.test(cleaned);
+}
+
+function looksLikeLocalNetworkName(hostname) {
+  return isLocalNetworkHostname(hostname)
+    || isLocalMdnsName(hostname)
+    || isPrivateDnsLanName(hostname);
 }
 
 /**
@@ -275,7 +293,7 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   if (text.includes("Local Network")) return text;
 
   // ProxyCommand owns the dial outside Electron. Never append a Netcatty
-  // Local Network hint — even when the child error embeds a LAN address —
+  // Local Network hint - even when the child error embeds a LAN address -
   // because the user would be sent to enable Netcatty for a connection the
   // external command made.
   if (options.skipProbe === true) return text;
@@ -303,9 +321,7 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
     options.firstHopHostname,
     ...remotesForEvidence,
   ].filter((value) => value != null && String(value).trim() !== "");
-  const touchesLan = candidates.some((value) => (
-    isLocalNetworkHostname(value) || isLocalMdnsName(value)
-  ));
+  const touchesLan = candidates.some((value) => looksLikeLocalNetworkName(value));
   if (!touchesLan) return text;
   return `${text}\n\n${LOCAL_NETWORK_HINT}`;
 }

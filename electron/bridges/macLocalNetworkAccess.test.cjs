@@ -357,6 +357,18 @@ test("annotateMacLocalNetworkErrorMessage ignores downstream LAN addresses behin
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage keeps LAN guidance for hostname-based LAN first hops", () => {
+  const message = "connect EHOSTUNREACH 192.168.1.20:22";
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "app.internal",
+      firstHopHostname: "bastion.lan",
+    }),
+    /Local Network/i,
+  );
+});
+
 test("annotateMacLocalNetworkErrorMessage ignores ProxyCommand errors even with LAN evidence", () => {
   const localName = "Network is unreachable";
   assert.equal(
