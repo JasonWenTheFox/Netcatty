@@ -1568,7 +1568,14 @@ async function acquireSessionFastDownloadSlot(client, transfer) {
   if (transfer?.cancelled || transfer?.signal?.aborted) {
     throw new Error("Transfer cancelled");
   }
-  if (tryAcquireSessionFastDownloadSlot(client)) return;
+  if (tryAcquireSessionFastDownloadSlot(client)) {
+    // Granted immediately — still recheck cancel before the caller starts work.
+    if (transfer.cancelled || transfer.signal?.aborted) {
+      releaseSessionFastDownloadSlot(client);
+      throw new Error("Transfer cancelled");
+    }
+    return;
+  }
 
   await new Promise((resolve, reject) => {
     const entry = { resolve, reject, transfer };
@@ -1577,47 +1584,55 @@ async function acquireSessionFastDownloadSlot(client, transfer) {
     sessionFastDownloadWaiters.set(client, waiters);
 
     const previousAbort = transfer.abort;
-    const abortWait = () => {
-      transfer.cancelled = true;
+    let settled = false;
+    const dequeue = () => {
       const list = sessionFastDownloadWaiters.get(client);
-      if (list) {
-        const index = list.indexOf(entry);
-        if (index >= 0) list.splice(index, 1);
-        if (list.length === 0) sessionFastDownloadWaiters.delete(client);
-      }
+      if (!list) return;
+      const index = list.indexOf(entry);
+      if (index >= 0) list.splice(index, 1);
+      if (list.length === 0) sessionFastDownloadWaiters.delete(client);
+    };
+    const cleanupAbort = () => {
+      transfer.signal?.removeEventListener?.("abort", abortWait);
+      if (transfer.abort === abortWait) transfer.abort = previousAbort;
+    };
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      cleanupAbort();
+      resolve();
+    };
+    const settleReject = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanupAbort();
+      reject(err);
+    };
+    const abortWait = () => {
+      if (settled) return;
+      transfer.cancelled = true;
+      dequeue();
       try { previousAbort?.(); } catch { /* ignore */ }
-      reject(new Error("Transfer cancelled"));
+      settleReject(new Error("Transfer cancelled"));
     };
     transfer.abort = abortWait;
     transfer.signal?.addEventListener?.("abort", abortWait, { once: true });
 
     // Another transfer may have released between tryAcquire and enqueue.
     if (tryAcquireSessionFastDownloadSlot(client)) {
-      const list = sessionFastDownloadWaiters.get(client);
-      if (list) {
-        const index = list.indexOf(entry);
-        if (index >= 0) list.splice(index, 1);
-        if (list.length === 0) sessionFastDownloadWaiters.delete(client);
-      }
-      transfer.signal?.removeEventListener?.("abort", abortWait);
-      if (transfer.abort === abortWait) transfer.abort = previousAbort;
-      resolve();
+      dequeue();
+      settleResolve();
       return;
     }
 
-    const originalResolve = entry.resolve;
-    const originalReject = entry.reject;
-    entry.resolve = () => {
-      transfer.signal?.removeEventListener?.("abort", abortWait);
-      if (transfer.abort === abortWait) transfer.abort = previousAbort;
-      originalResolve();
-    };
-    entry.reject = (err) => {
-      transfer.signal?.removeEventListener?.("abort", abortWait);
-      if (transfer.abort === abortWait) transfer.abort = previousAbort;
-      originalReject(err);
-    };
+    entry.resolve = settleResolve;
+    entry.reject = settleReject;
   });
+
+  if (transfer.cancelled || transfer.signal?.aborted) {
+    releaseSessionFastDownloadSlot(client);
+    throw new Error("Transfer cancelled");
+  }
 }
 
 async function acquireIsolatedDownloadChannel(client, transfer) {
@@ -6463,6 +6478,10 @@ module.exports = {
   },
   _getPendingCancelCountForTests: () => pendingCancelTransferIds.size,
   _getActiveTransferCountForTests: () => activeTransfers.size,
+  /** @param {object} client SFTP client object used as WeakMap key */
+  _getSessionFastDownloadWaiterCountForTests: (client) => (
+    sessionFastDownloadWaiters.get(client)?.length || 0
+  ),
   _execSshCommandCancellableForTests: execSshCommandCancellable,
   _assertSourceMetadataUnchangedForTests: assertSourceMetadataUnchanged,
   _assertDownloadSourceAfterTransferForTests: assertDownloadSourceAfterTransfer,
