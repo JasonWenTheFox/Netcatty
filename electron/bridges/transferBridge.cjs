@@ -2159,6 +2159,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // a concurrent same-path writer — same-id retry or a new transferId.
     if (!isTruncatingOpenNow()) return;
     const openHost = transfer?.targetHostId || transfer?.hostId || transfer?.sourceHostId;
+    const openSession = transfer?.targetSftpId || transfer?.sourceSftpId || transfer?.sftpId;
     for (const active of activeTransfers.values()) {
       if (!active || active === transfer) continue;
       const matchesStage = remoteOpenPathMatchesStaged(filePath, active.stagedRemote);
@@ -2172,11 +2173,17 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       );
       if (!matchesStage && !matchesInPlace) continue;
       const activeHost = active.targetHostId || active.hostId || active.sourceHostId;
-      if (
-        openHost != null && String(openHost).length > 0
-        && activeHost != null && String(activeHost).length > 0
-        && String(openHost) !== String(activeHost)
-      ) {
+      const activeSession = active.targetSftpId || active.sourceSftpId || active.sftpId;
+      // Require a matching host or session identity. Do not treat a missing host
+      // as a wildcard — clipboard/agent uploads share common paths like /tmp
+      // across unrelated endpoints (Codex P2 on 4d194041).
+      if (openHost != null && String(openHost).length > 0
+        && activeHost != null && String(activeHost).length > 0) {
+        if (String(openHost) !== String(activeHost)) continue;
+      } else if (openSession != null && String(openSession).length > 0
+        && activeSession != null && String(activeSession).length > 0) {
+        if (String(openSession) !== String(activeSession)) continue;
+      } else {
         continue;
       }
       active.staleOpenTruncatedStage = true;

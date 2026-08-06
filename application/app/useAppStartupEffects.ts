@@ -409,6 +409,9 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
               targetType: task.direction === "download" ? "local" : "sftp",
               sourceSftpId: task.direction === "download" ? sftpId : undefined,
               targetSftpId: task.direction === "upload" ? sftpId : undefined,
+              // Keep host-scoped path gates across session reopen (Codex P1).
+              sourceHostId: task.sourceHostId,
+              targetHostId: task.targetHostId,
               totalBytes: task.totalBytes,
               resumable: task.resumable !== false,
               checkpointBytes,
