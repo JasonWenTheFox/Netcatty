@@ -845,8 +845,10 @@ export function useSftpDirectoryTransferOps({
           const fileSize = getEntrySize(file);
           const sourcePath = joinPath(task.sourcePath, file.name);
           const targetPath = joinTransferTargetPath(task.targetPath, file.name);
+          let transferSize = fileSize;
+          let transferLastModified = file.lastModified;
           const directoryEntryIndex = directoryEntryBase + fileIndex;
-          const directoryEntryIdentity = createDirectoryEntryIdentity({
+          let directoryEntryIdentity = createDirectoryEntryIdentity({
             sourcePath,
             targetPath,
             size: fileSize,
@@ -872,14 +874,11 @@ export function useSftpDirectoryTransferOps({
             await waitWhileTransferPaused(rootTaskId);
           }
 
-          const skipUnchanged = readSkipUnchangedEnabled()
-            && !task.replaceExistingTarget
-            && !String(task.targetPath).includes(".netcatty-");
           // Symlink listing attrs are the link node; transfer follows target bytes.
-          if (skipUnchanged && file.type !== "symlink") {
-            // Re-stat source immediately before the quick check: interleaved
-            // walks can list a file long before its transfer turn (Codex P1).
-            // Missing fresh metadata must not fall back to listing attrs.
+          // For regular files, re-stat so skip and transfer use current size/mtime
+          // (Codex P1: listing attrs can go stale during a long interleaved walk).
+          let freshSourceOk = false;
+          if (file.type !== "symlink") {
             const freshSource = await tryStatTransferPath(
               sourcePath,
               sourceIsLocal,
@@ -887,67 +886,81 @@ export function useSftpDirectoryTransferOps({
               sourceEncoding,
             );
             if (freshSource && freshSource.type !== "directory") {
-              const skipSourceSize = freshSource.size;
-              const skipSourceLastModified = freshSource.lastModified;
-              const existing = await tryStatTransferTarget(
+              transferSize = freshSource.size;
+              transferLastModified = freshSource.lastModified;
+              directoryEntryIdentity = createDirectoryEntryIdentity({
+                sourcePath,
                 targetPath,
-                targetIsLocal,
-                targetSftpId,
-                targetEncoding,
-              );
-              if (
-                existing
-                && existing.type !== "directory"
-                && isUnchangedTransferCandidate(
-                  { size: skipSourceSize, lastModified: skipSourceLastModified, mtimeUnit: "ms" },
-                  { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
-                )
-              ) {
-                const skippedId = persistedChild?.id ?? crypto.randomUUID();
-                setTransfers((prev) => {
-                  const hasChild = prev.some((row) => row.id === skippedId);
-                  const base = hasChild
-                    ? prev.map((row) => row.id === skippedId
-                      ? {
-                          ...row,
-                          status: "completed" as TransferStatus,
-                          transferredBytes: skipSourceSize,
-                          totalBytes: skipSourceSize,
-                          endTime: Date.now(),
-                          speed: 0,
-                          error: undefined,
-                        }
-                      : row)
-                    : [...prev, {
-                        ...task,
-                        id: skippedId,
-                        fileName: file.name,
-                        originalFileName: file.name,
-                        sourcePath,
-                        targetPath,
-                        isDirectory: false,
-                        progressMode: "bytes" as const,
-                        parentTaskId: rootTaskId,
-                        totalBytes: skipSourceSize,
-                        transferredBytes: skipSourceSize,
-                        sourceLastModified: skipSourceLastModified,
-                        directoryEntryIndex,
-                        directoryEntryIdentity,
+                size: transferSize,
+                lastModified: transferLastModified,
+              });
+              freshSourceOk = true;
+            }
+          }
+
+          const skipUnchanged = readSkipUnchangedEnabled()
+            && !task.replaceExistingTarget
+            && !String(task.targetPath).includes(".netcatty-");
+          // Missing fresh metadata must not fall back to listing attrs for skip.
+          if (skipUnchanged && file.type !== "symlink" && freshSourceOk) {
+            const existing = await tryStatTransferTarget(
+              targetPath,
+              targetIsLocal,
+              targetSftpId,
+              targetEncoding,
+            );
+            if (
+              existing
+              && existing.type !== "directory"
+              && isUnchangedTransferCandidate(
+                { size: transferSize, lastModified: transferLastModified, mtimeUnit: "ms" },
+                { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
+              )
+            ) {
+              const skippedId = persistedChild?.id ?? crypto.randomUUID();
+              setTransfers((prev) => {
+                const hasChild = prev.some((row) => row.id === skippedId);
+                const base = hasChild
+                  ? prev.map((row) => row.id === skippedId
+                    ? {
+                        ...row,
                         status: "completed" as TransferStatus,
-                        speed: 0,
-                        startTime: Date.now(),
+                        transferredBytes: transferSize,
+                        totalBytes: transferSize,
                         endTime: Date.now(),
-                      }];
-                  return base.map((row) => {
-                    if (row.id !== rootTaskId) return row;
-                    if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
-                      return { ...row, speed: 0 };
-                    }
-                    return { ...row, transferredBytes: row.transferredBytes + 1 };
-                  });
+                        speed: 0,
+                        error: undefined,
+                      }
+                    : row)
+                  : [...prev, {
+                      ...task,
+                      id: skippedId,
+                      fileName: file.name,
+                      originalFileName: file.name,
+                      sourcePath,
+                      targetPath,
+                      isDirectory: false,
+                      progressMode: "bytes" as const,
+                      parentTaskId: rootTaskId,
+                      totalBytes: transferSize,
+                      transferredBytes: transferSize,
+                      sourceLastModified: transferLastModified,
+                      directoryEntryIndex,
+                      directoryEntryIdentity,
+                      status: "completed" as TransferStatus,
+                      speed: 0,
+                      startTime: Date.now(),
+                      endTime: Date.now(),
+                    }];
+                return base.map((row) => {
+                  if (row.id !== rootTaskId) return row;
+                  if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
+                    return { ...row, speed: 0 };
+                  }
+                  return { ...row, transferredBytes: row.transferredBytes + 1 };
                 });
-                return;
-              }
+              });
+              return;
             }
           }
 
@@ -970,11 +983,11 @@ export function useSftpDirectoryTransferOps({
             isDirectory: false,
             progressMode: "bytes",
             parentTaskId: rootTaskId,
-            totalBytes: fileSize,
-            sourceLastModified: file.lastModified,
+            totalBytes: transferSize,
+            sourceLastModified: transferLastModified,
             directoryEntryIndex,
             directoryEntryIdentity,
-            // Inherit retryable from parent — downloadToLocal sets retryable: false
+            // Inherit retryable from parent - downloadToLocal sets retryable: false
             // because "local" targetConnectionId can't be resolved by retryTransfer
             retryable: task.retryable,
             // New/restarted child streams arm at bridge lifecycleEpoch 0. Never
