@@ -445,18 +445,40 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     released: false,
     failed: false,
     failError: null,
+    transportGone: false,
+    transportGoneTimer: null,
   };
   truncatingSharedWriteOpenGates.set(key, entry);
 
   const release = () => {
     if (entry.released) return;
     entry.released = true;
+    if (entry.transportGoneTimer) {
+      clearTimeout(entry.transportGoneTimer);
+      entry.transportGoneTimer = null;
+    }
     if (truncatingSharedWriteOpenGates.get(key) === entry) {
       truncatingSharedWriteOpenGates.delete(key);
     }
     // Already failed: promise rejected; drop the barrier once OPEN settled.
     if (entry.failed) return;
     entry.resolve();
+  };
+
+  /**
+   * After the owning SFTP transport is closed/replaced, clear a poisoned
+   * barrier so reconnects to the same host/path are not fail-closed forever.
+   * Keep a short grace so a late OPEN callback that still races end() cannot
+   * wipe a same-path retry with no barrier (Codex P2 on 713719c2).
+   */
+  const releaseAfterTransportGone = () => {
+    entry.transportGone = true;
+    if (!entry.failed || entry.released || entry.transportGoneTimer) return;
+    entry.transportGoneTimer = setTimeout(() => {
+      entry.transportGoneTimer = null;
+      if (entry.released || !entry.failed) return;
+      release();
+    }, 2000);
   };
 
   /**
@@ -496,9 +518,15 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     if (reinstall && !entry.released) {
       truncatingSharedWriteOpenGates.set(key, entry);
     }
+
+    // Channel may already have ended before poison (isolated dispose in
+    // uploadFileConcurrent finally). Arm the post-close clear now.
+    if (entry.transportGone) {
+      releaseAfterTransportGone();
+    }
   };
 
-  return { waitForPrior, release, fail };
+  return { waitForPrior, release, fail, releaseAfterTransportGone };
 }
 
 /**
@@ -2306,6 +2334,15 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     transfer._failPendingWriteOpenPathGate = (error) => {
       try { pathGate.fail?.(error); } catch { /* ignore */ }
     };
+  }
+  // When the owning transport ends, clear a poisoned barrier after a short
+  // grace so reconnects are not permanently fail-closed (Codex P2 on 713719c2).
+  if (pathGate && sftp && typeof sftp.once === "function") {
+    const onTransportGone = () => {
+      try { pathGate.releaseAfterTransportGone?.(); } catch { /* ignore */ }
+    };
+    try { sftp.once("end", onTransportGone); } catch { /* ignore */ }
+    try { sftp.once("close", onTransportGone); } catch { /* ignore */ }
   }
   // Re-check ownership at unlink time: a same-id retry may already own
   // activeTransfers. Only suppress unlink when the retry's *actual* staged

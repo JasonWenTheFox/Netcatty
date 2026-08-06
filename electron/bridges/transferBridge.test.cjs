@@ -5913,6 +5913,213 @@ test("later same-path upload fails promptly after cancel during unresolved OPEN 
   assert.equal(laterWriteOpens, 0, "cancel poison must not allow a later truncating write OPEN");
 });
 
+test("path gate poison clears after owning isolated transport ends", async (t) => {
+  // Codex P2 on 713719c2: a dead OPEN that never callbacks leaves a host-keyed
+  // poison. Once the owning isolated channel has ended and a short grace
+  // passes, clear the barrier so reconnect / later uploads are not
+  // permanently fail-closed until process restart.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-gate-transport-clear-"));
+  t.after(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.alloc(TRANSFER_CHUNK_SIZE, 67);
+  const localPath = path.join(tempDir, "upload.bin");
+  const targetPath = "/tmp/upload-inplace-gate-transport-clear.bin";
+  const remoteFiles = new Map([[targetPath, Buffer.from("old")]]);
+  await fs.promises.writeFile(localPath, payload);
+
+  let isolatedChannelCount = 0;
+  let firstOpenStarted = false;
+  let firstIsolated = null;
+  let postClearWriteOpens = 0;
+  const symlinkLstat = (remotePath, callback) => {
+    const key = String(remotePath);
+    if (key.includes(".netcatty-backup-") || key.includes(".netcatty-upload-") || key.includes(".netcatty-")) {
+      const error = new Error("ENOENT");
+      error.code = 2;
+      callback(error);
+      return;
+    }
+    if (!remoteFiles.has(key)) {
+      const error = new Error("ENOENT");
+      error.code = 2;
+      callback(error);
+      return;
+    }
+    callback(null, {
+      size: remoteFiles.get(key).length,
+      mode: 0o120777,
+      isDirectory: () => false,
+      isSymbolicLink: () => true,
+    });
+  };
+
+  const client = {
+    sftp: createFastSftp({
+      lstat: symlinkLstat,
+      open(remotePath, flags, callback) {
+        postClearWriteOpens += 1;
+        remoteFiles.set(String(remotePath), Buffer.from(payload));
+        callback(null, Buffer.from(`shared-handle:${flags}:${remotePath}`));
+      },
+      write(_handle, _buffer, _offset, length, _position, callback) {
+        callback(null);
+      },
+      close(_handle, callback) {
+        callback(null);
+      },
+      createWriteStream() {
+        throw new Error("stream fallback must not run in this test");
+      },
+    }),
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete(remotePath) {
+      remoteFiles.delete(String(remotePath));
+    },
+    client: {
+      sftp(callback) {
+        isolatedChannelCount += 1;
+        if (isolatedChannelCount === 1) {
+          firstIsolated = createFastSftp({
+            lstat: symlinkLstat,
+            open(remotePath, flags) {
+              assert.equal(flags, "w");
+              assert.equal(String(remotePath), targetPath);
+              firstOpenStarted = true;
+            },
+            end() {
+              this.emit("end");
+              this.emit("close");
+            },
+          });
+          callback(null, firstIsolated);
+          return;
+        }
+        callback(null, createFastSftp({
+          lstat: symlinkLstat,
+          open(remotePath, flags, cb) {
+            postClearWriteOpens += 1;
+            remoteFiles.set(String(remotePath), Buffer.from(payload));
+            cb(null, Buffer.from(`isolated-handle:${flags}:${remotePath}`));
+          },
+          write(_handle, _buffer, _offset, length, _position, cb) {
+            cb(null);
+          },
+          close(_handle, cb) {
+            cb(null);
+          },
+          fastPut(local, remote, _opts, cb) {
+            postClearWriteOpens += 1;
+            remoteFiles.set(String(remote), Buffer.from(payload));
+            cb(null);
+          },
+          end() {},
+        }));
+      },
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const firstRunning = transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "upload-inplace-gate-transport-clear-first",
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: payload.length,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+
+  const openReady = await waitUntil(() => firstOpenStarted, 2000);
+  assert.ok(openReady, "expected first in-place write OPEN to stall");
+  firstIsolated.emit("error", new Error("isolated SFTP channel died during OPEN"));
+
+  const firstResult = await Promise.race([
+    firstRunning,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("first transfer hung on gate timeout")), 5000);
+    }),
+  ]);
+  assert.match(firstResult.error || "", /Timed out waiting for prior write OPEN to settle before fastPut/i);
+
+  // Immediately after poison the barrier must still fail closed.
+  const midRunning = transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "upload-inplace-gate-transport-clear-mid",
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: payload.length,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+  const midResult = await Promise.race([
+    midRunning,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("mid upload hung on poisoned gate")), 1500);
+    }),
+  ]);
+  assert.match(midResult.error || "", /prior write OPEN never settled|path gate is fail-closed/i);
+
+  // After transport-gone grace, the host-keyed poison must clear.
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+
+  const laterRunning = transferBridge.startTransfer(
+    { sender: createSender() },
+    {
+      transferId: "upload-inplace-gate-transport-clear-later",
+      sourcePath: localPath,
+      targetPath,
+      sourceType: "local",
+      targetType: "sftp",
+      targetSftpId: "target",
+      totalBytes: payload.length,
+      resumable: false,
+      skipAdmission: true,
+    },
+  );
+  const laterResult = await Promise.race([
+    laterRunning,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("later upload hung after transport-gone poison clear")), 5000);
+    }),
+  ]);
+
+  assert.notEqual(
+    laterResult.error && /prior write OPEN never settled|path gate is fail-closed/i.test(laterResult.error),
+    true,
+    `later upload must not stay permanently fail-closed after transport end, error=${laterResult.error}`,
+  );
+  assert.ok(
+    postClearWriteOpens > 0
+    || (laterResult.transferId && laterResult.error == null && laterResult.cancelled !== true)
+    || laterResult.cancelled === true
+    || laterResult.error,
+    `expected later upload to settle after transport-gone clear, result=${JSON.stringify(laterResult)}`,
+  );
+});
+
 test("shared upload OPEN drain unlinks late staged OPEN after channel-error force-complete", async (t) => {
   // Codex P2 on bd42c51c: late truncating OPEN after channel-error drain
   // force-complete is not a cancel (`transfer.cancelled` false). Non-resumable
