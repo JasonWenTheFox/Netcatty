@@ -285,10 +285,13 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   return `${text}\n\n${LOCAL_NETWORK_HINT}`;
 }
 
-function pickUdpType(hostname) {
+function pickUdpTypes(hostname) {
   const cleaned = stripIpBrackets(hostname);
-  if (net.isIP(cleaned) === 6) return "udp6";
-  return "udp4";
+  if (net.isIP(cleaned) === 6) return ["udp6"];
+  if (net.isIP(cleaned) === 4) return ["udp4"];
+  // Unresolved hostnames (especially .local) may be IPv6-only on the LAN.
+  // Node's udp4 sockets will not attempt AAAA, so try both families.
+  return ["udp4", "udp6"];
 }
 
 function createMacLocalNetworkAccessGate(options = {}) {
@@ -315,14 +318,14 @@ function createMacLocalNetworkAccessGate(options = {}) {
     return String(hostname).toLowerCase();
   }
 
-  function runUdpProbe(hostname) {
+  function runUdpProbeOnce(hostname, udpType) {
     return new Promise((resolve) => {
       let settled = false;
       let socket = null;
       let safetyTimer = null;
       let holdTimer = null;
 
-      const finish = () => {
+      const finish = (connected) => {
         if (settled) return;
         settled = true;
         if (safetyTimer) clearTimer(safetyTimer);
@@ -330,13 +333,13 @@ function createMacLocalNetworkAccessGate(options = {}) {
         safetyTimer = null;
         holdTimer = null;
         try { socket?.close(); } catch { /* ignore */ }
-        resolve();
+        resolve(connected === true);
       };
 
       try {
-        socket = dgramModule.createSocket(pickUdpType(hostname));
-        socket.once?.("error", finish);
-        safetyTimer = setTimer(finish, probeTimeoutMs);
+        socket = dgramModule.createSocket(udpType);
+        socket.once?.("error", () => finish(false));
+        safetyTimer = setTimer(() => finish(false), probeTimeoutMs);
         socket.connect(DISCARD_PORT, hostname, () => {
           if (settled) return;
           // Clear the connect safety window once connected so a slow
@@ -347,15 +350,23 @@ function createMacLocalNetworkAccessGate(options = {}) {
             safetyTimer = null;
           }
           if (probeHoldMs <= 0) {
-            finish();
+            finish(true);
             return;
           }
-          holdTimer = setTimer(finish, probeHoldMs);
+          holdTimer = setTimer(() => finish(true), probeHoldMs);
         });
       } catch {
-        finish();
+        finish(false);
       }
     });
+  }
+
+  async function runUdpProbe(hostname) {
+    const types = pickUdpTypes(hostname);
+    for (const udpType of types) {
+      const connected = await runUdpProbeOnce(hostname, udpType);
+      if (connected) return;
+    }
   }
 
   async function ensureAccess(connectOptions = {}) {

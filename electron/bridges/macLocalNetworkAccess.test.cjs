@@ -345,8 +345,9 @@ test("createMacLocalNetworkAccessGate probes .local names without requiring DNS"
       throw new Error("DNS must not be required for .local");
     },
     dgram: {
-      createSocket() {
+      createSocket(type) {
         const socket = createFakeUdpSocket();
+        socket.type = type;
         sockets.push(socket);
         return socket;
       },
@@ -356,6 +357,34 @@ test("createMacLocalNetworkAccessGate probes .local names without requiring DNS"
   const result = await gate.ensureAccess({ hostname: "nas.local", port: 22 });
   assert.equal(result.probed, true);
   assert.deepEqual(sockets[0].connectCalls[0], { port: DISCARD_PORT, host: "nas.local" });
+  assert.equal(sockets[0].type, "udp4");
+});
+
+test("createMacLocalNetworkAccessGate retries .local probes over udp6 when udp4 fails", async () => {
+  const sockets = [];
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeHoldMs: 5,
+    dgram: {
+      createSocket(type) {
+        const socket = createFakeUdpSocket(
+          type === "udp4"
+            ? { onError: Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }) }
+            : undefined,
+        );
+        socket.type = type;
+        sockets.push(socket);
+        return socket;
+      },
+    },
+  });
+
+  const result = await gate.ensureAccess({ hostname: "ipv6-only.local", port: 22 });
+  assert.equal(result.probed, true);
+  assert.deepEqual(sockets.map((socket) => socket.type), ["udp4", "udp6"]);
+  assert.deepEqual(sockets[1].connectCalls[0], { port: DISCARD_PORT, host: "ipv6-only.local" });
+  assert.equal(sockets[1].closed, true);
 });
 
 test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async () => {
