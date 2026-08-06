@@ -359,6 +359,12 @@ function joinLocalRelativePath(rootPath: string, relativePath: string): string {
  * Prefer reconstructing local paths from the drop root so we can skip per-file
  * `entry.file()` when Electron already exposed the folder path.
  */
+export function isDropScanCancelledError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: string }).code;
+  return code === "ERR_DROP_SCAN_CANCELLED" || code === "ERR_LOCAL_TREE_CANCELLED";
+}
+
 function throwIfDropScanCancelled(options: {
   abortSignal?: AbortSignal;
   isCancelled?: () => boolean;
@@ -571,7 +577,7 @@ export function localTreeToDropEntries(tree: readonly LocalTreeListEntry[]): Dro
         localPath: entry.localPath,
         relativePath: entry.relativePath,
         isDirectory: true,
-        size: entry.size,
+        // Do not use directory metadata size in conflict / compressed totals.
       };
     }
     return {
@@ -663,19 +669,47 @@ export async function materializeDropEntries(
       report(label, { fileCount: files, directoryCount: dirs, entryCount: files + dirs });
     };
 
-    const trees = await Promise.all(
-      nativeDirectoryRoots.map(async (root) => {
-        throwIfDropScanCancelled({ abortSignal, isCancelled });
-        const tree = await listLocalTree(root.localPath!, {
-          abortSignal,
-          onProgress: (partial) => {
-            partialByRoot.set(root.localPath!, partial);
-            emitCombined(root.name);
-          },
-        });
-        return { root, tree };
-      }),
+    // Local controller so a single root failure aborts sibling walks too.
+    const siblingAbort = new AbortController();
+    const stopSiblingScans = () => {
+      try {
+        siblingAbort.abort();
+      } catch {
+        // ignore
+      }
+    };
+    if (abortSignal) {
+      if (abortSignal.aborted) stopSiblingScans();
+      else abortSignal.addEventListener("abort", stopSiblingScans, { once: true });
+    }
+    const walkSignal = siblingAbort.signal;
+    const walkCancelled = () => (
+      walkSignal.aborted || abortSignal?.aborted === true || isCancelled?.() === true
     );
+
+    const walkPromises = nativeDirectoryRoots.map(async (root) => {
+      throwIfDropScanCancelled({ abortSignal: walkSignal, isCancelled: walkCancelled });
+      const tree = await listLocalTree(root.localPath!, {
+        abortSignal: walkSignal,
+        onProgress: (partial) => {
+          partialByRoot.set(root.localPath!, partial);
+          emitCombined(root.name);
+        },
+      });
+      return { root, tree };
+    });
+
+    let trees: Array<{ root: CapturedDropRoot; tree: LocalTreeListEntry[] }>;
+    try {
+      trees = await Promise.all(walkPromises);
+    } catch (error) {
+      stopSiblingScans();
+      // Drain remaining native walks so retry does not pile more I/O on top.
+      await Promise.allSettled(walkPromises);
+      throw error;
+    } finally {
+      abortSignal?.removeEventListener("abort", stopSiblingScans);
+    }
 
     for (const { root, tree } of trees) {
       const entries = localTreeToDropEntries(tree);

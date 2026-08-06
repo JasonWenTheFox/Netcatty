@@ -133,6 +133,7 @@ export const createUploadTaskCallbacks = ({
       endTime: Date.now(),
       transferredBytes: totalBytes,
       speed: 0,
+      phase: undefined,
     });
   },
   onTaskFailed: (taskId: string, error: string) => {
@@ -141,6 +142,7 @@ export const createUploadTaskCallbacks = ({
       endTime: Date.now(),
       error,
       speed: 0,
+      phase: undefined,
     });
   },
   onTaskCancelled: (taskId: string) => {
@@ -148,6 +150,7 @@ export const createUploadTaskCallbacks = ({
       status: "cancelled" as TransferStatus,
       endTime: Date.now(),
       speed: 0,
+      phase: undefined,
     });
   },
 });

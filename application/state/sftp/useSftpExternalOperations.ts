@@ -18,11 +18,16 @@ import {
 import {
   captureDropPayload,
   formatDropScanLabel,
+  isDropScanCancelledError,
   localTreeToDropEntries,
   materializeDropEntries,
   type DropEntry,
   type LocalTreeListEntry,
 } from "../../../lib/sftpFileUtils";
+
+function isUploadScanCancelled(controller: UploadController, error?: unknown): boolean {
+  return controller.isCancelled() || isDropScanCancelledError(error);
+}
 
 // Re-export UploadResult for external usage
 export type { UploadResult };
@@ -31,6 +36,12 @@ type LocalTreeScanOptions = {
   onProgress?: (progress: { fileCount: number; directoryCount: number; entryCount: number }) => void;
   abortSignal?: AbortSignal;
 };
+
+function createDropScanCancelledError(): Error {
+  const error = new Error("Drop scan cancelled");
+  (error as Error & { code?: string }).code = "ERR_DROP_SCAN_CANCELLED";
+  return error;
+}
 
 async function listLocalTreeWithAbort(
   bridge: NetcattyBridge,
@@ -43,12 +54,17 @@ async function listLocalTreeWithAbort(
     void bridge.cancelLocalTreeScan?.(scanId);
   };
   if (abortSignal?.aborted) {
-    throw new Error("Drop scan cancelled");
+    throw createDropScanCancelledError();
   }
   abortSignal?.addEventListener("abort", requestCancel, { once: true });
   const { abortSignal: _abortSignal, ...bridgeOptions } = options;
   try {
     return await bridge.listLocalTree!(localPath, { ...bridgeOptions, scanId });
+  } catch (error) {
+    if (abortSignal?.aborted || isDropScanCancelledError(error)) {
+      throw createDropScanCancelledError();
+    }
+    throw error;
   } finally {
     abortSignal?.removeEventListener("abort", requestCancel);
   }
@@ -1000,7 +1016,7 @@ export const useSftpExternalOperations = (
         );
       } catch (error) {
         if (scanningTask?.isOpen()) {
-          if (controller.isCancelled() || /cancel/i.test(error instanceof Error ? error.message : String(error))) {
+          if (isUploadScanCancelled(controller, error)) {
             scanningTask.cancel();
           } else {
             scanningTask.fail(error);
@@ -1008,7 +1024,7 @@ export const useSftpExternalOperations = (
         }
         detachScanCancel();
         unregisterUploadController(controller);
-        if (controller.isCancelled() || /cancel/i.test(error instanceof Error ? error.message : String(error))) {
+        if (isUploadScanCancelled(controller, error)) {
           return [{ fileName: "", success: false, cancelled: true }];
         }
         logger.error("[SFTP] Failed to read dropped files:", error);
@@ -1129,7 +1145,7 @@ export const useSftpExternalOperations = (
           try {
             return await run(true);
           } catch (retryError) {
-            if (controller.isCancelled() || /cancel/i.test(retryError instanceof Error ? retryError.message : String(retryError))) {
+            if (isUploadScanCancelled(controller, retryError)) {
               scanningTask?.cancel();
             } else if (scanningTask?.isOpen()) {
               scanningTask.fail(retryError);
@@ -1474,7 +1490,7 @@ export const useSftpExternalOperations = (
           try {
             return await run(true);
           } catch (retryError) {
-            if (controller.isCancelled() || /cancel/i.test(retryError instanceof Error ? retryError.message : String(retryError))) {
+            if (isUploadScanCancelled(controller, retryError)) {
               scanningTask.cancel();
               return [{ fileName: "", success: false, cancelled: true }];
             }
@@ -1482,7 +1498,7 @@ export const useSftpExternalOperations = (
             throw retryError;
           }
         }
-        if (controller.isCancelled() || /cancel/i.test(error instanceof Error ? error.message : String(error))) {
+        if (isUploadScanCancelled(controller, error)) {
           scanningTask.cancel();
           return [{ fileName: "", success: false, cancelled: true }];
         }

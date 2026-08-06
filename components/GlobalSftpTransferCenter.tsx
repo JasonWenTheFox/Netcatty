@@ -422,8 +422,12 @@ function TransferRow({
     if (task.status === "pausing" || task.status === "paused" || task.status === "interrupted") {
       return t(statusLabelKey(task.status));
     }
-    // Scanning runs as pending; surface the phase so the row does not look idle.
-    if (task.phase === "scanning") {
+    // Scanning runs as pending/transferring; never override terminal statuses
+    // (cancelled/failed/completed) that still carry a stale phase value.
+    if (
+      task.phase === "scanning"
+      && (task.status === "pending" || task.status === "queued" || task.status === "transferring")
+    ) {
       return t("sftp.transferCenter.phase.scanning");
     }
     if (task.phase && task.status === "transferring") {

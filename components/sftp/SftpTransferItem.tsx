@@ -205,9 +205,11 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
     // the backend drained in-flight chunks ("finish current step").
     const pausingLabel = t('sftp.transferCenter.status.pausing');
     const resumingLabel = t('sftp.transferCenter.status.resuming');
+    const isLiveScanning = task.phase === 'scanning'
+        && (task.status === 'pending' || task.status === 'queued' || task.status === 'transferring');
     const progressOverlayText = isResuming
         ? resumingLabel
-        : task.phase === 'scanning'
+        : isLiveScanning
         ? (fileCountDisplay
             ? `${t('sftp.transferCenter.phase.scanning')} · ${fileCountDisplay}`
             : t('sftp.transferCenter.phase.scanning'))
@@ -230,10 +232,10 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
                             : '...';
 
     const progressBarWidth = task.status === 'pending'
-        || task.phase === 'scanning'
+        || isLiveScanning
         || (task.status === 'transferring' && !hasKnownTotal)
         || isIndeterminate
-        ? (task.status === 'pending' || task.phase === 'scanning' || !hasKnownTotal ? '100%' : `${progress}%`)
+        ? (task.status === 'pending' || isLiveScanning || !hasKnownTotal ? '100%' : `${progress}%`)
         : `${progress}%`;
 
     const statusIcon = isResuming

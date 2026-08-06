@@ -118,8 +118,8 @@ test("materializeDropEntries prefers listLocalTree for directory roots with path
       size: entry.size,
     })),
     [
-      { relativePath: "project", isDirectory: true, localPath: "/tmp/project", size: 0 },
-      { relativePath: "project/src", isDirectory: true, localPath: "/tmp/project/src", size: 0 },
+      { relativePath: "project", isDirectory: true, localPath: "/tmp/project", size: undefined },
+      { relativePath: "project/src", isDirectory: true, localPath: "/tmp/project/src", size: undefined },
       {
         relativePath: "project/src/main.ts",
         isDirectory: false,
