@@ -76,6 +76,42 @@ Temperature(C)                 : 40
   assert.equal(device.memoryUsedMb, 8192);
 });
 
+test("parseAscendProcesses accepts whitespace-delimited table rows", () => {
+  const { parseAscendProcesses } = require("./gpuOps.cjs");
+  const processes = parseAscendProcesses(`
+| NPU Chip PID Name Memory |
+| 0 0 12345 python 1024 |
+| 1 0 99 train.py 2048 |
+`);
+  assert.equal(processes.length, 2);
+  assert.equal(processes[0].gpuIndex, 0);
+  assert.equal(processes[0].pid, 12345);
+  assert.equal(processes[0].processName, "python");
+  assert.equal(processes[0].memoryUsedMb, 1024);
+  assert.equal(processes[1].pid, 99);
+});
+
+test("POSIX accelerator collector keeps sed quotes inside JSON-wrapped sh -c", () => {
+  const { ACCELERATOR_COLLECT_SCRIPT } = require("./gpuOps.cjs");
+  assert.match(ACCELERATOR_COLLECT_SCRIPT, /^exec sh -c "/);
+  assert.match(ACCELERATOR_COLLECT_SCRIPT, /sed -n '/);
+  // Outer wrapper must not use raw single quotes around the whole script body.
+  assert.doesNotMatch(ACCELERATOR_COLLECT_SCRIPT, /^exec sh -c '/);
+});
+
+test("POSIX accelerator collector is syntactically valid for sh -c", () => {
+  const { ACCELERATOR_COLLECT_SCRIPT } = require("./gpuOps.cjs");
+  const { spawnSync } = require("node:child_process");
+  // Replace remote tools with no-ops so we only validate shell syntax/runtime of wrappers.
+  const dryRun = ACCELERATOR_COLLECT_SCRIPT
+    .replaceAll("nvidia-smi", "false")
+    .replaceAll("npu-smi", "false");
+  const result = spawnSync("sh", ["-c", dryRun], { encoding: "utf8" });
+  assert.equal(result.status, 0, `stderr=${result.stderr}\nstdout=${result.stdout}`);
+  assert.match(result.stdout, /__NC_ACCEL_BEGIN__/);
+  assert.match(result.stdout, /__NC_ACCEL_END__/);
+});
+
 test("listAccelerators uses PowerShell collector for local Windows sessions", async () => {
   const { createGpuOpsApi, ACCELERATOR_COLLECT_SCRIPT_WINDOWS } = require("./gpuOps.cjs");
   let seenCommand = "";

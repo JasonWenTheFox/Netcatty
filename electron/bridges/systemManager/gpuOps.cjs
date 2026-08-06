@@ -38,13 +38,10 @@ const ACCELERATOR_COLLECT_SCRIPT_WINDOWS = [
 ].join("");
 
 /**
- * Remote script emits marked sections so Node can parse vendors independently.
- * Ascend uses typed queries per NPU id when `npu-smi info -l` works; falls back
- * to a single `npu-smi info` table dump.
+ * Remote collector body (no outer quoting). Wrapped with JSON.stringify so
+ * nested sed single-quotes cannot break `sh -c`.
  */
-const ACCELERATOR_COLLECT_SCRIPT = [
-  "exec sh -c ",
-  "'",
+const ACCELERATOR_COLLECT_INNER = [
   'printf "%s\\n" "__NC_ACCEL_BEGIN__"; ',
   'if command -v nvidia-smi >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_NVIDIA_DEVICES__"; ',
@@ -54,7 +51,7 @@ const ACCELERATOR_COLLECT_SCRIPT = [
   "fi; ",
   'if command -v npu-smi >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_NPU_BEGIN__"; ',
-  'ids=$(npu-smi info -l 2>/dev/null | sed -n \'s/^[[:space:]]*NPU ID[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p\'); ',
+  "ids=$(npu-smi info -l 2>/dev/null | sed -n 's/^[[:space:]]*NPU ID[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p'); ",
   'if [ -n "$ids" ]; then ',
   'for id in $ids; do ',
   'printf "%s\\n" "__NC_NPU_DEVICE__=$id"; ',
@@ -72,8 +69,9 @@ const ACCELERATOR_COLLECT_SCRIPT = [
   'printf "%s\\n" "__NC_NPU_END__"; ',
   "fi; ",
   'printf "%s\\n" "__NC_ACCEL_END__"',
-  "'",
 ].join("");
+
+const ACCELERATOR_COLLECT_SCRIPT = `exec sh -c ${JSON.stringify(ACCELERATOR_COLLECT_INNER)}`;
 
 function parseCsvNumber(raw) {
   const text = String(raw ?? "").trim();
@@ -314,27 +312,43 @@ function parseAscendProcesses(sectionText) {
     const match = line.match(
       /(?:NPU|Device)?\s*I?D?\s*[:=]?\s*(\d+).*?\b(?:PID|Pid)\s*[:=]?\s*(\d+).*?\b(?:Name|Process)\s*[:=]?\s*(\S+).*?(?:Memory|Mem)\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
     );
-    if (!match) {
-      // Table-ish: | 0 | 0 | 12345 | python | 1024 |
-      const table = line.match(
-        /^\|\s*(\d+)\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*(\d+(?:\.\d+)?)/,
-      );
-      if (!table) continue;
+    if (match) {
       processes.push({
         vendor: "ascend",
-        gpuIndex: Number.parseInt(table[1], 10) || 0,
-        pid: Number.parseInt(table[2], 10),
-        processName: table[3].trim(),
-        memoryUsedMb: parseCsvNumber(table[4]),
+        gpuIndex: Number.parseInt(match[1], 10) || 0,
+        pid: Number.parseInt(match[2], 10),
+        processName: match[3],
+        memoryUsedMb: parseCsvNumber(match[4]),
       });
       continue;
     }
+
+    // Pipe-separated: | 0 | 0 | 12345 | python | 1024 |
+    const pipeTable = line.match(
+      /^\|\s*(\d+)\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*(\d+(?:\.\d+)?)/,
+    );
+    if (pipeTable) {
+      processes.push({
+        vendor: "ascend",
+        gpuIndex: Number.parseInt(pipeTable[1], 10) || 0,
+        pid: Number.parseInt(pipeTable[2], 10),
+        processName: pipeTable[3].trim(),
+        memoryUsedMb: parseCsvNumber(pipeTable[4]),
+      });
+      continue;
+    }
+
+    // Whitespace-delimited inside one outer |: | 0 0 12345 python 1024 |
+    const wsTable = line.match(
+      /^\|\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\d+(?:\.\d+)?)\s*\|?\s*$/,
+    );
+    if (!wsTable) continue;
     processes.push({
       vendor: "ascend",
-      gpuIndex: Number.parseInt(match[1], 10) || 0,
-      pid: Number.parseInt(match[2], 10),
-      processName: match[3],
-      memoryUsedMb: parseCsvNumber(match[4]),
+      gpuIndex: Number.parseInt(wsTable[1], 10) || 0,
+      pid: Number.parseInt(wsTable[3], 10),
+      processName: wsTable[4],
+      memoryUsedMb: parseCsvNumber(wsTable[5]),
     });
   }
   return processes.filter((p) => Number.isFinite(p.pid) && p.pid > 0);
