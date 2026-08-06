@@ -1490,7 +1490,10 @@ export const useSftpExternalOperations = (
       finally {
         detachScanCancel();
         unregisterUploadController(controller);
-        if (scanningTask.isOpen()) scanningTask.complete();
+        if (scanningTask.isOpen()) {
+          if (controller.isCancelled()) scanningTask.cancel();
+          else scanningTask.complete();
+        }
       }
     },
     [
