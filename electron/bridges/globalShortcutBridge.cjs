@@ -36,7 +36,9 @@ let trayMenuData = {
 };
 
 let trayPanelWindow = null;
-
+/** True after the tray panel renderer finishes its first load. */
+let trayPanelReady = false;
+let trayPanelShowWhenReady = false;
 let trayPanelRefreshTimer = null;
 // Watchdog: if `leave-full-screen` never arrives (edge case / stuck transition)
 // we eventually give up and force a hide attempt. Better a visible window than
@@ -273,6 +275,9 @@ function ensureTrayPanelWindow() {
     windowsCssRoundedOverlayChromeOptions,
   } = require("./windowManager/windowsWindowChrome.cjs");
 
+  trayPanelReady = false;
+  trayPanelShowWhenReady = false;
+
   trayPanelWindow = new BrowserWindow({
     width: 360,
     height: 520,
@@ -316,7 +321,17 @@ function ensureTrayPanelWindow() {
   void trayPanelWindow.loadURL(url);
 
   trayPanelWindow.webContents.on("did-finish-load", () => {
+    trayPanelReady = true;
     pushTrayMenuDataToPanel();
+    if (trayPanelShowWhenReady && trayPanelWindow && !trayPanelWindow.isDestroyed()) {
+      trayPanelShowWhenReady = false;
+      try {
+        trayPanelWindow.show();
+        trayPanelWindow.focus();
+      } catch {
+        // ignore
+      }
+    }
   });
 
   return trayPanelWindow;
@@ -339,8 +354,14 @@ function showTrayPanel() {
   const y = Math.min(trayBounds.y + trayBounds.height + 6, workArea.y + workArea.height - panelBounds.height);
 
   win.setBounds({ x, y, width: panelBounds.width, height: panelBounds.height }, false);
-  win.show();
-  win.focus();
+  // Wait for first paint/load so the opaque main-app splash cannot flash as a
+  // square underlay before the tray route clears it (#2505).
+  if (!trayPanelReady) {
+    trayPanelShowWhenReady = true;
+  } else {
+    win.show();
+    win.focus();
+  }
 
   pushTrayMenuDataToPanel();
 
@@ -1080,6 +1101,8 @@ function cleanup() {
     }
     trayPanelWindow = null;
   }
+  trayPanelReady = false;
+  trayPanelShowWhenReady = false;
 }
 
 module.exports = {

@@ -5,11 +5,11 @@
  * - Frameless Win11 windows need an explicit `roundedCorners: true` so DWM
  *   applies the system round clip (Electron 34+).
  * - Transparent tray popups that keep the default opaque white backdrop + CSS
- *   `border-radius` produce the "直角底上叠圆角 / 冒尖" look.
+ *   `border-radius` produce square tips under a rounded panel.
  *
  * Approach:
  * - App content windows (resizable): solid host + native `roundedCorners`.
- *   Do NOT set `transparent: true` here — Electron documents transparent
+ *   Do NOT set `transparent: true` here - Electron documents transparent
  *   windows as not resizable, and `resizable: true` can break them
  *   (https://www.electronjs.org/docs/latest/tutorial/custom-window-styles).
  * - Tray / CSS-shaped popovers (`resizable: false`): transparent host + clear
@@ -26,7 +26,7 @@ function isWindowsPlatform(platform = process.platform) {
 
 /**
  * Options for full-bleed app windows (main / settings / terminal popup).
- * Safe to spread on non-Windows — returns an empty object.
+ * Safe to spread on non-Windows - returns an empty object.
  */
 function windowsFramelessContentChromeOptions(platform = process.platform) {
   if (!isWindowsPlatform(platform)) return {};
