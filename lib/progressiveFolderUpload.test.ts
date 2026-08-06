@@ -440,6 +440,93 @@ test("progressive multi-root pause does not HOL-block an unpaused sibling root",
   );
 });
 
+test("progressive backpressure wakes every parked enqueue waiter", async () => {
+  // Discovery floods the queue while workers hold transfers open so the queue
+  // stays above the high-water mark. Multiple enqueueBatch waiters must all
+  // be released when workers drain past the low-water mark.
+  const transferred: string[] = [];
+  let releaseTransfers!: () => void;
+  const transferGate = new Promise<void>((resolve) => {
+    releaseTransfers = resolve;
+  });
+  let started = 0;
+
+  const listLocalTree = async (
+    _path: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    const batches = Array.from({ length: 8 }, (_, batch) => (
+      Array.from({ length: 300 }, (__, i) => ({
+        localPath: `/tmp/docs/f-${batch}-${i}.txt`,
+        relativePath: `docs/f-${batch}-${i}.txt`,
+        type: "file" as const,
+        size: 1,
+        lastModified: 1,
+      }))
+    ));
+    // Overlapping handlers so several park on waitIfQueueHigh together.
+    await Promise.all(batches.map((batch) => Promise.resolve().then(() => options.onEntries?.(batch))));
+    return [];
+  };
+
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [{ name: "docs", localPath: "/tmp/docs" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          started += 1;
+          transferred.push(payload.sourcePath);
+          await transferGate;
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+    },
+  );
+
+  // Let discovery fill past high-water (2000) while 2 workers hold the gate.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok(started >= 1, "workers should have started");
+  releaseTransfers();
+  const results = await uploadPromise;
+  assert.equal(results.filter((row) => row.success).length, 8 * 300);
+  assert.equal(transferred.length, 8 * 300);
+});
+
+test("progressive root conflict skip does not overwrite an existing remote folder", async () => {
+  const transferred: string[] = [];
+  const result = await uploadLocalFoldersProgressively(
+    [{ name: "docs", localPath: "/tmp/docs" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      resolveConflict: async () => "skip",
+      bridge: {
+        mkdirSftp: async () => {},
+        statSftp: async () => ({ type: "directory", size: 0, lastModified: 1 }),
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.sourcePath);
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree: async () => {
+        throw new Error("scan must not run after skip");
+      },
+    },
+  );
+  assert.equal(transferred.length, 0);
+  assert.equal(result[0]?.cancelled, true);
+});
+
 test("progressive multi-root resume of non-head parent unblocks while head stays paused", async () => {
   const transferred: string[] = [];
   // Both latched initially; head is always parent-a in FIFO order.

@@ -1052,7 +1052,9 @@ export async function uploadEntriesDirect(
   }
 
   if (controller) {
-    controller.reset();
+    // Keep cancel latches/listeners from the external drop scan so the user
+    // can still cancel while pre-task work (stat / conflict / mkdir) runs.
+    controller.prepareForEntries();
     controller.setBridge(config.bridge);
   }
 

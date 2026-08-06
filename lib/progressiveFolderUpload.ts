@@ -7,6 +7,12 @@ import type { DropEntry } from "./sftpFileUtils";
 import { localTreeToDropEntries, type LocalTreeListEntry } from "./sftpFileUtils";
 import type { UploadBridge, UploadCallbacks, UploadResult } from "./uploadService.types";
 import type { UploadController } from "./uploadController";
+import {
+  canReplaceSftpConflict,
+  describeSftpExistingKind,
+  describeSftpIncomingKind,
+  getSftpConflictTypeKey,
+} from "../domain/sftpConflict";
 
 const formatUploadError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -31,6 +37,8 @@ export type ListLocalTreeStreaming = (
   },
 ) => Promise<LocalTreeListEntry[]>;
 
+export type ProgressiveConflictAction = "stop" | "skip" | "replace" | "duplicate" | "merge";
+
 export type ProgressiveFolderUploadConfig = {
   targetPath: string;
   sftpId: string | null;
@@ -51,6 +59,21 @@ export type ProgressiveFolderUploadConfig = {
   waitWhilePaused?: (parentTaskId: string) => Promise<void>;
   /** Sync probe so multi-root queues can skip latched parents (no HOL block). */
   isPaused?: (parentTaskId: string) => boolean;
+  /**
+   * Root-level conflict dialog (same contract as uploadEntries). Progressive
+   * path must not overwrite existing remote folders without confirmation.
+   */
+  resolveConflict?: (conflict: {
+    fileName: string;
+    targetPath: string;
+    isDirectory: boolean;
+    existingType?: "file" | "directory" | "symlink";
+    existingSize: number;
+    newSize: number;
+    existingModified: number;
+    newModified: number;
+    applyToAllCount: number;
+  }) => Promise<ProgressiveConflictAction>;
 };
 
 function entryToDrop(entry: LocalTreeListEntry): DropEntry {
@@ -79,6 +102,7 @@ export async function uploadLocalFoldersProgressively(
     abortSignal,
     waitWhilePaused,
     isPaused,
+    resolveConflict,
   } = config;
 
   if (roots.length === 0) return [];
@@ -103,23 +127,149 @@ export async function uploadLocalFoldersProgressively(
 
   const results: UploadResult[] = [];
   const createdDirs = new Set<string>();
+  const failedDirs = new Map<string, string>();
   const parentIds = new Map<string, string>();
   const parentStats = new Map<string, {
     discovered: number;
     completed: number;
     failed: number;
+    dirFailures: number;
   }>();
+  /** Source root name -> destination root segment after conflict resolution. */
+  const destRootNameBySource = new Map<string, string>();
 
-  for (const root of roots) {
+  const statTarget = async (path: string) => {
+    try {
+      if (isLocal) return await bridge.statLocal?.(path) ?? null;
+      if (sftpId) return await bridge.statSftp?.(sftpId, path) ?? null;
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const deleteTarget = async (path: string) => {
+    if (isLocal) await bridge.deleteLocalFile?.(path);
+    else if (sftpId) await bridge.deleteSftp?.(sftpId, path);
+  };
+
+  const getDuplicateName = async (name: string) => {
+    for (let index = 1; index < 1000; index++) {
+      const suffix = index === 1 ? " (copy)" : ` (copy ${index})`;
+      const candidate = `${name}${suffix}`;
+      const existing = await statTarget(joinPath(targetPath, candidate));
+      if (!existing) return candidate;
+    }
+    return `${name} (copy ${Date.now()})`;
+  };
+
+  // Root-level conflict preflight — match uploadEntries so progressive drops
+  // cannot overwrite remote content without Skip/Replace/Duplicate/Merge.
+  let activeRoots = [...roots];
+  if (resolveConflict) {
+    const existingByRoot = await Promise.all(activeRoots.map(async (root) => ({
+      root,
+      existing: await statTarget(joinPath(targetPath, root.name)),
+    })));
+    const conflictCounts = new Map<string, number>();
+    for (const { existing } of existingByRoot) {
+      if (!existing) continue;
+      const key = getSftpConflictTypeKey(true, existing.type);
+      conflictCounts.set(key, (conflictCounts.get(key) ?? 0) + 1);
+    }
+
+    const kept: ProgressiveLocalRoot[] = [];
+    for (const { root, existing } of existingByRoot) {
+      if (isStopped()) break;
+      if (!existing) {
+        destRootNameBySource.set(root.name, root.name);
+        kept.push(root);
+        continue;
+      }
+      const conflictKey = getSftpConflictTypeKey(true, existing.type);
+      const action = await resolveConflict({
+        fileName: root.name,
+        targetPath: joinPath(targetPath, root.name),
+        isDirectory: true,
+        existingType: existing.type,
+        existingSize: existing.size,
+        // Progressive has not walked yet; byte total is unknown.
+        newSize: 0,
+        existingModified: existing.lastModified,
+        newModified: Date.now(),
+        applyToAllCount: conflictCounts.get(conflictKey) ?? 1,
+      });
+
+      if (action === "stop") {
+        await controller?.cancel();
+        return [{ fileName: root.name, success: false, cancelled: true }, ...results];
+      }
+      if (action === "skip") {
+        results.push({ fileName: root.name, success: false, cancelled: true });
+        const scanningId = parentTaskIds?.get(root.name);
+        if (scanningId) callbacks?.onTaskCancelled?.(scanningId);
+        continue;
+      }
+      if (action === "replace") {
+        if (!canReplaceSftpConflict(true, existing.type)) {
+          results.push({
+            fileName: root.name,
+            success: false,
+            error: `Cannot replace existing ${describeSftpExistingKind(existing.type)} with ${describeSftpIncomingKind(true)}: ${joinPath(targetPath, root.name)}`,
+          });
+          const scanningId = parentTaskIds?.get(root.name);
+          if (scanningId) {
+            callbacks?.onTaskFailed?.(
+              scanningId,
+              `Cannot replace existing ${describeSftpExistingKind(existing.type)}`,
+            );
+          }
+          continue;
+        }
+        await deleteTarget(joinPath(targetPath, root.name));
+        destRootNameBySource.set(root.name, root.name);
+        kept.push(root);
+        continue;
+      }
+      if (action === "duplicate") {
+        const duplicateName = await getDuplicateName(root.name);
+        destRootNameBySource.set(root.name, duplicateName);
+        kept.push(root);
+        continue;
+      }
+      if (action === "merge" && !(existing.type === "directory")) {
+        results.push({
+          fileName: root.name,
+          success: false,
+          error: `Cannot merge existing ${describeSftpExistingKind(existing.type)} with ${describeSftpIncomingKind(true)}: ${joinPath(targetPath, root.name)}`,
+        });
+        const scanningId = parentTaskIds?.get(root.name);
+        if (scanningId) {
+          callbacks?.onTaskFailed?.(scanningId, `Cannot merge existing ${describeSftpExistingKind(existing.type)}`);
+        }
+        continue;
+      }
+      destRootNameBySource.set(root.name, root.name);
+      kept.push(root);
+    }
+    activeRoots = kept;
+  } else {
+    for (const root of activeRoots) destRootNameBySource.set(root.name, root.name);
+  }
+
+  if (activeRoots.length === 0) return results;
+
+  for (const root of activeRoots) {
     const id = parentTaskIds?.get(root.name) ?? crypto.randomUUID();
     parentIds.set(root.name, id);
-    parentStats.set(id, { discovered: 0, completed: 0, failed: 0 });
+    parentStats.set(id, { discovered: 0, completed: 0, failed: 0, dirFailures: 0 });
+    const destName = destRootNameBySource.get(root.name) ?? root.name;
     // Skip create if caller already opened a scanning row with this id.
     if (!parentTaskIds?.has(root.name)) {
       callbacks?.onTaskCreated?.({
         id,
-        fileName: root.name,
-        displayName: root.name,
+        fileName: destName,
+        displayName: destName,
         isDirectory: true,
         progressMode: "files",
         totalBytes: 0,
@@ -143,12 +293,36 @@ export async function uploadLocalFoldersProgressively(
 
   const ensureDirectory = async (dirPath: string): Promise<void> => {
     if (createdDirs.has(dirPath)) return;
-    if (isLocal) {
-      await bridge.mkdirLocal?.(dirPath);
-    } else if (sftpId) {
-      await bridge.mkdirSftp(sftpId, dirPath);
+    if (failedDirs.has(dirPath)) {
+      throw new Error(failedDirs.get(dirPath) || "Directory creation failed");
     }
-    createdDirs.add(dirPath);
+    try {
+      if (isLocal) {
+        await bridge.mkdirLocal?.(dirPath);
+      } else if (sftpId) {
+        await bridge.mkdirSftp(sftpId, dirPath);
+      }
+      createdDirs.add(dirPath);
+    } catch (error) {
+      const message = formatUploadError(error);
+      // Concurrent workers / merge into existing remote dirs race here.
+      if (/exist|EEXIST|file exists|already/i.test(message)) {
+        createdDirs.add(dirPath);
+        return;
+      }
+      failedDirs.set(dirPath, message);
+      throw error;
+    }
+  };
+
+  const remapRelativePath = (sourceRootName: string, relativePath: string): string => {
+    const dest = destRootNameBySource.get(sourceRootName) ?? sourceRootName;
+    if (dest === sourceRootName) return relativePath;
+    if (relativePath === sourceRootName) return dest;
+    if (relativePath.startsWith(`${sourceRootName}/`)) {
+      return `${dest}/${relativePath.slice(sourceRootName.length + 1)}`;
+    }
+    return relativePath;
   };
 
   const ensureParentsForFile = async (relativePath: string): Promise<void> => {
@@ -178,20 +352,21 @@ export async function uploadLocalFoldersProgressively(
   });
   const discoverySettled = () => scanDone && pendingEnqueues === 0;
 
-  let pauseScanResolve: (() => void) | null = null;
+  // Multiple enqueueBatch handlers can park on backpressure at once. A single
+  // resolver would orphan older waiters and leave pendingEnqueues stuck forever.
+  let pauseScanWaiters: Array<() => void> = [];
   const waitIfQueueHigh = async () => {
     while (fileQueue.length >= QUEUE_HIGH_WATER && !isStopped()) {
       await new Promise<void>((resolve) => {
-        pauseScanResolve = resolve;
+        pauseScanWaiters.push(resolve);
       });
     }
   };
   const maybeResumeScan = () => {
-    if (fileQueue.length <= QUEUE_LOW_WATER && pauseScanResolve) {
-      const resolve = pauseScanResolve;
-      pauseScanResolve = null;
-      resolve();
-    }
+    if (fileQueue.length > QUEUE_LOW_WATER || pauseScanWaiters.length === 0) return;
+    const waiters = pauseScanWaiters;
+    pauseScanWaiters = [];
+    for (const resolve of waiters) resolve();
   };
 
   const publishParentProgress = (parentId: string, phase?: "scanning" | "transferring") => {
@@ -237,17 +412,27 @@ export async function uploadLocalFoldersProgressively(
           return;
         }
         const drop = entryToDrop(row);
-        if (drop.isDirectory) {
-          // Create remote dirs early when we see them; ignore exists races later.
+        const remappedRelative = remapRelativePath(rootName, drop.relativePath);
+        const remappedDrop = remappedRelative === drop.relativePath
+          ? drop
+          : { ...drop, relativePath: remappedRelative };
+        if (remappedDrop.isDirectory) {
+          // Create remote dirs early when we see them. Empty-directory failures
+          // must not be silently ignored (no later file will retry the mkdir).
           try {
-            await ensureDirectory(joinPath(targetPath, drop.relativePath));
-          } catch {
-            // File upload path will retry parent mkdirs.
+            await ensureDirectory(joinPath(targetPath, remappedDrop.relativePath));
+          } catch (error) {
+            stats.dirFailures += 1;
+            results.push({
+              fileName: remappedDrop.relativePath,
+              success: false,
+              error: formatUploadError(error),
+            });
           }
           continue;
         }
         stats.discovered += 1;
-        fileQueue.push({ entry: drop, parentId, rootName });
+        fileQueue.push({ entry: remappedDrop, parentId, rootName });
       }
       publishParentProgress(parentId);
       wake();
@@ -263,7 +448,7 @@ export async function uploadLocalFoldersProgressively(
 
   const scanPromise = (async () => {
     try {
-      for (const root of roots) {
+      for (const root of activeRoots) {
         if (isStopped()) break;
         await listLocalTree(root.localPath, {
           abortSignal,
@@ -280,10 +465,10 @@ export async function uploadLocalFoldersProgressively(
     } finally {
       scanDone = true;
       wake();
-      if (pauseScanResolve) {
-        const resolve = pauseScanResolve;
-        pauseScanResolve = null;
-        resolve();
+      if (pauseScanWaiters.length > 0) {
+        const waiters = pauseScanWaiters;
+        pauseScanWaiters = [];
+        for (const resolve of waiters) resolve();
       }
     }
   })();
@@ -458,13 +643,23 @@ export async function uploadLocalFoldersProgressively(
   }
 
   for (const [parentId, stats] of parentStats) {
-    if (stats.failed > 0) {
-      callbacks?.onTaskFailed?.(
-        parentId,
-        stats.failed === stats.discovered
-          ? `All ${stats.failed} files failed`
-          : `${stats.failed} of ${stats.discovered} files failed`,
-      );
+    if (stats.failed > 0 || stats.dirFailures > 0) {
+      const parts: string[] = [];
+      if (stats.failed > 0) {
+        parts.push(
+          stats.failed === stats.discovered && stats.discovered > 0
+            ? `All ${stats.failed} files failed`
+            : `${stats.failed} of ${stats.discovered} files failed`,
+        );
+      }
+      if (stats.dirFailures > 0) {
+        parts.push(
+          stats.dirFailures === 1
+            ? "1 directory could not be created"
+            : `${stats.dirFailures} directories could not be created`,
+        );
+      }
+      callbacks?.onTaskFailed?.(parentId, parts.join("; "));
     } else {
       callbacks?.onTaskCompleted?.(parentId, stats.discovered);
     }

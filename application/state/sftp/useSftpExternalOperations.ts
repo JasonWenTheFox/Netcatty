@@ -1067,6 +1067,7 @@ export const useSftpExternalOperations = (
                 // only the open streams (otherwise Pause still floods the queue).
                 waitWhilePaused: (parentTaskId) => waitWhileTransferOrRootPaused(parentTaskId),
                 isPaused: (parentTaskId) => isTransferPauseLatched(parentTaskId),
+                resolveConflict: createUploadConflictResolver(controller),
                 listLocalTree: (localPath, treeOptions) => listLocalTreeWithAbort(bridge, localPath, {
                   ...treeOptions,
                   abortSignal: scanAbort.signal,
