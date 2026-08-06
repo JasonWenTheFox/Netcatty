@@ -102,6 +102,34 @@ test("resolveFirstTcpEndpoint prefers proxy, then jump host, then target", () =>
   );
 });
 
+test("resolveFirstTcpEndpoint prefers the first jump proxy over session proxy and jump host", () => {
+  assert.deepEqual(
+    resolveFirstTcpEndpoint({
+      hostname: "10.0.0.9",
+      port: 22,
+      proxy: { type: "socks5", host: "203.0.113.10", port: 1080 },
+      jumpHosts: [{
+        hostname: "nas.local",
+        port: 22,
+        proxy: { type: "http", host: "192.168.0.50", port: 8080 },
+      }],
+    }),
+    { hostname: "192.168.0.50", port: 8080 },
+  );
+  // Jump-level command proxy is not a TCP host; fall through to session proxy.
+  assert.deepEqual(
+    resolveFirstTcpEndpoint({
+      hostname: "10.0.0.9",
+      proxy: { type: "socks5", host: "192.168.0.2", port: 1080 },
+      jumpHosts: [{
+        hostname: "nas.local",
+        proxy: { type: "command", command: "nc -X connect" },
+      }],
+    }),
+    { hostname: "192.168.0.2", port: 1080 },
+  );
+});
+
 test("resolveLanProbeTarget keeps LAN literals and .local names", async () => {
   assert.deepEqual(
     await resolveLanProbeTarget("192.168.7.37"),

@@ -113,28 +113,36 @@ function isLocalMdnsName(hostname) {
 
 /**
  * First TCP hop the local process will open for this SSH dial.
- * Prefer HTTP/SOCKS proxy host when configured, else first jump host, else target.
+ * Prefer the first jump's HTTP/SOCKS proxy when set (sshBridge hop wiring),
+ * else the session-level proxy, else the first jump host, else the target.
+ * Command proxies are skipped because they do not dial a TCP host we own.
  */
 function resolveFirstTcpEndpoint(options = {}) {
-  const proxy = options.proxy && typeof options.proxy === "object" ? options.proxy : null;
-  if (
-    proxy
-    && proxy.type !== "command"
-    && String(proxy.host || proxy.hostname || "").trim()
-  ) {
+  const endpointFromProxy = (proxy, fallbackPort = 1080) => {
+    if (!proxy || typeof proxy !== "object") return null;
+    if (proxy.type === "command") return null;
     const hostname = String(proxy.host || proxy.hostname || "").trim();
+    if (!hostname) return null;
     const port = Number(proxy.port);
     return {
       hostname,
-      port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 1080,
+      port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallbackPort,
     };
-  }
+  };
 
   const jumpHosts = Array.isArray(options.jumpHosts) ? options.jumpHosts : [];
-  if (jumpHosts.length > 0) {
-    const first = jumpHosts[0] || {};
-    const hostname = String(first.hostname || first.host || "").trim();
-    const port = Number(first.port);
+  const firstJump = jumpHosts.length > 0 ? (jumpHosts[0] || {}) : null;
+  const jumpProxyEndpoint = firstJump
+    ? endpointFromProxy(firstJump.proxy || firstJump.proxyConfig || null)
+    : null;
+  if (jumpProxyEndpoint) return jumpProxyEndpoint;
+
+  const sessionProxyEndpoint = endpointFromProxy(options.proxy || null);
+  if (sessionProxyEndpoint) return sessionProxyEndpoint;
+
+  if (firstJump) {
+    const hostname = String(firstJump.hostname || firstJump.host || "").trim();
+    const port = Number(firstJump.port);
     return {
       hostname,
       port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 22,
