@@ -7,7 +7,6 @@ import type {
   AcceleratorProcessInfo,
   AcceleratorSnapshot,
 } from '../../domain/systemManager/types';
-import { cn } from '../../lib/utils';
 import { ResourceBar } from './ResourceBar';
 import {
   SystemPanelEmpty,
@@ -105,14 +104,13 @@ const DeviceCard = memo(function DeviceCard({
       </div>
       <ResourceBar
         label={t('systemManager.gpu.util')}
-        value={util ?? 0}
-        className={cn(!Number.isFinite(util) && 'opacity-50')}
+        value={util}
       />
       <div className="flex items-center gap-2 min-w-0">
         <ResourceBar
           label={device.vendor === 'ascend' ? t('systemManager.gpu.hbm') : t('systemManager.gpu.memory')}
-          value={memPct ?? 0}
-          className={cn('flex-1', !Number.isFinite(memPct) && 'opacity-50')}
+          value={memPct}
+          className="flex-1"
         />
         <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
           {formatMb(device.memoryUsedMb)} / {formatMb(device.memoryTotalMb)}

@@ -19,3 +19,11 @@ test("gpu tab still renders compute processes when device list is empty", () => 
   assert.match(source, /if \(!devices\.length && !processes\.length\)/);
   assert.match(source, /processes\.map\(\(process\) =>/);
 });
+
+test("gpu tab passes null utilization to ResourceBar instead of zero", () => {
+  const source = readFileSync(new URL("./GpuManagerTab.tsx", import.meta.url), "utf8");
+  assert.match(source, /value=\{util\}/);
+  assert.match(source, /value=\{memPct\}/);
+  assert.doesNotMatch(source, /value=\{util \?\? 0\}/);
+  assert.doesNotMatch(source, /value=\{memPct \?\? 0\}/);
+});
