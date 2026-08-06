@@ -77,9 +77,11 @@ export type WakeTerminalFromHibernateOptions = {
   /**
    * On a thrown/failed wake: dispose the partial xterm runtime and restore
    * hibernate listeners so output is ACKed again (never unpause without a
-   * listener).
+   * listener). `takenPending` is every byte already take-and-cleared during
+   * this wake attempt; it must be restored because those bytes no longer
+   * live in the pending ref and the partial xterm is disposed.
    */
-  restoreAfterFailedWake?: () => void;
+  restoreAfterFailedWake?: (takenPending: string) => void;
   /** Resume backend output after the live display listener is attached. */
   resumeAfterReattach?: () => void;
   reattachSession: (term: XTerm) => void;
@@ -164,6 +166,15 @@ export async function wakeTerminalFromHibernate(
   // ACKed bytes under sustained `cat` output (#2762).
   let didReattach = false;
   let wakeSucceeded = false;
+  // Bytes take-and-cleared from the pending ref during this wake. On failure
+  // they must be handed back: the partial xterm is disposed and the ref no
+  // longer holds them.
+  let takenPendingForRestore = "";
+  const takeAndTrackPending = (): string => {
+    const pending = takePendingBuffer();
+    if (pending) takenPendingForRestore += pending;
+    return pending;
+  };
   try {
     const drainOk = (await prepareWakeFlow?.()) ?? true;
     if (drainOk) {
@@ -175,7 +186,7 @@ export async function wakeTerminalFromHibernate(
       setHibernatePendingCapDisabled?.(true);
     }
     const initialPayload = getPayload();
-    const pendingAtApplyStart = takePendingBuffer();
+    const pendingAtApplyStart = takeAndTrackPending();
     const replayOptions = { chunkBytes: replayChunkBytes };
     let replayedPendingChars = pendingAtApplyStart.length;
 
@@ -193,22 +204,28 @@ export async function wakeTerminalFromHibernate(
     // - uncapped live arrivals when drainOk was false
     stopHibernateDataListener();
     setHibernatePendingCapDisabled?.(false);
-    const latePending = takePendingBuffer();
+    const latePending = takeAndTrackPending();
     if (latePending) {
       await appendTerminalReplayData(term, latePending, replayOptions);
       replayedPendingChars += latePending.length;
     }
     // Exit (or residual uncapped output) may arrive during the late await.
-    const exitTail = takePendingBuffer();
+    const exitTail = takeAndTrackPending();
     if (exitTail) {
       await appendTerminalReplayData(term, exitTail, replayOptions);
       replayedPendingChars += exitTail.length;
     }
-    // Final sync capture after all awaits, before tearing down the exit listener.
-    const finalTail = takePendingBuffer();
+    // Final capture after all awaits, before tearing down the exit listener.
+    const finalTail = takeAndTrackPending();
     if (finalTail) {
       await appendTerminalReplayData(term, finalTail, replayOptions);
       replayedPendingChars += finalTail.length;
+    }
+    // Last sync take immediately before teardown (covers exit during finalTail).
+    const preTeardownTail = takeAndTrackPending();
+    if (preTeardownTail) {
+      await appendTerminalReplayData(term, preTeardownTail, replayOptions);
+      replayedPendingChars += preTeardownTail.length;
     }
 
     // Recompute after late drains so an exit during those awaits cannot leave
@@ -264,8 +281,9 @@ export async function wakeTerminalFromHibernate(
     if (!wakeSucceeded) {
       // Dispose the partial runtime and restore hibernate listeners so a
       // failed wake never unpauses into a listener-less backlog gap, and so a
-      // retry can re-enter wake (hasRuntimeRef stays false).
-      restoreAfterFailedWake?.();
+      // retry can re-enter wake (hasRuntimeRef stays false). Hand back every
+      // take-and-cleared pending byte so it is not lost with the disposed term.
+      restoreAfterFailedWake?.(takenPendingForRestore);
     } else if (didReattach) {
       resumeAfterReattach?.();
     }

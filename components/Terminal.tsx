@@ -3739,18 +3739,30 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         hibernatePendingCapDisabledRef.current = disabled;
       },
       stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
-      restoreAfterFailedWake: () => {
+      restoreAfterFailedWake: (takenPending) => {
         hibernatePendingCapDisabledRef.current = false;
-        const pending = hibernatePendingBufferRef.current;
+        const pendingStillInRef = hibernatePendingBufferRef.current;
         disposeRuntimeOnly();
         const backendId = sessionRef.current;
-        if (!backendId) return;
-        beginHibernatedSessionListeners(backendId);
-        // beginHibernatedSessionListeners clears pending; restore any bytes
-        // captured during the failed wake window.
-        if (pending) {
+        if (!backendId) {
+          // No backend to reattach listeners to; still keep taken bytes for a
+          // later wake of a disconnected hibernated tab.
           hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
-            pending,
+            takenPending || "",
+            pendingStillInRef,
+          );
+          return;
+        }
+        beginHibernatedSessionListeners(backendId);
+        // beginHibernatedSessionListeners clears pending; restore take-and-cleared
+        // bytes from this wake plus anything that arrived after the last take.
+        const restored = appendHibernatePendingBuffer(
+          takenPending || "",
+          pendingStillInRef,
+        );
+        if (restored) {
+          hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
+            restored,
             hibernatePendingBufferRef.current,
           );
         }
