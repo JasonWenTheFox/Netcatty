@@ -1007,9 +1007,26 @@ async function promoteLocalTransfer(stagedPath, targetPath, options = {}) {
 /**
  * Apply the source mtime to the committed destination so skip-unchanged
  * (size + mtime) can match on a later folder transfer. Best-effort: never
- * fails the transfer if utimes/setstat is unsupported.
+ * fails the transfer if utimes/setstat is unsupported or times out.
  */
-async function preserveTransferredDestinationMtime(transfer) {
+async function awaitBestEffortBounded(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function preserveTransferredDestinationMtime(transfer, options = {}) {
   try {
     let mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
     if ((!Number.isFinite(mtimeMs) || mtimeMs <= 0)
@@ -1023,9 +1040,18 @@ async function preserveTransferredDestinationMtime(transfer) {
     const mtimeSec = Math.floor(mtimeMs / 1000);
     if (mtimeSec <= 0) return;
     const when = new Date(mtimeSec * 1000);
+    // Best-effort stamp must not pin sendComplete / scheduler forever when the
+    // server stops answering metadata requests (Codex P2).
+    const mtimeTimeoutMs = Number(options.timeoutMs) > 0
+      ? Number(options.timeoutMs)
+      : 15_000;
 
     if (transfer.targetType === "local" && transfer.targetPath) {
-      await fs.promises.utimes(transfer.targetPath, when, when);
+      await awaitBestEffortBounded(
+        fs.promises.utimes(transfer.targetPath, when, when),
+        mtimeTimeoutMs,
+        "Destination utimes",
+      );
       return;
     }
 
@@ -1044,7 +1070,7 @@ async function preserveTransferredDestinationMtime(transfer) {
         + `touch -t "$(date -u -r ${mtimeSec} +%Y%m%d%H%M.%S 2>/dev/null `
         + `|| date -u -d @${mtimeSec} +%Y%m%d%H%M.%S 2>/dev/null)" -- '${escaped}' 2>/dev/null `
         + `|| true`;
-      await executeBoundedSshCommand(sshClient, command, { runTimeoutMs: 15_000 });
+      await executeBoundedSshCommand(sshClient, command, { runTimeoutMs: mtimeTimeoutMs });
       return;
     }
 
@@ -1055,16 +1081,24 @@ async function preserveTransferredDestinationMtime(transfer) {
       transfer.targetEncoding,
     );
     if (typeof client.setStat === "function") {
-      await client.setStat(encoded, { mtime: mtimeSec, atime: mtimeSec });
+      await awaitBestEffortBounded(
+        client.setStat(encoded, { mtime: mtimeSec, atime: mtimeSec }),
+        mtimeTimeoutMs,
+        "Destination setStat",
+      );
       return;
     }
     const sftp = client.sftp;
     if (!sftp || typeof sftp.setstat !== "function") return;
-    await new Promise((resolve, reject) => {
-      sftp.setstat(encoded, { mtime: mtimeSec, atime: mtimeSec }, (err) => (
-        err ? reject(err) : resolve()
-      ));
-    });
+    await awaitBestEffortBounded(
+      new Promise((resolve, reject) => {
+        sftp.setstat(encoded, { mtime: mtimeSec, atime: mtimeSec }, (err) => (
+          err ? reject(err) : resolve()
+        ));
+      }),
+      mtimeTimeoutMs,
+      "Destination setstat",
+    );
   } catch (err) {
     console.warn(
       "[transferBridge] failed to preserve destination mtime:",

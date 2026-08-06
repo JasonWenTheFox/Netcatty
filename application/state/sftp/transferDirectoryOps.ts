@@ -135,25 +135,34 @@ async function ensureTransferDirectory(
   }
 }
 
+async function tryStatTransferPath(
+  filePath: string,
+  isLocal: boolean,
+  sftpId: string | null,
+  encoding: SftpFilenameEncoding,
+): Promise<{ size: number; lastModified: number; type: string } | null> {
+  try {
+    if (isLocal) {
+      const stat = await netcattyBridge.get()?.statLocal?.(filePath);
+      if (!stat || stat.type === "directory") return null;
+      return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
+    }
+    if (!sftpId) return null;
+    const stat = await netcattyBridge.get()?.statSftp?.(sftpId, filePath, encoding);
+    if (!stat || stat.type === "directory") return null;
+    return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
+  } catch {
+    return null;
+  }
+}
+
 async function tryStatTransferTarget(
   targetPath: string,
   targetIsLocal: boolean,
   targetSftpId: string | null,
   targetEncoding: SftpFilenameEncoding,
 ): Promise<{ size: number; lastModified: number; type: string } | null> {
-  try {
-    if (targetIsLocal) {
-      const stat = await netcattyBridge.get()?.statLocal?.(targetPath);
-      if (!stat || stat.type === "directory") return null;
-      return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
-    }
-    if (!targetSftpId) return null;
-    const stat = await netcattyBridge.get()?.statSftp?.(targetSftpId, targetPath, targetEncoding);
-    if (!stat || stat.type === "directory") return null;
-    return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
-  } catch {
-    return null;
-  }
+  return tryStatTransferPath(targetPath, targetIsLocal, targetSftpId, targetEncoding);
 }
 
 export type AcquireTransferSessionFn = (
@@ -597,6 +606,9 @@ export function useSftpDirectoryTransferOps({
           cancelledTasksRef.current.has(task.id)
           || cancelledTasksRef.current.has(rootTaskId)
         ),
+        waitWhilePaused: async () => {
+          await waitWhileTransferPaused(rootTaskId);
+        },
         onDiscoveredFiles: (totalFiles) => {
           setTransfers((prev) => prev.map((candidate) => candidate.id === rootTaskId
             ? {
@@ -649,6 +661,12 @@ export function useSftpDirectoryTransferOps({
           targetIsLocal,
           targetSftpId,
           targetEncoding,
+        ),
+        tryStatSource: (sourcePath) => tryStatTransferPath(
+          sourcePath,
+          sourceIsLocal,
+          sourceSftpId,
+          sourceEncoding,
         ),
       });
       // Match interleaved walk: max-depth symlink omissions count as failures.

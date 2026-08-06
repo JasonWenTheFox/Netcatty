@@ -49,6 +49,10 @@ export type TransferDiscoveredFilesParams = {
   tryStatTarget: (
     targetPath: string,
   ) => Promise<{ size: number; lastModified: number; type: string } | null>;
+  /** Fresh source identity immediately before skip-unchanged (Codex P1). */
+  tryStatSource: (
+    sourcePath: string,
+  ) => Promise<{ size: number; lastModified: number; type: string } | null>;
 };
 
 /**
@@ -79,6 +83,7 @@ export async function transferDiscoveredFiles(
     isPauseLatched,
     transferFile,
     tryStatTarget,
+    tryStatSource,
   } = params;
 
   if (files.length === 0) return 0;
@@ -102,8 +107,10 @@ export async function transferDiscoveredFiles(
       const fileSize = file.size;
       const sourcePath = file.sourcePath;
       const targetPath = file.targetPath;
+      let skipSourceSize = fileSize;
+      let skipSourceLastModified = file.lastModified;
       const directoryEntryIndex = startEntryIndex + fileIndex;
-      const directoryEntryIdentity = createDirectoryEntryIdentity({
+      let directoryEntryIdentity = createDirectoryEntryIdentity({
         sourcePath,
         targetPath,
         size: fileSize,
@@ -126,12 +133,25 @@ export async function transferDiscoveredFiles(
 
       // Symlink listing attrs are the link node; transfer follows target bytes.
       if (skipUnchanged && !file.isSymlink) {
+        // Re-stat source immediately before the quick check: pre-scan attrs can
+        // go stale while a large tree is still being discovered (Codex P1).
+        const freshSource = await tryStatSource(sourcePath);
+        if (freshSource && freshSource.type !== "directory") {
+          skipSourceSize = freshSource.size;
+          skipSourceLastModified = freshSource.lastModified;
+          directoryEntryIdentity = createDirectoryEntryIdentity({
+            sourcePath,
+            targetPath,
+            size: skipSourceSize,
+            lastModified: skipSourceLastModified,
+          });
+        }
         const existing = await tryStatTarget(targetPath);
         if (
           existing
           && existing.type !== "directory"
           && isUnchangedTransferCandidate(
-            { size: fileSize, lastModified: file.lastModified, mtimeUnit: "ms" },
+            { size: skipSourceSize, lastModified: skipSourceLastModified, mtimeUnit: "ms" },
             { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
           )
         ) {
@@ -143,8 +163,8 @@ export async function transferDiscoveredFiles(
                 ? {
                     ...row,
                     status: "completed" as TransferStatus,
-                    transferredBytes: fileSize,
-                    totalBytes: fileSize,
+                    transferredBytes: skipSourceSize,
+                    totalBytes: skipSourceSize,
                     endTime: Date.now(),
                     speed: 0,
                     error: undefined,
@@ -160,9 +180,9 @@ export async function transferDiscoveredFiles(
                   isDirectory: false,
                   progressMode: "bytes" as const,
                   parentTaskId: rootTaskId,
-                  totalBytes: fileSize,
-                  transferredBytes: fileSize,
-                  sourceLastModified: file.lastModified,
+                  totalBytes: skipSourceSize,
+                  transferredBytes: skipSourceSize,
+                  sourceLastModified: skipSourceLastModified,
                   directoryEntryIndex,
                   directoryEntryIdentity,
                   status: "completed" as TransferStatus,
@@ -199,8 +219,8 @@ export async function transferDiscoveredFiles(
         isDirectory: false,
         progressMode: "bytes",
         parentTaskId: rootTaskId,
-        totalBytes: fileSize,
-        sourceLastModified: file.lastModified,
+        totalBytes: skipSourceSize,
+        sourceLastModified: skipSourceLastModified,
         directoryEntryIndex,
         directoryEntryIdentity,
         retryable: rootTask.retryable,

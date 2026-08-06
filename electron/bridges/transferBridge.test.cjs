@@ -11290,6 +11290,35 @@ test("preserveTransferredDestinationMtime stamps local targets from sourceSoftId
   assert.notEqual(Math.floor(after.mtimeMs / 1000), Math.floor(before.mtimeMs / 1000));
 });
 
+test("preserveTransferredDestinationMtime times out hanging remote setStat", async () => {
+  let setStatStarted = false;
+  const hangingClient = {
+    sftp: {
+      readdir() {},
+      stat() {},
+      mkdir() {},
+      unlink() {},
+    },
+    async setStat() {
+      setStatStarted = true;
+      await new Promise(() => {});
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", hangingClient]]) });
+
+  const startedAt = Date.now();
+  await transferBridge._preserveTransferredDestinationMtimeForTests({
+    targetType: "sftp",
+    targetSftpId: "target",
+    targetPath: "/tmp/mtime-hang.bin",
+    sourceSoftIdentity: { size: 1, mtimeMs: 1_700_000_000_000 },
+  }, { timeoutMs: 40 });
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(setStatStarted, true);
+  assert.ok(elapsed < 1500, `expected bounded mtime stamp, elapsed=${elapsed}`);
+});
+
 test("local-to-local transfer preserves source mtime on the destination", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-local-mtime-"));
   t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));

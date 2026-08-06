@@ -269,3 +269,43 @@ test("discoverTransferTree bounds local folder pre-scan memory", async () => {
     /Directory traversal directory limit exceeded/,
   );
 });
+
+test("discoverTransferTree waits while paused between BFS waves", async () => {
+  let paused = true;
+  let listCalls = 0;
+  let pauseWaits = 0;
+  const listLocalFiles = async (path: string): Promise<SftpFileEntry[]> => {
+    listCalls += 1;
+    if (path === "/local") return [directoryEntry("a"), fileEntry("root.txt")];
+    if (path === "/local/a") return [fileEntry("nested.txt")];
+    return [];
+  };
+
+  const discovery = discoverTransferTree({
+    sourcePath: "/local",
+    targetPath: "/target",
+    sourceIsLocal: true,
+    sourceSftpId: null,
+    sourceEncoding: "auto",
+    listLocalFiles,
+    listRemoteFiles: async () => [],
+    listingConcurrency: 1,
+    waitWhilePaused: async () => {
+      pauseWaits += 1;
+      while (paused) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+  });
+
+  // First waitWhilePaused (wave start) should block before any listing.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(listCalls, 0, "pause must block pre-scan listings");
+  assert.ok(pauseWaits >= 1, "expected waitWhilePaused to be invoked");
+
+  paused = false;
+  const result = await discovery;
+  assert.equal(result.files.length, 2);
+  assert.ok(listCalls >= 2);
+  assert.ok(pauseWaits >= 2, "expected pause checks across waves/listings");
+});

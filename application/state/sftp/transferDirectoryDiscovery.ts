@@ -98,6 +98,8 @@ export type DiscoverTransferTreeOptions = {
   listLocalFiles: (path: string) => Promise<SftpFileEntry[]>;
   listRemoteFiles: (sftpId: string, path: string, encoding?: SftpFilenameEncoding) => Promise<SftpFileEntry[]>;
   shouldAbort?: () => boolean;
+  /** Honor transfer-center pause between BFS waves / listings. */
+  waitWhilePaused?: () => Promise<void>;
   onDiscoveredFiles?: (totalFiles: number) => void;
   listingConcurrency?: number;
   traversalBudget?: SftpDirectoryTraversalBudget;
@@ -146,6 +148,8 @@ export async function discoverTransferTree(
 
   const processDir = async (job: DirJob): Promise<DirJob[]> => {
     if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
+    await options.waitWhilePaused?.();
+    if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
     let claimedCanonicalPath: string | null = null;
     try {
       let canonicalPath = job.sourcePath;
@@ -173,6 +177,8 @@ export async function discoverTransferTree(
       }
 
       const listed = await listingGate.run(async () => {
+        if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
+        await options.waitWhilePaused?.();
         if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
         if (options.sourceIsLocal) {
           return options.listLocalFiles(job.sourcePath);
@@ -247,6 +253,8 @@ export async function discoverTransferTree(
 
   // BFS waves: each wave lists up to listingConcurrency directories in parallel.
   while (queue.length > 0) {
+    if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
+    await options.waitWhilePaused?.();
     if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
     const wave = queue.splice(0, queue.length);
     const nested: DirJob[][] = new Array(wave.length);
