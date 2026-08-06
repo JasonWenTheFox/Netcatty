@@ -28,7 +28,6 @@ import {
 } from "./transferConcurrency";
 import {
   discoverTransferTree,
-  type DiscoveredTransferFile,
 } from "./transferDirectoryDiscovery";
 import { transferDiscoveredFiles } from "./transferDirectoryFileBatch";
 import { getSftpTransferResourceKeys, globalSftpTransferScheduler } from "./globalTransferScheduler";
