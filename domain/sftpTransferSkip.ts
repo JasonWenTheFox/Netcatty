@@ -13,8 +13,10 @@ export interface TransferSkipIdentity {
 
 export function normalizeTransferMtimeSeconds(lastModified: number): number {
   if (!Number.isFinite(lastModified) || lastModified <= 0) return 0;
-  // Values below 1e12 are already seconds (SFTP / some bridges); larger are ms.
-  return lastModified >= 1e12 ? Math.floor(lastModified / 1000) : Math.floor(lastModified);
+  // Epoch seconds for ~1973..5138 sit below 1e11; millisecond timestamps for
+  // post-1973 dates sit above it (year 2000 ms ~= 9.5e11). Using 1e12 would
+  // mis-classify pre-2001 millisecond mtimes as seconds.
+  return lastModified >= 1e11 ? Math.floor(lastModified / 1000) : Math.floor(lastModified);
 }
 
 export function isUnchangedTransferCandidate(

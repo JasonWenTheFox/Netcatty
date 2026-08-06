@@ -2,6 +2,7 @@ import type { SftpFileEntry, SftpFilenameEncoding } from "../../../domain/models
 import {
   accountSftpDirectoryEntries,
   claimSftpDirectoryVisit,
+  compareDirectoryTraversalPaths,
   createSftpDirectoryBranchAncestors,
   createSftpDirectoryTraversalBudget,
   releaseSftpDirectoryVisit,
@@ -236,9 +237,14 @@ export async function discoverTransferTree(
       },
     );
     for (const children of nested) {
+      if (!children) continue;
       for (const child of children) queue.push(child);
     }
   }
+
+  // Match dedicated-resume / transfer-center ordering so directoryEntryIndex and
+  // manifest checkpoints stay valid across interrupt + rebuild.
+  files.sort((left, right) => compareDirectoryTraversalPaths(left.sourcePath, right.sourcePath));
 
   return { files, directories };
 }

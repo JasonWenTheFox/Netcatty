@@ -9,6 +9,9 @@ import {
 test("normalizeTransferMtimeSeconds accepts seconds and milliseconds", () => {
   assert.equal(normalizeTransferMtimeSeconds(1_700_000_000), 1_700_000_000);
   assert.equal(normalizeTransferMtimeSeconds(1_700_000_000_500), 1_700_000_000);
+  // Year 2000 in milliseconds must not be treated as epoch seconds.
+  assert.equal(normalizeTransferMtimeSeconds(946_684_800_000), 946_684_800);
+  assert.equal(normalizeTransferMtimeSeconds(946_684_800), 946_684_800);
 });
 
 test("isUnchangedTransferCandidate requires matching size and second mtime", () => {
@@ -16,6 +19,13 @@ test("isUnchangedTransferCandidate requires matching size and second mtime", () 
     isUnchangedTransferCandidate(
       { size: 10, lastModified: 1_700_000_000_200 },
       { size: 10, lastModified: 1_700_000_000 },
+    ),
+    true,
+  );
+  assert.equal(
+    isUnchangedTransferCandidate(
+      { size: 10, lastModified: 946_684_800_123 },
+      { size: 10, lastModified: 946_684_800 },
     ),
     true,
   );

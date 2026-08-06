@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { SftpFileEntry } from "../../../domain/models";
+import { compareDirectoryTraversalPaths } from "../../../domain/sftpDirectoryCheckpoint";
 import { discoverTransferTree } from "./transferDirectoryDiscovery";
 
 const directoryEntry = (name: string): SftpFileEntry => ({
@@ -59,6 +60,13 @@ test("discoverTransferTree returns a stable flat file list with bounded listings
       onDiscoveredFiles: (total) => counts.push(total),
     });
 
+    assert.deepEqual(
+      result.files.map((file) => file.sourcePath),
+      [...result.files.map((file) => file.sourcePath)].sort((left, right) =>
+        compareDirectoryTraversalPaths(left, right)
+      ),
+      "pre-scan file order must match resume comparator",
+    );
     assert.deepEqual(
       result.files.map((file) => file.sourcePath).sort(),
       ["/source/a/a1.txt", "/source/a/a2.txt", "/source/b/b1.txt", "/source/root.txt"],
