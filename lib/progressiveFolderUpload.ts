@@ -403,8 +403,16 @@ export async function uploadLocalFoldersProgressively(
       if (isPaused) {
         const freeIndex = fileQueue.findIndex((j) => !isPaused(j.parentId));
         if (freeIndex < 0) {
-          // Every pending parent is latched — wait on the head's latch, then retry.
-          if (!(await awaitUnpaused(fileQueue[0].parentId))) {
+          // Every pending parent is latched. Race-wait on *all* of them so
+          // resuming a non-head parent does not stall behind a still-paused head.
+          const pausedParents = [...new Set(fileQueue.map((j) => j.parentId))];
+          let anyReleased = false;
+          await Promise.race(
+            pausedParents.map(async (parentId) => {
+              if (await awaitUnpaused(parentId)) anyReleased = true;
+            }),
+          );
+          if (!anyReleased || isStopped()) {
             fileQueue.length = 0;
             return;
           }

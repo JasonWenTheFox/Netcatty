@@ -216,6 +216,17 @@ function rollupParentAfterChildSuccess(
   completedChildId: string,
   deps: ExternalDragDropRetryDeps,
 ): void {
+  // Only re-roll parents that already finished the progressive walk as failed.
+  // Never promote a still-scanning/transferring parent mid-walk.
+  const parent = deps.getTask?.(parentTaskId);
+  if (
+    parent
+    && parent.status !== "failed"
+    && parent.status !== "attention"
+    && parent.status !== "cancelled"
+  ) {
+    return;
+  }
   const children = deps.getChildTasks?.(parentTaskId) ?? [];
   if (children.length === 0) return;
   const stillFailed = children.some(
@@ -239,7 +250,11 @@ function rollupParentAfterChildSuccess(
   const completedCount = children.filter(
     (child) => child.id === completedChildId || child.status === "completed",
   ).length;
-  const total = Math.max(children.length, completedCount);
+  const total = Math.max(
+    Number(parent?.totalBytes) || 0,
+    children.length,
+    completedCount,
+  );
   deps.onPatch(parentTaskId, {
     status: "completed",
     error: undefined,

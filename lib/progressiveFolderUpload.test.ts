@@ -439,3 +439,103 @@ test("progressive multi-root pause does not HOL-block an unpaused sibling root",
     `expected B before A, got ${transferred.join(",")}`,
   );
 });
+
+test("progressive multi-root resume of non-head parent unblocks while head stays paused", async () => {
+  const transferred: string[] = [];
+  // Both latched initially; head is always parent-a in FIFO order.
+  const pausedParents = new Set<string>(["parent-a", "parent-b"]);
+  const parentIds = new Map([
+    ["folderA", "parent-a"],
+    ["folderB", "parent-b"],
+  ]);
+  const waiters = new Map<string, Array<() => void>>();
+
+  const waitWhilePaused = async (parentId: string) => {
+    while (pausedParents.has(parentId)) {
+      await new Promise<void>((resolve) => {
+        const list = waiters.get(parentId) ?? [];
+        list.push(resolve);
+        waiters.set(parentId, list);
+      });
+    }
+  };
+
+  const release = (parentId: string) => {
+    pausedParents.delete(parentId);
+    for (const resolve of waiters.get(parentId) ?? []) resolve();
+    waiters.delete(parentId);
+  };
+
+  const listLocalTree = async (
+    localPath: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    if (localPath.endsWith("folderA")) {
+      options.onEntries?.([
+        {
+          localPath: "/tmp/folderA/a.txt",
+          relativePath: "folderA/a.txt",
+          type: "file",
+          size: 1,
+          lastModified: 1,
+        },
+      ]);
+    } else {
+      options.onEntries?.([
+        {
+          localPath: "/tmp/folderB/b.txt",
+          relativePath: "folderB/b.txt",
+          type: "file",
+          size: 1,
+          lastModified: 1,
+        },
+      ]);
+    }
+    return [];
+  };
+
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [
+      { name: "folderA", localPath: "/tmp/folderA" },
+      { name: "folderB", localPath: "/tmp/folderB" },
+    ],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      parentTaskIds: parentIds,
+      waitWhilePaused,
+      isPaused: (parentId) => pausedParents.has(parentId),
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.sourcePath);
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+    },
+  );
+
+  // Let both jobs queue and workers park on all-paused race.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(transferred, []);
+  // Resume only non-head parent B while A stays paused.
+  release("parent-b");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.ok(
+    transferred.some((p) => p.includes("folderB")),
+    `B must transfer while A paused, got ${transferred.join(",")}`,
+  );
+  assert.equal(
+    transferred.some((p) => p.includes("folderA")),
+    false,
+    "A must stay blocked",
+  );
+  release("parent-a");
+  const results = await uploadPromise;
+  assert.equal(results.filter((row) => row.success).length, 2);
+});

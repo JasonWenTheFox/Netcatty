@@ -104,6 +104,21 @@ test("retry rolls parent to completed when all siblings succeed", async () => {
   const result = await retryExternalDragDropFileUpload(baseTask(), {
     getBrowseSftpId: () => "sftp-live",
     startStreamTransfer: async () => ({}),
+    getTask: (id) => (
+      id === "folder-1"
+        ? baseTask({
+          id: "folder-1",
+          isDirectory: true,
+          status: "failed",
+          sourcePath: "/tmp/docs",
+          targetPath: "/remote/docs",
+          error: "1 of 2 files failed",
+          totalBytes: 2,
+          transferredBytes: 1,
+          parentTaskId: undefined,
+        })
+        : undefined
+    ),
     getChildTasks: () => [
       baseTask({ id: "child-1", status: "transferring" }),
       baseTask({ id: "child-2", status: "completed", sourcePath: "/tmp/docs/b.txt" }),
@@ -114,6 +129,31 @@ test("retry rolls parent to completed when all siblings succeed", async () => {
   const parentPatch = patches.find((p) => p.id === "folder-1");
   assert.ok(parentPatch);
   assert.equal(parentPatch?.updates.status, "completed");
+});
+
+test("retry does not rollup a still-transferring progressive parent", async () => {
+  const patches: Array<{ id: string; updates: Partial<TransferTask> }> = [];
+  await retryExternalDragDropFileUpload(baseTask(), {
+    getBrowseSftpId: () => "sftp-live",
+    startStreamTransfer: async () => ({}),
+    getTask: (id) => (
+      id === "folder-1"
+        ? baseTask({
+          id: "folder-1",
+          isDirectory: true,
+          status: "transferring",
+          sourcePath: "/tmp/docs",
+          parentTaskId: undefined,
+        })
+        : undefined
+    ),
+    getChildTasks: () => [
+      baseTask({ id: "child-1", status: "transferring" }),
+      baseTask({ id: "child-2", status: "completed", sourcePath: "/tmp/docs/b.txt" }),
+    ],
+    onPatch: (taskId, updates) => patches.push({ id: taskId, updates }),
+  });
+  assert.equal(patches.some((p) => p.id === "folder-1"), false);
 });
 
 test("retry fails clearly when no sftp session can be opened", async () => {
