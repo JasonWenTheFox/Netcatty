@@ -1403,11 +1403,17 @@ function registerWorkerHandle(ipcMain, terminalWorkerManager, channel) {
     // SSH sessions run in utilityProcess; UDP-probe LAN access from the main
     // process first so macOS can show the Local Network privacy alert for
     // the Netcatty app bundle instead of silently denying the helper
-    // (#2663 / #2673 / TN3179).
+    // (#2663 / #2673 / TN3179). Mark the payload so the worker skips a
+    // second hold / probe in its own process.
+    let workerPayload = payload;
     if (channel === "netcatty:start") {
       await ensureMacLocalNetworkAccess(payload);
+      workerPayload = {
+        ...(payload && typeof payload === "object" ? payload : {}),
+        _macLocalNetworkMainProbed: true,
+      };
     }
-    return terminalWorkerManager.request(channel, payload, {
+    return terminalWorkerManager.request(channel, workerPayload, {
       webContentsId: event?.sender?.id,
     });
   });

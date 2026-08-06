@@ -29,7 +29,7 @@ const dns = require("node:dns");
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
 /** Hold the connected UDP socket briefly so TCC can present the alert (FB16131937). */
 const DEFAULT_PROBE_HOLD_MS = 500;
-/** IANA discard service — Apple's TN3179 sample uses this port for the trigger. */
+/** IANA discard service - Apple's TN3179 sample uses this port for the trigger. */
 const DISCARD_PORT = 9;
 const LOCAL_NETWORK_HINT =
   "macOS may be blocking Local Network access. Open System Settings → Privacy & Security → Local Network, enable Netcatty, then reconnect.";
@@ -252,6 +252,8 @@ function createMacLocalNetworkAccessGate(options = {}) {
         settled = true;
         if (safetyTimer) clearTimer(safetyTimer);
         if (holdTimer) clearTimer(holdTimer);
+        safetyTimer = null;
+        holdTimer = null;
         try { socket?.close(); } catch { /* ignore */ }
         resolve();
       };
@@ -262,6 +264,13 @@ function createMacLocalNetworkAccessGate(options = {}) {
         safetyTimer = setTimer(finish, probeTimeoutMs);
         socket.connect(DISCARD_PORT, hostname, () => {
           if (settled) return;
+          // Clear the connect safety window once connected so a slow
+          // .local/mDNS resolve cannot truncate the intentional hold
+          // that gives TCC time to present the Local Network alert.
+          if (safetyTimer) {
+            clearTimer(safetyTimer);
+            safetyTimer = null;
+          }
           if (probeHoldMs <= 0) {
             finish();
             return;
@@ -277,6 +286,11 @@ function createMacLocalNetworkAccessGate(options = {}) {
   async function ensureAccess(connectOptions = {}) {
     if (platform !== "darwin") return { skipped: true, reason: "platform" };
     if (!electronRuntime) return { skipped: true, reason: "not-electron" };
+    // Main process already probed before forwarding into the terminal
+    // worker; skip the second hold in utilityProcess (#2673 Codex P2).
+    if (connectOptions._macLocalNetworkMainProbed === true) {
+      return { skipped: true, reason: "main-probed" };
+    }
 
     const endpoint = resolveFirstTcpEndpoint(connectOptions);
     if (!endpoint.hostname) {

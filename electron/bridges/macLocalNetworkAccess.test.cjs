@@ -145,7 +145,7 @@ test("annotateMacLocalNetworkErrorMessage only rewrites LAN unreachability on da
     }),
     base,
   );
-  // Message embeds a LAN IP — annotate even when the vault hostname option is public.
+  // Message embeds a LAN IP - annotate even when the vault hostname option is public.
   assert.match(
     annotateMacLocalNetworkErrorMessage(base, {
       platform: "darwin",
@@ -420,4 +420,84 @@ test("createMacLocalNetworkAccessGate applies the configured probe timeout as a 
   });
   await gate.ensureAccess({ hostname: "10.0.0.1", port: 22 });
   assert.ok(timeouts.includes(DEFAULT_PROBE_TIMEOUT_MS));
+});
+
+test("createMacLocalNetworkAccessGate clears the safety timer so the full hold runs after a slow connect", async () => {
+  const cleared = [];
+  const holds = [];
+  const safetyHandles = [];
+  const safetyMs = 500;
+  const holdMs = 40;
+  let resolveConnectReady;
+  const connectReady = new Promise((resolve) => {
+    resolveConnectReady = resolve;
+  });
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeTimeoutMs: safetyMs,
+    probeHoldMs: holdMs,
+    setTimer: (fn, ms) => {
+      const handle = { ms, fn, cleared: false };
+      if (ms === safetyMs) safetyHandles.push(handle);
+      if (ms === holdMs) {
+        holds.push(ms);
+        queueMicrotask(fn);
+      }
+      return handle;
+    },
+    clearTimer(handle) {
+      if (handle && typeof handle === "object") {
+        handle.cleared = true;
+        cleared.push(handle.ms);
+      }
+    },
+    dgram: {
+      createSocket() {
+        class SlowSocket extends EventEmitter {
+          connect(_port, _host, callback) {
+            resolveConnectReady(callback);
+          }
+          close() {}
+        }
+        return new SlowSocket();
+      },
+    },
+  });
+
+  const pending = gate.ensureAccess({ hostname: "192.168.1.10", port: 22 });
+  const connectCallback = await connectReady;
+  // Simulate connect completing late in the safety window.
+  assert.equal(typeof connectCallback, "function");
+  assert.equal(safetyHandles.length, 1);
+  connectCallback();
+  await pending;
+
+  assert.ok(
+    cleared.includes(safetyMs),
+    `safety timer should be cleared on connect, cleared=${JSON.stringify(cleared)}`,
+  );
+  assert.deepEqual(holds, [holdMs]);
+  assert.equal(safetyHandles[0].cleared, true);
+});
+
+test("createMacLocalNetworkAccessGate skips when main process already probed", async () => {
+  let creates = 0;
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("worker must not probe after main");
+      },
+    },
+  });
+  const result = await gate.ensureAccess({
+    hostname: "192.168.5.22",
+    port: 22,
+    _macLocalNetworkMainProbed: true,
+  });
+  assert.deepEqual(result, { skipped: true, reason: "main-probed" });
+  assert.equal(creates, 0);
 });
