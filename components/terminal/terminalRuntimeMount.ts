@@ -150,16 +150,17 @@ export async function wakeTerminalFromHibernate(
     await appendTerminalReplayData(term, pendingDelta, replayOptions);
     replayedPendingChars += pendingDelta.length;
   }
-  // Final catch-all before tearing down hibernate listeners: anything still in
-  // the pending ref (or that landed after the loop saw an empty buffer) must be
-  // written once more, or flow-acked hibernate chunks are permanently dropped.
+
+  // Stop hibernate IPC first so no further bytes land in the pending ref, then
+  // take any remainder once. Awaiting a final write while listeners are still
+  // live can lose already-acked chunks that arrive during that write.
+  stopHibernateListeners();
   const finalPendingDelta = takePendingBuffer();
   if (finalPendingDelta) {
     await appendTerminalReplayData(term, finalPendingDelta, replayOptions);
     replayedPendingChars += finalPendingDelta.length;
   }
 
-  stopHibernateListeners();
   const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
   if (shouldReattach) {
     reattachSession(term);

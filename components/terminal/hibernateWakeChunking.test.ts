@@ -39,6 +39,11 @@ test("hibernate wake consumes pending via take-and-clear so capped arrivals are 
   assert.match(mountSource, /const finalPendingDelta = takePendingBuffer\(\);/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
 
+  const stopListenersIndex = mountSource.indexOf("stopHibernateListeners();");
+  const finalPendingIndex = mountSource.indexOf("const finalPendingDelta = takePendingBuffer();");
+  assert.ok(stopListenersIndex >= 0, "wake must stop hibernate listeners");
+  assert.ok(finalPendingIndex > stopListenersIndex, "final pending take must run after listeners stop");
+
   assert.match(
     terminalSource,
     /takePendingBuffer:\s*\(\)\s*=>\s*\{\s*const pending = hibernatePendingBufferRef\.current;\s*hibernatePendingBufferRef\.current = "";\s*return pending;\s*\}/,
