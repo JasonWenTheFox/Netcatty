@@ -420,6 +420,9 @@ function createPreloadApi(ctx) {
   getDockerStats: async (options) => {
     return ipcRenderer.invoke("netcatty:system:dockerStats", options);
   },
+  listAccelerators: async (sessionId) => {
+    return ipcRenderer.invoke("netcatty:system:listAccelerators", { sessionId });
+  },
   dockerInspect: async (options) => {
     return ipcRenderer.invoke("netcatty:system:dockerInspect", options);
   },
@@ -1466,6 +1469,9 @@ function createPreloadApi(ctx) {
   },
   readClipboardImage: async () => {
     return ipcRenderer.invoke("netcatty:clipboard:readImage");
+  },
+  hasClipboardImage: async () => {
+    return ipcRenderer.invoke("netcatty:clipboard:hasImage");
   },
 
   // Credential encryption (field-level safeStorage)

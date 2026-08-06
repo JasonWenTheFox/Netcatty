@@ -134,6 +134,11 @@ test("terminal worker mode proxies SSH session and remote helper requests", asyn
       "netcatty:ssh:setEncoding",
     ],
   );
+  assert.equal(
+    terminalWorkerManager.requests[0].payload._macLocalNetworkMainProbed,
+    true,
+    "worker start payload should skip a second Local Network probe",
+  );
 });
 
 test("terminal worker mode keeps main-process keyboard-interactive responses in the main process", async () => {
@@ -337,6 +342,7 @@ test("terminal worker mode proxies system management requests", async () => {
     "netcatty:system:setupOsc7Tracking",
     "netcatty:system:listTmuxSessions",
     "netcatty:system:listDockerContainers",
+    "netcatty:system:listAccelerators",
   ]) {
     assert.equal(ipcMain.handlers.has(channel), true, `${channel} should be proxied`);
     await ipcMain.handlers.get(channel)(fakeEvent, { sessionId: "ssh-1" });
@@ -350,6 +356,7 @@ test("terminal worker mode proxies system management requests", async () => {
       "netcatty:system:setupOsc7Tracking",
       "netcatty:system:listTmuxSessions",
       "netcatty:system:listDockerContainers",
+      "netcatty:system:listAccelerators",
     ],
   );
 });

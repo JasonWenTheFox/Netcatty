@@ -68,7 +68,7 @@ const {
   createStartSessionApi,
   resolveSshConnectionTimeouts,
 } = require("./sshBridge/startSession.cjs");
-const { ensureMacLocalNetworkAccess } = require("./macLocalNetworkAccess.cjs");
+const { ensureMacLocalNetworkAccess, attachMacLocalNetworkProbeResult } = require("./macLocalNetworkAccess.cjs");
 
 function quoteShellArg(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
@@ -1336,11 +1336,13 @@ async function startSSHSessionWrapper(event, options) {
     }
   }
   try {
-    // Main-process LAN probe so macOS Local Network TCC attributes to Netcatty
-    // before the (possibly worker-hosted) SSH dial. See #2663 / TN3179.
-    await ensureMacLocalNetworkAccess(options);
+    // Main-process UDP Local Network probe (TN3179 discard-port connect) so
+    // TCC attributes to Netcatty before the (possibly worker-hosted) SSH dial.
+    // See #2663 / #2673. Carry the resolved first-hop address so direct-start
+    // annotation (no terminal worker) still sees split-DNS LAN evidence.
+    const probeResult = await ensureMacLocalNetworkAccess(options);
     return await startSSHSessionWithRetries(event, {
-      ...options,
+      ...attachMacLocalNetworkProbeResult(options, probeResult),
       sessionId,
       _passphraseSignal: passphraseAbortController.signal,
       ...(sourceReuseState ? { _sourceReuseState: sourceReuseState } : {}),
@@ -1420,13 +1422,23 @@ const {
  */
 function registerWorkerHandle(ipcMain, terminalWorkerManager, channel) {
   ipcMain.handle(channel, async (event, payload) => {
-    // SSH sessions run in utilityProcess; probe LAN access from the main
+    // SSH sessions run in utilityProcess; UDP-probe LAN access from the main
     // process first so macOS can show the Local Network privacy alert for
-    // the Netcatty app bundle instead of silently denying the helper (#2663).
+    // the Netcatty app bundle instead of silently denying the helper
+    // (#2663 / #2673 / TN3179). Mark the payload so the worker skips a
+    // second hold / probe in its own process.
+    let workerPayload = payload;
     if (channel === "netcatty:start") {
-      await ensureMacLocalNetworkAccess(payload);
+      const probeResult = await ensureMacLocalNetworkAccess(payload);
+      workerPayload = {
+        ...attachMacLocalNetworkProbeResult(
+          payload && typeof payload === "object" ? payload : {},
+          probeResult,
+        ),
+        _macLocalNetworkMainProbed: true,
+      };
     }
-    return terminalWorkerManager.request(channel, payload, {
+    return terminalWorkerManager.request(channel, workerPayload, {
       webContentsId: event?.sender?.id,
     });
   });

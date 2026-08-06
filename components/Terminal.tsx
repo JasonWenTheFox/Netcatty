@@ -449,6 +449,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const hibernateContextViewportSnapshotRef = useRef("");
   const hibernateContextScrollbackSnapshotRef = useRef("");
   const hibernatePendingBufferRef = useRef("");
+  const hibernatePendingCapDisabledRef = useRef(false);
   const hibernateAlternateScreenRef = useRef(false);
   const hibernateRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fullHibernateRuntimeRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -1843,10 +1844,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       backendId,
       (chunk, meta) => {
         observeTerminalInputPrompt(chunk, meta);
-        hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
-          hibernatePendingBufferRef.current,
-          chunk,
-        );
+        hibernatePendingBufferRef.current = hibernatePendingCapDisabledRef.current
+          ? hibernatePendingBufferRef.current + chunk
+          : appendHibernatePendingBuffer(
+            hibernatePendingBufferRef.current,
+            chunk,
+          );
         const pluginPipelineIngressBytes = Number.isFinite(meta?.pluginPipelineIngressBytes)
           ? Math.max(0, Number(meta.pluginPipelineIngressBytes))
           : chunk.length;
@@ -1866,10 +1869,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         setError(evt.error);
       }
       const exitMessage = `\r\n[session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`;
-      hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
-        hibernatePendingBufferRef.current,
-        exitMessage,
-      );
+      hibernatePendingBufferRef.current = hibernatePendingCapDisabledRef.current
+        ? hibernatePendingBufferRef.current + exitMessage
+        : appendHibernatePendingBuffer(
+          hibernatePendingBufferRef.current,
+          exitMessage,
+        );
       onSessionExitRef.current?.(sessionId, evt);
       scheduleAutoReconnect({ evt });
     });
@@ -3812,16 +3817,22 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     wakeInProgressRef.current = true;
     setPasswordPickerState(null);
 
-    const stopHibernateListeners = () => {
-      const backendId = sessionRef.current;
+    const stopHibernateDataListener = () => {
       disposeDataRef.current?.();
       disposeDataRef.current = null;
+    };
+
+    const stopHibernateListeners = (opts?: { keepPaused?: boolean }) => {
+      const backendId = sessionRef.current;
+      stopHibernateDataListener();
       disposeExitRef.current?.();
       disposeExitRef.current = null;
       if (backendId) {
         flushTerminalSessionFlowAck(backendId);
         clearTerminalSessionFlowAck(backendId);
-        terminalBackend.setSessionFlowPaused?.(backendId, false);
+        if (!opts?.keepPaused) {
+          terminalBackend.setSessionFlowPaused?.(backendId, false);
+        }
       }
     };
 
@@ -3830,7 +3841,64 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       runtimeContext,
       container,
       getPayload,
-      stopHibernateListeners,
+      prepareWakeFlow: async () => {
+        const backendId = sessionRef.current;
+        if (!backendId) return true;
+        // Always pause when a backend exists, including reconnect wakes
+        // (sessionConnected=false) that will not reattach. Stopping the
+        // hibernate listener without a pause drops live output into the
+        // preload backlog without flow ACKs until cleanupSession.
+        if (terminalBackend.setSessionFlowPausedAndWait) {
+          const result = await terminalBackend.setSessionFlowPausedAndWait(backendId, true);
+          return result?.success === true;
+        }
+        terminalBackend.setSessionFlowPaused?.(backendId, true);
+        return false;
+      },
+      takePendingBuffer: () => {
+        const pending = hibernatePendingBufferRef.current;
+        hibernatePendingBufferRef.current = "";
+        return pending;
+      },
+      stopHibernateDataListener,
+      setHibernatePendingCapDisabled: (disabled) => {
+        hibernatePendingCapDisabledRef.current = disabled;
+      },
+      stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
+      restoreAfterFailedWake: (takenPending) => {
+        hibernatePendingCapDisabledRef.current = false;
+        const pendingStillInRef = hibernatePendingBufferRef.current;
+        disposeRuntimeOnly();
+        const backendId = sessionRef.current;
+        if (!backendId) {
+          // No backend to reattach listeners to; still keep taken bytes for a
+          // later wake of a disconnected hibernated tab.
+          hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
+            takenPending || "",
+            pendingStillInRef,
+          );
+          return;
+        }
+        beginHibernatedSessionListeners(backendId);
+        // beginHibernatedSessionListeners clears pending; restore take-and-cleared
+        // bytes from this wake plus anything that arrived after the last take.
+        const restored = appendHibernatePendingBuffer(
+          takenPending || "",
+          pendingStillInRef,
+        );
+        if (restored) {
+          hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
+            restored,
+            hibernatePendingBufferRef.current,
+          );
+        }
+      },
+      resumeAfterReattach: () => {
+        hibernatePendingCapDisabledRef.current = false;
+        const backendId = sessionRef.current;
+        if (!backendId) return;
+        terminalBackend.setSessionFlowPaused?.(backendId, false);
+      },
       sessionConnected: options.sessionConnected,
       getSessionConnected: () => getSessionConnectedRef.current(),
       reattachSession: (term) => {
@@ -3856,7 +3924,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     });
     wakePromiseRef.current = wakePromise;
     return wakePromise;
-  }, [sessionId, terminalBackend, terminalRuntimeRefs, resizeSession, terminalSettings]);
+  }, [sessionId, terminalBackend, terminalRuntimeRefs, resizeSession, terminalSettings, beginHibernatedSessionListeners]);
 
   const wakeHibernatedRuntime = useCallback(async (sessionConnected: boolean): Promise<boolean> => {
     if (!hibernatedRef.current) {
