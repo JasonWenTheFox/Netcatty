@@ -12,7 +12,6 @@ import {
   type XTermRuntime,
 } from "./runtime/createXTermRuntime";
 import {
-  appendTerminalReplayData,
   applyHibernateWakeToTerminal,
   nudgeAlternateScreenRedraw,
 } from "./terminalHibernateRuntime";
@@ -50,15 +49,26 @@ export type WakeTerminalFromHibernateOptions = {
   container: HTMLDivElement;
   getPayload: () => TerminalHibernateWakePayload;
   /**
-   * Atomically read and clear hibernate pending output. Required so chunked
-   * full-history replay cannot race the capped pending buffer: length-based
-   * slicing misses bytes when capHibernateBuffer trims the front during wake.
+   * Pause backend output and wait for in-flight chunks to drain into the
+   * hibernate pending buffer before history replay. Prevents the 512 KiB
+   * pending cap and the 64 KiB preload backlog from dropping ACKed bytes
+   * during a long full-history wake (#2762).
+   */
+  prepareWakeFlow?: () => Promise<void>;
+  /**
+   * Atomically read and clear hibernate pending output after the data listener
+   * has been stopped (and preferably after prepareWakeFlow).
    */
   takePendingBuffer: () => string;
   /** Stop only the hibernate data listener so pending stops growing. */
   stopHibernateDataListener: () => void;
-  /** Stop hibernate data+exit listeners and release flow pause state. */
+  /**
+   * Stop hibernate data+exit listeners and clear flow-ack state.
+   * Must keep the backend paused until resumeWakeFlow runs after reattach.
+   */
   stopHibernateListeners: () => void;
+  /** Resume backend output after the live display listener is attached. */
+  resumeWakeFlow?: () => void;
   reattachSession: (term: XTerm) => void;
   safeFit: (options?: { force?: boolean; requireVisible?: boolean }) => void;
   resizeSession: () => void;
@@ -82,9 +92,11 @@ export async function wakeTerminalFromHibernate(
     runtimeContext,
     container,
     getPayload,
+    prepareWakeFlow,
     takePendingBuffer,
     stopHibernateDataListener,
     stopHibernateListeners,
+    resumeWakeFlow,
     reattachSession,
     safeFit,
     resizeSession,
@@ -130,82 +142,78 @@ export async function wakeTerminalFromHibernate(
   );
 
   const term = runtime.term;
-  const initialPayload = getPayload();
-  // Capture pending for this replay pass and clear the live buffer so arrivals
-  // during chunked history replay accumulate as a pure delta (survives the
-  // 512 KiB pending cap without length-slice gaps).
-  const pendingAtApplyStart = takePendingBuffer();
-  const replayOptions = { chunkBytes: replayChunkBytes };
+  // Pause first so in-flight output drains into pending via the still-live
+  // hibernate listener, then detach that listener before capturing pending.
+  // Full-history replay can take many frames; leaving the capped pending
+  // buffer open (or leaving no display listener while flow is live) drops
+  // ACKed bytes under sustained `cat` output (#2762).
+  try {
+    await prepareWakeFlow?.();
+    stopHibernateDataListener();
+    const initialPayload = getPayload();
+    const pendingAtApplyStart = takePendingBuffer();
+    const replayOptions = { chunkBytes: replayChunkBytes };
+    const replayedPendingChars = pendingAtApplyStart.length;
 
-  await applyHibernateWakeToTerminal(term, runtime, {
-    ...initialPayload,
-    pendingBuffer: pendingAtApplyStart,
-  }, {
-    replayOptions,
-    deferWebgl: true,
-  });
-  runtime.cursorLineHighlighter.refresh({ force: true });
+    await applyHibernateWakeToTerminal(term, runtime, {
+      ...initialPayload,
+      pendingBuffer: pendingAtApplyStart,
+    }, {
+      replayOptions,
+      deferWebgl: true,
+    });
+    runtime.cursorLineHighlighter.refresh({ force: true });
 
-  let replayedPendingChars = pendingAtApplyStart.length;
-  for (let drainPass = 0; drainPass < 16; drainPass += 1) {
-    const pendingDelta = takePendingBuffer();
-    if (!pendingDelta) break;
-    await appendTerminalReplayData(term, pendingDelta, replayOptions);
-    replayedPendingChars += pendingDelta.length;
-  }
+    // Exit listener stays alive through replay so a close during wake still
+    // updates status before we decide whether to reattach.
+    const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
+    stopHibernateListeners();
+    if (shouldReattach) {
+      reattachSession(term);
+      updateStatus("connected");
+    }
 
-  // Stop only the data listener so pending stops growing, but keep the exit
-  // listener alive through the final replay. An exit during that await must
-  // still update session status before we decide whether to reattach.
-  stopHibernateDataListener();
-  const finalPendingDelta = takePendingBuffer();
-  if (finalPendingDelta) {
-    await appendTerminalReplayData(term, finalPendingDelta, replayOptions);
-    replayedPendingChars += finalPendingDelta.length;
-  }
+    runtime.ensureWebglRenderer();
+    runtime.clearTextureAtlas();
 
-  const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
-  stopHibernateListeners();
-  if (shouldReattach) {
-    reattachSession(term);
-    updateStatus("connected");
-  }
-
-  runtime.ensureWebglRenderer();
-  runtime.clearTextureAtlas();
-
-  safeFit({ force: true });
-  resizeSession();
-  forceSyncRenderAfterResize(term);
-  if (initialPayload.alternateScreen) {
-    nudgeAlternateScreenRedraw(term);
-  } else {
-    term.scrollToBottom();
-  }
-
-  window.setTimeout(() => safeFit({ force: true }), 0);
-  window.setTimeout(() => {
     safeFit({ force: true });
+    resizeSession();
     forceSyncRenderAfterResize(term);
     if (initialPayload.alternateScreen) {
       nudgeAlternateScreenRedraw(term);
+    } else {
+      term.scrollToBottom();
     }
-  }, 100);
-  window.setTimeout(() => {
-    safeFit({ force: true });
-    forceSyncRenderAfterResize(term);
-    if (initialPayload.alternateScreen) {
-      nudgeAlternateScreenRedraw(term);
-    }
-  }, 350);
 
-  logger.info("[Terminal] Resumed from hibernate", {
-    sessionId,
-    snapshotChars: initialPayload.snapshot.length,
-    viewportChars: initialPayload.viewportSnapshot?.length ?? initialPayload.snapshot.length,
-    scrollbackChars: initialPayload.scrollbackSnapshot?.length ?? 0,
-    pendingChars: replayedPendingChars,
-    alternateScreen: initialPayload.alternateScreen,
-  });
-  return true;
+    window.setTimeout(() => safeFit({ force: true }), 0);
+    window.setTimeout(() => {
+      safeFit({ force: true });
+      forceSyncRenderAfterResize(term);
+      if (initialPayload.alternateScreen) {
+        nudgeAlternateScreenRedraw(term);
+      }
+    }, 100);
+    window.setTimeout(() => {
+      safeFit({ force: true });
+      forceSyncRenderAfterResize(term);
+      if (initialPayload.alternateScreen) {
+        nudgeAlternateScreenRedraw(term);
+      }
+    }, 350);
+
+    logger.info("[Terminal] Resumed from hibernate", {
+      sessionId,
+      snapshotChars: initialPayload.snapshot.length,
+      viewportChars: initialPayload.viewportSnapshot?.length ?? initialPayload.snapshot.length,
+      scrollbackChars: initialPayload.scrollbackSnapshot?.length ?? 0,
+      pendingChars: replayedPendingChars,
+      alternateScreen: initialPayload.alternateScreen,
+    });
+    return true;
+  } finally {
+    // Resume only after the live display listener is installed (or after we
+    // choose not to reattach / wake fails). Keeps the preload backlog from
+    // absorbing a burst that would exceed its 64 KiB trim.
+    resumeWakeFlow?.();
+  }
 }

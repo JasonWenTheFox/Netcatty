@@ -29,37 +29,69 @@ const writeAndWait = (term: XTerm, data: string): Promise<void> =>
     term.write(data, () => resolve());
   });
 
-test("hibernate wake consumes pending via take-and-clear so capped arrivals are not skipped", () => {
+test("hibernate wake pauses flow before replay and resumes only after reattach", () => {
+  // #2762 / Codex: full-history wake must not race the capped pending buffer or
+  // the 64 KiB preload backlog. Pause+wait drains into pending, then stop the
+  // data listener, take pending once, replay, reattach, and only then resume.
   const mountSource = readFileSync(new URL("./terminalRuntimeMount.ts", import.meta.url), "utf8");
   const terminalSource = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
 
+  assert.match(mountSource, /prepareWakeFlow\?:\s*\(\) => Promise<void>/);
+  assert.match(mountSource, /resumeWakeFlow\?:\s*\(\) => void/);
   assert.match(mountSource, /takePendingBuffer: \(\) => string/);
   assert.match(mountSource, /stopHibernateDataListener: \(\) => void/);
+  assert.match(mountSource, /await prepareWakeFlow\?\.\(\);/);
+  assert.match(mountSource, /stopHibernateDataListener\(\);/);
   assert.match(mountSource, /const pendingAtApplyStart = takePendingBuffer\(\);/);
-  assert.match(mountSource, /const pendingDelta = takePendingBuffer\(\);/);
-  assert.match(mountSource, /const finalPendingDelta = takePendingBuffer\(\);/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
+  // No multi-pass drain while the hibernate listener is live: that races the
+  // 512 KiB pending cap and can drop ACKed bytes under sustained output.
+  assert.doesNotMatch(mountSource, /for \(let drainPass = 0;/);
+  assert.doesNotMatch(mountSource, /finalPendingDelta/);
 
+  const prepareIndex = mountSource.indexOf("await prepareWakeFlow?.();");
   const stopDataIndex = mountSource.indexOf("stopHibernateDataListener();");
-  const finalPendingIndex = mountSource.indexOf("const finalPendingDelta = takePendingBuffer();");
+  const pendingIndex = mountSource.indexOf("const pendingAtApplyStart = takePendingBuffer();");
+  const applyIndex = mountSource.indexOf("await applyHibernateWakeToTerminal(");
   const shouldReattachIndex = mountSource.indexOf(
     "const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);",
   );
   const stopAllIndex = mountSource.indexOf("stopHibernateListeners();", shouldReattachIndex - 80);
-  assert.ok(stopDataIndex >= 0, "wake must stop the hibernate data listener before final drain");
-  assert.ok(finalPendingIndex > stopDataIndex, "final pending take must run after data listener stops");
+  const reattachIndex = mountSource.indexOf("reattachSession(term);", shouldReattachIndex);
+  const resumeIndex = mountSource.indexOf("resumeWakeFlow?.();", shouldReattachIndex);
+
+  assert.ok(prepareIndex >= 0, "wake must pause backend flow before history replay");
+  assert.ok(stopDataIndex > prepareIndex, "data listener stops only after flow pause drains");
+  assert.ok(pendingIndex > stopDataIndex, "pending take must run after data listener stops");
+  assert.ok(applyIndex > pendingIndex, "history replay follows the single pending capture");
   assert.ok(
-    shouldReattachIndex > finalPendingIndex,
-    "reattach decision must observe exit status after final replay",
+    shouldReattachIndex > applyIndex,
+    "reattach decision must observe exit status after replay",
   );
   assert.ok(
     stopAllIndex > shouldReattachIndex,
     "full hibernate listener teardown must wait until after the reattach decision",
   );
+  assert.ok(reattachIndex > stopAllIndex, "reattach runs after hibernate listeners are cleared");
+  assert.ok(resumeIndex > reattachIndex, "flow resume must wait until after reattach");
+  // Prefer finally so a failed wake cannot leave the backend paused forever.
+  assert.match(mountSource, /finally\s*\{\s*[\s\S]*?resumeWakeFlow\?\.\(\);/);
 
   assert.match(
     terminalSource,
     /takePendingBuffer:\s*\(\)\s*=>\s*\{\s*const pending = hibernatePendingBufferRef\.current;\s*hibernatePendingBufferRef\.current = "";\s*return pending;\s*\}/,
+  );
+  assert.match(
+    terminalSource,
+    /setSessionFlowPausedAndWait\?\.\(backendId,\s*true\)/,
+  );
+  assert.match(
+    terminalSource,
+    /stopHibernateListeners\(\{\s*keepPaused:\s*true\s*\}\)/,
+  );
+  assert.match(
+    terminalSource,
+    /resumeWakeFlow:\s*\(\)\s*=>\s*\{[\s\S]*?setSessionFlowPaused\?\.\(backendId,\s*false\)/,
   );
 });
 

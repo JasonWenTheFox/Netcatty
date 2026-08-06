@@ -3691,7 +3691,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       disposeDataRef.current = null;
     };
 
-    const stopHibernateListeners = () => {
+    const stopHibernateListeners = (opts?: { keepPaused?: boolean }) => {
       const backendId = sessionRef.current;
       stopHibernateDataListener();
       disposeExitRef.current?.();
@@ -3699,7 +3699,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       if (backendId) {
         flushTerminalSessionFlowAck(backendId);
         clearTerminalSessionFlowAck(backendId);
-        terminalBackend.setSessionFlowPaused?.(backendId, false);
+        if (!opts?.keepPaused) {
+          terminalBackend.setSessionFlowPaused?.(backendId, false);
+        }
       }
     };
 
@@ -3708,13 +3710,27 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       runtimeContext,
       container,
       getPayload,
+      prepareWakeFlow: async () => {
+        if (!options.sessionConnected) return;
+        const backendId = sessionRef.current;
+        if (!backendId) return;
+        // Drain in-flight output into the hibernate pending buffer while the
+        // listener is still attached, then keep the backend paused through
+        // history replay and reattach.
+        await terminalBackend.setSessionFlowPausedAndWait?.(backendId, true);
+      },
       takePendingBuffer: () => {
         const pending = hibernatePendingBufferRef.current;
         hibernatePendingBufferRef.current = "";
         return pending;
       },
       stopHibernateDataListener,
-      stopHibernateListeners,
+      stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
+      resumeWakeFlow: () => {
+        const backendId = sessionRef.current;
+        if (!backendId) return;
+        terminalBackend.setSessionFlowPaused?.(backendId, false);
+      },
       sessionConnected: options.sessionConnected,
       getSessionConnected: () => getSessionConnectedRef.current(),
       reattachSession: (term) => {
