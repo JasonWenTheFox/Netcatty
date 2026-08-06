@@ -454,22 +454,38 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     if (truncatingSharedWriteOpenGates.get(key) === entry) {
       truncatingSharedWriteOpenGates.delete(key);
     }
-    // Already failed: promise rejected; just drop the barrier once OPEN settled.
+    // Already failed: promise rejected; drop the barrier once OPEN settled.
     if (entry.failed) return;
     entry.resolve();
   };
 
   const fail = (error) => {
-    if (entry.released || entry.failed) return;
     const err = error instanceof Error
       ? error
       : createPoisonedWriteOpenPathGateError(String(error?.message || error || ""));
     if (!err.noTransferFallback) err.noTransferFallback = true;
-    entry.failed = true;
-    entry.failError = err;
-    // Keep entry in the map so later beginTruncatingSharedWriteOpen sees failed
-    // and rejects promptly without clearing the fail-closed barrier.
-    entry.reject(err);
+
+    if (!entry.released && !entry.failed) {
+      entry.failed = true;
+      entry.failError = err;
+      entry.reject(err);
+    }
+
+    // A successor waiter may already own the map slot. Poison that head too so
+    // its promise cannot resolve and clear the barrier for a third upload while
+    // the original truncating OPEN may still land (Codex P1 on 0292802c).
+    const current = truncatingSharedWriteOpenGates.get(key);
+    if (current && current !== entry && !current.released && !current.failed) {
+      current.failed = true;
+      current.failError = err;
+      current.reject(err);
+    }
+
+    // Reinstall this poisoned entry as the durable fail-closed barrier even if
+    // a successor replaced us. Successor release must not delete the poison.
+    if (!entry.released) {
+      truncatingSharedWriteOpenGates.set(key, entry);
+    }
   };
 
   return { waitForPrior, release, fail };
@@ -2043,6 +2059,16 @@ async function uploadFile(
             const onAbort = () => {
               try { previousAbort?.(); } catch { /* ignore */ }
               transfer.cancelled = true;
+              // Same fail-closed poison as the timeout path: a dead prior OPEN
+              // leaves the shared gate unresolved, and cancel must not leave
+              // later same-path uploads hanging on waitForPrior (Codex P2).
+              try {
+                transfer._failPendingWriteOpenPathGate?.(
+                  createPoisonedWriteOpenPathGateError(
+                    "Prior write OPEN never settled; path gate is fail-closed",
+                  ),
+                );
+              } catch { /* ignore */ }
               finish(reject, new Error("Transfer cancelled"));
             };
             if (transfer.cancelled || signal?.aborted) {
@@ -2683,14 +2709,20 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       // Do not release this waiter immediately: beginTruncatingSharedWriteOpen
       // already replaced the map entry with us. Releasing now would leave later
       // same-path attempts with no barrier while the prior OPEN is still in
-      // flight (stale truncating OPEN race). Chain our release to the prior.
+      // flight (stale truncating OPEN race). Chain our release to the prior
+      // settle; on prior *failure* (poison), propagate fail instead of resolve
+      // so a successor waiting on our promise cannot start OPEN (Codex P1).
       pathGate.waitForPrior.then(
         () => {
           pathGate.release();
           try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
         },
-        () => {
-          pathGate.release();
+        (priorErr) => {
+          const failErr = priorErr instanceof Error
+            ? priorErr
+            : createPoisonedWriteOpenPathGateError(String(priorErr?.message || priorErr || ""));
+          if (!failErr.noTransferFallback) failErr.noTransferFallback = true;
+          try { pathGate.fail?.(failErr); } catch { /* ignore */ }
           try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
         },
       );
