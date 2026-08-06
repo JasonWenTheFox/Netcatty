@@ -4080,6 +4080,73 @@ test("growing-download SFTP range hashing keeps a bounded read window", async (t
   assert.ok(maxIndexStarted >= concurrency, "verification must continue past the first window");
 });
 
+test("growing-download SFTP range hashing resets inactivity on window progress", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-window-watchdog-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const chunkSize = TRANSFER_CHUNK_SIZE;
+  const payload = Buffer.alloc(3 * chunkSize, 79);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const pendingReads = [];
+  let pumping = false;
+
+  const client = {
+    sftp: createFastSftp({
+      open(_remotePath, _flags, callback) {
+        callback(null, Buffer.from("watchdog-handle"));
+      },
+      read(_handle, buffer, offset, length, position, callback) {
+        const end = Math.min(position + length, payload.length);
+        const slice = payload.subarray(position, end);
+        pendingReads.push(() => {
+          slice.copy(buffer, offset);
+          callback(null, slice.length);
+        });
+        if (!pumping && pendingReads.length >= 3) {
+          pumping = true;
+          // Serialize completions so wall time exceeds the inactivity budget,
+          // but keep landing progress so a window watchdog stays armed.
+          void (async () => {
+            while (pendingReads.length > 0) {
+              await new Promise((resolve) => setTimeout(resolve, 40));
+              pendingReads.shift()?.();
+            }
+          })();
+        }
+      },
+      close(_handle, callback) {
+        callback(null);
+      },
+      createReadStream() {
+        throw new Error("serial prefix stream should not hide window-watchdog behavior");
+      },
+    }),
+    client: {
+      exec(_request, callback) {
+        const error = new Error("SSH exec unavailable");
+        error.code = "SSH_EXEC_UNAVAILABLE";
+        callback(error);
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+      // 80ms per-request deadlines would kill the 3rd serialized read (~120ms),
+      // but window inactivity resets on each completion.
+      sftpReadTimeoutMs: 80,
+    },
+  );
+});
+
 test("growing-download prefix verification times out a stalled SFTP READ", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-timeout-"));
   t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));

@@ -3474,19 +3474,50 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
     for (let windowStart = 0; windowStart < rangeCount; windowStart += concurrency) {
       const windowCount = Math.min(concurrency, rangeCount - windowStart);
       const windowBuffers = new Array(windowCount);
-      await Promise.all(Array.from({ length: windowCount }, async (_, offset) => {
-        const index = windowStart + offset;
-        const position = index * chunkSize;
-        const length = Math.min(chunkSize, bytes - position);
-        const buffer = Buffer.allocUnsafe(length);
-        await readSftpRange(sftp, handle, buffer, position, length, {
-          signal: options.signal,
-          timeoutMs: readTimeoutMs,
-        });
-        windowBuffers[offset] = buffer;
-        completedBytes += length;
-        options.onProgress?.(completedBytes);
-      }));
+      // One inactivity watchdog for the whole window. Per-request deadlines would
+      // fire together after readTimeoutMs even while earlier reads keep landing
+      // on a slow/serialized server.
+      let inactivityTimer = null;
+      let rejectInactivity = null;
+      const clearInactivity = () => {
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      };
+      const armInactivity = () => {
+        if (!(readTimeoutMs > 0) || options.signal?.aborted) return;
+        clearInactivity();
+        inactivityTimer = setTimeout(() => {
+          const error = new Error(`SFTP READ timed out after ${readTimeoutMs} ms`);
+          error.code = "SFTP_READ_TIMEOUT";
+          error.sftpRequestTimedOut = true;
+          rejectInactivity?.(error);
+        }, readTimeoutMs);
+      };
+      const inactivityWait = readTimeoutMs > 0
+        ? new Promise((_, reject) => { rejectInactivity = reject; })
+        : null;
+      armInactivity();
+      try {
+        await Promise.race([
+          Promise.all(Array.from({ length: windowCount }, async (_, offset) => {
+            const index = windowStart + offset;
+            const position = index * chunkSize;
+            const length = Math.min(chunkSize, bytes - position);
+            const buffer = Buffer.allocUnsafe(length);
+            await readSftpRange(sftp, handle, buffer, position, length, {
+              signal: options.signal,
+            });
+            windowBuffers[offset] = buffer;
+            completedBytes += length;
+            options.onProgress?.(completedBytes);
+            armInactivity();
+          })),
+          ...(inactivityWait ? [inactivityWait] : []),
+        ]);
+      } finally {
+        clearInactivity();
+        rejectInactivity = null;
+      }
       for (const buffer of windowBuffers) hash.update(buffer);
     }
     return hash.digest("hex");
