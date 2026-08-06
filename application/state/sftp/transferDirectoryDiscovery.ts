@@ -120,6 +120,8 @@ export async function discoverTransferTree(
     symlinkDepth: number;
     /** Ancestors on this BFS branch (copied for parallel sibling aliases). */
     branchAncestors: Set<string>;
+    /** False for the root (already in `directories`); true for accepted children. */
+    includeInCreationPlan: boolean;
   };
 
   const queue: DirJob[] = [{
@@ -127,6 +129,7 @@ export async function discoverTransferTree(
     targetPath: options.targetPath,
     symlinkDepth: 0,
     branchAncestors: createSftpDirectoryBranchAncestors(),
+    includeInCreationPlan: false,
   }];
 
   const publishCount = () => {
@@ -149,7 +152,14 @@ export async function discoverTransferTree(
           canonicalPath,
           job.branchAncestors,
         );
+        // Cycle / already visited: do not create an empty target dir for this path.
         if (!claimedCanonicalPath) return [];
+      }
+
+      // Only record directories after the visit is accepted so cyclic symlink
+      // children (e.g. /source/loop -> /source) are omitted from mkdir plans.
+      if (job.includeInCreationPlan) {
+        directories.push({ sourcePath: job.sourcePath, targetPath: job.targetPath });
       }
 
       const listed = await listingGate.run(async () => {
@@ -177,6 +187,7 @@ export async function discoverTransferTree(
             targetPath: joinTransferTargetPath(job.targetPath, entry.name),
             symlinkDepth: job.symlinkDepth,
             branchAncestors: createSftpDirectoryBranchAncestors(job.branchAncestors),
+            includeInCreationPlan: true,
           });
         } else if (
           followSymlinks
@@ -189,6 +200,7 @@ export async function discoverTransferTree(
               targetPath: joinTransferTargetPath(job.targetPath, entry.name),
               symlinkDepth: job.symlinkDepth + 1,
               branchAncestors: createSftpDirectoryBranchAncestors(job.branchAncestors),
+              includeInCreationPlan: true,
             });
           } else {
             logger.warn(
@@ -203,9 +215,6 @@ export async function discoverTransferTree(
       childDirs.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
       regularFiles.sort((left, right) => left.name.localeCompare(right.name));
 
-      for (const dir of childDirs) {
-        directories.push({ sourcePath: dir.sourcePath, targetPath: dir.targetPath });
-      }
       for (const entry of regularFiles) {
         files.push({
           name: entry.name,

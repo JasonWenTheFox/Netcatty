@@ -127,6 +127,11 @@ test("discoverTransferTree skips symlink directory cycles across BFS waves", asy
       result.files.map((file) => file.sourcePath).sort(),
       ["/source/child/nested.txt", "/source/root.txt"],
     );
+    assert.deepEqual(
+      result.directories.map((dir) => dir.sourcePath).sort(),
+      ["/source", "/source/child"],
+      "cyclic symlink dirs must not appear in the creation plan",
+    );
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }

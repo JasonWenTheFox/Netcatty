@@ -13,10 +13,11 @@ export interface TransferSkipIdentity {
 
 export function normalizeTransferMtimeSeconds(lastModified: number): number {
   if (!Number.isFinite(lastModified) || lastModified <= 0) return 0;
-  // Epoch seconds for ~1973..5138 sit below 1e11; millisecond timestamps for
-  // post-1973 dates sit above it (year 2000 ms ~= 9.5e11). Using 1e12 would
-  // mis-classify pre-2001 millisecond mtimes as seconds.
-  return lastModified >= 1e11 ? Math.floor(lastModified / 1000) : Math.floor(lastModified);
+  // Second timestamps at/above 1e10 are year ~2286+ - not plausible for file
+  // mtimes. Treat those magnitudes as milliseconds so early-1970s through
+  // pre-2001 local Date values (ms) still compare to SFTP second mtimes.
+  // Using 1e11 left 1970-early-1973 ms misclassified as huge second counts.
+  return lastModified >= 1e10 ? Math.floor(lastModified / 1000) : Math.floor(lastModified);
 }
 
 export function isUnchangedTransferCandidate(
