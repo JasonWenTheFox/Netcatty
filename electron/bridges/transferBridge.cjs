@@ -404,7 +404,13 @@ function sharedWriteOpenSessionKey(sftp, transfer) {
 /**
  * @param {string | Buffer} filePath
  * @param {string} [sessionKey]
- * @returns {{ waitForPrior: Promise<void>, release: () => void, fail: (err?: Error) => void }}
+ * @returns {{
+ *   waitForPrior: Promise<void>,
+ *   release: () => void,
+ *   fail: (err?: Error, options?: { reinstall?: boolean }) => void,
+ *   markOpenIssued: () => void,
+ *   releaseAfterTransportGone: () => void,
+ * }}
  */
 function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
   const key = `${sessionKey}|${sharedWriteOpenPathKey(filePath)}`;
@@ -419,6 +425,8 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
       waitForPrior: Promise.reject(err),
       release: () => {},
       fail: () => {},
+      markOpenIssued: () => {},
+      releaseAfterTransportGone: () => {},
     };
   }
 
@@ -445,8 +453,13 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     released: false,
     failed: false,
     failError: null,
+    // True once this entry has started the remote OPEN. Waiters that only
+    // block on a prior must not act as the OPEN owner for poison cleanup.
+    openIssued: false,
+    priorEntry: prior && !prior.released ? prior : null,
     transportGone: false,
     transportGoneTimer: null,
+    releaseAfterTransportGone: null,
   };
   truncatingSharedWriteOpenGates.set(key, entry);
 
@@ -480,17 +493,21 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
       release();
     }, 2000);
   };
+  entry.releaseAfterTransportGone = releaseAfterTransportGone;
+
+  const markOpenIssued = () => {
+    entry.openIssued = true;
+  };
 
   /**
    * @param {Error} [error]
    * @param {{ reinstall?: boolean }} [options]
-   *   reinstall — when true (default), make this entry the durable map barrier.
-   *   Successor waiters that only propagate a prior poison must pass false so
-   *   they cannot steal the slot from the OPEN owner; otherwise a later
-   *   owner release cannot clear the barrier (Codex P2 on 64450bfd).
+   *   reinstall — when true (default), make the OPEN-owning entry the durable
+   *   map barrier. Successor waiters that only propagate a prior poison must
+   *   pass false so they cannot steal the slot (Codex P2 on 64450bfd).
    */
   const fail = (error, options = {}) => {
-    const reinstall = options.reinstall !== false;
+    const wantReinstall = options.reinstall !== false;
     const err = error instanceof Error
       ? error
       : createPoisonedWriteOpenPathGateError(String(error?.message || error || ""));
@@ -512,21 +529,34 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
       current.reject(err);
     }
 
-    // Reinstall this poisoned entry as the durable fail-closed barrier even if
-    // a successor replaced us. Successor-propagated fail must not steal the
-    // slot from the OPEN owner (Codex P2 on 64450bfd).
-    if (reinstall && !entry.released) {
-      truncatingSharedWriteOpenGates.set(key, entry);
-      // Owner poison is raised from the isolated fastPut fallback after
-      // uploadFileConcurrent already ended that channel. Arm the post-close
-      // clear here instead of installing end/close listeners on every write
-      // OPEN (shared channels would accumulate listeners until teardown —
-      // Codex P2 on fe92b22c).
-      releaseAfterTransportGone();
+    if (!wantReinstall || entry.released) return;
+
+    // Prefer the OPEN-owning ancestor as the durable barrier. A waiter that
+    // reaches fastPut timeout must not reinstall itself and arm transport
+    // cleanup while the prior OPEN's channel may still deliver a late truncate
+    // (Codex P1 on 251bf9ec).
+    let barrier = entry;
+    if (!entry.openIssued) {
+      let cursor = entry.priorEntry;
+      while (cursor && !cursor.released) {
+        barrier = cursor;
+        if (cursor.openIssued || !cursor.priorEntry || cursor.priorEntry.released) break;
+        cursor = cursor.priorEntry;
+      }
+      if (!barrier.failed) {
+        barrier.failed = true;
+        barrier.failError = err;
+        try { barrier.reject(err); } catch { /* ignore */ }
+      }
+    }
+    truncatingSharedWriteOpenGates.set(key, barrier);
+    // Only the OPEN owner arms post-transport clear.
+    if (barrier.openIssued) {
+      try { barrier.releaseAfterTransportGone?.(); } catch { /* ignore */ }
     }
   };
 
-  return { waitForPrior, release, fail, releaseAfterTransportGone };
+  return { waitForPrior, release, fail, markOpenIssued, releaseAfterTransportGone };
 }
 
 /**
@@ -2798,6 +2828,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     const startOpen = () => {
       if (!waiting) return;
       waiting = false;
+      try { pathGate.markOpenIssued?.(); } catch { /* ignore */ }
       // Keep cancel + channel-error wiring active through afterPathGate. A hung
       // post-gate stage stat must still yield to cancel/channel death so the
       // path gate and lease are not pinned forever (Codex P2 on f642580d).
