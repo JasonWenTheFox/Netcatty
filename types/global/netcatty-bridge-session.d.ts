@@ -125,7 +125,17 @@ declare global {
       env?: Record<string, string>;
       sessionLog?: { enabled: boolean; directory: string; format: string; timestampsEnabled?: boolean };
     }): Promise<string>;
-    startLocalSession?(options: { sessionId?: string; cols?: number; rows?: number; shell?: string; shellArgs?: string[]; cwd?: string; env?: Record<string, string>; sessionLog?: { enabled: boolean; directory: string; format: string; timestampsEnabled?: boolean } }): Promise<string>;
+    startLocalSession?(options: {
+      sessionId?: string;
+      cols?: number;
+      rows?: number;
+      shell?: string;
+      shellArgs?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      sessionLog?: { enabled: boolean; directory: string; format: string; timestampsEnabled?: boolean };
+      bootEpoch?: number;
+    }): Promise<string>;
     startSerialSession?(options: {
       sessionId?: string;
       path: string;
@@ -347,7 +357,7 @@ declare global {
     respondTerminalOutputDrain?(requestId: string): void;
     notifyTerminalSessionDisplayReady?(sessionId: string): void;
     ackSessionFlow(sessionId: string, bytes: number): void;
-    closeSession(sessionId: string): void | Promise<void>;
+    closeSession(sessionId: string, options?: { bootEpoch?: number }): void | Promise<void>;
     /** Move a live session's output port to this renderer (same PTY). */
     rebindTerminalSessionOutput?(sessionId: string, authorization: string): Promise<{
       success: boolean;

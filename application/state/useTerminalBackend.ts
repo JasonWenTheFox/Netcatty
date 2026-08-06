@@ -276,9 +276,9 @@ export const useTerminalBackend = () => {
     netcattyBridge.get()?.notifyTerminalSessionDisplayReady?.(sessionId);
   }, []);
 
-  const closeSession = useCallback(async (sessionId: string) => {
+  const closeSession = useCallback(async (sessionId: string, options?: { bootEpoch?: number }) => {
     const bridge = netcattyBridge.get();
-    await bridge?.closeSession?.(sessionId);
+    await bridge?.closeSession?.(sessionId, options);
   }, []);
 
   const rebindSessionOutput = useCallback(async (sessionId: string, authorization: string) => {

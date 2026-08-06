@@ -19,7 +19,6 @@ import {
   closeOrphanBackendSession,
   createBootAttemptGuard,
   getFlowController,
-  isTerminalBootActive,
   notePendingOutputScrollIfEnabled,
   resetTerminalLineTimestampState,
   tryAttachSessionToTerminal,
@@ -127,8 +126,10 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const createAttemptGuards = () => {
+    const bootEpoch = ctx.bootEpochRef?.current ?? 0;
     const isCurrentAttempt = createBootAttemptGuard(ctx);
     return {
+      bootEpoch,
       isCurrentAttempt,
       ignoreStaleAttemptUi: () => !isCurrentAttempt(),
     };
@@ -196,10 +197,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startSSH = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     // Correlate host-key prompts with this boot so a superseded start cannot
     // reopen approval UI after disconnect → reconnect.
-    const bootEpoch = ctx.bootEpochRef?.current ?? 0;
     setTerminalBootEpoch(ctx.sessionId, bootEpoch);
     if (!ctx.terminalBackend.backendAvailable()) {
       ctx.setError("Native SSH bridge unavailable. Launch via Electron app.");
@@ -726,13 +726,14 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       // replacement's MFA wait / connection-timeout state, and do not close the
       // shared sessionId while the newer boot is active.
       if (!isCurrentAttempt()) {
-        if (!isTerminalBootActive(ctx)) closeOrphanBackendSession(ctx, id);
+        closeOrphanBackendSession(ctx, id, { bootEpoch });
         return;
       }
       ctx.setIsConnectionAwaitingUserInput?.(false);
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onConnected: () => ctx.setChainProgress(null),
         onExitMessage: (evt) =>
           `\r\n[session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
@@ -807,7 +808,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startTelnet = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.terminalBackend.telnetAvailable()) {
       ctx.setError("Telnet bridge unavailable. Please run the desktop build.");
       writeTerminalLine(ctx, term, "\r\n[Telnet bridge unavailable. Please run the desktop build.]");
@@ -949,6 +950,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onExitMessage: (evt) =>
           `\r\n[Telnet session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
         onExit: cleanupTelnetSession,
@@ -983,7 +985,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startMosh = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.terminalBackend.moshAvailable()) {
       ctx.setError("Mosh bridge unavailable. Please run the desktop build.");
       writeTerminalLine(ctx, term, "\r\n[Mosh bridge unavailable. Please run the desktop build.]");
@@ -1173,6 +1175,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onExitMessage: (evt) =>
           `\r\n[Mosh session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
         // Real backend exit only — do not chain onto disposeExitRef, because
@@ -1211,7 +1214,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startEt = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.terminalBackend.etAvailable()) {
       ctx.setError("EternalTerminal bridge unavailable. Please run the desktop build.");
       writeTerminalLine(ctx, term, "\r\n[EternalTerminal bridge unavailable. Please run the desktop build.]");
@@ -1485,6 +1488,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onExitMessage: (evt) =>
           `\r\n[EternalTerminal session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
         sudoAutofillPassword: resolveSavedSudoAutofillPassword(),
@@ -1517,7 +1521,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startPluginConnection = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.terminalBackend.pluginConnectionAvailable()) {
       ctx.setError("Plugin connection bridge unavailable. Please run the desktop build with Plugin Development enabled.");
       writeTerminalLine(ctx, term, "\r\n[Plugin connection bridge unavailable.]");
@@ -1606,11 +1610,11 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       });
       releasePendingStartCancellation();
       if (!isCurrentAttempt()) {
-        closeOrphanBackendSession(ctx, opened.sessionId);
+        closeOrphanBackendSession(ctx, opened.sessionId, { bootEpoch });
         return;
       }
       if (startController.signal.aborted) {
-        closeOrphanBackendSession(ctx, opened.sessionId);
+        closeOrphanBackendSession(ctx, opened.sessionId, { bootEpoch });
         abortSessionStartAfterUnmount();
         return;
       }
@@ -1629,6 +1633,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       };
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onExitMessage: formatPluginConnectionExitMessage,
         requireExplicitConnectionReady: true,
         onConnected: (meta) => {
@@ -1655,7 +1660,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
   };
 
   const startLocal = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.terminalBackend.localAvailable()) {
       ctx.setError("Local shell bridge unavailable. Please run the desktop build.");
       writeTerminalLine(
@@ -1688,10 +1693,11 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           TERM: ctx.terminalSettings?.terminalEmulationType ?? "xterm-256color",
         },
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        bootEpoch,
       });
 
       if (!isCurrentAttempt()) {
-        closeOrphanBackendSession(ctx, id);
+        closeOrphanBackendSession(ctx, id, { bootEpoch });
         return;
       }
 
@@ -1776,7 +1782,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
   // Start Serial session
   const startSerial = async (term: XTerm) => {
-    const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    const { isCurrentAttempt, ignoreStaleAttemptUi, bootEpoch } = createAttemptGuards();
     if (!ctx.serialConfig) {
       ctx.setError("No serial configuration provided");
       writeTerminalLine(ctx, term, "\r\n[Error: No serial configuration provided]");
@@ -1804,6 +1810,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
         isCurrentAttempt,
+        bootEpoch,
         onExitMessage: (evt) =>
           `\r\n[serial port closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
         // Convert lone LF to CRLF to prevent "staircase effect" in serial terminals

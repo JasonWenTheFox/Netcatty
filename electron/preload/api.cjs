@@ -510,15 +510,19 @@ function createPreloadApi(ctx) {
     if (!sessionId || !Number.isFinite(bytes) || bytes <= 0) return;
     ipcRenderer.send("netcatty:flow:ack", { sessionId, bytes });
   },
-  closeSession: async (sessionId) => {
+  closeSession: async (sessionId, options) => {
     markTerminalDataSessionClosed(sessionId);
     // closeSession sets session.closed before kill, so some protocol-specific
     // exit events can be skipped. Release every session-scoped listener here.
     clearSessionScopedTerminalListeners(sessionId);
+    const payload = {
+      sessionId,
+      ...(Number.isFinite(options?.bootEpoch) ? { bootEpoch: Number(options.bootEpoch) } : {}),
+    };
     try {
-      await ipcRenderer.invoke("netcatty:close:await", { sessionId });
+      await ipcRenderer.invoke("netcatty:close:await", payload);
     } catch {
-      ipcRenderer.send("netcatty:close", { sessionId });
+      ipcRenderer.send("netcatty:close", payload);
     }
   },
   rebindTerminalSessionOutput: (sessionId, authorization) =>

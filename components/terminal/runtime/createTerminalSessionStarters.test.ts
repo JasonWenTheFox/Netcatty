@@ -638,7 +638,10 @@ test("startSSH stale attempt cannot attach after disconnect then reconnect", asy
         resolveStart = resolve;
       });
     },
-    closeSession: (id: string) => { closed.push(id); },
+    closeSession: (id: string, opts?: { bootEpoch?: number }) => {
+      if (opts?.bootEpoch !== undefined && opts.bootEpoch !== bootEpochRef.current) return;
+      closed.push(id);
+    },
     onSessionData: () => noop,
     onSessionExit: () => noop,
     onChainProgress: () => noop,
@@ -690,6 +693,7 @@ test("stale startSSH closes orphan only when boot is fully inactive", async () =
         resolveStart = resolve;
       });
     },
+    // No newer registry owner exists; closing by the attempt's bootEpoch succeeds.
     closeSession: (id: string) => { closed.push(id); },
     onSessionData: () => noop,
     onSessionExit: () => noop,
@@ -737,7 +741,10 @@ test("stale startSSH success does not clear replacement MFA wait state", async (
         resolveStart = resolve;
       });
     },
-    closeSession: (id: string) => { closed.push(id); },
+    closeSession: (id: string, opts?: { bootEpoch?: number }) => {
+      if (opts?.bootEpoch !== undefined && opts.bootEpoch !== bootEpochRef.current) return;
+      closed.push(id);
+    },
     onSessionData: () => noop,
     onSessionExit: () => noop,
     onChainProgress: () => noop,

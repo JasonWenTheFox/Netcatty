@@ -754,9 +754,10 @@ export const createBootAttemptGuard = (
 export const closeOrphanBackendSession = (
   ctx: TerminalSessionStartersContext,
   sessionBackendId: string,
+  opts?: { bootEpoch?: number },
 ) => {
   try {
-    const closeResult = ctx.terminalBackend.closeSession(sessionBackendId);
+    const closeResult = ctx.terminalBackend.closeSession(sessionBackendId, opts);
     void Promise.resolve(closeResult).catch((err) => {
       logger.warn("Failed to close orphan session after terminal unmount", err);
     });
@@ -778,17 +779,13 @@ export const tryAttachSessionToTerminal = (
     sudoAutofillPassword?: string;
     sudoAutofillCandidates?: SudoPasswordAutofillCandidate[];
     isCurrentAttempt?: () => boolean;
+    bootEpoch?: number;
   },
 ): boolean => {
-  const isCurrent = opts?.isCurrentAttempt?.() !== false;
-  if (!isTerminalBootActive(ctx) || !isCurrent) {
-    // Overlapping disconnect→reconnect starts share ctx.sessionId. Closing by
-    // that ID would tear down the replacement; only close when this pane is
-    // fully inactive (no newer boot owns the shared registry entry).
-    if (!isCurrent && isTerminalBootActive(ctx)) {
-      return false;
-    }
-    closeOrphanBackendSession(ctx, id);
+  if (!isTerminalBootActive(ctx) || opts?.isCurrentAttempt?.() === false) {
+    // Pass the attempt bootEpoch so closeSession no-ops when a newer boot
+    // already owns this shared sessionId in the main-process registry.
+    closeOrphanBackendSession(ctx, id, { bootEpoch: opts?.bootEpoch });
     return false;
   }
   attachSessionToTerminal(ctx, term, id, opts);

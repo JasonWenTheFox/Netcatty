@@ -361,7 +361,15 @@ printf '%s\n' '${scanCompleteMarker}'`;
         cols: options.cols || 80,
         rows: options.rows || 24,
       };
-      sessions.set(sessionId, session);
+      const { claimSessionSlot } = require("../sessionBootEpoch.cjs");
+      const claim = claimSessionSlot(sessions, sessionId, session, options.bootEpoch);
+      if (!claim.ok) {
+        const supersededError = new Error("Connection superseded by a newer reconnect");
+        supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
+        try { stream?.close?.(); } catch { /* ignore */ }
+        try { if (!isReused) conn?.end?.(); } catch { /* ignore */ }
+        throw supersededError;
+      }
       openTerminalOutputSession?.(sessionId, event.sender);
 
       // Attach the shared connection descriptor to this session. The caller owns

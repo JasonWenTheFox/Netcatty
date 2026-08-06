@@ -961,7 +961,14 @@ function startLocalSession(event, payload) {
     lastIdlePromptAt: 0,
     _promptTrackTail: "",
   };
-  sessions.set(sessionId, session);
+  const { claimSessionSlot } = require("./sessionBootEpoch.cjs");
+  const claim = claimSessionSlot(sessions, sessionId, session, payload?.bootEpoch);
+  if (!claim.ok) {
+    try { proc.kill(); } catch { /* ignore */ }
+    const supersededError = new Error("Local session superseded by a newer reconnect");
+    supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
+    throw supersededError;
+  }
   openTerminalOutputSession(sessionId, event.sender);
   ptyProcessTree.registerPid(sessionId, proc.pid);
 
@@ -1913,6 +1920,10 @@ function clearSessionPtyBuffer(event, payload) {
  */
 function closeSession(event, payload) {
   const session = sessions.get(payload.sessionId);
+  const { sessionMatchesBootEpoch } = require("./sessionBootEpoch.cjs");
+  if (session && !sessionMatchesBootEpoch(session, payload?.bootEpoch)) {
+    return;
+  }
   releaseAttachedSessionState(payload.sessionId);
   if (!session) return;
   terminalFlowPauseArbiter.clearSession(payload.sessionId);
