@@ -538,9 +538,7 @@ export const useSftpViewFileOps = ({
       if (!pane.connection) return;
 
       if (pane.connection.isLocal) {
-        for (const file of files) {
-          await handleDownloadFileForSide(side, file);
-        }
+        await Promise.allSettled(files.map((file) => handleDownloadFileForSide(side, file)));
         return;
       }
 
@@ -558,27 +556,33 @@ export const useSftpViewFileOps = ({
       const selectedDirectory = await selectDirectory(t("sftp.context.download"));
       if (!selectedDirectory) return;
 
-      // Sequential enqueue; each file uses dedicated transfer-pool sessions
-      // via downloadToLocal so the browse connection stays responsive.
-      for (const file of files) {
+      // Enqueue in parallel — each downloadToLocal uses the dedicated transfer
+      // pool / host scheduler. Awaiting one-by-one forced serial multi-select
+      // throughput even though per-file SFTP I/O is already pipelined.
+      const results = await Promise.allSettled(files.map(async (file) => {
         const sourcePath = sftpRef.current.joinPath(pane.connection.currentPath, file.name);
         const targetPath = joinFsPath(selectedDirectory, file.name);
         const isDirectory = isNavigableDirectory(file);
         const fileSize = typeof file.size === "string" ? parseInt(file.size, 10) || 0 : (file.size || 0);
 
-        try {
-          const status = await sftpRef.current.downloadToLocal({
-            fileName: file.name,
-            sourcePath,
-            targetPath,
-            sftpId,
-            connectionId: pane.connection.id,
-            sourceHostId: pane.connection.hostId,
-            sourceHostLabel: pane.connection.hostLabel,
-            sourceEncoding: pane.filenameEncoding,
-            isDirectory,
-            totalBytes: isDirectory ? undefined : fileSize,
-          });
+        const status = await sftpRef.current.downloadToLocal({
+          fileName: file.name,
+          sourcePath,
+          targetPath,
+          sftpId,
+          connectionId: pane.connection.id,
+          sourceHostId: pane.connection.hostId,
+          sourceHostLabel: pane.connection.hostLabel,
+          sourceEncoding: pane.filenameEncoding,
+          isDirectory,
+          totalBytes: isDirectory ? undefined : fileSize,
+        });
+        return { file, status };
+      }));
+
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          const { file, status } = result.value;
           if (status === "completed") {
             toast.success(`${t("sftp.context.download")}: ${file.name}`, "SFTP");
           } else if (status === "failed") {
@@ -586,9 +590,9 @@ export const useSftpViewFileOps = ({
           } else if (status === "attention") {
             toast.error(`${file.name}: another transfer for this path is already in progress`, "SFTP");
           }
-        } catch (e) {
-          logger.error("[SftpView] Failed to download file:", e);
-          const errorMessage = e instanceof Error ? e.message : String(e);
+        } else {
+          logger.error("[SftpView] Failed to download file:", result.reason);
+          const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
           const isCancelError = errorMessage.includes("cancelled") || errorMessage.includes("canceled");
           if (!isCancelError) toast.error(errorMessage || t("sftp.error.downloadFailed"), "SFTP");
         }

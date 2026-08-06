@@ -1438,6 +1438,60 @@ async function prepareStreamFallbackAfterRangeFailure(transfer, client) {
   }
 }
 
+/**
+ * Wait for a prior truncating WRITE OPEN's published gate before fastPut.
+ * Cancelable and time-bounded so a dead isolated OPEN that never callbacks
+ * cannot hang strategy fallback forever (#2755).
+ */
+async function waitForPendingWriteOpenPathGate(transfer, options = {}) {
+  const gate = transfer?.pendingWriteOpenPathGate;
+  if (typeof gate?.then !== "function") return;
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 5_000;
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const previousAbort = transfer.abort;
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      transfer.signal?.removeEventListener?.("abort", onAbort);
+      if (transfer.abort === abortWait) transfer.abort = previousAbort;
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // Unblock other waiters even if the underlying OPEN never finishes.
+      try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
+      fn(value);
+    };
+    const onAbort = () => {
+      transfer.cancelled = true;
+      finish(reject, new Error("Transfer cancelled"));
+    };
+    const abortWait = () => {
+      try { previousAbort?.(); } catch { /* ignore */ }
+      onAbort();
+    };
+    transfer.abort = abortWait;
+    transfer.signal?.addEventListener?.("abort", onAbort, { once: true });
+    if (transfer.cancelled || transfer.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    timer = setTimeout(() => finish(resolve), timeoutMs);
+    Promise.resolve(gate).then(
+      () => finish(resolve),
+      () => finish(resolve),
+    );
+  });
+  if (transfer.cancelled || transfer.signal?.aborted) {
+    throw new Error("Transfer cancelled");
+  }
+}
+
 function getIsolatedDownloadChannelPool(client) {
   let pool = isolatedDownloadChannelPools.get(client);
   if (!pool) {
@@ -1895,6 +1949,14 @@ async function uploadFile(
   const initialSource = (transfer.resumable || !transfer.sourceIsOwnedTemp)
     ? await fs.promises.stat(originalLocalPath)
     : null;
+
+  /** @type {Error | null} */
+  let lastPipelineError = null;
+  const rememberPipelineError = (err) => {
+    if (err && typeof err === "object") lastPipelineError = err;
+    else lastPipelineError = new Error(String(err || "SFTP upload failed"));
+  };
+
   if (!transfer.sourceIsOwnedTemp) {
     const digestId = crypto.createHash("sha256")
       .update(String(transfer.transferId || "upload"))
@@ -1905,15 +1967,32 @@ async function uploadFile(
       "ranges.sha256",
     );
     transfer.sourceDigestPath = digestPath;
-    await createUploadDigestBaseline(
-      originalLocalPath,
-      digestPath,
-      fileSize,
-      transfer,
-    );
+    const previousPhase = transfer.phase;
+    transfer.phase = "verifying";
+    transfer.publishCurrentProgress?.();
+    try {
+      await createUploadDigestBaseline(
+        originalLocalPath,
+        digestPath,
+        fileSize,
+        transfer,
+        () => {
+          // Keep remote transferredBytes at the resume checkpoint while hashing
+          // so large uploads do not look stuck at 0 B with no status (#2712).
+          sendProgress(Math.max(0, Number(transfer.checkpointBytes) || 0), fileSize, {
+            force: true,
+          });
+        },
+      );
+    } finally {
+      transfer.phase = previousPhase || "transferring";
+      if (!transfer.cancelled && !transfer.signal?.aborted) {
+        transfer.publishCurrentProgress?.();
+      }
+    }
     if (isTransferCancelled(transfer)) throw new Error("Transfer cancelled");
     const sourceAfterBaseline = await fs.promises.stat(originalLocalPath);
-    // Digest was just built + verified; only size/content matter from here.
+    // Digest was just built; only size/content matter from here.
     assertSourceMetadataUnchanged(initialSource, sourceAfterBaseline, fileSize, {
       contentVerifiedSeparately: true,
     });
@@ -1953,16 +2032,9 @@ async function uploadFile(
     }
   };
 
-  /** @type {Error | null} */
-  let lastPipelineError = null;
-  const rememberPipelineError = (err) => {
-    if (err && typeof err === "object") lastPipelineError = err;
-    else lastPipelineError = new Error(String(err || "SFTP upload failed"));
-  };
-
   // Prefer an isolated SFTP channel so cancellation cannot kill the browse session.
+  let isolated = null;
   if (!client.__netcattySudoMode) {
-    let isolated = null;
     try {
       isolated = await openIsolatedSftpChannel(client, transfer?.signal);
     } catch (err) {
@@ -1972,151 +2044,154 @@ async function uploadFile(
         err.message || String(err),
       );
     }
+  }
+  if (isolated && transfer.cancelled) {
+    try { isolated.end?.(); } catch { /* ignore */ }
+    isolated = null;
+    throw new Error("Transfer cancelled");
+  }
 
-    if (isolated) {
-      let concurrentIsolatedOk = false;
-      try {
-        transfer.uploadStrategy = "concurrent-isolated";
-        logTransferDiag(transfer, "strategy", {
-          strategy: "concurrent-isolated",
-          fields: {
-            chunk: formatDiagBytes(TRANSFER_CHUNK_SIZE),
-            concurrency: UPLOAD_TRANSFER_CONCURRENCY,
-          },
-        });
-        await uploadFileConcurrent(
-          localPath,
-          remotePath,
-          isolated,
-          fileSize,
-          transfer,
-          sendProgress,
-          { disposeChannel: true, onBytesCommitted, generatedStagePath },
-        );
-        concurrentIsolatedOk = true;
-      } catch (err) {
-        // uploadFileConcurrent ends the isolated channel itself.
-        isolated = null;
-        if (transfer.cancelled) throw err;
-        if (err?.noTransferFallback) throw err;
-        rememberPipelineError(err);
-        if (transfer.resumable) {
-          await prepareUploadFallbackCheckpoint(transfer, client, fileSize, sendProgress);
-        } else {
-          transfer.checkpointBytes = 0;
-        }
-        console.warn(
-          "[transferBridge] concurrent isolated upload failed, trying next pipelined strategy:",
-          err?.message || String(err),
-        );
-      }
-      // Verification errors must not fall through into other strategies.
-      if (concurrentIsolatedOk) {
-        await finishSuccessfulUpload();
-        return;
-      }
-    }
-
-    if (!isolated) {
-      try {
-        isolated = await openIsolatedSftpChannel(client, transfer?.signal);
-      } catch (err) {
-        rememberPipelineError(err);
-        console.warn(
-          "[transferBridge] Failed to reopen isolated SFTP channel for fastPut:",
-          err.message || String(err),
-        );
-      }
-    }
-
-    // fastPut always truncates and rewrites from offset 0 — skip when we
-    // already have a durable resume checkpoint from a prior concurrent attempt.
-    // fastPut is not pause-aware; do not advertise pause while it runs.
-    const hasResumeCheckpoint = Math.max(0, Number(transfer.checkpointBytes) || 0) > 0;
-    if (
-      isolated
-      && typeof isolated.fastPut === "function"
-      && !hasResumeCheckpoint
-      && !transfer.resumable
-    ) {
-      let fastPutOk = false;
-      let fastPutSourcePath = localPath;
-      let fastPutSnapshotPath = null;
-      try {
-        // Wait for any prior/in-flight write OPEN on this path (including our
-        // own concurrent attempt's still-pending OPEN) before fastPut truncates
-        // the same stage (Codex P1 on 7872a304).
-        if (typeof transfer.pendingWriteOpenPathGate?.then === "function") {
-          await transfer.pendingWriteOpenPathGate;
-        }
-        if (transfer.cancelled) throw new Error("Transfer cancelled");
-        transfer.uploadStrategy = "fastPut-isolated";
-        logTransferDiag(transfer, "strategy", { strategy: "fastPut-isolated" });
-        transfer.pauseSupported = false;
-        transfer.pauseUnavailableReason = "Pause is unavailable during fastPut upload";
-        if (!transfer.sourceIsOwnedTemp) {
-          const snapshotId = crypto.createHash("sha256")
-            .update(String(transfer.transferId || localPath))
-            .digest("hex")
-            .slice(0, 16);
-          fastPutSnapshotPath = tempDirBridge.getTransferTempFilePath(
-            `upload-source-${snapshotId}`,
-            "snapshot.bin",
-          );
-          await createVerifiedUploadSnapshot(
-            originalLocalPath,
-            fastPutSnapshotPath,
-            transfer.sourceDigestPath,
-            fileSize,
-            transfer,
-          );
-          fastPutSourcePath = fastPutSnapshotPath;
-        }
-        sendProgress(Math.max(0, Number(transfer.checkpointBytes) || 0), fileSize, {
-          force: true,
-        });
-        await uploadViaFastPut(
-          fastPutSourcePath,
-          remotePath,
-          isolated,
-          fileSize,
-          transfer,
-          sendProgress,
-          { disposeChannel: true },
-        );
-        fastPutOk = true;
-      } catch (err) {
-        isolated = null;
-        // Restore pause capability for subsequent pause-aware strategies.
-        transfer.pauseSupported = Boolean(transfer.resumable);
-        transfer.pauseUnavailableReason = transfer.resumable
-          ? undefined
-          : transfer.pauseUnavailableReason;
-        if (transfer.cancelled) throw err;
-        // Source-change / hard safety errors must not be retried on another path.
-        if (err?.noTransferFallback || err?.sourceChanged) throw err;
-        rememberPipelineError(err);
-        // fastPut progress is not a durable contiguous checkpoint — reset so
-        // concurrent-shared does not resume past holes left by the failed put.
+  if (isolated) {
+    let concurrentIsolatedOk = false;
+    try {
+      transfer.uploadStrategy = "concurrent-isolated";
+      logTransferDiag(transfer, "strategy", {
+        strategy: "concurrent-isolated",
+        fields: {
+          chunk: formatDiagBytes(TRANSFER_CHUNK_SIZE),
+          concurrency: UPLOAD_TRANSFER_CONCURRENCY,
+        },
+      });
+      await uploadFileConcurrent(
+        localPath,
+        remotePath,
+        isolated,
+        fileSize,
+        transfer,
+        sendProgress,
+        { disposeChannel: true, onBytesCommitted, generatedStagePath },
+      );
+      concurrentIsolatedOk = true;
+    } catch (err) {
+      // uploadFileConcurrent ends the isolated channel itself.
+      isolated = null;
+      if (transfer.cancelled) throw err;
+      if (err?.noTransferFallback) throw err;
+      rememberPipelineError(err);
+      if (transfer.resumable) {
+        await prepareUploadFallbackCheckpoint(transfer, client, fileSize, sendProgress);
+      } else {
         transfer.checkpointBytes = 0;
-        sendProgress(0, fileSize, { force: true, checkpointBytes: 0 });
-        console.warn(
-          "[transferBridge] isolated fastPut failed, trying next pipelined strategy:",
-          err?.message || String(err),
-        );
-      } finally {
-        if (fastPutSnapshotPath) {
-          await fs.promises.rm(fastPutSnapshotPath, { force: true }).catch(() => {});
-        }
       }
-      if (fastPutOk) {
-        onBytesCommitted?.();
-        await finishSuccessfulUpload();
-        return;
-      }
-    } else if (isolated && typeof isolated.end === "function") {
-      try { isolated.end(); } catch { /* ignore */ }
+      console.warn(
+        "[transferBridge] concurrent isolated upload failed, trying next pipelined strategy:",
+        err?.message || String(err),
+      );
     }
+    // Verification errors must not fall through into other strategies.
+    if (concurrentIsolatedOk) {
+      await finishSuccessfulUpload();
+      return;
+    }
+  }
+
+  if (!isolated && !client.__netcattySudoMode) {
+    try {
+      isolated = await openIsolatedSftpChannel(client, transfer?.signal);
+    } catch (err) {
+      rememberPipelineError(err);
+      console.warn(
+        "[transferBridge] Failed to reopen isolated SFTP channel for fastPut:",
+        err.message || String(err),
+      );
+    }
+  }
+
+  // fastPut always truncates and rewrites from offset 0 — skip when we
+  // already have a durable resume checkpoint from a prior concurrent attempt.
+  // fastPut is not pause-aware; do not advertise pause while it runs.
+  const hasResumeCheckpoint = Math.max(0, Number(transfer.checkpointBytes) || 0) > 0;
+  if (
+    isolated
+    && typeof isolated.fastPut === "function"
+    && !hasResumeCheckpoint
+    && !transfer.resumable
+  ) {
+    let fastPutOk = false;
+    let fastPutSourcePath = localPath;
+    let fastPutSnapshotPath = null;
+    try {
+      // Wait for any prior/in-flight write OPEN on this path (including our
+      // own concurrent attempt's still-pending OPEN) before fastPut truncates
+      // the same stage (Codex P1 on 7872a304 / #2755 cancelable wait).
+      await waitForPendingWriteOpenPathGate(transfer);
+      if (transfer.cancelled) throw new Error("Transfer cancelled");
+      transfer.uploadStrategy = "fastPut-isolated";
+      logTransferDiag(transfer, "strategy", { strategy: "fastPut-isolated" });
+      transfer.pauseSupported = false;
+      transfer.pauseUnavailableReason = "Pause is unavailable during fastPut upload";
+      if (!transfer.sourceIsOwnedTemp) {
+        const snapshotId = crypto.createHash("sha256")
+          .update(String(transfer.transferId || localPath))
+          .digest("hex")
+          .slice(0, 16);
+        fastPutSnapshotPath = tempDirBridge.getTransferTempFilePath(
+          `upload-source-${snapshotId}`,
+          "snapshot.bin",
+        );
+        await createVerifiedUploadSnapshot(
+          originalLocalPath,
+          fastPutSnapshotPath,
+          transfer.sourceDigestPath,
+          fileSize,
+          transfer,
+        );
+        fastPutSourcePath = fastPutSnapshotPath;
+      }
+      sendProgress(Math.max(0, Number(transfer.checkpointBytes) || 0), fileSize, {
+        force: true,
+      });
+      await uploadViaFastPut(
+        fastPutSourcePath,
+        remotePath,
+        isolated,
+        fileSize,
+        transfer,
+        sendProgress,
+        { disposeChannel: true },
+      );
+      fastPutOk = true;
+    } catch (err) {
+      isolated = null;
+      // Restore pause capability for subsequent pause-aware strategies.
+      transfer.pauseSupported = Boolean(transfer.resumable);
+      transfer.pauseUnavailableReason = transfer.resumable
+        ? undefined
+        : transfer.pauseUnavailableReason;
+      if (transfer.cancelled) throw err;
+      // Source-change / hard safety errors must not be retried on another path.
+      if (err?.noTransferFallback || err?.sourceChanged) throw err;
+      rememberPipelineError(err);
+      // fastPut progress is not a durable contiguous checkpoint — reset so
+      // concurrent-shared does not resume past holes left by the failed put.
+      transfer.checkpointBytes = 0;
+      sendProgress(0, fileSize, { force: true, checkpointBytes: 0 });
+      console.warn(
+        "[transferBridge] isolated fastPut failed, trying next pipelined strategy:",
+        err?.message || String(err),
+      );
+    } finally {
+      if (fastPutSnapshotPath) {
+        await fs.promises.rm(fastPutSnapshotPath, { force: true }).catch(() => {});
+      }
+    }
+    if (fastPutOk) {
+      onBytesCommitted?.();
+      await finishSuccessfulUpload();
+      return;
+    }
+  } else if (isolated && typeof isolated.end === "function") {
+    try { isolated.end(); } catch { /* ignore */ }
   }
 
   // Concurrent WRITEs on the shared browse channel — still pipelined, does not
@@ -2510,11 +2585,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             settle(reject, new Error("Transfer cancelled"));
             if (trackSharedWriteDrain) {
               armSharedWriteDrainForceComplete();
+            } else {
+              // Isolated write cancel: force-release path gate so fastPut /
+              // shared fallback (or a same-id retry) is not stuck forever when
+              // OPEN never callbacks after sftp.end() (#2755).
+              completeSharedWriteDrain();
+              releasePathGate();
             }
-            // Isolated write: keep path gate until OPEN callback too. Force-
-            // releasing after sftp.end() lets a same-path retry finish, then a
-            // late truncating OPEN can wipe its destination with no live
-            // activeTransfers entry to invalidate (Codex P1 on c30e1734).
+            // Late OPEN after this still closes/unlinks via finishLateSharedWriteOpen.
           }, 2000);
         }
         return;
@@ -2534,7 +2612,15 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (trackSharedWriteDrain) {
         armSharedWriteDrainForceComplete();
       } else if (isWriteOpen) {
-        // Isolated write: hold path gate until OPEN callback (same as cancel).
+        // Isolated write: hold until OPEN callback, but force-release after a
+        // short grace so strategy fallback / cancel cannot hang forever when
+        // the OPEN never arrives on a dead channel (#2755).
+        if (!openDrainTimer) {
+          openDrainTimer = setTimeout(() => {
+            completeSharedWriteDrain();
+            releasePathGate();
+          }, 2000);
+        }
       } else {
         completeSharedWriteDrain();
         releasePathGate();
@@ -2961,7 +3047,7 @@ async function assertUploadDigestCapacity(digestPath, fileSize) {
   }
 }
 
-async function verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer) {
+async function verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer, onProgress = null) {
   let sourceHandle = null;
   let digestHandle = null;
   try {
@@ -2988,6 +3074,7 @@ async function verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, tran
       }
       position += length;
       chunkIndex += digestCount;
+      onProgress?.(position, fileSize);
     }
   } finally {
     await sourceHandle?.close().catch(() => {});
@@ -2995,7 +3082,7 @@ async function verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, tran
   }
 }
 
-async function createUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer) {
+async function createUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer, onProgress = null) {
   // A crashed attempt may have left this transfer's old baseline behind. It is
   // fully replaceable and its blocks must be reclaimable before capacity is
   // evaluated for the new baseline.
@@ -3038,6 +3125,9 @@ async function createUploadDigestBaseline(sourcePath, digestPath, fileSize, tran
       }
       position += length;
       digestPosition += digests.length;
+      // Report scan progress so large uploads do not look stuck at 0 B/s while
+      // hashing (#2712 / #2556). Bytes here are local read progress, not remote.
+      onProgress?.(position, fileSize);
     }
     completed = true;
   } finally {
@@ -3046,7 +3136,9 @@ async function createUploadDigestBaseline(sourcePath, digestPath, fileSize, tran
     if (!completed) await fs.promises.rm(digestPath, { force: true }).catch(() => {});
   }
 
-  await verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer);
+  // Confirm the sidecar matches the source before any remote WRITE. Progress
+  // callbacks keep the UI in "verifying" instead of looking stuck (#2712).
+  await verifyUploadDigestBaseline(sourcePath, digestPath, fileSize, transfer, onProgress);
 }
 
 async function createVerifiedUploadSnapshot(

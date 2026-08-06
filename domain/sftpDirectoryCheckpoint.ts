@@ -37,8 +37,9 @@ export function normalizeSftpCanonicalDirectoryPath(canonicalPath: string): stri
 
 /**
  * Claims one directory against the global work budget. Active directories are
- * shared by one sequential traversal and released when each recursive frame
- * exits, so sibling aliases remain valid without copying the ancestor set.
+ * shared across the (possibly parallel) traversal and released when each
+ * recursive frame exits, so sibling aliases remain valid without copying the
+ * ancestor set.
  */
 export function claimSftpDirectoryVisit(
   budget: SftpDirectoryTraversalBudget,

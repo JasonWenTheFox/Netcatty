@@ -2,6 +2,17 @@ export const DEFAULT_SFTP_FILE_TRANSFER_CONCURRENCY = 2;
 export const MIN_SFTP_FILE_TRANSFER_CONCURRENCY = 1;
 export const MAX_SFTP_FILE_TRANSFER_CONCURRENCY = 16;
 
+/**
+ * Bounded parallel directory listings while walking a folder tree.
+ * SFTP has no recursive LIST; FileZilla/WinSCP still walk one dir at a time on
+ * a single control channel. We pipeline several OPENDIR/READDIR requests so
+ * wide trees discover total file counts much faster without a second full scan.
+ * Keep this modest — listing shares the transfer SFTP session with file I/O.
+ */
+export const DEFAULT_SFTP_DIRECTORY_LISTING_CONCURRENCY = 4;
+export const MIN_SFTP_DIRECTORY_LISTING_CONCURRENCY = 1;
+export const MAX_SFTP_DIRECTORY_LISTING_CONCURRENCY = 8;
+
 export function resolveSftpTransferConcurrency(readStoredValue: () => number | null | undefined): number {
   const stored = readStoredValue();
   return stored != null &&
@@ -9,6 +20,17 @@ export function resolveSftpTransferConcurrency(readStoredValue: () => number | n
     stored <= MAX_SFTP_FILE_TRANSFER_CONCURRENCY
     ? stored
     : DEFAULT_SFTP_FILE_TRANSFER_CONCURRENCY;
+}
+
+export function resolveSftpDirectoryListingConcurrency(
+  readStoredValue?: () => number | null | undefined,
+): number {
+  const stored = readStoredValue?.();
+  return stored != null &&
+    stored >= MIN_SFTP_DIRECTORY_LISTING_CONCURRENCY &&
+    stored <= MAX_SFTP_DIRECTORY_LISTING_CONCURRENCY
+    ? stored
+    : DEFAULT_SFTP_DIRECTORY_LISTING_CONCURRENCY;
 }
 
 export async function runSftpTransferWorkers<T>(
@@ -45,4 +67,29 @@ export async function runSftpTransferWorkers<T>(
     () => runNext(),
   );
   await Promise.all(workers);
+}
+
+/** Run workers over a queue with an explicit concurrency (not settings-backed). */
+export async function runBoundedConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+  options?: {
+    beforeClaim?: () => Promise<void>;
+  },
+): Promise<void> {
+  const limit = Math.max(1, Math.min(Math.floor(concurrency) || 1, items.length || 1));
+  if (items.length === 0) return;
+  let nextIndex = 0;
+  const runNext = async () => {
+    while (nextIndex < items.length) {
+      if (options?.beforeClaim) {
+        await options.beforeClaim();
+      }
+      if (nextIndex >= items.length) return;
+      const index = nextIndex++;
+      await worker(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runNext()));
 }
