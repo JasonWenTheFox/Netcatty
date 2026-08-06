@@ -20,17 +20,19 @@ const ENC_PREFIX = "enc:v1:";
  * - macOS/Linux: plaintext bytes start with "v10" or "v11"
  * - Windows (legacy DPAPI blob): leading bytes are 0x01 0x00 0x00 0x00
  *
+ * Detect headers on *decoded* bytes. A four-byte DPAPI header alone base64-
+ * encodes as `AQAAAA==`, but real blobs continue with `d0 8c ...` and encode
+ * as `AQAAANCM...` — matching the six-character `AQAAAA` prefix rejects them.
+ *
  * Keep in sync with domain/credentials.ts.
  *
  * v10/v11 CBC blobs are at least header(3) + one AES block(16) = 19 bytes.
  * AES-GCM blobs are larger (nonce+tag), but CBC is the lower bound we must
  * accept so short credentials are not mistaken for plaintext coincidences.
  */
-const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
-  "djEw", // "v10"
-  "djEx", // "v11"
-  "AQAAAA", // 0x01 0x00 0x00 0x00 (DPAPI blob header)
-];
+const V10_HEADER = Buffer.from("v10", "utf8");
+const V11_HEADER = Buffer.from("v11", "utf8");
+const DPAPI_HEADER = Buffer.from([0x01, 0x00, 0x00, 0x00]);
 
 const MIN_V10_V11_CIPHERTEXT_BYTES = 19;
 const MIN_DPAPI_CIPHERTEXT_BYTES = 20;
@@ -39,9 +41,9 @@ const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
 
 let safeStorage = null;
 
-function minimumCiphertextBytesForPayload(payload) {
-  if (payload.startsWith("AQAAAA")) return MIN_DPAPI_CIPHERTEXT_BYTES;
-  return MIN_V10_V11_CIPHERTEXT_BYTES;
+function startsWithBytes(buffer, prefix) {
+  if (buffer.byteLength < prefix.byteLength) return false;
+  return buffer.subarray(0, prefix.byteLength).equals(prefix);
 }
 
 function looksLikeEncryptedCredential(value) {
@@ -50,12 +52,20 @@ function looksLikeEncryptedCredential(value) {
   }
   const payload = value.slice(ENC_PREFIX.length);
   if (!payload || !BASE64_RE.test(payload)) return false;
-  if (!SAFE_STORAGE_BASE64_HEADER_PREFIXES.some((prefix) => payload.startsWith(prefix))) {
+  // Reject header-only / truncated base64 that is not a full platform blob.
+  let decoded;
+  try {
+    decoded = Buffer.from(payload, "base64");
+  } catch {
     return false;
   }
-  // Reject header-only / truncated base64 that is not a full platform blob.
-  const decoded = Buffer.from(payload, "base64");
-  return decoded.byteLength >= minimumCiphertextBytesForPayload(payload);
+  if (startsWithBytes(decoded, V10_HEADER) || startsWithBytes(decoded, V11_HEADER)) {
+    return decoded.byteLength >= MIN_V10_V11_CIPHERTEXT_BYTES;
+  }
+  if (startsWithBytes(decoded, DPAPI_HEADER)) {
+    return decoded.byteLength >= MIN_DPAPI_CIPHERTEXT_BYTES;
+  }
+  return false;
 }
 
 /**

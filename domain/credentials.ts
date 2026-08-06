@@ -12,6 +12,10 @@ const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
  * - macOS/Linux: plaintext bytes start with "v10" or "v11"
  * - Windows (legacy DPAPI blob): leading bytes are 0x01 0x00 0x00 0x00
  *
+ * Detect headers on *decoded* bytes. A four-byte DPAPI header alone base64-
+ * encodes as `AQAAAA==`, but real blobs continue with `d0 8c ...` and encode
+ * as `AQAAANCM...` — matching the six-character `AQAAAA` prefix rejects them.
+ *
  * We require a known header AND a complete-enough decoded blob. v10/v11 CBC
  * blobs are at least header(3) + one AES block(16) = 19 bytes. Header-only
  * base64 such as `enc:v1:djEw` must not be treated as ciphertext.
@@ -23,24 +27,27 @@ const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
  * - components/os_crypt/sync/os_crypt_linux.cc (kObfuscationPrefixV10/V11)
  * - components/os_crypt/sync/os_crypt_win.cc (DPAPI legacy path)
  */
-const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
-  "djEw", // "v10"
-  "djEx", // "v11"
-  "AQAAAA", // 0x01 0x00 0x00 0x00 (DPAPI blob header)
-] as const;
+const V10_HEADER = [0x76, 0x31, 0x30] as const; // "v10"
+const V11_HEADER = [0x76, 0x31, 0x31] as const; // "v11"
+const DPAPI_HEADER = [0x01, 0x00, 0x00, 0x00] as const;
 
 /** Minimum decoded sizes for complete Chromium OSCrypt blobs. */
 const MIN_V10_V11_CIPHERTEXT_BYTES = 19; // CBC: header(3) + one AES block(16)
 const MIN_DPAPI_CIPHERTEXT_BYTES = 20; // header(4) + protected payload
 
 /**
- * Renderer-safe base64 decode length. Avoids Node `Buffer` which is unavailable
+ * Renderer-safe base64 decode. Avoids Node `Buffer` which is unavailable
  * in Electron windows with `nodeIntegration: false`.
  */
-const decodedBase64ByteLength = (payload: string): number => {
+const decodeBase64Bytes = (payload: string): Uint8Array | null => {
   try {
     if (typeof atob === "function") {
-      return atob(payload).length;
+      const binary = atob(payload);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        out[i] = binary.charCodeAt(i);
+      }
+      return out;
     }
   } catch {
     // fall through
@@ -48,17 +55,20 @@ const decodedBase64ByteLength = (payload: string): number => {
   // Node / test environments without atob.
   if (typeof Buffer !== "undefined") {
     try {
-      return Buffer.from(payload, "base64").byteLength;
+      return new Uint8Array(Buffer.from(payload, "base64"));
     } catch {
-      return 0;
+      return null;
     }
   }
-  return 0;
+  return null;
 };
 
-const minimumCiphertextBytesForPayload = (payload: string): number => {
-  if (payload.startsWith("AQAAAA")) return MIN_DPAPI_CIPHERTEXT_BYTES;
-  return MIN_V10_V11_CIPHERTEXT_BYTES;
+const startsWithBytes = (
+  decoded: Uint8Array,
+  prefix: readonly number[],
+): boolean => {
+  if (decoded.byteLength < prefix.length) return false;
+  return prefix.every((byte, index) => decoded[index] === byte);
 };
 
 export const isEncryptedCredentialPlaceholder = (
@@ -69,10 +79,15 @@ export const isEncryptedCredentialPlaceholder = (
   }
   const payload = value.slice(CREDENTIAL_ENCRYPTION_PREFIX.length);
   if (!payload || !BASE64_RE.test(payload)) return false;
-  if (!SAFE_STORAGE_BASE64_HEADER_PREFIXES.some((prefix) => payload.startsWith(prefix))) {
-    return false;
+  const decoded = decodeBase64Bytes(payload);
+  if (!decoded) return false;
+  if (startsWithBytes(decoded, V10_HEADER) || startsWithBytes(decoded, V11_HEADER)) {
+    return decoded.byteLength >= MIN_V10_V11_CIPHERTEXT_BYTES;
   }
-  return decodedBase64ByteLength(payload) >= minimumCiphertextBytesForPayload(payload);
+  if (startsWithBytes(decoded, DPAPI_HEADER)) {
+    return decoded.byteLength >= MIN_DPAPI_CIPHERTEXT_BYTES;
+  }
+  return false;
 };
 
 /**

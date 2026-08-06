@@ -51,6 +51,17 @@ test("isEncryptedCredentialPlaceholder detects complete v10 device-bound ciphert
   assert.equal(isEncryptedCredentialPlaceholder(ENC), true);
 });
 
+test("isEncryptedCredentialPlaceholder detects real Windows DPAPI base64 prefixes", () => {
+  const body = Buffer.alloc(20, 0);
+  body[0] = 0x01;
+  body[4] = 0xd0;
+  body[5] = 0x8c;
+  const encoded = body.toString("base64");
+  assert.equal(encoded.startsWith("AQAAANCM"), true);
+  assert.equal(encoded.startsWith("AQAAAA"), false);
+  assert.equal(isEncryptedCredentialPlaceholder(`enc:v1:${encoded}`), true);
+});
+
 test("isEncryptedCredentialPlaceholder rejects header-only enc:v1 payloads", () => {
   assert.equal(isEncryptedCredentialPlaceholder("enc:v1:djEw"), false);
 });

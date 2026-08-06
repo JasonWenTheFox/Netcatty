@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   ENC_PREFIX,
   MIN_V10_V11_CIPHERTEXT_BYTES,
+  MIN_DPAPI_CIPHERTEXT_BYTES,
   encryptCredentialValue,
   decryptCredentialValue,
   looksLikeEncryptedCredential,
@@ -43,10 +44,32 @@ test("looksLikeEncryptedCredential accepts complete CBC-sized v10 payloads", () 
   assert.equal(looksLikeEncryptedCredential(completeCiphertextPlaceholder()), true);
 });
 
+test("looksLikeEncryptedCredential accepts real Windows DPAPI base64 prefixes", () => {
+  // 01 00 00 00 d0 8c ... encodes as AQAAANCM..., not AQAAAA...
+  const body = Buffer.alloc(MIN_DPAPI_CIPHERTEXT_BYTES, 0);
+  body[0] = 0x01;
+  body[4] = 0xd0;
+  body[5] = 0x8c;
+  const encoded = body.toString("base64");
+  assert.equal(encoded.startsWith("AQAAANCM"), true);
+  assert.equal(encoded.startsWith("AQAAAA"), false);
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${encoded}`), true);
+});
+
 test("looksLikeEncryptedCredential rejects header-only enc:v1 payloads", () => {
   assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}djEw`), false);
   assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}not-real-ciphertext`), false);
   assert.equal(looksLikeEncryptedCredential("password"), false);
+});
+
+test("encrypt leaves undecryptable DPAPI enc:v1 ciphertext unchanged", () => {
+  const storage = fakeSafeStorage({ decryptThrows: true });
+  const body = Buffer.alloc(MIN_DPAPI_CIPHERTEXT_BYTES, 0);
+  body[0] = 0x01;
+  body[4] = 0xd0;
+  body[5] = 0x8c;
+  const stale = `${ENC_PREFIX}${body.toString("base64")}`;
+  assert.equal(encryptCredentialValue(stale, storage), stale);
 });
 
 test("encrypt leaves undecryptable complete enc:v1 ciphertext unchanged instead of wrapping again", () => {
