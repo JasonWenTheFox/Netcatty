@@ -44,27 +44,28 @@ test("hibernate wake pauses flow before replay and resumes only after reattach",
   assert.match(mountSource, /const drainOk = \(await prepareWakeFlow\?\.\(\)\) \?\? true;/);
   assert.match(mountSource, /const takeAndTrackPending = \(\): string =>/);
   assert.match(mountSource, /const pendingAtApplyStart = takeAndTrackPending\(\);/);
-  assert.match(mountSource, /const latePending = takeAndTrackPending\(\);/);
-  assert.match(mountSource, /const exitTail = takeAndTrackPending\(\);/);
-  assert.match(mountSource, /const finalTail = takeAndTrackPending\(\);/);
-  assert.match(mountSource, /const preTeardownTail = takeAndTrackPending\(\);/);
+  assert.match(mountSource, /const pendingTail = takeAndTrackPending\(\);/);
+  assert.match(mountSource, /if \(!pendingTail\) break;/);
   assert.match(mountSource, /restoreAfterFailedWake\?\.\(takenPendingForRestore\)/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
   assert.doesNotMatch(mountSource, /for \(let drainPass = 0;/);
   assert.doesNotMatch(mountSource, /finalPendingDelta/);
+  assert.doesNotMatch(mountSource, /preTeardownTail/);
 
   const prepareIndex = mountSource.indexOf("const drainOk = (await prepareWakeFlow?.()) ?? true;");
   const disableCapIndex = mountSource.indexOf("setHibernatePendingCapDisabled?.(true);");
   const stopDataBeforeReplay = mountSource.indexOf("if (drainOk) {\n      stopHibernateDataListener();");
   const pendingIndex = mountSource.indexOf("const pendingAtApplyStart = takeAndTrackPending();");
   const applyIndex = mountSource.indexOf("await applyHibernateWakeToTerminal(");
-  const latePendingIndex = mountSource.indexOf("const latePending = takeAndTrackPending();");
-  const exitTailIndex = mountSource.indexOf("const exitTail = takeAndTrackPending();");
-  const finalTailIndex = mountSource.indexOf("const finalTail = takeAndTrackPending();");
+  const stopDataBeforeTail = mountSource.indexOf(
+    "stopHibernateDataListener();",
+    applyIndex,
+  );
+  const pendingTailIndex = mountSource.indexOf("const pendingTail = takeAndTrackPending();");
+  const emptyBreakIndex = mountSource.indexOf("if (!pendingTail) break;");
   const shouldReattachIndex = mountSource.indexOf(
     "const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);",
   );
-  const preTeardownIndex = mountSource.indexOf("const preTeardownTail = takeAndTrackPending();");
   const stopAllIndex = mountSource.indexOf("stopHibernateListeners();", shouldReattachIndex);
   const reattachIndex = mountSource.indexOf("reattachSession(term);", shouldReattachIndex);
   const failedRestoreIndex = mountSource.indexOf("restoreAfterFailedWake?.(takenPendingForRestore);");
@@ -79,18 +80,20 @@ test("hibernate wake pauses flow before replay and resumes only after reattach",
   assert.ok(pendingIndex > stopDataBeforeReplay, "pending take must run after drain handling");
   assert.ok(applyIndex > pendingIndex, "history replay follows the pending capture");
   assert.ok(
-    latePendingIndex > applyIndex,
-    "late pending take must run after history replay to keep exit/live tails",
-  );
-  assert.ok(exitTailIndex > latePendingIndex, "exit-tail take must follow the late pending await");
-  assert.ok(finalTailIndex > exitTailIndex, "final tail take must follow exit-tail await");
-  assert.ok(
-    preTeardownIndex > finalTailIndex,
-    "pre-teardown pending take must follow final tail",
+    stopDataBeforeTail > applyIndex,
+    "data listener must stop again before residual pending drain",
   );
   assert.ok(
-    shouldReattachIndex > preTeardownIndex,
-    "reattach decision must run after all pending/exit drains",
+    pendingTailIndex > stopDataBeforeTail,
+    "residual pending drain must run after history replay",
+  );
+  assert.ok(
+    emptyBreakIndex > pendingTailIndex,
+    "residual drain must end with an empty take before teardown",
+  );
+  assert.ok(
+    shouldReattachIndex > emptyBreakIndex,
+    "reattach decision must run after until-empty pending drain",
   );
   assert.ok(
     stopAllIndex > shouldReattachIndex,

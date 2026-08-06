@@ -199,36 +199,22 @@ export async function wakeTerminalFromHibernate(
     });
     runtime.cursorLineHighlighter.refresh({ force: true });
 
-    // Stop the data listener before the late take. Captures:
+    // Stop the data listener before draining residual pending. Captures:
     // - exit "[session closed]" tails appended during history replay
     // - uncapped live arrivals when drainOk was false
+    // Only the exit listener can still append after this point, so a short
+    // until-empty loop is enough; the last take before teardown must be empty
+    // after any awaited replay.
     stopHibernateDataListener();
     setHibernatePendingCapDisabled?.(false);
-    const latePending = takeAndTrackPending();
-    if (latePending) {
-      await appendTerminalReplayData(term, latePending, replayOptions);
-      replayedPendingChars += latePending.length;
-    }
-    // Exit (or residual uncapped output) may arrive during the late await.
-    const exitTail = takeAndTrackPending();
-    if (exitTail) {
-      await appendTerminalReplayData(term, exitTail, replayOptions);
-      replayedPendingChars += exitTail.length;
-    }
-    // Final capture after all awaits, before tearing down the exit listener.
-    const finalTail = takeAndTrackPending();
-    if (finalTail) {
-      await appendTerminalReplayData(term, finalTail, replayOptions);
-      replayedPendingChars += finalTail.length;
-    }
-    // Last sync take immediately before teardown (covers exit during finalTail).
-    const preTeardownTail = takeAndTrackPending();
-    if (preTeardownTail) {
-      await appendTerminalReplayData(term, preTeardownTail, replayOptions);
-      replayedPendingChars += preTeardownTail.length;
+    for (;;) {
+      const pendingTail = takeAndTrackPending();
+      if (!pendingTail) break;
+      await appendTerminalReplayData(term, pendingTail, replayOptions);
+      replayedPendingChars += pendingTail.length;
     }
 
-    // Recompute after late drains so an exit during those awaits cannot leave
+    // Recompute after drains so an exit during those awaits cannot leave
     // shouldReattach stale (would reattach a dead session as connected).
     const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
     stopHibernateListeners();
