@@ -2145,6 +2145,15 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }
       return true;
     }
+    // Same transfer moved to another strategy (e.g. fastPut after concurrent
+    // OPEN channel-error) still owns the stage — do not unlink the file that
+    // the fallback just wrote (Codex P2 on 98b26f31).
+    if (active === transfer) {
+      if (active.sharedWriteOpenAccepted === true) return false;
+      if (remoteOpenPathMatchesStaged(filePath, active.stagedRemote)) return false;
+      const strategy = String(active.uploadStrategy || active.strategy || "");
+      if (/fastput|stream/i.test(strategy)) return false;
+    }
     return true;
   };
 
