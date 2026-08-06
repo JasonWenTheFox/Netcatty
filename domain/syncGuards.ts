@@ -52,6 +52,28 @@ export function detectSuspiciousShrink(
     const lost = baseCount - outgoingCount;
     if (lost <= 0) continue;
 
+    // Complete wipe of one collection while other vault data remains is a
+    // hydration-race fingerprint (e.g. hosts arrived, groupConfigs still []).
+    // Tiny collections like a single groupConfig carrying startup commands /
+    // appearance defaults fall below the bulk/ratio gates (#2757). A fully
+    // empty outgoing snapshot is left alone — that is a real deletion path.
+    if (outgoingCount === 0 && baseCount > 0) {
+      const hasOtherVaultContent = CHECKED_ENTITIES.some(
+        (other) => other !== entityType && countOf(outgoing, other) > 0,
+      );
+      if (hasOtherVaultContent) {
+        return {
+          suspicious: true,
+          reason: lost >= LARGE_SHRINK_ABSOLUTE ? 'large-shrink' : 'bulk-shrink',
+          entityType,
+          baseCount,
+          outgoingCount,
+          lost,
+          ...(viaRemote ? { viaRemote: true } : {}),
+        };
+      }
+    }
+
     if (lost >= LARGE_SHRINK_ABSOLUTE) {
       return {
         suspicious: true,
