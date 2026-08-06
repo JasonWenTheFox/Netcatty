@@ -5121,7 +5121,9 @@ async function startTransferNow(event, payload, onProgress) {
         mtimeMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs
           : (Number.isFinite(st.mtime) ? st.mtime * 1000 : undefined);
       } else {
-        await requireSftpChannel(client);
+        // Race channel reopen against cancel (Codex P2): a dead sftp handle can
+        // sit in requireSftpChannel for ~10s; cancel must not wait that out.
+        await requireSftpChannel(client, { signal: transfer.signal });
         const encoded = encodePathForSession(sourceSftpId, sourcePath, sourceEncoding);
         const st = await client.stat(encoded);
         size = st.size;
@@ -5144,8 +5146,16 @@ async function startTransferNow(event, payload, onProgress) {
   transfer.captureSourceSoftIdentity = async () => {
     try {
       transfer.sourceSoftIdentity = await readSourceSoftIdentity();
-    } catch {
-      // Best-effort baseline for soft resume.
+    } catch (error) {
+      // Propagate cancel/abort so preflight racing can settle; other failures
+      // stay best-effort (soft resume simply lacks a baseline).
+      if (
+        transfer.cancelled
+        || transfer.signal?.aborted
+        || /cancel|abort/i.test(String(error?.message || error))
+      ) {
+        throw error;
+      }
     }
   };
 
@@ -5382,9 +5392,10 @@ async function startTransferNow(event, payload, onProgress) {
     // Baseline for soft resume and destination mtime preserve (size + mtime +
     // head sample). Capture before bytes move so non-resumable / SCP paths stamp
     // the pre-transfer identity (Codex P1). Full SHA-256 remains for hard
-    // reconnect / crash recovery.
+    // reconnect / crash recovery. Run through cancelable preflight so a hung
+    // SFTP reopen cannot outlive cancel (Codex P2).
     if (typeof transfer.captureSourceSoftIdentity === "function") {
-      await transfer.captureSourceSoftIdentity();
+      await runCancelablePreflight(() => transfer.captureSourceSoftIdentity());
     }
 
     const sourceClient = sourceType === "sftp" ? sftpClients.get(sourceSftpId) : null;
