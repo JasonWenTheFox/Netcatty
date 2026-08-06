@@ -186,6 +186,36 @@ test("annotateMacLocalNetworkErrorMessage detects LAN IPs embedded in the error 
   assert.match(annotated, /Local Network/i);
 });
 
+test("annotateMacLocalNetworkErrorMessage ignores LAN bind addresses on public failures", () => {
+  const message = "connect EHOSTUNREACH 93.184.216.34:22 - Local (192.168.1.5:58210)";
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "example.com",
+    }),
+    message,
+  );
+});
+
+test("annotateMacLocalNetworkErrorMessage detects embedded IPv6 LAN destinations", () => {
+  const bracketed = "connect EHOSTUNREACH [fd12::1]:22";
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(bracketed, {
+      platform: "darwin",
+      hostname: "ula-host",
+    }),
+    /Local Network/i,
+  );
+  const bare = "connect EHOSTUNREACH fe80::1:22 - Local ([fe80::abcd]:5555)";
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(bare, {
+      platform: "darwin",
+      hostname: "link-local-host",
+    }),
+    /Local Network/i,
+  );
+});
+
 function createFakeUdpSocket({ onConnect, onError } = {}) {
   class FakeUdpSocket extends EventEmitter {
     constructor() {

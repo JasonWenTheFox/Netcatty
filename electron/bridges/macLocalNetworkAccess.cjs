@@ -209,9 +209,43 @@ function looksLikeHostUnreachableMessage(message) {
   return /EHOSTUNREACH|ENETUNREACH|host is unreachable|network is unreachable/i.test(text);
 }
 
-function extractIpv4Addresses(text) {
-  const matches = String(text || "").match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
-  return matches.filter((ip) => isLocalNetworkHostname(ip));
+/**
+ * Pull unreachable *remote* addresses out of Node connect errors.
+ * Strips the trailing `- Local (bind:port)` clause so the local bind IP
+ * cannot be mistaken for a LAN destination (Codex #2673 follow-up).
+ */
+function extractRemoteUnreachableAddresses(text) {
+  const withoutLocalBind = String(text || "").replace(/\s*-\s*Local\s*\([^)]*\)\s*$/i, "");
+  const found = [];
+
+  const pushIfLan = (value) => {
+    const cleaned = stripIpBrackets(value);
+    if (!cleaned) return;
+    if (isLocalNetworkHostname(cleaned)) found.push(cleaned);
+  };
+
+  for (const ip of withoutLocalBind.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || []) {
+    pushIfLan(ip);
+  }
+  for (const matched of withoutLocalBind.match(/\[([0-9a-fA-F:]+)\]/g) || []) {
+    pushIfLan(matched.slice(1, -1));
+  }
+
+  const afterErr = withoutLocalBind.match(/(?:EHOSTUNREACH|ENETUNREACH)\s+(\S+)/i);
+  if (afterErr) {
+    const token = afterErr[1];
+    const bracketed = token.match(/^\[([0-9a-fA-F:]+)\](?::\d+)?$/);
+    if (bracketed) {
+      pushIfLan(bracketed[1]);
+    } else {
+      pushIfLan(token);
+      // Node often formats IPv6 as addr:port without brackets.
+      const withoutPort = String(token).replace(/:(\d+)$/, "");
+      if (withoutPort !== token) pushIfLan(withoutPort);
+    }
+  }
+
+  return [...new Set(found)];
 }
 
 function annotateMacLocalNetworkErrorMessage(message, options = {}) {
@@ -225,7 +259,7 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
     options.hostname,
     options.host,
     options.firstHopHostname,
-    ...extractIpv4Addresses(text),
+    ...extractRemoteUnreachableAddresses(text),
   ].filter((value) => value != null && String(value).trim() !== "");
   const touchesLan = candidates.some((value) => (
     isLocalNetworkHostname(value) || isLocalMdnsName(value)
