@@ -968,6 +968,7 @@ export const useSftpExternalOperations = (
       const scanAbort = new AbortController();
       const detachScanCancel = controller.addCancelListener(() => {
         scanAbort.abort();
+        if (scanningTask?.isOpen()) scanningTask.cancel();
       });
 
       let capturedEntries: DropEntry[] = [];
@@ -1315,6 +1316,7 @@ export const useSftpExternalOperations = (
       const scanAbort = new AbortController();
       const detachScanCancel = controller.addCancelListener(() => {
         scanAbort.abort();
+        if (scanningTask.isOpen()) scanningTask.cancel();
       });
       let capturedEntries: DropEntry[] | null = null;
 
