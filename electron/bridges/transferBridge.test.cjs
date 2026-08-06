@@ -3767,6 +3767,106 @@ test("growing-download prefix verification prefers a bounded remote digest", asy
   assert.match(command, /sha256sum|busybox|openssl/);
 });
 
+test("growing-download prefix verification skips unprivileged digest for sudo SFTP", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-sudo-digest-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(96 * 1024, 72);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const emptyDigest = crypto.createHash("sha256").update("").digest("hex");
+  let execCalls = 0;
+  const pipelined = createPipelinedDownloadSftp(payload, {
+    createReadStream() {
+      throw new Error("serial prefix stream should remain the final fallback");
+    },
+  });
+  const client = {
+    __netcattySudoMode: true,
+    sftp: pipelined.sftp,
+    client: {
+      exec(_request, callback) {
+        execCalls += 1;
+        const stream = new EventEmitter();
+        stream.stderr = new EventEmitter();
+        stream.destroy = () => {};
+        callback(null, stream);
+        // Unprivileged head fails open into sha256sum and still exits 0.
+        setImmediate(() => {
+          stream.emit("data", Buffer.from(`${emptyDigest}  -\n`));
+          stream.emit("close", 0);
+        });
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/root/secure.log",
+      signal: new AbortController().signal,
+    },
+  );
+
+  assert.equal(execCalls, 0, "sudo downloads must not use unprivileged digest commands");
+});
+
+test("growing-download prefix verification rejects empty remote digests", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-empty-digest-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(64 * 1024, 70);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const emptyDigest = crypto.createHash("sha256").update("").digest("hex");
+  let rangeReads = 0;
+  const pipelined = createPipelinedDownloadSftp(payload, {
+    read(handle, buffer, offset, length, position, callback) {
+      rangeReads += 1;
+      const end = Math.min(position + length, payload.length);
+      const slice = payload.subarray(position, end);
+      slice.copy(buffer, offset);
+      setImmediate(() => callback(null, slice.length));
+    },
+    createReadStream() {
+      throw new Error("serial prefix stream should remain the final fallback");
+    },
+  });
+  const client = {
+    sftp: pipelined.sftp,
+    client: {
+      exec(_request, callback) {
+        const stream = new EventEmitter();
+        stream.stderr = new EventEmitter();
+        stream.destroy = () => {};
+        callback(null, stream);
+        setImmediate(() => {
+          stream.emit("data", Buffer.from(`${emptyDigest}  -\n`));
+          stream.emit("close", 0);
+        });
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+    },
+  );
+
+  assert.ok(rangeReads > 0, "empty digest must fall through to elevated/SFTP hashing");
+});
+
 test("growing-download prefix verification falls back to parallel SFTP reads", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-ranges-"));
   t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
@@ -3801,6 +3901,87 @@ test("growing-download prefix verification falls back to parallel SFTP reads", a
       signal: new AbortController().signal,
     },
   );
+});
+
+test("growing-download SFTP range hashing keeps a bounded read window", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-bound-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const chunkSize = TRANSFER_CHUNK_SIZE;
+  const concurrency = DOWNLOAD_TRANSFER_CONCURRENCY;
+  const payload = Buffer.alloc((concurrency + 8) * chunkSize, 77);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+
+  let maxIndexStarted = -1;
+  let releaseFirstWindow;
+  const firstWindowBlocked = new Promise((resolve) => { releaseFirstWindow = resolve; });
+  let firstWindowGateOpened = false;
+  const pendingFirstWindow = [];
+
+  const client = {
+    sftp: createFastSftp({
+      open(_remotePath, _flags, callback) {
+        callback(null, Buffer.from("bounded-handle"));
+      },
+      read(_handle, buffer, offset, length, position, callback) {
+        const index = Math.floor(position / chunkSize);
+        maxIndexStarted = Math.max(maxIndexStarted, index);
+        const end = Math.min(position + length, payload.length);
+        const slice = payload.subarray(position, end);
+        const deliver = () => {
+          slice.copy(buffer, offset);
+          callback(null, slice.length);
+        };
+        if (!firstWindowGateOpened && index < concurrency) {
+          pendingFirstWindow.push(deliver);
+          if (pendingFirstWindow.length === 1) {
+            firstWindowBlocked.then(() => {
+              firstWindowGateOpened = true;
+              for (const pending of pendingFirstWindow.splice(0)) pending();
+            });
+          }
+          return;
+        }
+        setImmediate(deliver);
+      },
+      close(_handle, callback) {
+        callback(null);
+      },
+      createReadStream() {
+        throw new Error("serial prefix stream should not run for bounded-window test");
+      },
+    }),
+    client: {
+      exec(_request, callback) {
+        const error = new Error("SSH exec unavailable");
+        error.code = "SSH_EXEC_UNAVAILABLE";
+        callback(error);
+      },
+    },
+  };
+
+  const verifyPromise = transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+    },
+  );
+
+  await waitUntil(() => pendingFirstWindow.length >= concurrency, 2000);
+  assert.equal(
+    maxIndexStarted,
+    concurrency - 1,
+    "later windows must wait until the current concurrency window finishes",
+  );
+  releaseFirstWindow();
+  await verifyPromise;
+  assert.ok(maxIndexStarted >= concurrency, "verification must continue past the first window");
 });
 
 test("growing-download prefix verification times out a stalled SFTP READ", async (t) => {

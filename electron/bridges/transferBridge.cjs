@@ -675,6 +675,8 @@ async function hashReadable(readable, options = {}) {
   }
 }
 
+const EMPTY_SHA256_HEX = crypto.createHash("sha256").update("").digest("hex");
+
 function hashLocalPrefix(filePath, bytes, options) {
   if (!Number.isFinite(bytes) || bytes < 0) return Promise.resolve(null);
   if (bytes === 0) return Promise.resolve(EMPTY_SHA256_HEX);
@@ -687,6 +689,10 @@ function hashLocalFile(filePath, options = {}) {
 
 async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options = {}) {
   if (!Number.isFinite(bytes) || bytes <= 0 || isScpModeClient(client)) return null;
+  // Sudo SFTP elevates the subsystem, but exec() still runs as the login user.
+  // For a root-only source, head can fail while sha256sum/openssl still emit the
+  // empty-input digest and exit 0 — skip the command path and use elevated SFTP.
+  if (client?.__netcattySudoMode) return null;
   const sshClient = client?.client;
   if (!sshClient || typeof sshClient.exec !== "function") return null;
 
@@ -709,7 +715,11 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
       });
       if (result.code !== 0) continue;
       const match = String(result.stdout || "").match(/\b([a-fA-F0-9]{64})\b/);
-      if (match) return match[1].toLowerCase();
+      if (!match) continue;
+      const digest = match[1].toLowerCase();
+      // Empty-input digest with bytes > 0 means head failed open into the hasher.
+      if (digest === EMPTY_SHA256_HEX) continue;
+      return digest;
     } catch (error) {
       if (
         options.signal?.aborted
@@ -755,8 +765,6 @@ async function hashRemoteFile(client, sftpId, filePath, encoding, options = {}) 
     options,
   );
 }
-
-const EMPTY_SHA256_HEX = crypto.createHash("sha256").update("").digest("hex");
 
 /** @param {number|null|undefined} prefixBytes null = full file; >=0 = bounded prefix (incl. empty). */
 function formatSourceFingerprint(digest, prefixBytes) {
@@ -3437,8 +3445,6 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
   const chunkSize = TRANSFER_CHUNK_SIZE;
   const rangeCount = Math.ceil(bytes / chunkSize);
   const concurrency = Math.min(DOWNLOAD_TRANSFER_CONCURRENCY, rangeCount);
-  const buffers = new Array(rangeCount);
-  let nextRange = 0;
   let completedBytes = 0;
   const openTimeoutMs = Number(options.sftpOpenTimeoutMs) > 0
     ? Number(options.sftpOpenTimeoutMs)
@@ -3448,11 +3454,14 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
     : SFTP_REQUEST_TIMEOUT_MS;
   const handle = await openSftpReadHandle(sftp, remotePath, options.signal, openTimeoutMs);
   try {
-    const worker = async () => {
-      while (true) {
-        const index = nextRange;
-        nextRange += 1;
-        if (index >= rangeCount) return;
+    // Hash windows in order so peak retained buffers stay within the concurrency
+    // fanout (~2MB), not the full multi-GB prefix.
+    const hash = crypto.createHash("sha256");
+    for (let windowStart = 0; windowStart < rangeCount; windowStart += concurrency) {
+      const windowCount = Math.min(concurrency, rangeCount - windowStart);
+      const windowBuffers = new Array(windowCount);
+      await Promise.all(Array.from({ length: windowCount }, async (_, offset) => {
+        const index = windowStart + offset;
         const position = index * chunkSize;
         const length = Math.min(chunkSize, bytes - position);
         const buffer = Buffer.allocUnsafe(length);
@@ -3460,14 +3469,12 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
           signal: options.signal,
           timeoutMs: readTimeoutMs,
         });
-        buffers[index] = buffer;
+        windowBuffers[offset] = buffer;
         completedBytes += length;
         options.onProgress?.(completedBytes);
-      }
-    };
-    await Promise.all(Array.from({ length: concurrency }, worker));
-    const hash = crypto.createHash("sha256");
-    for (const buffer of buffers) hash.update(buffer);
+      }));
+      for (const buffer of windowBuffers) hash.update(buffer);
+    }
     return hash.digest("hex");
   } finally {
     await closeSftpHandleBestEffort(sftp, handle);
