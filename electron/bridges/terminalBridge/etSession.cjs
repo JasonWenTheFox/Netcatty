@@ -1283,7 +1283,15 @@ main();
           lastIdlePromptAt: 0,
           _promptTrackTail: "",
         };
-        sessions.set(sessionId, session);
+        {
+          const { claimSessionSlot } = require("../sessionBootEpoch.cjs");
+          const claim = claimSessionSlot(sessions, sessionId, session, options.bootEpoch);
+          if (!claim.ok) {
+            const supersededError = new Error("Connection superseded by a newer reconnect");
+            supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
+            throw supersededError;
+          }
+        }
         openTerminalOutputSession?.(sessionId, event.sender);
 
         // Start real-time session log stream if configured

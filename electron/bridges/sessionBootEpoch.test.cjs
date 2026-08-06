@@ -19,7 +19,10 @@ test("claimSessionSlot rejects a superseded lower boot epoch", () => {
 
 test("claimSessionSlot replaces an older boot epoch and marks it superseded", () => {
   const sessions = new Map();
-  const older = { bootEpoch: 1 };
+  const older = {
+    bootEpoch: 1,
+    proc: { killed: false, kill() { this.killed = true; } },
+  };
   sessions.set("s1", older);
   const newer = {};
   const result = claimSessionSlot(sessions, "s1", newer, 4);
@@ -28,6 +31,9 @@ test("claimSessionSlot replaces an older boot epoch and marks it superseded", ()
   assert.equal(newer.bootEpoch, 4);
   assert.equal(older.closed, true);
   assert.equal(older.supersededByBootEpoch, 4);
+  assert.equal(older.proc.killed, true);
+  assert.equal(older._displacedDisposed, true);
+  assert.equal(result.displaced, older);
 });
 
 test("sessionMatchesBootEpoch ignores closes for a different generation", () => {

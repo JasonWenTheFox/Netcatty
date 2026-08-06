@@ -1245,7 +1245,15 @@ async function startSerialSession(event, options) {
           decoderRef: serialDecoderRef,
           webContentsId: event.sender.id,
         };
-        sessions.set(sessionId, session);
+        {
+          const { claimSessionSlot } = require("./sessionBootEpoch.cjs");
+          const claim = claimSessionSlot(sessions, sessionId, session, options?.bootEpoch);
+          if (!claim.ok) {
+            try { serialPort.close(); } catch { /* ignore */ }
+            reject(new Error("Connection superseded by a newer reconnect"));
+            return;
+          }
+        }
         openTerminalOutputSession(sessionId, event.sender);
 
         // Start real-time session log stream if configured

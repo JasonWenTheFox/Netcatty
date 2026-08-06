@@ -942,6 +942,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         charset: ctx.host.charset,
         env: telnetEnv,
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        bootEpoch,
       });
       telnetSessionId = id;
       if (id !== ctx.sessionId) {
@@ -1170,6 +1171,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         charset: ctx.host.charset,
         env: moshEnv,
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        bootEpoch,
       });
       attachedSessionId = id;
 
@@ -1484,6 +1486,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         charset: ctx.host.charset,
         env: etEnv,
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        bootEpoch,
       });
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
@@ -1806,6 +1809,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         flowControl: ctx.serialConfig.flowControl,
         charset: ctx.host.charset,
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        bootEpoch,
       });
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {
