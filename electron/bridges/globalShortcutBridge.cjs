@@ -377,6 +377,7 @@ function showTrayPanel() {
 }
 
 function hideTrayPanel() {
+  trayPanelShowWhenReady = false;
   if (trayPanelWindow && !trayPanelWindow.isDestroyed()) {
     trayPanelWindow.hide();
   }
@@ -388,7 +389,12 @@ function hideTrayPanel() {
 }
 
 function toggleTrayPanel() {
-  if (trayPanelWindow && !trayPanelWindow.isDestroyed() && trayPanelWindow.isVisible()) {
+  // A pending first-load show counts as "open" so a second click cancels it
+  // instead of leaving did-finish-load to pop the panel open later.
+  const isOpenOrPending =
+    trayPanelShowWhenReady
+    || (trayPanelWindow && !trayPanelWindow.isDestroyed() && trayPanelWindow.isVisible());
+  if (isOpenOrPending) {
     hideTrayPanel();
   } else {
     showTrayPanel();

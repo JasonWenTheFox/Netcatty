@@ -87,6 +87,7 @@ test("main/settings/tray call sites wire Windows chrome helpers", () => {
   assert.match(html, /tray-window/);
   assert.match(html, /removeTraySplash|splash\.remove\(\)/);
   assert.match(tray, /trayPanelShowWhenReady|trayPanelReady/);
+  assert.match(tray, /isOpenOrPending/);
   assert.match(helper, /square tips under a rounded panel/);
   assert.match(helper, /not resizable/);
   assert.doesNotMatch(helper, /[^\x00-\x7F]/, "helper comments must stay ASCII-only");
