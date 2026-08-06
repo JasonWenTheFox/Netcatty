@@ -9,16 +9,28 @@ import {
   type SftpDirectoryTraversalBudget,
   shouldFollowSftpSymlinkDirectory,
 } from "../../../domain/sftpDirectoryCheckpoint";
-import { STORAGE_KEY_SFTP_TRANSFER_CONCURRENCY } from "../../../infrastructure/config/storageKeys";
+import { isUnchangedTransferCandidate } from "../../../domain/sftpTransferSkip";
+import {
+  STORAGE_KEY_SFTP_FOLDER_PRESCAN,
+  STORAGE_KEY_SFTP_SKIP_UNCHANGED,
+  STORAGE_KEY_SFTP_TRANSFER_CONCURRENCY,
+} from "../../../infrastructure/config/storageKeys";
 import { localStorageAdapter } from "../../../infrastructure/persistence/localStorageAdapter";
 import { netcattyBridge } from "../../../infrastructure/services/netcattyBridge";
 import { logger } from "../../../lib/logger";
 import {
   DEFAULT_SFTP_DIRECTORY_LISTING_CONCURRENCY,
   resolveSftpDirectoryListingConcurrency,
+  resolveSftpFolderPrescanEnabled,
+  resolveSftpSkipUnchangedEnabled,
   runBoundedConcurrency,
   runSftpTransferWorkers,
 } from "./transferConcurrency";
+import {
+  discoverTransferTree,
+  type DiscoveredTransferFile,
+} from "./transferDirectoryDiscovery";
+import { transferDiscoveredFiles } from "./transferDirectoryFileBatch";
 import { getSftpTransferResourceKeys, globalSftpTransferScheduler } from "./globalTransferScheduler";
 import { resolveDedicatedStreamEndpointIds } from "../../../domain/sftpDedicatedStreamPolicy";
 import { isSessionError } from "./errors";
@@ -91,6 +103,59 @@ function isCancelledLocalOrGlobal(
     return true;
   }
   return false;
+}
+
+function readFolderPrescanEnabled(): boolean {
+  return resolveSftpFolderPrescanEnabled(() => localStorageAdapter.readBoolean(STORAGE_KEY_SFTP_FOLDER_PRESCAN));
+}
+
+function readSkipUnchangedEnabled(): boolean {
+  return resolveSftpSkipUnchangedEnabled(() => localStorageAdapter.readBoolean(STORAGE_KEY_SFTP_SKIP_UNCHANGED));
+}
+
+async function ensureTransferDirectory(
+  targetPath: string,
+  targetIsLocal: boolean,
+  targetSftpId: string | null,
+  targetEncoding: SftpFilenameEncoding,
+): Promise<void> {
+  if (targetIsLocal) {
+    try {
+      await netcattyBridge.get()?.mkdirLocal?.(targetPath);
+    } catch (mkdirErr: unknown) {
+      const isEEXIST = mkdirErr instanceof Error && mkdirErr.message.includes("EEXIST");
+      if (!isEEXIST) throw mkdirErr;
+      const stat = await netcattyBridge.get()?.statLocal?.(targetPath);
+      if (stat && stat.type !== "directory") {
+        throw new Error(`Target path exists as a file: ${targetPath}`);
+      }
+    }
+    return;
+  }
+  if (targetSftpId) {
+    await netcattyBridge.get()?.mkdirSftp(targetSftpId, targetPath, targetEncoding);
+  }
+}
+
+async function tryStatTransferTarget(
+  targetPath: string,
+  targetIsLocal: boolean,
+  targetSftpId: string | null,
+  targetEncoding: SftpFilenameEncoding,
+): Promise<{ size: number; lastModified: number; type: string } | null> {
+  try {
+    if (targetIsLocal) {
+      const stat = await netcattyBridge.get()?.statLocal?.(targetPath);
+      if (!stat || stat.type === "directory") return null;
+      return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
+    }
+    if (!targetSftpId) return null;
+    const stat = await netcattyBridge.get()?.statSftp?.(targetSftpId, targetPath, targetEncoding);
+    if (!stat || stat.type === "directory") return null;
+    return { size: Number(stat.size) || 0, lastModified: Number(stat.lastModified) || 0, type: stat.type };
+  } catch {
+    return null;
+  }
 }
 
 export type AcquireTransferSessionFn = (
@@ -505,6 +570,91 @@ export function useSftpDirectoryTransferOps({
       throw new Error("Transfer cancelled");
     }
 
+    // Root-only pre-scan (rsync --no-inc-recursive): discover the full tree first
+    // so the transfer center can show a stable file total before bytes move.
+    if (!discoveryProgress && readFolderPrescanEnabled()) {
+      const skipUnchanged = readSkipUnchangedEnabled()
+        && !task.replaceExistingTarget
+        && !String(task.targetPath).includes(".netcatty-");
+      setTransfers((prev) => prev.map((candidate) => candidate.id === rootTaskId
+        ? {
+            ...candidate,
+            phase: "scanning",
+            totalBytes: Math.max(candidate.transferredBytes, candidate.totalBytes || 0),
+          }
+        : candidate));
+
+      const traversal = traversalBudget ?? createSftpDirectoryTraversalBudget();
+      const discovered = await discoverTransferTree({
+        sourcePath: task.sourcePath,
+        targetPath: task.targetPath,
+        sourceIsLocal,
+        sourceSftpId,
+        sourceEncoding,
+        followSymlinks,
+        listLocalFiles,
+        listRemoteFiles,
+        traversalBudget: traversal,
+        shouldAbort: () => (
+          cancelledTasksRef.current.has(task.id)
+          || cancelledTasksRef.current.has(rootTaskId)
+        ),
+        onDiscoveredFiles: (totalFiles) => {
+          setTransfers((prev) => prev.map((candidate) => candidate.id === rootTaskId
+            ? {
+                ...candidate,
+                phase: "scanning",
+                totalBytes: Math.max(totalFiles, candidate.transferredBytes),
+              }
+            : candidate));
+        },
+      });
+
+      setTransfers((prev) => prev.map((candidate) => candidate.id === rootTaskId
+        ? {
+            ...candidate,
+            totalBytes: Math.max(discovered.files.length, candidate.transferredBytes),
+          }
+        : candidate));
+
+      // Create directories breadth-first so parents exist before children.
+      for (const dir of discovered.directories) {
+        if (cancelledTasksRef.current.has(task.id) || cancelledTasksRef.current.has(rootTaskId)) {
+          throw new Error("Transfer cancelled");
+        }
+        await waitWhileTransferPaused(rootTaskId);
+        await ensureTransferDirectory(dir.targetPath, targetIsLocal, targetSftpId, targetEncoding);
+      }
+
+      return transferDiscoveredFiles({
+        rootTask: task,
+        files: discovered.files,
+        sourceSftpId,
+        targetSftpId,
+        sourceIsLocal,
+        targetIsLocal,
+        sourceEncoding,
+        targetEncoding,
+        rootTaskId,
+        sameHost,
+        skipUnchanged,
+        startEntryIndex: 0,
+        cancelledTasksRef,
+        activeChildIdsRef,
+        transfersRef,
+        setTransfers,
+        waitWhileTransferPaused,
+        isPauseLatched,
+        transferFile,
+        tryStatTarget: (targetPath) => tryStatTransferTarget(
+          targetPath,
+          targetIsLocal,
+          targetSftpId,
+          targetEncoding,
+        ),
+      });
+    }
+
     let totalErrors = 0;
     const progress = discoveryProgress ?? {
       discoveredFiles: 0,
@@ -719,6 +869,72 @@ export function useSftpDirectoryTransferOps({
           if (isPauseLatched(rootTaskId)) {
             await waitWhileTransferPaused(rootTaskId);
           }
+
+          const skipUnchanged = readSkipUnchangedEnabled()
+            && !task.replaceExistingTarget
+            && !String(task.targetPath).includes(".netcatty-");
+          if (skipUnchanged) {
+            const existing = await tryStatTransferTarget(
+              targetPath,
+              targetIsLocal,
+              targetSftpId,
+              targetEncoding,
+            );
+            if (
+              existing
+              && existing.type !== "directory"
+              && isUnchangedTransferCandidate(
+                { size: fileSize, lastModified: file.lastModified },
+                { size: existing.size, lastModified: existing.lastModified },
+              )
+            ) {
+              const skippedId = persistedChild?.id ?? crypto.randomUUID();
+              setTransfers((prev) => {
+                const hasChild = prev.some((row) => row.id === skippedId);
+                const base = hasChild
+                  ? prev.map((row) => row.id === skippedId
+                    ? {
+                        ...row,
+                        status: "completed" as TransferStatus,
+                        transferredBytes: fileSize,
+                        totalBytes: fileSize,
+                        endTime: Date.now(),
+                        speed: 0,
+                        error: undefined,
+                      }
+                    : row)
+                  : [...prev, {
+                      ...task,
+                      id: skippedId,
+                      fileName: file.name,
+                      originalFileName: file.name,
+                      sourcePath,
+                      targetPath,
+                      isDirectory: false,
+                      progressMode: "bytes" as const,
+                      parentTaskId: rootTaskId,
+                      totalBytes: fileSize,
+                      transferredBytes: fileSize,
+                      sourceLastModified: file.lastModified,
+                      directoryEntryIndex,
+                      directoryEntryIdentity,
+                      status: "completed" as TransferStatus,
+                      speed: 0,
+                      startTime: Date.now(),
+                      endTime: Date.now(),
+                    }];
+                return base.map((row) => {
+                  if (row.id !== rootTaskId) return row;
+                  if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
+                    return { ...row, speed: 0 };
+                  }
+                  return { ...row, transferredBytes: row.transferredBytes + 1 };
+                });
+              });
+              return;
+            }
+          }
+
           const fileId = persistedChild?.id ?? crypto.randomUUID();
 
           // Track child ID outside React state for immediate cancellation visibility
