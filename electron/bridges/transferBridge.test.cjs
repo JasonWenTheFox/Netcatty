@@ -4886,6 +4886,7 @@ test("fastPut fallback cancel settles while prior isolated write OPEN gate is un
   let firstOpenStarted = false;
   let firstIsolated = null;
   let fastPutCalls = 0;
+  let reopenedEnded = 0;
   const sharedSftp = createFastSftp({
     lstat(remotePath, callback) {
       const key = String(remotePath);
@@ -4951,7 +4952,9 @@ test("fastPut fallback cancel settles while prior isolated write OPEN gate is un
             fastPutCalls += 1;
             cb(null);
           },
-          end() {},
+          end() {
+            reopenedEnded += 1;
+          },
         }));
       },
     },
@@ -4997,6 +5000,7 @@ test("fastPut fallback cancel settles while prior isolated write OPEN gate is un
 
   assert.match(result.error || "", /cancel/i);
   assert.equal(fastPutCalls, 0, "cancel must settle before fastPut runs on unresolved gate");
+  assert.equal(reopenedEnded, 1, "cancel during gate wait must end the reopened isolated channel");
   assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:cancelled"), true);
 });
 
@@ -5019,6 +5023,7 @@ test("fastPut fallback fails closed when prior isolated write OPEN gate never se
   let firstOpenStarted = false;
   let firstIsolated = null;
   let fastPutCalls = 0;
+  let reopenedEnded = 0;
   let sharedWriteOpens = 0;
   const sharedSftp = createFastSftp({
     lstat(remotePath, callback) {
@@ -5090,7 +5095,9 @@ test("fastPut fallback fails closed when prior isolated write OPEN gate never se
             fastPutCalls += 1;
             cb(null);
           },
-          end() {},
+          end() {
+            reopenedEnded += 1;
+          },
         }));
       },
     },
@@ -5131,6 +5138,7 @@ test("fastPut fallback fails closed when prior isolated write OPEN gate never se
   assert.match(result.error || "", /Timed out waiting for prior write OPEN to settle before fastPut/i);
   assert.equal(fastPutCalls, 0, "must not fastPut while prior OPEN gate is unresolved");
   assert.equal(sharedWriteOpens, 0, "must not fall through to shared write after gate timeout");
+  assert.equal(reopenedEnded, 1, "gate timeout must end the reopened isolated channel");
   assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
 });
 

@@ -1953,26 +1953,48 @@ async function uploadFile(
         // timeout — skip fastPut rather than race a still-pending truncate.
         if (typeof transfer.pendingWriteOpenPathGate?.then === "function") {
           const pendingGate = transfer.pendingWriteOpenPathGate;
-          await runTransferCancelablePreflight(transfer, async () => {
-            let timer = null;
-            try {
-              await Promise.race([
-                pendingGate,
-                new Promise((_, reject) => {
-                  timer = setTimeout(() => {
-                    // Fail closed: do not fall through to another writer on the
-                    // same stage while a truncating OPEN may still land.
-                    const err = new Error(
-                      "Timed out waiting for prior write OPEN to settle before fastPut",
-                    );
-                    err.noTransferFallback = true;
-                    reject(err);
-                  }, 2000);
-                }),
-              ]);
-            } finally {
-              if (timer) clearTimeout(timer);
+          // Local cancel race (not runTransferCancelablePreflight): cancel must
+          // clear the timeout so an abandoned 2s reject cannot fire as an
+          // unhandled rejection after the outer wait already settled.
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            const previousAbort = transfer.abort;
+            const signal = transfer.signal;
+            const finish = (fn, value) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              try { signal?.removeEventListener?.("abort", onAbort); } catch { /* ignore */ }
+              if (transfer.abort === onAbort) transfer.abort = previousAbort;
+              fn(value);
+            };
+            const timer = setTimeout(() => {
+              // Fail closed: do not fall through to another writer on the
+              // same stage while a truncating OPEN may still land.
+              const err = new Error(
+                "Timed out waiting for prior write OPEN to settle before fastPut",
+              );
+              err.noTransferFallback = true;
+              finish(reject, err);
+            }, 2000);
+            const onAbort = () => {
+              try { previousAbort?.(); } catch { /* ignore */ }
+              transfer.cancelled = true;
+              finish(reject, new Error("Transfer cancelled"));
+            };
+            if (transfer.cancelled || signal?.aborted) {
+              onAbort();
+              return;
             }
+            transfer.abort = onAbort;
+            try { signal?.addEventListener?.("abort", onAbort, { once: true }); } catch { /* ignore */ }
+            pendingGate.then(
+              () => finish(resolve),
+              (err) => finish(
+                reject,
+                err instanceof Error ? err : new Error(String(err?.message || err)),
+              ),
+            );
           });
         }
         if (transfer.cancelled) throw new Error("Transfer cancelled");
@@ -2012,6 +2034,13 @@ async function uploadFile(
         );
         fastPutOk = true;
       } catch (err) {
+        // Gate-wait / snapshot / fastPut failure: end the reopened isolated
+        // channel before nulling. Rethrow paths skip the post-block else-if
+        // end, and fallthrough also clears isolated — either way we must not
+        // leak the SSH subsystem opened for this attempt (#2755 Bugbot).
+        if (isolated && typeof isolated.end === "function") {
+          try { isolated.end(); } catch { /* ignore */ }
+        }
         isolated = null;
         // Restore pause capability for subsequent pause-aware strategies.
         transfer.pauseSupported = Boolean(transfer.resumable);
