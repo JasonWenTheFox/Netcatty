@@ -1945,9 +1945,35 @@ async function uploadFile(
       try {
         // Wait for any prior/in-flight write OPEN on this path (including our
         // own concurrent attempt's still-pending OPEN) before fastPut truncates
-        // the same stage (Codex P1 on 7872a304).
+        // the same stage (Codex P1 on 7872a304). The wait must be cancelable and
+        // bounded: an isolated OPEN that never callbacks after channel death
+        // leaves pendingWriteOpenPathGate unresolved by design; hanging forever
+        // (or ignoring cancel because uploadFileConcurrent cleared abort) pins
+        // the transfer/lease (#2755 / Codex P2 on 667e9115). Fail closed on
+        // timeout — skip fastPut rather than race a still-pending truncate.
         if (typeof transfer.pendingWriteOpenPathGate?.then === "function") {
-          await transfer.pendingWriteOpenPathGate;
+          const pendingGate = transfer.pendingWriteOpenPathGate;
+          await runTransferCancelablePreflight(transfer, async () => {
+            let timer = null;
+            try {
+              await Promise.race([
+                pendingGate,
+                new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    // Fail closed: do not fall through to another writer on the
+                    // same stage while a truncating OPEN may still land.
+                    const err = new Error(
+                      "Timed out waiting for prior write OPEN to settle before fastPut",
+                    );
+                    err.noTransferFallback = true;
+                    reject(err);
+                  }, 2000);
+                }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+          });
         }
         if (transfer.cancelled) throw new Error("Transfer cancelled");
         transfer.uploadStrategy = "fastPut-isolated";
