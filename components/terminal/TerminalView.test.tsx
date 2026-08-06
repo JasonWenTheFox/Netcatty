@@ -387,6 +387,7 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.notEqual(disconnectEnd, -1);
   const body = source.slice(disconnectStart, disconnectEnd);
   assert.match(body, /clearAutoReconnect\(\{ stopLoop: true \}\)/);
+  assert.match(body, /bootEpochRef\.current \+= 1/);
   assert.match(body, /isBootActiveRef\.current = false/);
   assert.match(body, /setIsCancelling\(true\)/);
   assert.match(body, /updateStatus\("disconnected"\)/);
@@ -399,7 +400,8 @@ test("manual disconnect keeps the session pane for reconnect", () => {
     new URL("./runtime/createTerminalSessionStarters.ts", import.meta.url),
     "utf8",
   );
-  assert.match(startersSource, /const ignoreStaleStartUi = \(\): boolean => !isTerminalBootActive\(ctx\)/);
+  assert.match(startersSource, /createBootAttemptGuard\(ctx\)/);
+  assert.match(source, /bootEpochRef\.current \+= 1/);
 });
 
 test("hidden host information reveals actions without permanently covering terminal content", () => {

@@ -189,6 +189,11 @@ export type TerminalSessionStartersContext = {
   isVisibleRef?: RefObject<boolean>;
   /** False after unmount/teardown so in-flight session starts skip attach. */
   isBootActiveRef?: RefObject<boolean>;
+  /**
+   * Monotonic boot epoch. Disconnect / a newer reconnect bumps this so an
+   * older in-flight start cannot become current again when boot is re-armed.
+   */
+  bootEpochRef?: RefObject<number>;
   pendingOutputScrollRef?: RefObject<boolean>;
 
   sessionRef: RefObject<string | null>;

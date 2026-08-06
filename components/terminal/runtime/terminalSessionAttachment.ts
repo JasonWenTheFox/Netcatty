@@ -743,6 +743,14 @@ const writeSessionDataImmediate = (
 export const isTerminalBootActive = (ctx: TerminalSessionStartersContext): boolean =>
   !ctx.isBootActiveRef || ctx.isBootActiveRef.current;
 
+/** Capture the current boot epoch so a later reconnect cannot revive this attempt. */
+export const createBootAttemptGuard = (
+  ctx: TerminalSessionStartersContext,
+): (() => boolean) => {
+  const epoch = ctx.bootEpochRef?.current ?? 0;
+  return () => isTerminalBootActive(ctx) && (ctx.bootEpochRef?.current ?? 0) === epoch;
+};
+
 export const closeOrphanBackendSession = (
   ctx: TerminalSessionStartersContext,
   sessionBackendId: string,
@@ -769,9 +777,10 @@ export const tryAttachSessionToTerminal = (
     convertLfToCrlf?: boolean;
     sudoAutofillPassword?: string;
     sudoAutofillCandidates?: SudoPasswordAutofillCandidate[];
+    isCurrentAttempt?: () => boolean;
   },
 ): boolean => {
-  if (!isTerminalBootActive(ctx)) {
+  if (!isTerminalBootActive(ctx) || opts?.isCurrentAttempt?.() === false) {
     closeOrphanBackendSession(ctx, id);
     return false;
   }
