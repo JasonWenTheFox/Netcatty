@@ -1062,6 +1062,7 @@ export const useSftpExternalOperations = (
             }
           : liveCallbacks;
 
+        let transferSucceeded = false;
         try {
           if (controller.isCancelled()) {
             scanningTask?.cancel();
@@ -1104,11 +1105,12 @@ export const useSftpExternalOperations = (
           if (liveTargetPath === livePane.connection.currentPath) {
             await refresh(side, { tabId: uploadPaneId });
           }
+          transferSucceeded = true;
           return results;
         } finally {
           if (scanningTask?.isOpen()) {
             if (controller.isCancelled()) scanningTask.cancel();
-            else scanningTask.complete();
+            else if (transferSucceeded) scanningTask.complete();
           }
           release();
         }
@@ -1366,6 +1368,7 @@ export const useSftpExternalOperations = (
         const detachScanCancel = controller.addCancelListener(() => {
           scanAbort.abort();
         });
+        let transferSucceeded = false;
         try {
           const localEntries = await listLocalTreeWithAbort(bridge, folderPath, {
             abortSignal: scanAbort.signal,
@@ -1417,6 +1420,7 @@ export const useSftpExternalOperations = (
             const refreshSide = getSideByTabId?.(uploadPaneId) ?? side;
             await refresh(refreshSide, { tabId: uploadPaneId });
           }
+          transferSucceeded = true;
           return results;
         } catch (error) {
           if (
@@ -1434,7 +1438,7 @@ export const useSftpExternalOperations = (
           detachScanCancel();
           if (scanningTask.isOpen()) {
             if (controller.isCancelled()) scanningTask.cancel();
-            else scanningTask.complete();
+            else if (transferSucceeded) scanningTask.complete();
           }
           release();
           unregisterUploadController(controller);
