@@ -2219,16 +2219,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     const previousAbort = transfer.abort;
     let pathGateReleased = false;
 
-    let pathGateForceTimer = null;
-    const clearPathGateForceTimer = () => {
-      if (!pathGateForceTimer) return;
-      clearTimeout(pathGateForceTimer);
-      pathGateForceTimer = null;
-    };
     const releasePathGate = () => {
       if (!pathGate || pathGateReleased) return;
       pathGateReleased = true;
-      clearPathGateForceTimer();
       pathGate.release();
     };
 
@@ -2265,16 +2258,6 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }, 2000);
     };
 
-    // Isolated write OPEN: after sftp.end() the OPEN callback may never fire.
-    // Force-release the path gate so same-path retries are not stuck forever,
-    // while late callbacks still run finishLateSharedWriteOpen (Codex P1).
-    const armPathGateForceRelease = () => {
-      if (!pathGate || pathGateReleased || pathGateForceTimer) return;
-      pathGateForceTimer = setTimeout(() => {
-        pathGateForceTimer = null;
-        releasePathGate();
-      }, 2000);
-    };
 
     // Best-effort remote unlink. A dead shared channel that never invokes the
     // unlink callback is bounded by boundUnlinkThen so finishCancel / gate
@@ -2389,10 +2372,11 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             settle(reject, new Error("Transfer cancelled"));
             if (trackSharedWriteDrain) {
               armSharedWriteDrainForceComplete();
-            } else {
-              // Isolated: sftp.end() was requested; OPEN may never return.
-              armPathGateForceRelease();
             }
+            // Isolated write: keep path gate until OPEN callback too. Force-
+            // releasing after sftp.end() lets a same-path retry finish, then a
+            // late truncating OPEN can wipe its destination with no live
+            // activeTransfers entry to invalidate (Codex P1 on c30e1734).
           }, 2000);
         }
         return;
@@ -2412,7 +2396,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (trackSharedWriteDrain) {
         armSharedWriteDrainForceComplete();
       } else if (isWriteOpen) {
-        armPathGateForceRelease();
+        // Isolated write: hold path gate until OPEN callback (same as cancel).
       } else {
         completeSharedWriteDrain();
         releasePathGate();
