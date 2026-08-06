@@ -494,6 +494,9 @@ async function listLocalTree(event, payload) {
   const onEntries = entriesChannel
     ? (batch) => {
       try {
+        // Always send plain arrays for entry batches. The stream end marker is
+        // a separate object so the preload can keep its listener until every
+        // nested batch has been delivered (invoke reply races with send).
         event.sender.send(entriesChannel, batch);
       } catch {
         // Renderer may have gone away mid-scan.
@@ -509,6 +512,16 @@ async function listLocalTree(event, payload) {
       onEntries,
     );
   } finally {
+    // Must be sent after the last entry batch and before the invoke resolves
+    // is not enough alone — preload must wait for this marker before removing
+    // its listener, otherwise deep nested files (discovered late) are dropped.
+    if (entriesChannel) {
+      try {
+        event.sender.send(entriesChannel, { type: "tree-end" });
+      } catch {
+        // Renderer may have gone away mid-scan.
+      }
+    }
     if (cancelChannel && electronIpcMain) {
       electronIpcMain.removeListener(cancelChannel, onCancel);
     }

@@ -100,6 +100,7 @@ import {
   registerExternalUploadController,
   unregisterExternalUploadController,
 } from "./externalUploadRuntime";
+import { waitWhileTransferOrRootPaused } from "./transferPauseLatch";
 
 type UploadConflictResolver = {
   resolve: (action: FileConflictAction) => void;
@@ -1055,6 +1056,9 @@ export const useSftpExternalOperations = (
                 callbacks: liveCallbacks,
                 parentTaskIds,
                 abortSignal: scanAbort.signal,
+                // Soft-pause must freeze discovery enqueue + child UI rows, not
+                // only the open streams (otherwise Pause still floods the queue).
+                waitWhilePaused: (parentTaskId) => waitWhileTransferOrRootPaused(parentTaskId),
                 listLocalTree: (localPath, treeOptions) => listLocalTreeWithAbort(bridge, localPath, {
                   ...treeOptions,
                   abortSignal: scanAbort.signal,

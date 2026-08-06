@@ -898,10 +898,23 @@ function createPreloadApi(ctx) {
         }
       }
       : null;
+    // Entry batches arrive on a different channel than the invoke reply. If we
+    // tear down the listener when invoke resolves, nested-folder batches that
+    // are still in the IPC queue are dropped (top-level files look fine).
+    let settleEntriesStream = null;
+    const entriesStreamDone = onEntries && entriesChannel
+      ? new Promise((resolve) => {
+        settleEntriesStream = resolve;
+      })
+      : null;
     const entriesHandler = onEntries && entriesChannel
-      ? (_event, batch) => {
+      ? (_event, payload) => {
+        if (payload && typeof payload === "object" && !Array.isArray(payload) && payload.type === "tree-end") {
+          settleEntriesStream?.();
+          return;
+        }
         try {
-          onEntries(batch);
+          if (Array.isArray(payload)) onEntries(payload);
         } catch {
           // Ignore batch handler errors so the scan can finish.
         }
@@ -914,14 +927,24 @@ function createPreloadApi(ctx) {
       ipcRenderer.on(entriesChannel, entriesHandler);
     }
     try {
-      return await ipcRenderer.invoke("netcatty:local:tree", {
+      const result = await ipcRenderer.invoke("netcatty:local:tree", {
         path,
         progressChannel,
         entriesChannel,
         cancelChannel,
         limits: options?.limits,
       });
+      if (entriesStreamDone) {
+        // Wait for the main-process end marker so late nested batches are not
+        // lost. Fallback timeout if the marker never arrives (old main, crash).
+        await Promise.race([
+          entriesStreamDone,
+          new Promise((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+      }
+      return result;
     } finally {
+      settleEntriesStream?.();
       if (progressHandler && progressChannel) {
         ipcRenderer.removeListener(progressChannel, progressHandler);
       }

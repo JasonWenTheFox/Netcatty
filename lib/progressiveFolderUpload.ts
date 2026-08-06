@@ -43,6 +43,12 @@ export type ProgressiveFolderUploadConfig = {
   /** Optional pre-created parent task ids (e.g. scanning task id for single root). */
   parentTaskIds?: Map<string, string>;
   abortSignal?: AbortSignal;
+  /**
+   * Soft-pause gate (process-global latch). Must resolve only after the parent
+   * folder is resumed. Used before discovery enqueue and before creating child
+   * UI rows so Pause does not keep filling the transfer queue.
+   */
+  waitWhilePaused?: (parentTaskId: string) => Promise<void>;
 };
 
 function entryToDrop(entry: LocalTreeListEntry): DropEntry {
@@ -69,12 +75,28 @@ export async function uploadLocalFoldersProgressively(
     listLocalTree,
     parentTaskIds,
     abortSignal,
+    waitWhilePaused,
   } = config;
 
   if (roots.length === 0) return [];
   if (!isLocal && !sftpId) {
     throw new Error("No SFTP session for progressive folder upload");
   }
+
+  const isStopped = () => !!(controller?.isCancelled() || abortSignal?.aborted);
+
+  /** Block while the folder soft-pause latch is held; re-check cancel after wake. */
+  const awaitUnpaused = async (parentTaskId: string): Promise<boolean> => {
+    if (!waitWhilePaused) return !isStopped();
+    while (!isStopped()) {
+      await waitWhilePaused(parentTaskId);
+      // waitWhilePaused may resolve spuriously if the latch was already free;
+      // always re-check stop intent after any await.
+      if (isStopped()) return false;
+      return true;
+    }
+    return false;
+  };
 
   const results: UploadResult[] = [];
   const createdDirs = new Set<string>();
@@ -139,6 +161,8 @@ export async function uploadLocalFoldersProgressively(
   type FileJob = { entry: DropEntry; parentId: string; rootName: string };
   const fileQueue: FileJob[] = [];
   let scanDone = false;
+  /** In-flight onEntries handlers (may await soft-pause before queueing). */
+  let pendingEnqueues = 0;
   let scanError: unknown;
   let wakeWaiters: Array<() => void> = [];
   const wake = () => {
@@ -149,10 +173,11 @@ export async function uploadLocalFoldersProgressively(
   const waitForWork = () => new Promise<void>((resolve) => {
     wakeWaiters.push(resolve);
   });
+  const discoverySettled = () => scanDone && pendingEnqueues === 0;
 
   let pauseScanResolve: (() => void) | null = null;
   const waitIfQueueHigh = async () => {
-    while (fileQueue.length >= QUEUE_HIGH_WATER && !controller?.isCancelled()) {
+    while (fileQueue.length >= QUEUE_HIGH_WATER && !isStopped()) {
       await new Promise<void>((resolve) => {
         pauseScanResolve = resolve;
       });
@@ -180,43 +205,63 @@ export async function uploadLocalFoldersProgressively(
   };
 
   const enqueueBatch = async (rootName: string, batch: LocalTreeListEntry[]) => {
-    if (controller?.isCancelled() || abortSignal?.aborted) {
-      fileQueue.length = 0;
-      return;
-    }
-    const parentId = parentIds.get(rootName);
-    if (!parentId) return;
-    const stats = parentStats.get(parentId);
-    if (!stats) return;
-
-    for (const row of batch) {
-      if (controller?.isCancelled() || abortSignal?.aborted) {
+    pendingEnqueues += 1;
+    try {
+      if (isStopped()) {
         fileQueue.length = 0;
         return;
       }
-      const drop = entryToDrop(row);
-      if (drop.isDirectory) {
-        // Create remote dirs early when we see them; ignore exists races later.
-        try {
-          await ensureDirectory(joinPath(targetPath, drop.relativePath));
-        } catch {
-          // File upload path will retry parent mkdirs.
-        }
-        continue;
+      const parentId = parentIds.get(rootName);
+      if (!parentId) return;
+      const stats = parentStats.get(parentId);
+      if (!stats) return;
+
+      // Soft-pause: do not grow the work queue or create remote dirs until resume.
+      // Otherwise Pause still looks "alive" as hundreds of pending children appear.
+      if (!(await awaitUnpaused(parentId))) {
+        fileQueue.length = 0;
+        return;
       }
-      stats.discovered += 1;
-      fileQueue.push({ entry: drop, parentId, rootName });
+
+      for (const row of batch) {
+        if (isStopped()) {
+          fileQueue.length = 0;
+          return;
+        }
+        // Re-check pause between entries so a mid-batch Pause freezes the rest.
+        if (waitWhilePaused && !(await awaitUnpaused(parentId))) {
+          fileQueue.length = 0;
+          return;
+        }
+        const drop = entryToDrop(row);
+        if (drop.isDirectory) {
+          // Create remote dirs early when we see them; ignore exists races later.
+          try {
+            await ensureDirectory(joinPath(targetPath, drop.relativePath));
+          } catch {
+            // File upload path will retry parent mkdirs.
+          }
+          continue;
+        }
+        stats.discovered += 1;
+        fileQueue.push({ entry: drop, parentId, rootName });
+      }
+      publishParentProgress(parentId);
+      wake();
+      maybeResumeScan();
+      await waitIfQueueHigh();
+    } finally {
+      pendingEnqueues = Math.max(0, pendingEnqueues - 1);
+      // Workers may have seen an empty queue while we were still paused inside
+      // this handler — wake them once discovery work is actually settled.
+      wake();
     }
-    publishParentProgress(parentId);
-    wake();
-    maybeResumeScan();
-    await waitIfQueueHigh();
   };
 
   const scanPromise = (async () => {
     try {
       for (const root of roots) {
-        if (controller?.isCancelled() || abortSignal?.aborted) break;
+        if (isStopped()) break;
         await listLocalTree(root.localPath, {
           abortSignal,
           onProgress: () => {
@@ -241,13 +286,15 @@ export async function uploadLocalFoldersProgressively(
   })();
 
   const uploadSingle = async (job: FileJob): Promise<void> => {
-    if (controller?.isCancelled() || abortSignal?.aborted) return;
+    if (isStopped()) return;
     const { entry, parentId } = job;
     const stats = parentStats.get(parentId);
     if (!stats) return;
 
-    // Do not enqueue UI children after the parent was cancelled.
-    if (controller?.isCancelled() || abortSignal?.aborted) return;
+    // Soft-pause and cancel both block before a child row is created. Creating
+    // the UI task first made Pause look broken: new "pending" children kept
+    // flooding the panel even though streams were soft-drained.
+    if (!(await awaitUnpaused(parentId))) return;
 
     const entryTargetPath = joinPath(targetPath, entry.relativePath);
     const childId = crypto.randomUUID();
@@ -268,7 +315,13 @@ export async function uploadLocalFoldersProgressively(
       sourcePath: entry.localPath,
     });
 
-    if (controller?.isCancelled() || abortSignal?.aborted) {
+    if (isStopped()) {
+      callbacks?.onTaskCancelled?.(childId);
+      return;
+    }
+    // Pause may have been hit between create and stream open — wait again so we
+    // never start a new write under a paused parent.
+    if (!(await awaitUnpaused(parentId))) {
       callbacks?.onTaskCancelled?.(childId);
       return;
     }
@@ -329,19 +382,35 @@ export async function uploadLocalFoldersProgressively(
 
   const workers = Array.from({ length: UPLOAD_CONCURRENCY }, async () => {
     while (true) {
-      if (controller?.isCancelled() || abortSignal?.aborted) {
+      if (isStopped()) {
         fileQueue.length = 0;
         return;
       }
       if (fileQueue.length === 0) {
-        if (scanDone) return;
+        // onEntries handlers may still be awaiting soft-pause before pushing
+        // jobs — do not treat scanDone alone as terminal.
+        if (discoverySettled()) return;
         await waitForWork();
         continue;
       }
+      // Peek parent before taking work so soft-pause does not dequeue a flood of
+      // jobs that would immediately create child UI rows on resume races.
+      const peeked = fileQueue[0];
+      if (peeked && waitWhilePaused) {
+        if (!(await awaitUnpaused(peeked.parentId))) {
+          fileQueue.length = 0;
+          return;
+        }
+      }
+      if (isStopped()) {
+        fileQueue.length = 0;
+        return;
+      }
+      if (fileQueue.length === 0) continue;
       const job = fileQueue.shift();
       if (!job) continue;
       maybeResumeScan();
-      if (controller?.isCancelled() || abortSignal?.aborted) {
+      if (isStopped()) {
         fileQueue.length = 0;
         return;
       }

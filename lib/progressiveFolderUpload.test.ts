@@ -93,6 +93,87 @@ test("progressive folder upload starts file transfers before the tree walk finis
   assert.ok(uploadA < batch2, "first file must upload while scan still running");
 });
 
+test("progressive folder upload enqueues nested subdirectory files", async () => {
+  const transferred: string[] = [];
+  const mkdirs: string[] = [];
+
+  const listLocalTree = async (
+    _path: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs",
+        relativePath: "docs",
+        type: "directory",
+        size: 0,
+        lastModified: 1,
+      },
+      {
+        localPath: "/tmp/docs/a.txt",
+        relativePath: "docs/a.txt",
+        type: "file",
+        size: 1,
+        lastModified: 1,
+      },
+    ]);
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs/nested",
+        relativePath: "docs/nested",
+        type: "directory",
+        size: 0,
+        lastModified: 1,
+      },
+      {
+        localPath: "/tmp/docs/nested/deep",
+        relativePath: "docs/nested/deep",
+        type: "directory",
+        size: 0,
+        lastModified: 1,
+      },
+      {
+        localPath: "/tmp/docs/nested/deep/b.txt",
+        relativePath: "docs/nested/deep/b.txt",
+        type: "file",
+        size: 2,
+        lastModified: 2,
+      },
+    ]);
+    return [];
+  };
+
+  const results = await uploadLocalFoldersProgressively(
+    [{ name: "docs", localPath: "/tmp/docs" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      bridge: {
+        mkdirSftp: async (_id, dirPath) => {
+          mkdirs.push(dirPath);
+        },
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.targetPath);
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+    },
+  );
+
+  assert.equal(results.filter((row) => row.success).length, 2);
+  assert.deepEqual(transferred.sort(), [
+    "/remote/docs/a.txt",
+    "/remote/docs/nested/deep/b.txt",
+  ].sort());
+  assert.ok(mkdirs.includes("/remote/docs/nested"));
+  assert.ok(mkdirs.includes("/remote/docs/nested/deep"));
+});
+
 test("progressive folder upload stops enqueueing children after cancel", async () => {
   const controller = new UploadController();
   const createdChildren: string[] = [];
@@ -174,4 +255,103 @@ test("progressive folder upload stops enqueueing children after cancel", async (
   await uploadPromise;
   // At most the in-flight child should have been created.
   assert.ok(createdChildren.length <= 1, `expected no post-cancel flood, got ${createdChildren.join(",")}`);
+});
+
+test("progressive folder upload stops enqueueing children while soft-paused", async () => {
+  const createdChildren: string[] = [];
+  const transferred: string[] = [];
+  let paused = true;
+  let releasePause!: () => void;
+  const pauseGate = new Promise<void>((resolve) => {
+    releasePause = resolve;
+  });
+  let releaseMoreFiles!: () => void;
+  const moreFilesGate = new Promise<void>((resolve) => {
+    releaseMoreFiles = resolve;
+  });
+
+  const waitWhilePaused = async () => {
+    while (paused) {
+      await pauseGate;
+    }
+  };
+
+  const listLocalTree = async (
+    _path: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs/a.txt",
+        relativePath: "docs/a.txt",
+        type: "file",
+        size: 1,
+        lastModified: 1,
+      },
+    ]);
+    // Stay in the walk until the test unblocks the second batch (after pause assert).
+    await moreFilesGate;
+    options.onEntries?.([
+      {
+        localPath: "/tmp/docs/b.txt",
+        relativePath: "docs/b.txt",
+        type: "file",
+        size: 1,
+        lastModified: 2,
+      },
+      {
+        localPath: "/tmp/docs/c.txt",
+        relativePath: "docs/c.txt",
+        type: "file",
+        size: 1,
+        lastModified: 3,
+      },
+    ]);
+    return [];
+  };
+
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [{ name: "docs", localPath: "/tmp/docs" }],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      waitWhilePaused,
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.sourcePath);
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+      callbacks: {
+        onTaskCreated: (task) => {
+          if (!task.isDirectory) createdChildren.push(task.fileName);
+        },
+      },
+    },
+  );
+
+  // Give workers a turn; soft-pause must block child creation entirely.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(createdChildren, [], "no children while paused");
+  assert.deepEqual(transferred, [], "no transfers while paused");
+
+  paused = false;
+  releasePause();
+  // Let first file create/upload, then release the rest of the tree.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  releaseMoreFiles();
+
+  const results = await uploadPromise;
+  assert.equal(results.filter((row) => row.success).length, 3);
+  assert.deepEqual(
+    createdChildren.sort(),
+    ["docs/a.txt", "docs/b.txt", "docs/c.txt"].sort(),
+  );
+  assert.equal(transferred.length, 3);
 });
