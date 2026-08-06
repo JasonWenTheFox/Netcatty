@@ -394,6 +394,12 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.doesNotMatch(body, /onCloseSession/);
   assert.match(source, /handleDisconnect: attachExistingSession \? undefined : handleDisconnect/);
   assert.match(source, /showConnectionControls: !attachExistingSession/);
+
+  const startersSource = readFileSync(
+    new URL("./runtime/createTerminalSessionStarters.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(startersSource, /const ignoreStaleStartUi = \(\): boolean => !isTerminalBootActive\(ctx\)/);
 });
 
 test("hidden host information reveals actions without permanently covering terminal content", () => {

@@ -569,6 +569,56 @@ test("startSSH rechecks the live automation policy before password fallback", as
   assert.equal(commitCount, 0);
 });
 
+test("startSSH auth failure after disconnect does not reopen credential UI", async () => {
+  let resolveStart: ((error: Error) => void) | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const needsAuthCalls: boolean[] = [];
+  const statuses: string[] = [];
+  const errors: Array<string | null> = [];
+  const isBootActiveRef = { current: true };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async () => {
+      releaseStartEntered?.();
+      return await new Promise<string>((_resolve, reject) => {
+        resolveStart = reject;
+      });
+    },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: () => noop,
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      password: "secret",
+      authMethod: "password",
+    },
+    isBootActiveRef,
+    setNeedsAuth: (value: boolean) => { needsAuthCalls.push(value); },
+    setStatus: (value: string) => { statuses.push(value); },
+    setError: (value: string | null) => { errors.push(value); },
+    updateStatus: (value: string) => { statuses.push(value); },
+    terminalBackend,
+  });
+
+  const startPromise = createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  isBootActiveRef.current = false;
+  resolveStart?.(new Error("Authentication failed"));
+  await startPromise;
+
+  assert.deepEqual(needsAuthCalls, []);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(errors, []);
+});
+
 test("startSSH keeps interactive source auth retries off unrelated pooled transports", async () => {
   const captured: Record<string, unknown>[] = [];
   const terminalBackend = {

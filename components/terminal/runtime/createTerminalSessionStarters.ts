@@ -124,6 +124,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     ctx.setChainProgress(null);
   };
 
+  /** Disconnect/unmount flipped boot inactive — do not reopen auth or errors. */
+  const ignoreStaleStartUi = (): boolean => !isTerminalBootActive(ctx);
+
   const consumeRestoreCwdIntent = (term: XTerm, id: string): void => {
     const intent = ctx.restoreCwdIntentRef?.current;
     if (!intent) return;
@@ -730,6 +733,12 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         }, 600);
       }
     } catch (err) {
+      ctx.setChainProgress(null);
+      ctx.setIsConnectionAwaitingUserInput?.(false);
+      ctx.setIsConnectionPastTcpDial?.(false);
+      if (unsubscribeChainProgress) unsubscribeChainProgress();
+      if (ignoreStaleStartUi()) return;
+
       const message = err instanceof Error ? err.message : String(err);
       const authError = isAuthError(err);
 
@@ -763,11 +772,6 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         writeTerminalLine(ctx, term, `\r\n[Failed to start SSH: ${message}]`);
         ctx.updateStatus("disconnected");
       }
-
-      ctx.setChainProgress(null);
-      ctx.setIsConnectionAwaitingUserInput?.(false);
-      ctx.setIsConnectionPastTcpDial?.(false);
-      if (unsubscribeChainProgress) unsubscribeChainProgress();
     }
   };
 
@@ -938,6 +942,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         return;
       }
       cleanupTelnetSession();
+      if (ignoreStaleStartUi()) return;
       ctx.setError(message);
       writeTerminalLine(ctx, term, `\r\n[Failed to start Telnet: ${message}]`);
       ctx.updateStatus("disconnected");
@@ -1162,6 +1167,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       disposeMoshReady = undefined;
       cancelPendingStartupCommand?.();
       cancelPendingStartupCommand = undefined;
+      if (ignoreStaleStartUi()) return;
       const message = err instanceof Error ? err.message : String(err);
       ctx.setError(message);
       writeTerminalLine(ctx, term, `\r\n[Failed to start Mosh: ${message}]`);
@@ -1463,6 +1469,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         }, 600);
       }
     } catch (err) {
+      if (ignoreStaleStartUi()) return;
       const message = err instanceof Error ? err.message : String(err);
       ctx.setError(message);
       writeTerminalLine(ctx, term, `\r\n[Failed to start EternalTerminal: ${message}]`);
@@ -1714,6 +1721,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       consumeRestoreCwdIntent(term, id);
       scheduleStartupCommand(ctx, term, id);
     } catch (err) {
+      if (ignoreStaleStartUi()) return;
       const message = err instanceof Error ? err.message : String(err);
       ctx.setError(message);
       writeTerminalLine(ctx, term, `\r\n[Failed to start local shell: ${message}]`);
@@ -1763,6 +1771,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       ctx.setProgressValue(100);
       writeTerminalLine(ctx, term, `[Connected to ${ctx.serialConfig.path} at ${ctx.serialConfig.baudRate} baud]`);
     } catch (err) {
+      if (ignoreStaleStartUi()) return;
       const message = err instanceof Error ? err.message : String(err);
       ctx.setError(message);
       writeTerminalLine(ctx, term, `\r\n[Failed to connect to serial port: ${message}]`);

@@ -688,36 +688,37 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
           return;
         }
 
+        const bootStillActive = () => !disposed && isBootActiveRef.current;
         if (effectiveTerminalProtocol.startsWith("plugin:")) {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing plugin connection..."]);
           await sessionStarters.startPluginConnection(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else if (effectiveTerminalProtocol === "serial") {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing serial connection..."]);
           await sessionStarters.startSerial(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else if (effectiveTerminalProtocol === "local") {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing local shell..."]);
           await sessionStarters.startLocal(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else if (effectiveTerminalProtocol === "telnet") {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing Telnet connection..."]);
           await sessionStarters.startTelnet(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else if (effectiveTerminalProtocol === "mosh") {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing Mosh connection..."]);
           await sessionStarters.startMosh(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else if (effectiveTerminalProtocol === "et") {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing EternalTerminal connection..."]);
           await sessionStarters.startEt(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         } else {
           const resolvedAuth = resolveHostAuth({ host, keys, identities });
           const hasPassword = !!resolvedAuth.password;
@@ -738,10 +739,10 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
           setBackendConnectingStatus();
           setProgressLogs(["Initializing secure channel..."]);
           await sessionStarters.startSSH(term);
-          if (disposed) return;
+          if (!bootStillActive()) return;
         }
       } catch (err) {
-        if (disposed) return;
+        if (disposed || !isBootActiveRef.current) return;
         logger.error("Failed to initialize terminal", err);
         setError(err instanceof Error ? err.message : String(err));
         updateStatus("disconnected");
