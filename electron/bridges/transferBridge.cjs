@@ -1504,6 +1504,11 @@ async function prepareStreamFallbackAfterRangeFailure(transfer, client) {
  * still wipe after sendComplete (Codex P1 on e2cc8241).
  */
 async function waitForPendingWriteOpenPathGate(transfer, options = {}) {
+  if (transfer?.noTransferFallback || transfer?.inPlaceWriteOpenPoisoned) {
+    const err = new Error("In-place write OPEN poison is still held; refusing same-path fallback");
+    err.noTransferFallback = true;
+    throw err;
+  }
   const gate = transfer?.pendingWriteOpenPathGate;
   if (typeof gate?.then !== "function") return;
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 5_000;
@@ -1540,7 +1545,10 @@ async function waitForPendingWriteOpenPathGate(transfer, options = {}) {
       return;
     }
     timer = setTimeout(() => {
-      finish(reject, new Error("Timed out waiting for prior write OPEN to settle"));
+      const err = new Error("Timed out waiting for prior write OPEN to settle");
+      // Do not clear poison; fail this waiter so callers cannot race a late OPEN.
+      if (transfer?.inPlaceWriteOpenPoisoned) err.noTransferFallback = true;
+      finish(reject, err);
     }, timeoutMs);
     // Only the real gate release unblocks safely. Do not resolve the published
     // poison from this waiter on timeout/cancel.
@@ -2138,7 +2146,12 @@ async function uploadFile(
       // uploadFileConcurrent ends the isolated channel itself.
       isolated = null;
       if (transfer.cancelled) throw err;
-      if (err?.noTransferFallback) throw err;
+      if (err?.noTransferFallback || transfer.noTransferFallback) {
+        if (err && typeof err === "object" && transfer.noTransferFallback) {
+          err.noTransferFallback = true;
+        }
+        throw err;
+      }
       rememberPipelineError(err);
       if (transfer.resumable) {
         await prepareUploadFallbackCheckpoint(transfer, client, fileSize, sendProgress);
@@ -2172,6 +2185,13 @@ async function uploadFile(
   // fastPut always truncates and rewrites from offset 0 — skip when we
   // already have a durable resume checkpoint from a prior concurrent attempt.
   // fastPut is not pause-aware; do not advertise pause while it runs.
+  // In-place OPEN poison is terminal for this transfer: do not wait on/race
+  // the unreleased path gate with another same-path strategy (Codex P1 on 3d4cecfa).
+  if (transfer.noTransferFallback) {
+    const cause = lastPipelineError || new Error("SFTP pipelined upload failed");
+    if (typeof cause === "object" && cause) cause.noTransferFallback = true;
+    throw cause;
+  }
   const hasResumeCheckpoint = Math.max(0, Number(transfer.checkpointBytes) || 0) > 0;
   if (
     isolated
@@ -2499,6 +2519,16 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       isTruncatingOpenNow() && !generatedStagePath
     );
 
+    // When we keep in-place poison without force-release, same-path strategy
+    // fallbacks must not run: concurrent-shared would wait forever on the
+    // unreleased prior gate (Codex P1 on 3d4cecfa).
+    const markInPlaceOpenPoisonTerminal = () => {
+      try {
+        transfer.noTransferFallback = true;
+        transfer.inPlaceWriteOpenPoisoned = true;
+      } catch { /* ignore */ }
+    };
+
     const invalidateSameTransferAfterForcedGateRelease = () => {
       if (!pathGateForceReleased || !isTruncatingOpenNow() || !transfer) return;
       const transferId = transfer.transferId;
@@ -2687,8 +2717,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
               completeSharedWriteDrain();
               releasePathGate({ forced: true });
             } else {
-              // In-place truncating OPEN: settle the transfer UX, but keep the
-              // path gate until the late OPEN callback (finishLateSharedWriteOpen).
+              // In-place truncating OPEN: keep the path gate until the late OPEN
+              // callback, and fail closed for this transfer so fallback strategies
+              // do not wait forever on the poisoned gate (Codex P1 on 3d4cecfa).
+              markInPlaceOpenPoisonTerminal();
               completeSharedWriteDrain();
             }
             // Late OPEN after this still closes/unlinks via finishLateSharedWriteOpen.
@@ -2714,12 +2746,19 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
         // Isolated write: hold until OPEN callback. Generated stages may
         // force-release after a short grace so strategy fallback / cancel cannot
         // hang forever when the OPEN never arrives on a dead channel (#2755).
-        // In-place truncating OPEN never force-releases (Codex P1 on e2cc8241).
-        if (mayForceReleasePathGate() && !openDrainTimer) {
-          openDrainTimer = setTimeout(() => {
-            completeSharedWriteDrain();
-            releasePathGate({ forced: true });
-          }, 2000);
+        // In-place truncating OPEN never force-releases (Codex P1 on e2cc8241);
+        // mark the transfer terminal so concurrent-shared does not block on the
+        // unreleased prior gate (Codex P1 on 3d4cecfa).
+        if (mayForceReleasePathGate()) {
+          if (!openDrainTimer) {
+            openDrainTimer = setTimeout(() => {
+              completeSharedWriteDrain();
+              releasePathGate({ forced: true });
+            }, 2000);
+          }
+        } else {
+          markInPlaceOpenPoisonTerminal();
+          completeSharedWriteDrain();
         }
       } else {
         completeSharedWriteDrain();

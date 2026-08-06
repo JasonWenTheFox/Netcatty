@@ -10076,6 +10076,128 @@ test("waitForPendingWriteOpenPathGate timeout fails closed without clearing pois
   resolveGate();
 });
 
+test("in-place isolated OPEN channel error fails closed without waiting on shared fallback", async (t) => {
+  // Codex P1 on 3d4cecfa: keeping in-place poison without force-release must not
+  // fall through into concurrent-shared, which waits forever on the prior gate.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-inplace-open-terminal-poison-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(TRANSFER_CHUNK_SIZE, 73);
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const targetPath = "/tmp/inplace-terminal-poison.bin";
+  const remoteFiles = new Map([[targetPath, Buffer.from("keep-original")]]);
+  let openCalls = 0;
+  let sharedOpenCalls = 0;
+
+  const isolatedSftp = createFastSftp({
+    open(_remotePath, flags, _callback) {
+      assert.equal(flags, "w");
+      openCalls += 1;
+      // Never invoke OPEN callback (dead channel after error).
+    },
+    write() {
+      throw new Error("WRITE must not run while OPEN is pending");
+    },
+    end() {},
+    fastPut() {
+      throw new Error("fastPut must not run after in-place OPEN poison");
+    },
+  });
+
+  const sharedSftp = createFastSftp({
+    open() {
+      sharedOpenCalls += 1;
+      throw new Error("shared OPEN must not run after terminal in-place poison");
+    },
+    createWriteStream() {
+      throw new Error("serial WriteStream must not run");
+    },
+    lstat(remotePath, callback) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        callback(error);
+        return;
+      }
+      callback(null, {
+        size: remoteFiles.get(key).length,
+        mode: 0o120777,
+        isDirectory: () => false,
+        isSymbolicLink: () => true,
+      });
+    },
+  });
+
+  const client = {
+    sftp: sharedSftp,
+    async lstat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return {
+        size: remoteFiles.get(key).length,
+        mode: 0o120777,
+        isDirectory: () => false,
+        isSymbolicLink: () => true,
+      };
+    },
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete() {},
+    client: {
+      sftp(callback) {
+        callback(null, isolatedSftp);
+      },
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const running = transferBridge.startTransfer({ sender }, {
+    transferId: "inplace-open-terminal-poison",
+    sourcePath: localPath,
+    targetPath,
+    sourceType: "local",
+    targetType: "sftp",
+    targetSftpId: "target",
+    totalBytes: payload.length,
+    resumable: false,
+    skipAdmission: true,
+  });
+
+  const opened = await waitUntil(() => openCalls >= 1, 2000);
+  assert.ok(opened, "expected isolated in-place OPEN to stall");
+  isolatedSftp.emit("error", new Error("isolated channel died during in-place OPEN"));
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("transfer hung behind permanent in-place OPEN poison")),
+      4000,
+    )),
+  ]);
+
+  assert.ok(result.error, "expected fail-closed transfer");
+  assert.match(result.error, /isolated channel died|pipelined upload failed/i);
+  assert.equal(sharedOpenCalls, 0, "concurrent-shared must not wait on poisoned in-place gate");
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
+});
+
 test("in-place isolated OPEN keeps path gate until late callback after channel error", async (t) => {
   // Codex P1 on e2cc8241: force-releasing an in-place truncating OPEN lets
   // fastPut complete, then a late OPEN truncates the reported-success file.
