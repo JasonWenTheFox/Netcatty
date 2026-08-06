@@ -862,6 +862,63 @@ async function promoteLocalTransfer(stagedPath, targetPath, options = {}) {
   }
 }
 
+/**
+ * Apply the source mtime to the committed destination so skip-unchanged
+ * (size + mtime) can match on a later folder transfer. Best-effort: never
+ * fails the transfer if utimes/setstat is unsupported.
+ */
+async function preserveTransferredDestinationMtime(transfer) {
+  try {
+    let mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
+    if ((!Number.isFinite(mtimeMs) || mtimeMs <= 0)
+      && typeof transfer?.captureSourceSoftIdentity === "function") {
+      await transfer.captureSourceSoftIdentity();
+      mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
+    }
+    if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) return;
+
+    // Compare / skip logic uses whole seconds; stamp the destination the same way.
+    const mtimeSec = Math.floor(mtimeMs / 1000);
+    if (mtimeSec <= 0) return;
+    const when = new Date(mtimeSec * 1000);
+
+    if (transfer.targetType === "local" && transfer.targetPath) {
+      await fs.promises.utimes(transfer.targetPath, when, when);
+      return;
+    }
+
+    if (transfer.targetType !== "sftp" || !transfer.targetSftpId || !transfer.targetPath) {
+      return;
+    }
+    const client = sftpClients.get(transfer.targetSftpId);
+    // SCP has no SETSTAT; same-host `cp -a` already preserves mtime.
+    if (!client || isScpModeClient(client)) return;
+
+    await requireSftpChannel(client);
+    const encoded = encodePathForSession(
+      transfer.targetSftpId,
+      transfer.targetPath,
+      transfer.targetEncoding,
+    );
+    if (typeof client.setStat === "function") {
+      await client.setStat(encoded, { mtime: mtimeSec, atime: mtimeSec });
+      return;
+    }
+    const sftp = client.sftp;
+    if (!sftp || typeof sftp.setstat !== "function") return;
+    await new Promise((resolve, reject) => {
+      sftp.setstat(encoded, { mtime: mtimeSec, atime: mtimeSec }, (err) => (
+        err ? reject(err) : resolve()
+      ));
+    });
+  } catch (err) {
+    console.warn(
+      "[transferBridge] failed to preserve destination mtime:",
+      err?.message || String(err),
+    );
+  }
+}
+
 async function inspectLocalPromotionTarget(targetPath) {
   const absoluteTargetPath = path.resolve(targetPath);
   const visitedLinkStates = new Set();
@@ -5604,6 +5661,8 @@ async function startTransferNow(event, payload, onProgress) {
     }
 
     sendProgress(fileSize, fileSize);
+    // Stamp destination mtime from the source so skip-unchanged can match later.
+    await preserveTransferredDestinationMtime(transfer);
     logTransferDiag(transfer, "done", {
       transferred: fileSize,
       total: fileSize,
@@ -6585,6 +6644,7 @@ module.exports = {
   releaseSftpTransferSession,
   listTransferSftpIds,
   _promoteLocalTransferForTests: promoteLocalTransfer,
+  _preserveTransferredDestinationMtimeForTests: preserveTransferredDestinationMtime,
   _stableLocalFileIdentityForTests: stableLocalFileIdentity,
   _getWorkerTransferLifecycleEpochCountForTests: () => workerTransferLifecycleEpochs.size,
   _setWorkerTransferLifecycleEpochForTests: (transferId, epoch) => {

@@ -10008,3 +10008,50 @@ test("local promotion succeeds when backup still matches validated identity", as
     transferBridge._stableLocalFileIdentityForTests(originalStat),
   );
 });
+
+test("preserveTransferredDestinationMtime stamps local targets from sourceSoftIdentity", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-preserve-mtime-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const targetPath = path.join(tempDir, "copied.bin");
+  await fs.promises.writeFile(targetPath, Buffer.from("payload"));
+  const before = await fs.promises.stat(targetPath);
+  const sourceMtimeMs = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z
+
+  await transferBridge._preserveTransferredDestinationMtimeForTests({
+    targetType: "local",
+    targetPath,
+    sourceSoftIdentity: { size: 7, mtimeMs: sourceMtimeMs },
+  });
+
+  const after = await fs.promises.stat(targetPath);
+  assert.equal(Math.floor(after.mtimeMs / 1000), Math.floor(sourceMtimeMs / 1000));
+  assert.notEqual(Math.floor(after.mtimeMs / 1000), Math.floor(before.mtimeMs / 1000));
+});
+
+test("local-to-local transfer preserves source mtime on the destination", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-local-mtime-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const sourcePath = path.join(tempDir, "source.bin");
+  const targetPath = path.join(tempDir, "target.bin");
+  await fs.promises.writeFile(sourcePath, Buffer.from("hello-mtime"));
+  const sourceMtimeMs = 1_600_000_000_000; // 2020-09-13T12:26:40.000Z
+  await fs.promises.utimes(sourcePath, new Date(sourceMtimeMs), new Date(sourceMtimeMs));
+
+  transferBridge.init({ sftpClients: new Map() });
+  const result = await transferBridge.startTransfer({ sender: createSender() }, {
+    transferId: "local-mtime-preserve",
+    sourcePath,
+    targetPath,
+    sourceType: "local",
+    targetType: "local",
+    totalBytes: 11,
+    resumable: false,
+  });
+
+  assert.equal(result.error, undefined);
+  const targetStat = await fs.promises.stat(targetPath);
+  assert.equal(Math.floor(targetStat.mtimeMs / 1000), Math.floor(sourceMtimeMs / 1000));
+  assert.deepEqual(await fs.promises.readFile(targetPath), Buffer.from("hello-mtime"));
+});

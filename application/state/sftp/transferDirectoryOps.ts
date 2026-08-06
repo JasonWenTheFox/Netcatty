@@ -1048,7 +1048,7 @@ export function useSftpDirectoryTransferOps({
                   ? {
                       ...t,
                       status: "failed" as TransferStatus,
-                      error: "SFTP session lost — reconnect and resume remaining files",
+                      error: "SFTP session lost - reconnect and resume remaining files",
                       speed: 0,
                       endTime: Date.now(),
                     }

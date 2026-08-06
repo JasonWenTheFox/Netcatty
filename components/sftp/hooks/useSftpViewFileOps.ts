@@ -1,6 +1,11 @@
 import { useCallback, useRef, useState } from "react";
 import type { SftpFileEntry } from "../../../types";
+import type { TransferStatus } from "../../../domain/models";
 import { getParentPath, joinPath as joinFsPath } from "../../../application/state/sftp/utils";
+import {
+  DEFAULT_SFTP_FILE_TRANSFER_CONCURRENCY,
+  runBoundedConcurrency,
+} from "../../../application/state/sftp/transferConcurrency";
 import { logger } from "../../../lib/logger";
 import { toast } from "../../ui/toast";
 import { getFileExtension, getLanguageId, FileOpenerType, SystemAppInfo } from "../../../lib/sftpFileUtils";
@@ -11,6 +16,14 @@ import { toEditorTabId, activeTabStore } from "../../../application/state/active
 import type { TextEditorModalSnapshot } from "../../TextEditorModal";
 import type { UseSftpViewFileOpsParams, UseSftpViewFileOpsResult } from "./useSftpViewFileOps.types";
 import { assertSftpFileFitsBuiltinEditor } from "../sftpEditorFileLimits";
+
+/** Local multi-select blob downloads read whole files into ArrayBuffers. */
+const LOCAL_BLOB_DOWNLOAD_CONCURRENCY = 1;
+/**
+ * Multi-select roots each run folder pre-scan before the transfer scheduler.
+ * Bound them so listing fan-out cannot multiply by selection size.
+ */
+const MULTI_SELECT_ROOT_DOWNLOAD_CONCURRENCY = DEFAULT_SFTP_FILE_TRANSFER_CONCURRENCY;
 
 export const useSftpViewFileOps = ({
   sftpRef,
@@ -538,7 +551,14 @@ export const useSftpViewFileOps = ({
       if (!pane.connection) return;
 
       if (pane.connection.isLocal) {
-        await Promise.allSettled(files.map((file) => handleDownloadFileForSide(side, file)));
+        // Sequential: each local download materializes a full ArrayBuffer.
+        await runBoundedConcurrency(
+          files,
+          LOCAL_BLOB_DOWNLOAD_CONCURRENCY,
+          async (file) => {
+            await handleDownloadFileForSide(side, file);
+          },
+        );
         return;
       }
 
@@ -556,31 +576,40 @@ export const useSftpViewFileOps = ({
       const selectedDirectory = await selectDirectory(t("sftp.context.download"));
       if (!selectedDirectory) return;
 
-      // Enqueue in parallel — each downloadToLocal uses the dedicated transfer
-      // pool / host scheduler. Awaiting one-by-one forced serial multi-select
-      // throughput even though per-file SFTP I/O is already pipelined.
-      const results = await Promise.allSettled(files.map(async (file) => {
-        const sourcePath = sftpRef.current.joinPath(pane.connection.currentPath, file.name);
-        const targetPath = joinFsPath(selectedDirectory, file.name);
-        const isDirectory = isNavigableDirectory(file);
-        const fileSize = typeof file.size === "string" ? parseInt(file.size, 10) || 0 : (file.size || 0);
+      // Bound root jobs: directory roots run full pre-scan before the scheduler,
+      // so unbounded Promise.allSettled would multiply LIST concurrency.
+      const results: Array<PromiseSettledResult<{ file: SftpFileEntry; status: TransferStatus }>> = [];
+      await runBoundedConcurrency(
+        files,
+        MULTI_SELECT_ROOT_DOWNLOAD_CONCURRENCY,
+        async (file, index) => {
+          try {
+            const sourcePath = sftpRef.current.joinPath(pane.connection.currentPath, file.name);
+            const targetPath = joinFsPath(selectedDirectory, file.name);
+            const isDirectory = isNavigableDirectory(file);
+            const fileSize = typeof file.size === "string" ? parseInt(file.size, 10) || 0 : (file.size || 0);
 
-        const status = await sftpRef.current.downloadToLocal({
-          fileName: file.name,
-          sourcePath,
-          targetPath,
-          sftpId,
-          connectionId: pane.connection.id,
-          sourceHostId: pane.connection.hostId,
-          sourceHostLabel: pane.connection.hostLabel,
-          sourceEncoding: pane.filenameEncoding,
-          isDirectory,
-          totalBytes: isDirectory ? undefined : fileSize,
-        });
-        return { file, status };
-      }));
+            const status = await sftpRef.current.downloadToLocal({
+              fileName: file.name,
+              sourcePath,
+              targetPath,
+              sftpId,
+              connectionId: pane.connection.id,
+              sourceHostId: pane.connection.hostId,
+              sourceHostLabel: pane.connection.hostLabel,
+              sourceEncoding: pane.filenameEncoding,
+              isDirectory,
+              totalBytes: isDirectory ? undefined : fileSize,
+            });
+            results[index] = { status: "fulfilled", value: { file, status } };
+          } catch (reason) {
+            results[index] = { status: "rejected", reason };
+          }
+        },
+      );
 
       for (const result of results) {
+        if (!result) continue;
         if (result.status === "fulfilled") {
           const { file, status } = result.value;
           if (status === "completed") {
