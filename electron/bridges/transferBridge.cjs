@@ -3333,13 +3333,17 @@ function closeSftpHandle(sftp, handle) {
 async function readSftpRange(sftp, handle, buffer, position, length, options = {}) {
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 0;
   const signal = options.signal;
+  const abortGate = options.abortGate;
   let received = 0;
   while (received < length) {
     const bytesRead = await new Promise((resolve, reject) => {
       let settled = false;
       let timer = null;
+      let unwatchAbort = null;
       const cleanup = () => {
         if (timer) clearTimeout(timer);
+        unwatchAbort?.();
+        unwatchAbort = null;
         signal?.removeEventListener?.("abort", onAbort);
       };
       const finish = (error, count) => {
@@ -3354,11 +3358,15 @@ async function readSftpRange(sftp, handle, buffer, position, length, options = {
         error.code = "ABORT_ERR";
         finish(error);
       };
-      if (signal?.aborted) {
+      if (signal?.aborted || abortGate?.aborted) {
         onAbort();
         return;
       }
-      signal?.addEventListener?.("abort", onAbort, { once: true });
+      if (abortGate) {
+        unwatchAbort = abortGate.watch(onAbort);
+      } else {
+        signal?.addEventListener?.("abort", onAbort, { once: true });
+      }
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
           const error = new Error(`SFTP READ timed out after ${timeoutMs} ms`);
@@ -3385,6 +3393,68 @@ async function readSftpRange(sftp, handle, buffer, position, length, options = {
     }
     received += bytesRead;
   }
+}
+
+function createSharedAbortGate(signal) {
+  const waiters = new Set();
+  const notify = () => {
+    const error = new Error("Transfer cancelled");
+    error.code = "ABORT_ERR";
+    for (const reject of [...waiters]) {
+      try { reject(error); } catch { /* ignore */ }
+    }
+    waiters.clear();
+  };
+  const onAbort = () => notify();
+  if (signal?.aborted) {
+    return {
+      get aborted() { return true; },
+      watch(onAbortWatch) {
+        onAbortWatch();
+        return () => {};
+      },
+      dispose() {},
+    };
+  }
+  signal?.addEventListener?.("abort", onAbort, { once: true });
+  return {
+    get aborted() { return Boolean(signal?.aborted); },
+    watch(onAbortWatch) {
+      if (signal?.aborted) {
+        onAbortWatch();
+        return () => {};
+      }
+      waiters.add(onAbortWatch);
+      return () => waiters.delete(onAbortWatch);
+    },
+    dispose() {
+      signal?.removeEventListener?.("abort", onAbort);
+      waiters.clear();
+    },
+  };
+}
+
+async function closeSftpHandleBestEffort(sftp, handle, timeoutMs = 2_000) {
+  let timer = null;
+  let timedOut = false;
+  let failed = false;
+  try {
+    await Promise.race([
+      closeSftpHandle(sftp, handle),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+      }),
+    ]);
+  } catch {
+    // Verification cleanup must not mask the content check result.
+    failed = true;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return { timedOut, failed, unclean: timedOut || failed };
 }
 
 function openSftpReadHandle(sftp, remotePath, signal, timeoutMs) {
@@ -3434,22 +3504,6 @@ function openSftpReadHandle(sftp, remotePath, signal, timeoutMs) {
   });
 }
 
-async function closeSftpHandleBestEffort(sftp, handle, timeoutMs = 2_000) {
-  let timer = null;
-  try {
-    await Promise.race([
-      closeSftpHandle(sftp, handle),
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
-      }),
-    ]);
-  } catch {
-    // Verification cleanup must not mask the content check result.
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options = {}) {
   if (!Number.isFinite(bytes) || bytes <= 0 || isScpModeClient(client)) return null;
   await requireSftpChannel(client, { signal: options.signal });
@@ -3467,6 +3521,7 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
     ? Number(options.sftpReadTimeoutMs)
     : SFTP_REQUEST_TIMEOUT_MS;
   const handle = await openSftpReadHandle(sftp, remotePath, options.signal, openTimeoutMs);
+  const abortGate = createSharedAbortGate(options.signal);
   try {
     // Hash windows in order so peak retained buffers stay within the concurrency
     // fanout (~2MB), not the full multi-GB prefix.
@@ -3484,7 +3539,7 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
         inactivityTimer = null;
       };
       const armInactivity = () => {
-        if (!(readTimeoutMs > 0) || options.signal?.aborted) return;
+        if (!(readTimeoutMs > 0) || options.signal?.aborted || abortGate.aborted) return;
         clearInactivity();
         inactivityTimer = setTimeout(() => {
           const error = new Error(`SFTP READ timed out after ${readTimeoutMs} ms`);
@@ -3505,7 +3560,7 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
             const length = Math.min(chunkSize, bytes - position);
             const buffer = Buffer.allocUnsafe(length);
             await readSftpRange(sftp, handle, buffer, position, length, {
-              signal: options.signal,
+              abortGate,
             });
             windowBuffers[offset] = buffer;
             completedBytes += length;
@@ -3522,7 +3577,17 @@ async function hashRemotePrefixWithSftpRanges(client, remotePath, bytes, options
     }
     return hash.digest("hex");
   } finally {
-    await closeSftpHandleBestEffort(sftp, handle);
+    abortGate.dispose();
+    const closeResult = await closeSftpHandleBestEffort(
+      sftp,
+      handle,
+      Number(options.sftpCloseTimeoutMs) > 0 ? Number(options.sftpCloseTimeoutMs) : 2_000,
+    );
+    // A timed-out/failed CLOSE leaves an unresolved request on the shared
+    // channel; drop it so later browse/transfer work cannot reuse it.
+    if (closeResult?.unclean) {
+      abandonWedgedVerificationSftpChannel(client);
+    }
   }
 }
 

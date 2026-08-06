@@ -4014,6 +4014,12 @@ test("growing-download SFTP range hashing keeps a bounded read window", async (t
   const firstWindowBlocked = new Promise((resolve) => { releaseFirstWindow = resolve; });
   let firstWindowGateOpened = false;
   const pendingFirstWindow = [];
+  const warnings = [];
+  const onWarning = (warning) => {
+    warnings.push(String(warning?.name || warning?.message || warning));
+  };
+  process.on("warning", onWarning);
+  t.after(() => process.off("warning", onWarning));
 
   const client = {
     sftp: createFastSftp({
@@ -4078,6 +4084,11 @@ test("growing-download SFTP range hashing keeps a bounded read window", async (t
   releaseFirstWindow();
   await verifyPromise;
   assert.ok(maxIndexStarted >= concurrency, "verification must continue past the first window");
+  assert.equal(
+    warnings.some((message) => /MaxListenersExceededWarning/i.test(message)),
+    false,
+    "shared abort gate must not attach one listener per concurrent READ",
+  );
 });
 
 test("growing-download SFTP range hashing resets inactivity on window progress", async (t) => {
@@ -4145,6 +4156,55 @@ test("growing-download SFTP range hashing resets inactivity on window progress",
       sftpReadTimeoutMs: 80,
     },
   );
+});
+
+test("growing-download SFTP range hashing drops channel when CLOSE stalls", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-close-stall-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(64 * 1024, 81);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const client = {
+    sftp: createFastSftp({
+      open(_remotePath, _flags, callback) {
+        callback(null, Buffer.from("close-stall-handle"));
+      },
+      read(_handle, buffer, offset, length, position, callback) {
+        const end = Math.min(position + length, payload.length);
+        const slice = payload.subarray(position, end);
+        slice.copy(buffer, offset);
+        setImmediate(() => callback(null, slice.length));
+      },
+      close() {
+        // Never invoke the callback — CLOSE watchdog must abandon the channel.
+      },
+      createReadStream() {
+        throw new Error("serial prefix stream should not run for CLOSE-stall test");
+      },
+    }),
+    client: {
+      exec(_request, callback) {
+        const error = new Error("SSH exec unavailable");
+        error.code = "SSH_EXEC_UNAVAILABLE";
+        callback(error);
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+      sftpCloseTimeoutMs: 20,
+    },
+  );
+  assert.equal(client.sftp, null, "stalled CLOSE must drop the wedged SFTP channel");
 });
 
 test("growing-download prefix verification times out a stalled SFTP READ", async (t) => {
