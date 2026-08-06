@@ -290,10 +290,18 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
     || !targetHost
     || normalizeHost(targetHost) === normalizeHost(firstHop);
 
+  // Embedded unreachable addresses often name a downstream hop that a public
+  // proxy/jump dialed. Only treat them as LAN evidence when they identify the
+  // local first-hop dial (or when this connection is itself the first hop).
+  const remotes = extractRemoteUnreachableAddresses(text);
+  const remotesForEvidence = targetIsFirstHop
+    ? remotes
+    : remotes.filter((value) => normalizeHost(value) === normalizeHost(firstHop));
+
   const candidates = [
     ...(targetIsFirstHop ? [options.hostname, options.host] : []),
     options.firstHopHostname,
-    ...extractRemoteUnreachableAddresses(text),
+    ...remotesForEvidence,
   ].filter((value) => value != null && String(value).trim() !== "");
   const touchesLan = candidates.some((value) => (
     isLocalNetworkHostname(value) || isLocalMdnsName(value)

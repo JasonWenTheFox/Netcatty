@@ -337,6 +337,26 @@ test("annotateMacLocalNetworkErrorMessage ignores .local targets behind a public
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage ignores downstream LAN addresses behind a public first hop", () => {
+  const message = "connect EHOSTUNREACH 192.168.1.10:22";
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "nas.local",
+      firstHopHostname: "proxy.example.com",
+    }),
+    message,
+  );
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "192.168.1.10",
+      firstHopHostname: "93.184.216.34",
+    }),
+    message,
+  );
+});
+
 test("annotateMacLocalNetworkErrorMessage ignores ProxyCommand errors even with LAN evidence", () => {
   const localName = "Network is unreachable";
   assert.equal(
