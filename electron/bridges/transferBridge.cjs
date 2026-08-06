@@ -728,13 +728,16 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
       if (options.signal?.aborted || error?.code === "ABORT_ERR") {
         throw error;
       }
-      // Optional digest optimization timed out — fall through to SFTP verification
-      // instead of failing an already-completed download.
-      if (
-        error?.code === "SSH_EXEC_OPEN_TIMEOUT"
-        || error?.code === "SSH_EXEC_RUN_TIMEOUT"
-      ) {
+      // Run timeout: the exec stream opened, so the SSH transport is still valid.
+      // Treat the optional digest as a miss and fall through to SFTP verification.
+      if (error?.code === "SSH_EXEC_RUN_TIMEOUT") {
         return null;
+      }
+      // Open timeout invalidates the physical transport in boundedSshExec. Do not
+      // continue into SFTP on this dead session — propagate so the caller fails
+      // closed instead of hanging/failing obscurely on a poisoned channel.
+      if (error?.code === "SSH_EXEC_OPEN_TIMEOUT") {
+        throw error;
       }
     }
   }

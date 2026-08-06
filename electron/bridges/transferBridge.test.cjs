@@ -3864,6 +3864,52 @@ test("growing-download prefix verification falls back after digest command timeo
   assert.ok(rangeReads > 0, "digest run timeout must fall through to SFTP range hashing");
 });
 
+test("growing-download prefix verification propagates digest open timeouts", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-digest-open-timeout-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(32 * 1024, 68);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  let rangeReads = 0;
+  const client = {
+    sftp: createFastSftp({
+      open(_remotePath, _flags, callback) {
+        rangeReads += 1;
+        callback(null, Buffer.from("should-not-open"));
+      },
+      read() {
+        throw new Error("SFTP fallback must not run after exec-open timeout");
+      },
+      createReadStream() {
+        throw new Error("SFTP stream fallback must not run after exec-open timeout");
+      },
+    }),
+    client: {
+      // Never invoke the exec callback — hits SSH_EXEC_OPEN_TIMEOUT and
+      // invalidates the transport in boundedSshExec.
+      exec() {},
+    },
+  };
+
+  await assert.rejects(
+    transferBridge._assertDownloadSourceAfterTransferForTests(
+      { size: payload.length, mtimeMs: 1 },
+      { size: payload.length + 1, mtimeMs: 2 },
+      payload.length,
+      {
+        localPath,
+        client,
+        remotePath: "/var/log/app.log",
+        signal: new AbortController().signal,
+        sshDigestOpeningTimeoutMs: 30,
+      },
+    ),
+    (error) => error?.code === "SSH_EXEC_OPEN_TIMEOUT",
+  );
+  assert.equal(rangeReads, 0, "open timeout must not fall through onto a poisoned session");
+});
+
 test("growing-download prefix verification rejects empty remote digests", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-empty-digest-"));
   t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
