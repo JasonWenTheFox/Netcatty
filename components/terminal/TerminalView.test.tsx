@@ -409,12 +409,18 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   const effectsSource = readFileSync(new URL("./useTerminalEffects.ts", import.meta.url), "utf8");
   assert.match(
     effectsSource,
-    /!isBootActiveRef\.current \|\| statusRef\.current === "disconnected"/,
+    /!isBootActiveRef\.current[\s\S]*statusRef\.current === "disconnected"[\s\S]*bootEpochMismatch/,
   );
   assert.match(
     effectsSource,
     /respondHostKeyVerification\?\.\(request\.requestId, false\)/,
   );
+  assert.match(effectsSource, /request\.bootEpoch/);
+  assert.match(
+    startersSource,
+    /if \(!isCurrentAttempt\(\)\) return;/,
+  );
+  assert.match(startersSource, /bootEpoch,/);
 });
 
 test("hidden host information reveals actions without permanently covering terminal content", () => {

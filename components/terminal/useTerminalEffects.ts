@@ -365,8 +365,18 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     const dispose = terminalBackend.onHostKeyVerification?.((request) => {
       if (request.sessionId !== sessionId) return;
       // Disconnect keeps the pane mounted; reject late host-key prompts instead
-      // of reopening approval UI on a disconnected / aborted boot.
-      if (!isBootActiveRef.current || statusRef.current === "disconnected") {
+      // of reopening approval UI on a disconnected / aborted boot. After a
+      // reconnect the shared flags are active again, so also require the
+      // request's boot epoch (when present) to match the current boot.
+      const requestBootEpoch = request.bootEpoch;
+      const bootEpochMismatch = Number.isFinite(requestBootEpoch)
+        && bootEpochRef
+        && requestBootEpoch !== bootEpochRef.current;
+      if (
+        !isBootActiveRef.current
+        || statusRef.current === "disconnected"
+        || bootEpochMismatch
+      ) {
         void terminalBackend.respondHostKeyVerification?.(request.requestId, false);
         return;
       }

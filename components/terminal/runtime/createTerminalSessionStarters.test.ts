@@ -843,10 +843,83 @@ test("stale startSSH key auth failure does not launch password fallback", async 
 
   assert.equal(startCalls.length, 1);
   assert.equal(startCalls[0].password, "login-secret");
+  assert.equal(startCalls[0].bootEpoch, 1);
   assert.equal(
     progressLogs.includes("Key auth failed. Trying password..."),
     false,
   );
+});
+
+test("stale startSSH chain progress does not overwrite replacement reconnect UI", async () => {
+  let chainProgressListener:
+    | ((sessionId: string, hop: number, total: number, label: string, status: string, error?: string) => void)
+    | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const awaitingUserInput: boolean[] = [];
+  const chainProgress: unknown[] = [];
+  const isBootActiveRef = { current: true };
+  const bootEpochRef = { current: 1 };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async () => {
+      releaseStartEntered?.();
+      return await new Promise<string>(() => {});
+    },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: (
+      listener: (sessionId: string, hop: number, total: number, label: string, status: string, error?: string) => void,
+    ) => {
+      chainProgressListener = listener;
+      return noop;
+    },
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      password: "secret",
+      authMethod: "password",
+      hostChain: { hostIds: ["jump-1"] },
+    },
+    resolvedChainHosts: [{
+      id: "jump-1",
+      label: "Jump",
+      hostname: "jump.example.test",
+      username: "jump",
+      password: "jump-secret",
+    }],
+    isBootActiveRef,
+    bootEpochRef,
+    setIsConnectionAwaitingUserInput: (value: boolean) => { awaitingUserInput.push(value); },
+    setChainProgress: (value: unknown) => { chainProgress.push(value); },
+    terminalBackend,
+  });
+
+  void createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  awaitingUserInput.length = 0;
+  chainProgress.length = 0;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = false;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = true;
+  chainProgressListener?.(
+    "session-1",
+    1,
+    2,
+    "jump.example.test",
+    "auth-attempt",
+    "waiting for user input...",
+  );
+
+  assert.deepEqual(awaitingUserInput, []);
+  assert.deepEqual(chainProgress, []);
 });
 
 test("startSSH keeps interactive source auth retries off unrelated pooled transports", async () => {

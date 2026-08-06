@@ -1130,6 +1130,7 @@ printf '%s\n' '${scanCompleteMarker}'`;
           port: options.port || 22,
           knownHosts: options.knownHosts,
           verifyHostKeys: options.verifyHostKeys,
+          bootEpoch: options.bootEpoch,
         });
 
         // Authentication for final target

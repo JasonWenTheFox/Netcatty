@@ -557,6 +557,7 @@ declare global {
         publicKey?: string;
         knownHostId?: string;
         knownFingerprint?: string;
+        bootEpoch?: number;
       }) => void
     ): () => void;
     respondHostKeyVerification?(

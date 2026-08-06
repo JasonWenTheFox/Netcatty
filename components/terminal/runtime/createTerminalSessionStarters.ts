@@ -195,6 +195,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
 
   const startSSH = async (term: XTerm) => {
     const { isCurrentAttempt, ignoreStaleAttemptUi } = createAttemptGuards();
+    // Correlate host-key prompts with this boot so a superseded start cannot
+    // reopen approval UI after disconnect → reconnect.
+    const bootEpoch = ctx.bootEpochRef?.current ?? 0;
     if (!ctx.terminalBackend.backendAvailable()) {
       ctx.setError("Native SSH bridge unavailable. Launch via Electron app.");
       writeTerminalLine(
@@ -448,6 +451,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       const unsub = ctx.terminalBackend.onChainProgress((sid, hop, total, label, status, error) => {
         // P1: Only process events for this session
         if (sid !== ctx.sessionId) return;
+        // Disconnect/reconnect can leave two SSH starts sharing this UI
+        // sessionId; ignore progress from the superseded boot attempt.
+        if (!isCurrentAttempt()) return;
 
         // P3: Only show chain progress UI for multi-hop connections
         if (total > 1) {
@@ -608,6 +614,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           sshTcpConnectTimeoutMs: connectionTimeouts.tcpConnectTimeoutSeconds * 1000,
           sshAuthReadyTimeoutMs: connectionTimeouts.authReadyTimeoutSeconds * 1000,
           verifyHostKeys: globalTerminalSettings.verifyHostKeys,
+          bootEpoch,
           sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
           sshDebugLogEnabled: ctx.sshDebugLogEnabled,
           identityFilePaths: attempt.useIdentityFiles ? targetIdentityFilePaths : undefined,
