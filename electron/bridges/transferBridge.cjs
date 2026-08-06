@@ -550,8 +550,12 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
       }
     }
     truncatingSharedWriteOpenGates.set(key, barrier);
-    // Only the OPEN owner arms post-transport clear.
-    if (barrier.openIssued) {
+    // Arm post-transport clear only when THIS entry owns the unresolved OPEN
+    // and is the one being poisoned (its isolated channel already ended before
+    // fastPut timeout). A waiter fail() that walks to an ancestor must not
+    // start that ancestor's cleanup while the ancestor's transport may still
+    // deliver a late truncating OPEN (Codex P1 on 4f2397ce).
+    if (barrier === entry && barrier.openIssued) {
       try { barrier.releaseAfterTransportGone?.(); } catch { /* ignore */ }
     }
   };
