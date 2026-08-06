@@ -11,6 +11,7 @@ import { getSftpTransferResourceKeys, globalSftpTransferScheduler } from '../sta
 import { hasNewSourceFingerprint } from '../state/sftp/transferProgressMetadata';
 import { STORAGE_KEY_SFTP_TRANSFER_CONCURRENCY } from '../../infrastructure/config/storageKeys';
 import type { TransferTask } from '../../domain/models';
+import { isTerminalBootEpochCurrent } from '../../domain/terminalBootEpoch';
 import {
   canApplyDedicatedResumeProgress,
   createDedicatedResumeChildUpdateBatcher,
@@ -25,6 +26,7 @@ type KeyboardInteractiveRequestLike = {
   sessionId?: string;
   hostId?: string;
   requestId?: string;
+  bootEpoch?: number;
 };
 type SessionIdLike = { id: string; hostId?: string; hostname?: string; status?: string };
 type KeyboardInteractiveQueueItem = { requestId: string };
@@ -39,6 +41,9 @@ export function shouldQueueKeyboardInteractiveRequest(
   if (!session) return false;
   // Status-bar disconnect keeps the tab; do not queue MFA for aborted panes.
   if (session.status === "disconnected") return false;
+  // After disconnect → reconnect the tab is connecting again; reject MFA from
+  // a superseded SSH start that still shares this sessionId.
+  if (!isTerminalBootEpochCurrent(request.sessionId, request.bootEpoch)) return false;
   return true;
 }
 

@@ -22,6 +22,7 @@ import {
   resolveHibernatePreferWasmSerialize,
   resolveTerminalHibernateEnabledForProtocol,
 } from '../../domain/terminalHibernate';
+import { setTerminalBootEpoch } from '../../domain/terminalBootEpoch';
 import { applyUserCursorBlinkPreference } from './runtime/cursorPreference';
 import { resolveCursorLineHighlightBackground } from '../../domain/cursorLineHighlight';
 import { getFlowControllerForTerm } from './runtime/terminalSessionAttachment';
@@ -403,7 +404,10 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     let disposed = false;
     let initialFitTimer: ReturnType<typeof setTimeout> | undefined;
     const closeGeneration = ++terminalBootCloseGenerationRef.current;
-    if (bootEpochRef) bootEpochRef.current += 1;
+    if (bootEpochRef) {
+      bootEpochRef.current += 1;
+      setTerminalBootEpoch(sessionId, bootEpochRef.current);
+    }
     isBootActiveRef.current = true;
     terminalDataCapturedRef.current = false;
     connectionLogBufferRef.current.reset();

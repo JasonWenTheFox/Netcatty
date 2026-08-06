@@ -5,6 +5,10 @@ import {
   removeKeyboardInteractiveRequest,
   shouldQueueKeyboardInteractiveRequest,
 } from "./useAppStartupEffects.ts";
+import {
+  clearTerminalBootEpoch,
+  setTerminalBootEpoch,
+} from "../../domain/terminalBootEpoch.ts";
 
 const sessions = [{ id: "terminal-1" }, { id: "terminal-2" }];
 
@@ -34,6 +38,25 @@ test("disconnected terminal sessions do not queue keyboard-interactive prompts",
     ),
     true,
   );
+});
+
+test("superseded terminal boot epochs do not queue keyboard-interactive prompts", () => {
+  setTerminalBootEpoch("terminal-1", 3);
+  assert.equal(
+    shouldQueueKeyboardInteractiveRequest(
+      { scope: "terminal", sessionId: "terminal-1", bootEpoch: 1 },
+      [{ id: "terminal-1", status: "connecting" }],
+    ),
+    false,
+  );
+  assert.equal(
+    shouldQueueKeyboardInteractiveRequest(
+      { scope: "terminal", sessionId: "terminal-1", bootEpoch: 3 },
+      [{ id: "terminal-1", status: "connecting" }],
+    ),
+    true,
+  );
+  clearTerminalBootEpoch("terminal-1");
 });
 
 test("external keyboard-interactive requests are not filtered by terminal session ids", () => {

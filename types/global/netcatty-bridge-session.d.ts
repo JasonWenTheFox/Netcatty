@@ -530,6 +530,7 @@ declare global {
         /** When false, UI must not offer saving the response as the host password. */
         allowSavePassword?: boolean;
         scope?: "terminal" | "external";
+        bootEpoch?: number;
       }) => void
     ): () => void;
     onKeyboardInteractiveCancelled?(

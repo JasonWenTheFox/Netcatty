@@ -390,7 +390,7 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.match(body, /reconnectWakeTokenRef\.current = null/);
   assert.match(body, /reconnectWakeInFlightRef\.current = false/);
   assert.match(body, /netcatty:terminal-session-disconnected/);
-  assert.match(body, /bootEpochRef\.current \+= 1/);
+  assert.match(body, /bumpBootEpoch\(\)/);
   assert.match(body, /isBootActiveRef\.current = false/);
   assert.match(body, /setIsCancelling\(true\)/);
   assert.match(body, /updateStatus\("disconnected"\)/);
@@ -398,13 +398,14 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.doesNotMatch(body, /onCloseSession/);
   assert.match(source, /handleDisconnect: \(attachExistingSession \|\| compactToolbar\) \? undefined : handleDisconnect/);
   assert.match(source, /showConnectionControls: !attachExistingSession && !compactToolbar/);
+  assert.match(source, /setTerminalBootEpoch/);
 
   const startersSource = readFileSync(
     new URL("./runtime/createTerminalSessionStarters.ts", import.meta.url),
     "utf8",
   );
   assert.match(startersSource, /createBootAttemptGuard\(ctx\)/);
-  assert.match(source, /bootEpochRef\.current \+= 1/);
+  assert.match(startersSource, /setTerminalBootEpoch\(ctx\.sessionId, bootEpoch\)/);
 
   const effectsSource = readFileSync(new URL("./useTerminalEffects.ts", import.meta.url), "utf8");
   assert.match(

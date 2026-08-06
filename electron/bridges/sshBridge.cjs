@@ -599,6 +599,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
         port: jump.port || 22,
         knownHosts: options.knownHosts,
         verifyHostKeys: jump.verifyHostKeys ?? options.verifyHostKeys,
+        bootEpoch: options.bootEpoch,
       });
       attachSshDebugLogger(connOpts, sshDiagnosticLogger);
       logSshAlgorithms("Jump host", connOpts.algorithms, {
@@ -846,6 +847,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           password: jump.password,
           logPrefix: `[Chain] Hop ${i + 1}/${totalHops}`,
           scope: keyboardInteractiveScope,
+          bootEpoch: options.bootEpoch,
           getAuthBanner: () => authBanner,
           shouldSkipAutoFill: () => shouldSkipKiPasswordAutoFill(hopAuthPhase),
           onAutoFill: () => sendProgress(

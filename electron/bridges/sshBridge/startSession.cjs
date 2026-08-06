@@ -2191,6 +2191,7 @@ printf '%s\n' '${scanCompleteMarker}'`;
             password: options.password,
             logPrefix,
             scope: "terminal",
+            bootEpoch: options.bootEpoch,
             getAuthBanner: () => authBanner,
             shouldSkipAutoFill: () => shouldSkipKiPasswordAutoFill(authPhase),
             onAutoFill: () => sendProgress(

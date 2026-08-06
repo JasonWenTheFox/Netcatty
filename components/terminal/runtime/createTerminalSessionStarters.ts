@@ -3,6 +3,7 @@ import type { ProviderValidationIssue } from "@netcatty/plugin-contract";
 import { logger } from "../../../lib/logger";
 import type { Host, SSHKey } from "../../../types";
 import type { TerminalSessionExitEvent } from "../../../application/state/resolveTerminalSessionExitIntent";
+import { setTerminalBootEpoch } from "../../../domain/terminalBootEpoch";
 import type { TerminalSessionStartersContext } from "./createTerminalSessionStarters.types";
 export type {
   PendingAuth,
@@ -198,6 +199,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     // Correlate host-key prompts with this boot so a superseded start cannot
     // reopen approval UI after disconnect → reconnect.
     const bootEpoch = ctx.bootEpochRef?.current ?? 0;
+    setTerminalBootEpoch(ctx.sessionId, bootEpoch);
     if (!ctx.terminalBackend.backendAvailable()) {
       ctx.setError("Native SSH bridge unavailable. Launch via Electron app.");
       writeTerminalLine(

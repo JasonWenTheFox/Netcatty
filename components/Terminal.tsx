@@ -48,6 +48,7 @@ import { supportsZmodemTerminalDragDrop } from "../lib/zmodemDragDrop";
 import { resolveHostAuth, resolveHostAutofillPassword } from "../domain/sshAuth";
 import { resolveEffectiveTerminalProtocol } from "../domain/terminalProtocol";
 import { isPluginHostProtocol } from "../domain/pluginConnection";
+import { clearTerminalBootEpoch, setTerminalBootEpoch } from "../domain/terminalBootEpoch";
 import {
   appendTerminalPromptSecurityTail,
   isConfirmedTerminalShellPrompt,
@@ -459,6 +460,13 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const sessionCleanupPromiseRef = useRef<Promise<void> | null>(null);
   const isBootActiveRef = useRef(false);
   const bootEpochRef = useRef(0);
+  const publishBootEpoch = () => {
+    setTerminalBootEpoch(sessionId, bootEpochRef.current);
+  };
+  const bumpBootEpoch = () => {
+    bootEpochRef.current += 1;
+    publishBootEpoch();
+  };
   const hasConnectedRef = useRef(false);
   const hasRunStartupCommandRef = useRef(false);
   const restoreCwdIntentRef = useRef<{ cwd: string; command: string } | null>(null);
@@ -2068,10 +2076,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
   useEffect(() => () => {
     clearKittyKeyboardBroadcastSession(sessionId);
+    clearTerminalBootEpoch(sessionId);
   }, [sessionId]);
 
   const teardown = () => {
-    bootEpochRef.current += 1;
+    bumpBootEpoch();
     isBootActiveRef.current = false;
     retryTokenRef.current = null;
     reconnectPreparationTokenRef.current = null;
@@ -3118,7 +3127,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     // the pane mounted, so mark boot inactive here or a late startSSH/startMosh
     // attach can still bring the session back after the user asked to stop.
     // Bump the epoch so a later reconnect cannot revive this aborted attempt.
-    bootEpochRef.current += 1;
+    bumpBootEpoch();
     isBootActiveRef.current = false;
     setIsCancelling(true);
     auth.setNeedsAuth(false);
@@ -3273,6 +3282,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     const retryStillActive = () => retryTokenStillCurrent() && termRef.current === term;
 
     bootEpochRef.current += 1;
+    publishBootEpoch();
     isBootActiveRef.current = true;
     auth.resetForRetry();
     terminalDataCapturedRef.current = false;

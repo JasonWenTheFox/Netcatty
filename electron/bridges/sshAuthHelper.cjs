@@ -1821,6 +1821,7 @@ function createKeyboardInteractiveHandler(options) {
     password,
     logPrefix = "[SSH]",
     scope = "external",
+    bootEpoch,
     shouldSkipAutoFill,
     onAutoFill,
     onPromptShown,
@@ -1948,6 +1949,7 @@ function createKeyboardInteractiveHandler(options) {
       savedPassword: savedPasswordForModal,
       allowSavePassword,
       scope,
+      ...(Number.isFinite(bootEpoch) ? { bootEpoch: Number(bootEpoch) } : {}),
     });
   };
 }
