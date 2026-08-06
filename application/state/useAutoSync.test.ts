@@ -191,3 +191,43 @@ test("auto-sync skips only the exact remote-applied data hash", () => {
     "remote-apply skip hash must survive temporary sync blockers and clear only after a successful sync",
   );
 });
+
+test("startup local-wins and merge round-trips refuse device-bound credential placeholders", () => {
+  const source = readFileSync(new URL("./useAutoSync.ts", import.meta.url), "utf8");
+  const uploadLocalIndex = source.indexOf("if (conflictAction === 'upload-local')");
+  const uploadGuardIndex = source.indexOf(
+    "findSyncPayloadEncryptedCredentialPaths(localPayload)",
+    uploadLocalIndex,
+  );
+  const uploadPushIndex = source.indexOf("manager.syncAllProviders(localPayload)", uploadGuardIndex);
+  const mergeRoundTripBlockIndex = source.indexOf(
+    "Startup merge round-trip blocked: encrypted credential placeholders",
+  );
+  const mergeGuardIndex = source.indexOf(
+    "findSyncPayloadEncryptedCredentialPaths(mergeResult.payload)",
+    mergeRoundTripBlockIndex - 200,
+  );
+  const mergePushIndex = source.indexOf(
+    "manager.syncAllProviders(mergeResult.payload)",
+    mergeGuardIndex,
+  );
+  const stripRemoteIndex = source.indexOf(
+    "stripSyncPayloadEncryptedCredentials(inspection.payload)",
+  );
+
+  assert.notEqual(uploadLocalIndex, -1);
+  assert.notEqual(uploadGuardIndex, -1);
+  assert.notEqual(uploadPushIndex, -1);
+  assert.notEqual(mergeGuardIndex, -1);
+  assert.notEqual(mergeRoundTripBlockIndex, -1);
+  assert.notEqual(mergePushIndex, -1);
+  assert.notEqual(stripRemoteIndex, -1);
+  assert.ok(
+    uploadGuardIndex < uploadPushIndex,
+    "startup local-wins must guard placeholders before syncAllProviders",
+  );
+  assert.ok(
+    mergeGuardIndex < mergePushIndex,
+    "startup merge round-trip must guard placeholders before syncAllProviders",
+  );
+});

@@ -989,10 +989,22 @@ export const useVaultState = () => {
               ),
             );
             setHosts(sanitized);
-            encryptHosts(sanitized).then((enc) => {
-              if (ver === hostsWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_HOSTS, enc);
-            });
+            // If decrypt left device-bound placeholders, do not rewrite storage.
+            // Re-encrypting undecryptable ciphertext used to wrap it again and
+            // permanently poison the vault (#2702). encryptCredentialValue now
+            // refuses to wrap, but skipping the write avoids churn.
+            if (
+              !sanitized.some((host) =>
+                isEncryptedCredentialPlaceholder(host.password)
+                || isEncryptedCredentialPlaceholder(host.telnetPassword)
+                || isEncryptedCredentialPlaceholder(host.proxyConfig?.password)
+              )
+            ) {
+              encryptHosts(sanitized).then((enc) => {
+                if (ver === hostsWriteVersion.current)
+                  localStorageAdapter.write(STORAGE_KEY_HOSTS, enc);
+              });
+            }
           }
         } else {
           updateHosts(INITIAL_HOSTS);
@@ -1026,10 +1038,17 @@ export const useVaultState = () => {
           if (keyVer === keysWriteVersion.current) {
             const orderedKeys = normalizeVaultOrder(decryptedKeys);
             setKeys(orderedKeys);
-            encryptKeys(orderedKeys).then((enc) => {
-              if (keyVer === keysWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_KEYS, enc);
-            });
+            if (
+              !orderedKeys.some((key) =>
+                isEncryptedCredentialPlaceholder(key.privateKey)
+                || isEncryptedCredentialPlaceholder(key.passphrase)
+              )
+            ) {
+              encryptKeys(orderedKeys).then((enc) => {
+                if (keyVer === keysWriteVersion.current)
+                  localStorageAdapter.write(STORAGE_KEY_KEYS, enc);
+              });
+            }
           }
           if (legacyKeys.length) {
             localStorageAdapter.write(STORAGE_KEY_LEGACY_KEYS, legacyKeys);
@@ -1046,10 +1065,16 @@ export const useVaultState = () => {
           if (idVer === identitiesWriteVersion.current) {
             const orderedIdentities = normalizeVaultOrder(decryptedIds);
             setIdentities(orderedIdentities);
-            encryptIdentities(orderedIdentities).then((enc) => {
-              if (idVer === identitiesWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_IDENTITIES, enc);
-            });
+            if (
+              !orderedIdentities.some((identity) =>
+                isEncryptedCredentialPlaceholder(identity.password)
+              )
+            ) {
+              encryptIdentities(orderedIdentities).then((enc) => {
+                if (idVer === identitiesWriteVersion.current)
+                  localStorageAdapter.write(STORAGE_KEY_IDENTITIES, enc);
+              });
+            }
           }
         }
 
@@ -1061,10 +1086,16 @@ export const useVaultState = () => {
           if (proxyVer === proxyProfilesWriteVersion.current) {
             const orderedProfiles = normalizeVaultOrder(decryptedProfiles);
             setProxyProfiles(orderedProfiles);
-            encryptProxyProfiles(orderedProfiles).then((enc) => {
-              if (proxyVer === proxyProfilesWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_PROXY_PROFILES, enc);
-            });
+            if (
+              !orderedProfiles.some((profile) =>
+                isEncryptedCredentialPlaceholder(profile.config.password)
+              )
+            ) {
+              encryptProxyProfiles(orderedProfiles).then((enc) => {
+                if (proxyVer === proxyProfilesWriteVersion.current)
+                  localStorageAdapter.write(STORAGE_KEY_PROXY_PROFILES, enc);
+              });
+            }
           }
         }
 
@@ -1147,10 +1178,18 @@ export const useVaultState = () => {
           if (gcVer === groupConfigsWriteVersion.current) {
             const sanitizedGC = normalizeVaultOrder(decryptedGC.map(sanitizeGroupConfig));
             setGroupConfigs(sanitizedGC);
-            encryptGroupConfigs(sanitizedGC).then((enc) => {
-              if (gcVer === groupConfigsWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_GROUP_CONFIGS, enc);
-            });
+            if (
+              !sanitizedGC.some((config) =>
+                isEncryptedCredentialPlaceholder(config.password)
+                || isEncryptedCredentialPlaceholder(config.telnetPassword)
+                || isEncryptedCredentialPlaceholder(config.proxyConfig?.password)
+              )
+            ) {
+              encryptGroupConfigs(sanitizedGC).then((enc) => {
+                if (gcVer === groupConfigsWriteVersion.current)
+                  localStorageAdapter.write(STORAGE_KEY_GROUP_CONFIGS, enc);
+              });
+            }
           }
         }
       } finally {

@@ -14,6 +14,7 @@ import { getCloudSyncManager } from '../../infrastructure/services/CloudSyncMana
 import { netcattyBridge } from '../../infrastructure/services/netcattyBridge';
 import {
   findSyncPayloadEncryptedCredentialPaths,
+  stripSyncPayloadEncryptedCredentials,
 } from '../../domain/credentials';
 import { isProviderReadyForSync, type CloudProvider, type SyncPayload } from '../../domain/sync';
 import { mergeSyncPayloads } from '../../domain/syncMerge';
@@ -707,7 +708,9 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       inspectedRemoteChange = true;
 
       const remoteFile = inspection.remoteFile;
-      const remotePayload = inspection.payload;
+      // Strip any device-bound enc:v1 blobs before apply/round-trip so a
+      // previously poisoned cloud snapshot cannot be re-uploaded (#2702).
+      const remotePayload = stripSyncPayloadEncryptedCredentials(inspection.payload);
       const localPayload = await buildPayloadRef.current();
 
       // If local vault is empty but cloud has data, this almost certainly
@@ -778,6 +781,14 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       }
 
       if (conflictAction === 'upload-local') {
+        const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(localPayload);
+        if (encryptedCredentialPaths.length > 0) {
+          console.warn(
+            '[AutoSync] Startup local-wins blocked: encrypted credential placeholders found at:',
+            encryptedCredentialPaths.join(', '),
+          );
+          throw new Error(tRef.current('sync.credentialsUnavailable'));
+        }
         const pushResults = await manager.syncAllProviders(localPayload);
         const results = Array.from(pushResults.values());
         commitPluginSidecarsAfterSuccessfulSync(localPayload, results);
@@ -826,6 +837,16 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       // that only approximated the correct ordering.
       if (mergeResult.payload) {
         try {
+          const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(mergeResult.payload);
+          if (encryptedCredentialPaths.length > 0) {
+            console.warn(
+              '[AutoSync] Startup merge round-trip blocked: encrypted credential placeholders found at:',
+              encryptedCredentialPaths.join(', '),
+            );
+            // Local merge is already applied; refuse only the cloud push so we
+            // never upload device-bound enc:v1 ciphertext (#2702).
+            throw new Error(tRef.current('sync.credentialsUnavailable'));
+          }
           const roundTripResults = await manager.syncAllProviders(mergeResult.payload);
           const roundTripResultList = Array.from(roundTripResults.values());
           commitPluginSidecarsAfterSuccessfulSync(mergeResult.payload, roundTripResultList);

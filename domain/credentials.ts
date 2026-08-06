@@ -108,3 +108,66 @@ export const findSyncPayloadEncryptedCredentialPaths = (
 
   return issues;
 };
+
+/**
+ * Clear device-bound enc:v1 placeholders from a portable sync payload.
+ *
+ * Cloud / backup payloads must carry plaintext secrets (protected by the
+ * master key envelope). If a previous bug uploaded undecryptable local
+ * ciphertext, stripping placeholders lets download restore a usable vault
+ * shell so the user can re-enter credentials instead of looping forever.
+ */
+export const stripSyncPayloadEncryptedCredentials = (
+  payload: SyncPayload,
+): SyncPayload => {
+  const hosts = payload.hosts.map((host) => {
+    const next = { ...host };
+    if (isEncryptedCredentialPlaceholder(next.password)) delete next.password;
+    if (isEncryptedCredentialPlaceholder(next.telnetPassword)) delete next.telnetPassword;
+    if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
+      const { password: _removed, ...proxyRest } = next.proxyConfig;
+      next.proxyConfig = proxyRest;
+    }
+    return next;
+  });
+
+  const keys = payload.keys.map((key) => {
+    const next = { ...key };
+    if (isEncryptedCredentialPlaceholder(next.privateKey)) next.privateKey = "";
+    if (isEncryptedCredentialPlaceholder(next.passphrase)) delete next.passphrase;
+    return next;
+  });
+
+  const identities = payload.identities?.map((identity) => {
+    if (!isEncryptedCredentialPlaceholder(identity.password)) return identity;
+    const next = { ...identity };
+    delete next.password;
+    return next;
+  });
+
+  const proxyProfiles = payload.proxyProfiles?.map((profile) => {
+    if (!isEncryptedCredentialPlaceholder(profile.config.password)) return profile;
+    const { password: _removed, ...configRest } = profile.config;
+    return { ...profile, config: configRest };
+  });
+
+  const groupConfigs = payload.groupConfigs?.map((config) => {
+    const next = { ...config };
+    if (isEncryptedCredentialPlaceholder(next.password)) delete next.password;
+    if (isEncryptedCredentialPlaceholder(next.telnetPassword)) delete next.telnetPassword;
+    if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
+      const { password: _removed, ...proxyRest } = next.proxyConfig;
+      next.proxyConfig = proxyRest;
+    }
+    return next;
+  });
+
+  return {
+    ...payload,
+    hosts,
+    keys,
+    identities: identities ?? payload.identities,
+    proxyProfiles: proxyProfiles ?? payload.proxyProfiles,
+    groupConfigs: groupConfigs ?? payload.groupConfigs,
+  };
+};
