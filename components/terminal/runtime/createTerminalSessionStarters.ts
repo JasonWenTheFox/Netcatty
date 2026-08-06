@@ -719,7 +719,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         sudoAutofillPassword: resolveSavedSudoAutofillPassword(),
         sudoAutofillCandidates: resolveSudoAutofillCandidates(),
       })) {
-        abortSessionStartAfterUnmount();
+        // Only the current attempt may clear UI; a stale attach must not
+        // disconnect a newer reconnect that already re-armed boot.
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
 
@@ -930,7 +932,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         onExit: cleanupTelnetSession,
       })) {
         cleanupTelnetSession();
-        abortSessionStartAfterUnmount();
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
 
@@ -1159,7 +1161,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         sudoAutofillCandidates: resolveSudoAutofillCandidates(),
       })) {
         cleanupMoshStartupWait();
-        abortSessionStartAfterUnmount();
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
       sessionAttached = true;
@@ -1466,7 +1468,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         sudoAutofillPassword: resolveSavedSudoAutofillPassword(),
         sudoAutofillCandidates: resolveSudoAutofillCandidates(),
       })) {
-        abortSessionStartAfterUnmount();
+        // Only the current attempt may clear UI; a stale attach must not
+        // disconnect a newer reconnect that already re-armed boot.
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
 
@@ -1579,7 +1583,11 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         signal: startController.signal,
       });
       releasePendingStartCancellation();
-      if (startController.signal.aborted || !isCurrentAttempt()) {
+      if (!isCurrentAttempt()) {
+        closeOrphanBackendSession(ctx, opened.sessionId);
+        return;
+      }
+      if (startController.signal.aborted) {
         closeOrphanBackendSession(ctx, opened.sessionId);
         abortSessionStartAfterUnmount();
         return;
@@ -1605,7 +1613,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           if (meta?.pluginConnectionReady === true) schedulePluginStartup();
         },
       })) {
-        abortSessionStartAfterUnmount();
+        // Only the current attempt may clear UI; a stale attach must not
+        // disconnect a newer reconnect that already re-armed boot.
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
       if (opened.status === "connected") {
@@ -1614,10 +1624,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       }
     } catch (error) {
       releasePendingStartCancellation();
-      if (ignoreStaleAttemptUi()) {
-        abortSessionStartAfterUnmount();
-        return;
-      }
+      if (ignoreStaleAttemptUi()) return;
       const message = error instanceof Error ? error.message : String(error);
       ctx.setError(message);
       writeTerminalLine(ctx, term, "\r\n[Failed to start plugin connection. See connection details.]");
@@ -1780,7 +1787,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         // Convert lone LF to CRLF to prevent "staircase effect" in serial terminals
         convertLfToCrlf: true,
       })) {
-        abortSessionStartAfterUnmount();
+        // Only the current attempt may clear UI; a stale attach must not
+        // disconnect a newer reconnect that already re-armed boot.
+        if (isCurrentAttempt()) abortSessionStartAfterUnmount();
         return;
       }
 
