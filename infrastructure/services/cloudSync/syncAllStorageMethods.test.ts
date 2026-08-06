@@ -165,7 +165,7 @@ test("syncAllProviders uses the newest cloud payload without merging other remot
     const results = await syncAllProvidersImpl.call(manager, localPayload);
 
     assert.equal(results.get("github")?.action, "download");
-    assert.equal(results.get("github")?.mergedPayload, githubPayload);
+    assert.deepEqual(results.get("github")?.mergedPayload, githubPayload);
     assert.equal(results.get("github")?.remoteFile, githubRemote);
     assert.equal(uploaded.length, 1);
     assert.equal(uploaded[0].provider, "google");
@@ -815,4 +815,77 @@ test("syncToProvider preserves a merged payload discovered by a non-target provi
   assert.equal(selected.error, "github unavailable");
   assert.equal(selected.mergedPayload, mergedPayload);
   assert.equal(selected.remoteFile, undefined);
+});
+
+test("syncAllProviders smart-merge strips device-bound enc:v1 secrets before upload", async () => {
+  const originalDecryptPayload = EncryptionService.decryptPayload;
+  const originalEncryptPayload = EncryptionService.encryptPayload;
+  const ENC = `enc:v1:${Buffer.from("v10:stale-remote", "utf8").toString("base64")}`;
+  const checkedRemote = remoteFile("github", 5, 500);
+  const localPayload = payload("local-only");
+  const remotePoisoned: SyncPayload = {
+    ...payload("remote-only"),
+    hosts: [
+      {
+        ...payload("remote-only").hosts[0]!,
+        password: ENC,
+      },
+    ],
+  };
+  const uploaded: SyncPayload[] = [];
+
+  EncryptionService.decryptPayload = async () => remotePoisoned;
+  EncryptionService.encryptPayload = async (outgoing: SyncPayload) => ({
+    ...remoteFile("github", 6, 600),
+    payload: JSON.stringify(outgoing),
+  });
+
+  try {
+    const manager = {
+      masterPassword: "pw",
+      adapters: new Map(),
+      state: {
+        securityState: "UNLOCKED",
+        providers: {
+          github: { enabled: true, connected: true, status: "connected" },
+          google: { enabled: false, connected: false, status: "disconnected" },
+          onedrive: { enabled: false, connected: false, status: "disconnected" },
+          webdav: { enabled: false, connected: false, status: "disconnected" },
+          s3: { enabled: false, connected: false, status: "disconnected" },
+        },
+        lastError: null,
+        syncState: "IDLE",
+        syncStrategy: "smartMerge",
+        localVersion: 1,
+        deviceId: "local-device",
+        deviceName: "Local",
+      },
+      getConnectedAdapter: async (provider: CloudProvider) => ({ provider }),
+      updateProviderStatus: () => {},
+      emit: () => {},
+      checkProviderConflict: async () => ({ conflict: true, remoteFile: checkedRemote }),
+      loadSyncBase: async () => payload("base"),
+      uploadToProvider: async (
+        _provider: CloudProvider,
+        _adapter: unknown,
+        _file: SyncedFile,
+        outgoing: SyncPayload,
+      ) => {
+        uploaded.push(outgoing);
+        return { success: true, provider: "github" as const, action: "upload" as const, version: 6 };
+      },
+      exitBlockedState: () => {},
+      notifyStateChange: () => {},
+    };
+
+    const results = await syncAllProvidersImpl.call(manager, localPayload);
+    assert.equal(results.get("github")?.success, true);
+    assert.equal(uploaded.length, 1);
+    const remoteHost = uploaded[0]?.hosts.find((host) => host.id === "remote-only");
+    assert.ok(remoteHost);
+    assert.equal(remoteHost?.password, undefined);
+  } finally {
+    EncryptionService.decryptPayload = originalDecryptPayload;
+    EncryptionService.encryptPayload = originalEncryptPayload;
+  }
 });
