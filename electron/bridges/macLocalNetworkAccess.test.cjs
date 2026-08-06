@@ -387,6 +387,48 @@ test("createMacLocalNetworkAccessGate retries .local probes over udp6 when udp4 
   assert.equal(sockets[1].closed, true);
 });
 
+test("createMacLocalNetworkAccessGate shares one timeout across udp4 and udp6 fallbacks", async () => {
+  const safetyTimeouts = [];
+  let now = 1_000;
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeTimeoutMs: 500,
+    probeHoldMs: 5,
+    setTimer: (fn, ms) => {
+      safetyTimeouts.push(ms);
+      // First family burns part of the shared budget before failing.
+      if (safetyTimeouts.length === 1) now += 200;
+      queueMicrotask(fn);
+      return { ms };
+    },
+    clearTimer() {},
+    dgram: {
+      createSocket() {
+        class HangSocket extends EventEmitter {
+          connect() {
+            // Never connects; each family burns part of the shared budget.
+          }
+          close() {}
+        }
+        return new HangSocket();
+      },
+    },
+  });
+
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    await gate.ensureAccess({ hostname: "hang.local", port: 22 });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(safetyTimeouts.length, 2);
+  assert.equal(safetyTimeouts[0], 500);
+  assert.equal(safetyTimeouts[1], 300);
+});
+
 test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async () => {
   let creates = 0;
   const linuxGate = createMacLocalNetworkAccessGate({

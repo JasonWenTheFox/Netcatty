@@ -318,12 +318,13 @@ function createMacLocalNetworkAccessGate(options = {}) {
     return String(hostname).toLowerCase();
   }
 
-  function runUdpProbeOnce(hostname, udpType) {
+  function runUdpProbeOnce(hostname, udpType, attemptTimeoutMs) {
     return new Promise((resolve) => {
       let settled = false;
       let socket = null;
       let safetyTimer = null;
       let holdTimer = null;
+      const attemptMs = Math.max(1, Math.round(attemptTimeoutMs));
 
       const finish = (connected) => {
         if (settled) return;
@@ -339,7 +340,7 @@ function createMacLocalNetworkAccessGate(options = {}) {
       try {
         socket = dgramModule.createSocket(udpType);
         socket.once?.("error", () => finish(false));
-        safetyTimer = setTimer(() => finish(false), probeTimeoutMs);
+        safetyTimer = setTimer(() => finish(false), attemptMs);
         socket.connect(DISCARD_PORT, hostname, () => {
           if (settled) return;
           // Clear the connect safety window once connected so a slow
@@ -363,8 +364,11 @@ function createMacLocalNetworkAccessGate(options = {}) {
 
   async function runUdpProbe(hostname) {
     const types = pickUdpTypes(hostname);
+    const deadlineAt = Date.now() + probeTimeoutMs;
     for (const udpType of types) {
-      const connected = await runUdpProbeOnce(hostname, udpType);
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) return;
+      const connected = await runUdpProbeOnce(hostname, udpType, remainingMs);
       if (connected) return;
     }
   }
