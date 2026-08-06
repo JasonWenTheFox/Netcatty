@@ -7,7 +7,7 @@ import {
 import packageJson from '../../../package.json';
 import { EncryptionService } from '../EncryptionService';
 import { mergeSyncPayloads } from '../../../domain/syncMerge';
-import { stripSyncPayloadEncryptedCredentials, healPoisonedRemoteSecretsForMerge } from '../../../domain/credentials';
+import { stripSyncPayloadEncryptedCredentials, healPoisonedSecretsForMerge } from '../../../domain/credentials';
 import {
   SYNC_SNAPSHOT_LIMIT,
   summarizeSyncChanges,
@@ -308,13 +308,14 @@ export async function syncAllProvidersImpl(this: any,
               c.check!.remoteFile!,
               this.masterPassword,
             );
-            const remotePayload = healPoisonedRemoteSecretsForMerge(
+            const localHealed = healPoisonedSecretsForMerge(merged, remoteRaw, providerBase);
+            const remotePayload = healPoisonedSecretsForMerge(
               remoteRaw,
               merged,
               providerBase,
             );
             assertSyncSecurityGeneration(this, syncSecurityGeneration);
-            const result = mergeSyncPayloads(providerBase, merged, remotePayload);
+            const result = mergeSyncPayloads(providerBase, localHealed, remotePayload);
             merged = result.payload;
           }
           const mergeResult = {

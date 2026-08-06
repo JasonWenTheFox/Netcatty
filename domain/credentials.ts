@@ -225,36 +225,36 @@ const pickUsableCredential = (
 };
 
 /**
- * Before three-way merge, replace device-bound enc:v1 secrets on the remote
- * snapshot with usable local/base values when available. Stripping those
- * fields to undefined would make merge treat them as remote-only deletions of
- * good secrets. Final upload still runs stripSyncPayloadEncryptedCredentials.
+ * Before three-way merge, replace device-bound enc:v1 secrets on `poisoned`
+ * with usable values from `preferred` then `fallback`. Used for both remote
+ * and local sides so a poisoned field cannot win the entity-level merge and
+ * delete a still-usable secret from the other side / base.
  */
-export const healPoisonedRemoteSecretsForMerge = (
-  remote: SyncPayload,
-  local: SyncPayload,
-  base: SyncPayload | null | undefined,
+export const healPoisonedSecretsForMerge = (
+  poisoned: SyncPayload,
+  preferred: SyncPayload,
+  fallback: SyncPayload | null | undefined,
 ): SyncPayload => {
-  const localHosts = new Map(local.hosts.map((host) => [host.id, host]));
-  const baseHosts = new Map((base?.hosts ?? []).map((host) => [host.id, host]));
-  const hosts = remote.hosts.map((host) => {
-    const localHost = localHosts.get(host.id);
-    const baseHost = baseHosts.get(host.id);
+  const preferredHosts = new Map(preferred.hosts.map((host) => [host.id, host]));
+  const fallbackHosts = new Map((fallback?.hosts ?? []).map((host) => [host.id, host]));
+  const hosts = poisoned.hosts.map((host) => {
+    const preferredHost = preferredHosts.get(host.id);
+    const fallbackHost = fallbackHosts.get(host.id);
     const next = { ...host };
     if (isEncryptedCredentialPlaceholder(next.password)) {
-      const healed = pickUsableCredential(localHost?.password, baseHost?.password);
+      const healed = pickUsableCredential(preferredHost?.password, fallbackHost?.password);
       if (healed !== undefined) next.password = healed;
       else delete next.password;
     }
     if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
-      const healed = pickUsableCredential(localHost?.telnetPassword, baseHost?.telnetPassword);
+      const healed = pickUsableCredential(preferredHost?.telnetPassword, fallbackHost?.telnetPassword);
       if (healed !== undefined) next.telnetPassword = healed;
       else delete next.telnetPassword;
     }
     if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
       const healed = pickUsableCredential(
-        localHost?.proxyConfig?.password,
-        baseHost?.proxyConfig?.password,
+        preferredHost?.proxyConfig?.password,
+        fallbackHost?.proxyConfig?.password,
       );
       if (healed !== undefined) {
         next.proxyConfig = { ...next.proxyConfig, password: healed };
@@ -266,30 +266,30 @@ export const healPoisonedRemoteSecretsForMerge = (
     return next;
   });
 
-  const localKeys = new Map(local.keys.map((key) => [key.id, key]));
-  const baseKeys = new Map((base?.keys ?? []).map((key) => [key.id, key]));
-  const keys = remote.keys.map((key) => {
-    const localKey = localKeys.get(key.id);
-    const baseKey = baseKeys.get(key.id);
+  const preferredKeys = new Map(preferred.keys.map((key) => [key.id, key]));
+  const fallbackKeys = new Map((fallback?.keys ?? []).map((key) => [key.id, key]));
+  const keys = poisoned.keys.map((key) => {
+    const preferredKey = preferredKeys.get(key.id);
+    const fallbackKey = fallbackKeys.get(key.id);
     const next = { ...key };
     if (isEncryptedCredentialPlaceholder(next.privateKey)) {
-      next.privateKey = pickUsableCredential(localKey?.privateKey, baseKey?.privateKey) ?? "";
+      next.privateKey = pickUsableCredential(preferredKey?.privateKey, fallbackKey?.privateKey) ?? "";
     }
     if (isEncryptedCredentialPlaceholder(next.passphrase)) {
-      const healed = pickUsableCredential(localKey?.passphrase, baseKey?.passphrase);
+      const healed = pickUsableCredential(preferredKey?.passphrase, fallbackKey?.passphrase);
       if (healed !== undefined) next.passphrase = healed;
       else delete next.passphrase;
     }
     return next;
   });
 
-  const localIdentities = new Map((local.identities ?? []).map((identity) => [identity.id, identity]));
-  const baseIdentities = new Map((base?.identities ?? []).map((identity) => [identity.id, identity]));
-  const identities = remote.identities?.map((identity) => {
+  const preferredIdentities = new Map((preferred.identities ?? []).map((identity) => [identity.id, identity]));
+  const fallbackIdentities = new Map((fallback?.identities ?? []).map((identity) => [identity.id, identity]));
+  const identities = poisoned.identities?.map((identity) => {
     if (!isEncryptedCredentialPlaceholder(identity.password)) return identity;
     const healed = pickUsableCredential(
-      localIdentities.get(identity.id)?.password,
-      baseIdentities.get(identity.id)?.password,
+      preferredIdentities.get(identity.id)?.password,
+      fallbackIdentities.get(identity.id)?.password,
     );
     if (healed !== undefined) return { ...identity, password: healed };
     const next = { ...identity };
@@ -297,13 +297,13 @@ export const healPoisonedRemoteSecretsForMerge = (
     return next;
   });
 
-  const localProfiles = new Map((local.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
-  const baseProfiles = new Map((base?.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
-  const proxyProfiles = remote.proxyProfiles?.map((profile) => {
+  const preferredProfiles = new Map((preferred.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
+  const fallbackProfiles = new Map((fallback?.proxyProfiles ?? []).map((profile) => [profile.id, profile]));
+  const proxyProfiles = poisoned.proxyProfiles?.map((profile) => {
     if (!isEncryptedCredentialPlaceholder(profile.config.password)) return profile;
     const healed = pickUsableCredential(
-      localProfiles.get(profile.id)?.config.password,
-      baseProfiles.get(profile.id)?.config.password,
+      preferredProfiles.get(profile.id)?.config.password,
+      fallbackProfiles.get(profile.id)?.config.password,
     );
     if (healed !== undefined) {
       return { ...profile, config: { ...profile.config, password: healed } };
@@ -312,29 +312,29 @@ export const healPoisonedRemoteSecretsForMerge = (
     return { ...profile, config: configRest };
   });
 
-  const localGroupConfigs = new Map((local.groupConfigs ?? []).map((config) => [config.path, config]));
-  const baseGroupConfigs = new Map((base?.groupConfigs ?? []).map((config) => [config.path, config]));
-  const groupConfigs = remote.groupConfigs?.map((config) => {
-    const localConfig = localGroupConfigs.get(config.path);
-    const baseConfig = baseGroupConfigs.get(config.path);
+  const preferredGroupConfigs = new Map((preferred.groupConfigs ?? []).map((config) => [config.path, config]));
+  const fallbackGroupConfigs = new Map((fallback?.groupConfigs ?? []).map((config) => [config.path, config]));
+  const groupConfigs = poisoned.groupConfigs?.map((config) => {
+    const preferredConfig = preferredGroupConfigs.get(config.path);
+    const fallbackConfig = fallbackGroupConfigs.get(config.path);
     const next = { ...config };
     let changed = false;
     if (isEncryptedCredentialPlaceholder(next.password)) {
-      const healed = pickUsableCredential(localConfig?.password, baseConfig?.password);
+      const healed = pickUsableCredential(preferredConfig?.password, fallbackConfig?.password);
       if (healed !== undefined) next.password = healed;
       else delete next.password;
       changed = true;
     }
     if (isEncryptedCredentialPlaceholder(next.telnetPassword)) {
-      const healed = pickUsableCredential(localConfig?.telnetPassword, baseConfig?.telnetPassword);
+      const healed = pickUsableCredential(preferredConfig?.telnetPassword, fallbackConfig?.telnetPassword);
       if (healed !== undefined) next.telnetPassword = healed;
       else delete next.telnetPassword;
       changed = true;
     }
     if (next.proxyConfig && isEncryptedCredentialPlaceholder(next.proxyConfig.password)) {
       const healed = pickUsableCredential(
-        localConfig?.proxyConfig?.password,
-        baseConfig?.proxyConfig?.password,
+        preferredConfig?.proxyConfig?.password,
+        fallbackConfig?.proxyConfig?.password,
       );
       if (healed !== undefined) {
         next.proxyConfig = { ...next.proxyConfig, password: healed };
@@ -348,12 +348,19 @@ export const healPoisonedRemoteSecretsForMerge = (
   });
 
   return {
-    ...remote,
+    ...poisoned,
     hosts,
     keys,
-    identities: identities ?? remote.identities,
-    proxyProfiles: proxyProfiles ?? remote.proxyProfiles,
-    groupConfigs: groupConfigs ?? remote.groupConfigs,
+    identities: identities ?? poisoned.identities,
+    proxyProfiles: proxyProfiles ?? poisoned.proxyProfiles,
+    groupConfigs: groupConfigs ?? poisoned.groupConfigs,
   };
 };
+
+/** @deprecated Prefer healPoisonedSecretsForMerge(remote, local, base). */
+export const healPoisonedRemoteSecretsForMerge = (
+  remote: SyncPayload,
+  local: SyncPayload,
+  base: SyncPayload | null | undefined,
+): SyncPayload => healPoisonedSecretsForMerge(remote, local, base);
 

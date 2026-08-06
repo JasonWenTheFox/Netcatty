@@ -14,7 +14,7 @@ import { getCloudSyncManager } from '../../infrastructure/services/CloudSyncMana
 import { netcattyBridge } from '../../infrastructure/services/netcattyBridge';
 import {
   findSyncPayloadEncryptedCredentialPaths,
-  healPoisonedRemoteSecretsForMerge,
+  healPoisonedSecretsForMerge,
   stripSyncPayloadEncryptedCredentials,
 } from '../../domain/credentials';
 import { isProviderReadyForSync, type CloudProvider, type SyncPayload } from '../../domain/sync';
@@ -812,11 +812,13 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         throw new Error('Startup local-wins sync failed for one or more providers');
       }
 
-      const mergeResult = mergeSyncPayloads(
-        base,
-        localPayload,
-        healPoisonedRemoteSecretsForMerge(remoteRaw, localPayload, base),
-      );
+      // Prefer usable secrets from the opposite side / base over enc:v1
+      // placeholders before merge. Otherwise smart-merge can pick a "changed"
+      // local entity whose only secret change is ciphertext, then strip +
+      // upload and wipe usable cloud passwords. Same for remote-side poison.
+      const localHealed = healPoisonedSecretsForMerge(localPayload, remoteRaw, base);
+      const remoteHealed = healPoisonedSecretsForMerge(remoteRaw, localPayload, base);
+      const mergeResult = mergeSyncPayloads(base, localHealed, remoteHealed);
 
       // Apply merged payload to local state BEFORE committing. If the apply
       // throws, the next startup will re-run the merge with fresh data.

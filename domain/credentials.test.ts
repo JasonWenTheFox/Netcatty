@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   findSyncPayloadEncryptedCredentialPaths,
-  healPoisonedRemoteSecretsForMerge,
+  healPoisonedSecretsForMerge,
   isEncryptedCredentialPlaceholder,
   stripSyncPayloadEncryptedCredentials,
 } from "./credentials.ts";
@@ -67,25 +67,48 @@ test("stripSyncPayloadEncryptedCredentials clears device-bound placeholders for 
   assert.equal(findSyncPayloadEncryptedCredentialPaths(stripped).length, 0);
 });
 
-test("healPoisonedRemoteSecretsForMerge keeps usable local passwords over remote enc:v1", () => {
-  const remote = samplePayload();
-  const local = samplePayload({
+test("healPoisonedSecretsForMerge keeps usable preferred passwords over poisoned enc:v1", () => {
+  const poisoned = samplePayload();
+  const preferred = samplePayload({
     hosts: [{
       ...samplePayload().hosts[0]!,
-      password: "local-secret",
+      password: "preferred-secret",
     }],
     keys: [{
       ...samplePayload().keys[0]!,
-      privateKey: "LOCAL_PRIVATE_KEY",
+      privateKey: "PREFERRED_PRIVATE_KEY",
     }],
   });
-  const base = samplePayload({
+  const fallback = samplePayload({
     hosts: [{
       ...samplePayload().hosts[0]!,
       password: "base-secret",
     }],
   });
-  const healed = healPoisonedRemoteSecretsForMerge(remote, local, base);
-  assert.equal(healed.hosts[0]?.password, "local-secret");
-  assert.equal(healed.keys[0]?.privateKey, "LOCAL_PRIVATE_KEY");
+  const healed = healPoisonedSecretsForMerge(poisoned, preferred, fallback);
+  assert.equal(healed.hosts[0]?.password, "preferred-secret");
+  assert.equal(healed.keys[0]?.privateKey, "PREFERRED_PRIVATE_KEY");
+});
+
+test("healPoisonedSecretsForMerge heals local poison from remote then base", () => {
+  const local = samplePayload();
+  const remote = samplePayload({
+    hosts: [{
+      ...samplePayload().hosts[0]!,
+      password: "remote-secret",
+    }],
+    keys: [{
+      ...samplePayload().keys[0]!,
+      privateKey: ENC,
+    }],
+  });
+  const base = samplePayload({
+    keys: [{
+      ...samplePayload().keys[0]!,
+      privateKey: "BASE_PRIVATE_KEY",
+    }],
+  });
+  const healed = healPoisonedSecretsForMerge(local, remote, base);
+  assert.equal(healed.hosts[0]?.password, "remote-secret");
+  assert.equal(healed.keys[0]?.privateKey, "BASE_PRIVATE_KEY");
 });
