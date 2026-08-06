@@ -710,8 +710,7 @@ async function resumeSingleFileWithDedicatedSession(
           });
 
           if (streamResult?.superseded === true) {
-            // Live same-id owner still running; wait for terminal events.
-            const deadline = Date.now() + 30 * 60 * 1000;
+            // Live same-id owner still running; wait for terminal events only.
             for (;;) {
               if (shouldAbort?.()) throw new Error("Transfer cancelled");
               const latest = sftpTransferCenterStore.getTask(task.id);
@@ -719,7 +718,6 @@ async function resumeSingleFileWithDedicatedSession(
               if (status === "completed") break;
               if (status === "failed") throw new Error(latest?.error || "Transfer failed");
               if (status === "cancelled") throw new Error("Transfer cancelled");
-              if (Date.now() > deadline) throw new Error("Transfer superseded wait timed out");
               await new Promise((resolve) => setTimeout(resolve, 200));
             }
           } else if (streamResult?.error || streamResult?.cancelled) {
@@ -1273,7 +1271,6 @@ async function resumeDirectoryWithDedicatedSession(
               });
 
               if (streamResult?.superseded === true) {
-                const deadline = Date.now() + 30 * 60 * 1000;
                 for (;;) {
                   if (options?.shouldAbort?.()) throw new Error("Transfer cancelled");
                   const latest = sftpTransferCenterStore.getTask(childBase.id);
@@ -1281,7 +1278,6 @@ async function resumeDirectoryWithDedicatedSession(
                   if (status === "completed") break;
                   if (status === "failed") throw new Error(latest?.error || "Transfer failed");
                   if (status === "cancelled") throw new Error("Transfer cancelled");
-                  if (Date.now() > deadline) throw new Error("Transfer superseded wait timed out");
                   await new Promise((resolve) => setTimeout(resolve, 200));
                 }
               } else if (streamResult?.error || streamResult?.cancelled) {

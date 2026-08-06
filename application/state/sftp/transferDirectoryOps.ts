@@ -368,7 +368,8 @@ export function useSftpDirectoryTransferOps({
                 // owner still drives progress/completion events; this invoke must
                 // not mark the child completed or failed (Codex P2 on b17f64e9).
                 if (result?.superseded === true) {
-                  const deadline = Date.now() + 30 * 60 * 1000;
+                  // Wait for the live same-id owner only — no fixed deadline so
+                  // long transfers are not failed while still running (Codex P2).
                   for (;;) {
                     if (
                       cancelledTasksRef.current.has(task.id)
@@ -385,9 +386,6 @@ export function useSftpDirectoryTransferOps({
                     }
                     if (status === "cancelled") {
                       throw new Error("Transfer cancelled");
-                    }
-                    if (Date.now() > deadline) {
-                      throw new Error("Transfer superseded wait timed out");
                     }
                     await new Promise((resolve) => setTimeout(resolve, 200));
                   }

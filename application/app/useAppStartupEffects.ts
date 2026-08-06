@@ -426,7 +426,7 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
         // Same-id retry stole ownership; wait for the live owner's terminal
         // status instead of treating this invoke as completed (Codex P2).
         if (result?.superseded === true) {
-          const deadline = Date.now() + 30 * 60 * 1000;
+          // Wait for live owner terminal status only (no fixed deadline).
           for (;;) {
             const latest = sftpTransferCenterStore.getSnapshot().tasks.find((candidate) => candidate.id === task.id);
             const status = latest?.status;
@@ -443,9 +443,6 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
               }
               // completed: events already applied; cancelled handled above.
               break;
-            }
-            if (Date.now() > deadline) {
-              throw new Error("Transfer superseded wait timed out");
             }
             await new Promise((resolve) => setTimeout(resolve, 200));
           }
