@@ -95,6 +95,9 @@ function userVisibleSshErrorMessage(err, options = {}) {
   return annotateMacLocalNetworkErrorMessage(err?.message || String(err || ""), {
     hostname: options.hostname || options.host,
     firstHopHostname: firstHop.skipProbe ? "" : firstHop.hostname,
+    firstHopResolvedAddress: firstHop.skipProbe
+      ? ""
+      : (options._macLocalNetworkResolvedFirstHop || options.firstHopResolvedAddress || ""),
     skipProbe: firstHop.skipProbe === true,
   });
 }

@@ -312,6 +312,7 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   if (options.skipProbe === true) return text;
 
   const firstHop = String(options.firstHopHostname || "").trim();
+  const firstHopResolved = String(options.firstHopResolvedAddress || "").trim();
   const targetHost = String(options.hostname || options.host || "").trim();
   const normalizeHost = (value) => stripIpBrackets(value).toLowerCase();
   // Only treat the vault target as LAN evidence when it is also the first TCP
@@ -323,20 +324,22 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
 
   // Embedded unreachable addresses often name a downstream hop that a public
   // proxy/jump dialed. Only treat them as LAN evidence when they identify the
-  // local first-hop dial (or when this connection is itself the first hop).
-  // Unqualified / private-DNS first hops resolve to IPs in Node errors, so
-  // keep LAN remotes when the first-hop name itself looks local.
+  // local first-hop dial (hostname or the address ensureAccess resolved).
   const remotes = extractRemoteUnreachableAddresses(text);
   const remotesForEvidence = targetIsFirstHop
     ? remotes
-    : remotes.filter((value) => (
-      normalizeHost(value) === normalizeHost(firstHop)
-      || (looksLikeLocalNetworkName(firstHop) && isLocalNetworkHostname(value))
-    ));
+    : remotes.filter((value) => {
+      const normalized = normalizeHost(value);
+      if (normalized === normalizeHost(firstHop)) return true;
+      if (firstHopResolved && normalized === normalizeHost(firstHopResolved)) return true;
+      // Unqualified / private-DNS first hops may lack a carried resolution.
+      return looksLikeLocalNetworkName(firstHop) && isLocalNetworkHostname(value);
+    });
 
   const candidates = [
     ...(targetIsFirstHop ? [options.hostname, options.host] : []),
     options.firstHopHostname,
+    firstHopResolved || null,
     ...remotesForEvidence,
   ].filter((value) => value != null && String(value).trim() !== "");
   const touchesLan = candidates.some((value) => looksLikeLocalNetworkName(value));
@@ -368,6 +371,21 @@ function createMacLocalNetworkAccessGate(options = {}) {
     : DEFAULT_PROBE_HOLD_MS;
   const setTimer = options.setTimer || setTimeout;
   const clearTimer = options.clearTimer || clearTimeout;
+  const resolvedFirstHopByName = options.resolvedFirstHopByName || new Map();
+
+  function rememberResolvedFirstHop(hostname, resolvedHostname) {
+    const name = stripIpBrackets(hostname).toLowerCase();
+    const resolved = stripIpBrackets(resolvedHostname);
+    if (!name || !resolved) return;
+    if (!isLocalNetworkHostname(resolved) && !isLocalMdnsName(resolved)) return;
+    resolvedFirstHopByName.set(name, resolved);
+  }
+
+  function getResolvedFirstHop(hostname) {
+    const name = stripIpBrackets(hostname).toLowerCase();
+    if (!name) return "";
+    return resolvedFirstHopByName.get(name) || "";
+  }
   // Bare Node unit tests (and non-Electron CLIs) must never open LAN sockets.
   // Only the real Electron main process should trigger the TCC prompt.
   const electronRuntime = options.forceElectron === true
@@ -468,19 +486,22 @@ function createMacLocalNetworkAccessGate(options = {}) {
     if (!target) {
       return { skipped: true, reason: "not-local-network" };
     }
+    rememberResolvedFirstHop(endpoint.hostname, target.hostname);
 
     const key = probeKey(target.hostname);
-    if (probedKeys.has(key)) return { skipped: true, reason: "cached" };
+    if (probedKeys.has(key)) {
+      return { skipped: true, reason: "cached", hostname: target.hostname };
+    }
 
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) {
-      return { skipped: true, reason: "timeout" };
+      return { skipped: true, reason: "timeout", hostname: target.hostname };
     }
 
     const pending = inFlight.get(key);
     if (pending) {
       await pending;
-      return { skipped: true, reason: "in-flight" };
+      return { skipped: true, reason: "in-flight", hostname: target.hostname };
     }
 
     const probe = runUdpProbe(target.hostname, remainingMs).finally(() => {
@@ -504,12 +525,22 @@ function createMacLocalNetworkAccessGate(options = {}) {
     resolveFirstTcpEndpoint,
     getProbeTimeoutMs: () => probeTimeoutMs,
     getProbeHoldMs: () => probeHoldMs,
+    getResolvedFirstHop,
     annotateErrorMessage(message, connectOptions = {}) {
       const endpoint = resolveFirstTcpEndpoint(connectOptions);
+      const firstHopHostname = endpoint.skipProbe ? "" : endpoint.hostname;
+      const firstHopResolvedAddress = endpoint.skipProbe
+        ? ""
+        : (
+          connectOptions._macLocalNetworkResolvedFirstHop
+          || connectOptions.firstHopResolvedAddress
+          || getResolvedFirstHop(firstHopHostname)
+        );
       return annotateMacLocalNetworkErrorMessage(message, {
         platform,
         hostname: connectOptions.hostname || connectOptions.host,
-        firstHopHostname: endpoint.skipProbe ? "" : endpoint.hostname,
+        firstHopHostname,
+        firstHopResolvedAddress,
         skipProbe: endpoint.skipProbe === true,
       });
     },

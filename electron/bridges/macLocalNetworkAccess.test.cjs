@@ -381,6 +381,27 @@ test("annotateMacLocalNetworkErrorMessage keeps LAN guidance for unqualified fir
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage uses carried resolved first-hop addresses", () => {
+  const message = "connect EHOSTUNREACH 192.168.1.20:22";
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "app.example.com",
+      firstHopHostname: "bastion.example.com",
+      firstHopResolvedAddress: "192.168.1.20",
+    }),
+    /Local Network/i,
+  );
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "app.example.com",
+      firstHopHostname: "bastion.example.com",
+    }),
+    message,
+  );
+});
+
 test("annotateMacLocalNetworkErrorMessage ignores ProxyCommand errors even with LAN evidence", () => {
   const localName = "Network is unreachable";
   assert.equal(
@@ -837,4 +858,30 @@ test("createMacLocalNetworkAccessGate bounds hostname DNS lookup by the probe ti
   assert.deepEqual(result, { skipped: true, reason: "not-local-network" });
   assert.equal(creates, 0);
   assert.ok(timeouts.includes(500), `expected DNS timeout arm, got ${JSON.stringify(timeouts)}`);
+});
+
+test("createMacLocalNetworkAccessGate carries resolved first-hop addresses into annotation", async () => {
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeHoldMs: 0,
+    lookup: async () => ({ address: "192.168.1.20", family: 4 }),
+    dgram: {
+      createSocket() {
+        return createFakeUdpSocket();
+      },
+    },
+  });
+  const probe = await gate.ensureAccess({
+    jumpHosts: [{ hostname: "bastion.example.com", port: 22 }],
+  });
+  assert.equal(probe.hostname, "192.168.1.20");
+  assert.equal(gate.getResolvedFirstHop("bastion.example.com"), "192.168.1.20");
+  assert.match(
+    gate.annotateErrorMessage("connect EHOSTUNREACH 192.168.1.20:22", {
+      hostname: "app.example.com",
+      jumpHosts: [{ hostname: "bastion.example.com", port: 22 }],
+    }),
+    /Local Network/i,
+  );
 });

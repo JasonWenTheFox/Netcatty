@@ -1407,10 +1407,16 @@ function registerWorkerHandle(ipcMain, terminalWorkerManager, channel) {
     // second hold / probe in its own process.
     let workerPayload = payload;
     if (channel === "netcatty:start") {
-      await ensureMacLocalNetworkAccess(payload);
+      const probeResult = await ensureMacLocalNetworkAccess(payload);
+      const resolvedFirstHop = probeResult && typeof probeResult.hostname === "string"
+        ? String(probeResult.hostname).trim()
+        : "";
       workerPayload = {
         ...(payload && typeof payload === "object" ? payload : {}),
         _macLocalNetworkMainProbed: true,
+        ...(resolvedFirstHop
+          ? { _macLocalNetworkResolvedFirstHop: resolvedFirstHop }
+          : {}),
       };
     }
     return terminalWorkerManager.request(channel, workerPayload, {
