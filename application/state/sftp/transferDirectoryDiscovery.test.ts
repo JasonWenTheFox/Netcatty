@@ -76,6 +76,7 @@ test("discoverTransferTree returns a stable flat file list with bounded listings
       ["/source", "/source/a", "/source/b"],
     );
     assert.equal(counts.at(-1), 4);
+    assert.equal(result.omittedSymlinkDirectoryErrors, 0);
     assert.ok(maxActive >= 2, `expected parallel listings, got ${maxActive}`);
     assert.ok(maxActive <= 2, `listing concurrency exceeded: ${maxActive}`);
   } finally {
@@ -132,6 +133,7 @@ test("discoverTransferTree skips symlink directory cycles across BFS waves", asy
       ["/source", "/source/child"],
       "cyclic symlink dirs must not appear in the creation plan",
     );
+    assert.equal(result.omittedSymlinkDirectoryErrors, 0);
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }
@@ -184,6 +186,61 @@ test("discoverTransferTree copies sibling symlink aliases to distinct targets", 
       result.files.map((file) => file.targetPath).sort(),
       ["/target/alias-a/shared.txt", "/target/alias-b/shared.txt"],
     );
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("discoverTransferTree counts max-depth symlink directory omissions as errors", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    netcatty: {
+      realpathSftp: async (_sftpId: string, remotePath: string) => remotePath,
+    },
+  };
+
+  const listRemoteFiles = async (_sftpId: string, path: string): Promise<SftpFileEntry[]> => {
+    const depth = path === "/source"
+      ? 0
+      : path.startsWith("/source/")
+        ? path.slice("/source/".length).split("/").filter(Boolean).length
+        : -1;
+    if (depth < 0 || depth > 32) throw new Error(`unexpected list of ${path}`);
+    const nextLink = { ...directoryEntry("deep"), type: "symlink" as const, linkTarget: "directory" as const };
+    if (depth === 0) {
+      return [
+        nextLink,
+        {
+          name: "link.txt",
+          type: "symlink",
+          linkTarget: "file",
+          size: 3,
+          sizeFormatted: "3 B",
+          lastModified: 1_700_000_000,
+          lastModifiedFormatted: "",
+        },
+      ];
+    }
+    return [nextLink];
+  };
+
+  try {
+    const result = await discoverTransferTree({
+      sourcePath: "/source",
+      targetPath: "/target",
+      sourceIsLocal: false,
+      sourceSftpId: "sftp-1",
+      sourceEncoding: "auto",
+      followSymlinks: true,
+      listLocalFiles: async () => [],
+      listRemoteFiles,
+      listingConcurrency: 2,
+    });
+
+    assert.equal(result.omittedSymlinkDirectoryErrors, 1);
+    assert.equal(result.files.length, 1);
+    assert.equal(result.files[0]?.isSymlink, true);
+    assert.equal(result.files[0]?.name, "link.txt");
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }

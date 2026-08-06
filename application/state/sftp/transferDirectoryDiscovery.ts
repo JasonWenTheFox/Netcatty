@@ -24,6 +24,11 @@ export type DiscoveredTransferFile = {
   targetPath: string;
   size: number;
   lastModified: number;
+  /**
+   * True when the listing entry was a symlink. Link-node size/mtime must not
+   * drive skip-unchanged; transfer follows the target bytes.
+   */
+  isSymlink?: boolean;
 };
 
 export type DiscoveredTransferDirectory = {
@@ -34,6 +39,8 @@ export type DiscoveredTransferDirectory = {
 export type DiscoverTransferTreeResult = {
   files: DiscoveredTransferFile[];
   directories: DiscoveredTransferDirectory[];
+  /** Symlink directories omitted at max follow depth (incomplete tree). */
+  omittedSymlinkDirectoryErrors: number;
 };
 
 type ListingGate = {
@@ -113,6 +120,7 @@ export async function discoverTransferTree(
   const directories: DiscoveredTransferDirectory[] = [
     { sourcePath: options.sourcePath, targetPath: options.targetPath },
   ];
+  let omittedSymlinkDirectoryErrors = 0;
 
   type DirJob = {
     sourcePath: string;
@@ -203,6 +211,7 @@ export async function discoverTransferTree(
               includeInCreationPlan: true,
             });
           } else {
+            omittedSymlinkDirectoryErrors += 1;
             logger.warn(
               `[SFTP] Skipping symlink directory at max depth during pre-scan: ${joinPath(job.sourcePath, entry.name)}`,
             );
@@ -222,6 +231,7 @@ export async function discoverTransferTree(
           targetPath: joinTransferTargetPath(job.targetPath, entry.name),
           size: getEntrySize(entry),
           lastModified: typeof entry.lastModified === "number" ? entry.lastModified : 0,
+          isSymlink: entry.type === "symlink",
         });
       }
       publishCount();
@@ -255,5 +265,5 @@ export async function discoverTransferTree(
   // manifest checkpoints stay valid across interrupt + rebuild.
   files.sort((left, right) => compareDirectoryTraversalPaths(left.sourcePath, right.sourcePath));
 
-  return { files, directories };
+  return { files, directories, omittedSymlinkDirectoryErrors };
 }

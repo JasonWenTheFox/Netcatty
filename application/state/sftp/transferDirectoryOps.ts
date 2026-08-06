@@ -624,7 +624,7 @@ export function useSftpDirectoryTransferOps({
         await ensureTransferDirectory(dir.targetPath, targetIsLocal, targetSftpId, targetEncoding);
       }
 
-      return transferDiscoveredFiles({
+      const fileErrors = await transferDiscoveredFiles({
         rootTask: task,
         files: discovered.files,
         sourceSftpId,
@@ -651,6 +651,8 @@ export function useSftpDirectoryTransferOps({
           targetEncoding,
         ),
       });
+      // Match interleaved walk: max-depth symlink omissions count as failures.
+      return fileErrors + discovered.omittedSymlinkDirectoryErrors;
     }
 
     let totalErrors = 0;

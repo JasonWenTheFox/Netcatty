@@ -124,7 +124,8 @@ export async function transferDiscoveredFiles(
         await waitWhileTransferPaused(rootTaskId);
       }
 
-      if (skipUnchanged) {
+      // Symlink listing attrs are the link node; transfer follows target bytes.
+      if (skipUnchanged && !file.isSymlink) {
         const existing = await tryStatTarget(targetPath);
         if (
           existing
