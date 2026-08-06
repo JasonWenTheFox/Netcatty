@@ -19,6 +19,23 @@ test("terminal-scoped keyboard-interactive requests are limited to owned session
   );
 });
 
+test("disconnected terminal sessions do not queue keyboard-interactive prompts", () => {
+  assert.equal(
+    shouldQueueKeyboardInteractiveRequest(
+      { scope: "terminal", sessionId: "terminal-1" },
+      [{ id: "terminal-1", status: "disconnected" }],
+    ),
+    false,
+  );
+  assert.equal(
+    shouldQueueKeyboardInteractiveRequest(
+      { scope: "terminal", sessionId: "terminal-1" },
+      [{ id: "terminal-1", status: "connecting" }],
+    ),
+    true,
+  );
+});
+
 test("external keyboard-interactive requests are not filtered by terminal session ids", () => {
   assert.equal(
     shouldQueueKeyboardInteractiveRequest({ scope: "external", sessionId: "sftp-conn-1" }, sessions),

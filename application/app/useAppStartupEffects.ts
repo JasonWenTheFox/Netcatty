@@ -24,8 +24,9 @@ type KeyboardInteractiveRequestLike = {
   scope?: KeyboardInteractiveScope;
   sessionId?: string;
   hostId?: string;
+  requestId?: string;
 };
-type SessionIdLike = { id: string; hostId?: string; hostname?: string };
+type SessionIdLike = { id: string; hostId?: string; hostname?: string; status?: string };
 type KeyboardInteractiveQueueItem = { requestId: string };
 
 export function shouldQueueKeyboardInteractiveRequest(
@@ -34,7 +35,11 @@ export function shouldQueueKeyboardInteractiveRequest(
 ): boolean {
   if (request.scope !== "terminal") return true;
   if (!request.sessionId) return false;
-  return sessions.some((session) => session.id === request.sessionId);
+  const session = sessions.find((entry) => entry.id === request.sessionId);
+  if (!session) return false;
+  // Status-bar disconnect keeps the tab; do not queue MFA for aborted panes.
+  if (session.status === "disconnected") return false;
+  return true;
 }
 
 export function removeKeyboardInteractiveRequest<T extends KeyboardInteractiveQueueItem>(
@@ -519,7 +524,12 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
     if (!bridge?.onKeyboardInteractive) return;
 
     const unsubscribe = bridge.onKeyboardInteractive((request) => {
-      if (!shouldQueueKeyboardInteractiveRequest(request, sessionsRef.current)) return;
+      if (!shouldQueueKeyboardInteractiveRequest(request, sessionsRef.current)) {
+        if (request.scope === "terminal" && request.requestId) {
+          void bridge.respondKeyboardInteractive?.(request.requestId, [], true);
+        }
+        return;
+      }
       console.log('[App] Keyboard-interactive request received:', request);
       // Add to queue instead of replacing - supports multiple concurrent sessions
       setKeyboardInteractiveQueue(prev => [...prev, {
@@ -537,10 +547,23 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
     const unsubscribeCancelled = bridge.onKeyboardInteractiveCancelled?.((event) => {
       setKeyboardInteractiveQueue(prev => removeKeyboardInteractiveRequest(prev, event.requestId));
     });
+    const onTerminalDisconnected = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!sessionId) return;
+      setKeyboardInteractiveQueue((prev) => {
+        const doomed = prev.filter((request) => request.sessionId === sessionId);
+        for (const request of doomed) {
+          void bridge.respondKeyboardInteractive?.(request.requestId, [], true);
+        }
+        return prev.filter((request) => request.sessionId !== sessionId);
+      });
+    };
+    window.addEventListener("netcatty:terminal-session-disconnected", onTerminalDisconnected);
 
     return () => {
       unsubscribe?.();
       unsubscribeCancelled?.();
+      window.removeEventListener("netcatty:terminal-session-disconnected", onTerminalDisconnected);
     };
   }, [enabled, setKeyboardInteractiveQueue]);
 

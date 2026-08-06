@@ -3110,6 +3110,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     retryTokenRef.current = null;
     reconnectPreparationTokenRef.current = null;
     restoreCwdIntentRef.current = null;
+    // A hibernated reconnect may still be waking the runtime; invalidate that
+    // continuation so it cannot re-arm boot after this disconnect.
+    reconnectWakeTokenRef.current = null;
+    reconnectWakeInFlightRef.current = false;
     // Cancel closes the tab (effect cleanup flips boot-active). Disconnect keeps
     // the pane mounted, so mark boot inactive here or a late startSSH/startMosh
     // attach can still bring the session back after the user asked to stop.
@@ -3128,6 +3132,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     updateStatus("disconnected");
     setChainProgress(null);
     setIsDisconnectedDialogDismissed(false);
+    window.dispatchEvent(new CustomEvent("netcatty:terminal-session-disconnected", {
+      detail: { sessionId },
+    }));
     setTimeout(() => setIsCancelling(false), 600);
   };
 
