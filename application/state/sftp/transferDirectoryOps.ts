@@ -895,6 +895,13 @@ export function useSftpDirectoryTransferOps({
                 lastModified: transferLastModified,
               });
               freshSourceOk = true;
+            } else {
+              // Do not pass stale listing size as an explicit snapshot: the
+              // dedicated transfer session may still read a grown file (Codex P2).
+              // Child totalBytes 0 is omitted at startStreamTransfer via
+              // `|| undefined`, so the bridge re-stats instead of truncating.
+              transferSize = 0;
+              transferLastModified = 0;
             }
           }
 
@@ -984,7 +991,7 @@ export function useSftpDirectoryTransferOps({
             progressMode: "bytes",
             parentTaskId: rootTaskId,
             totalBytes: transferSize,
-            sourceLastModified: transferLastModified,
+            sourceLastModified: transferLastModified || undefined,
             directoryEntryIndex,
             directoryEntryIdentity,
             // Inherit retryable from parent - downloadToLocal sets retryable: false

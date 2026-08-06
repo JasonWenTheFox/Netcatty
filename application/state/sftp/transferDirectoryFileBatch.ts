@@ -147,6 +147,12 @@ export async function transferDiscoveredFiles(
             lastModified: skipSourceLastModified,
           });
           freshSourceOk = true;
+        } else {
+          // Do not pass stale pre-scan size as an explicit snapshot (Codex P2).
+          // Child totalBytes 0 is omitted at startStreamTransfer via `|| undefined`,
+          // so the dedicated transfer session re-stats the source itself.
+          skipSourceSize = 0;
+          skipSourceLastModified = 0;
         }
       }
       if (skipUnchanged && !file.isSymlink && freshSourceOk) {
@@ -224,7 +230,7 @@ export async function transferDiscoveredFiles(
         progressMode: "bytes",
         parentTaskId: rootTaskId,
         totalBytes: skipSourceSize,
-        sourceLastModified: skipSourceLastModified,
+        sourceLastModified: skipSourceLastModified || undefined,
         directoryEntryIndex,
         directoryEntryIdentity,
         retryable: rootTask.retryable,

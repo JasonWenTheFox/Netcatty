@@ -111,6 +111,8 @@ test("transferDiscoveredFiles does not skip when source re-stat fails", async ()
   } as MutableRefObject<Map<string, Set<string>>>;
   let transfers = transfersRef.current;
   let transferCalls = 0;
+  let transferredTotalBytes: number | undefined;
+  let transferredSourceLastModified: number | undefined;
   const mtime = 1_700_000_000_000;
 
   await transferDiscoveredFiles({
@@ -140,8 +142,10 @@ test("transferDiscoveredFiles does not skip when source re-stat fails", async ()
     },
     waitWhileTransferPaused: async () => {},
     isPauseLatched: () => false,
-    transferFile: async () => {
+    transferFile: async (task) => {
       transferCalls += 1;
+      transferredTotalBytes = task.totalBytes;
+      transferredSourceLastModified = task.sourceLastModified;
     },
     tryStatTarget: async () => ({
       size: 10,
@@ -152,6 +156,12 @@ test("transferDiscoveredFiles does not skip when source re-stat fails", async ()
   });
 
   assert.equal(transferCalls, 1, "missing fresh source meta must not skip");
+  assert.equal(transferredTotalBytes, 0, "must not pass stale listing size after re-stat failure");
+  assert.equal(
+    transferredSourceLastModified,
+    undefined,
+    "must clear stale listing mtime after re-stat failure",
+  );
 });
 
 test("transferDiscoveredFiles skips only when fresh source still matches", async () => {
