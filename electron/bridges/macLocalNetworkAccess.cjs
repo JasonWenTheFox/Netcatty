@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * macOS Local Network privacy gate (Apple TN3179 / issue #2663).
+ * macOS Local Network privacy gate (Apple TN3179 / issues #1040, #2663, #2673).
  *
  * Since macOS 15, outbound TCP/UDP to LAN addresses requires the user's
  * Local Network privilege. Netcatty already declares
@@ -12,17 +12,29 @@
  * System Settings → Privacy & Security → Local Network — so the user never
  * gets a prompt and has nothing to toggle.
  *
- * Before the worker opens a LAN socket, the main process performs a short
- * TCP connect to the first hop so TCC attributes the attempt to the app
- * bundle and can present the system alert.
+ * Before the worker opens a LAN socket, the main process performs Apple's
+ * recommended trigger: connect a UDP socket to a local-network address on
+ * the discard port (9). That attributes the attempt to the app bundle and
+ * can present the system alert without sending traffic (TN3179).
+ *
+ * Hostnames are resolved first so vault entries like "dev-viet" that map to
+ * 192.168.x still probe; `.local` mDNS names are probed directly.
  */
 
 const net = require("node:net");
+const dgram = require("node:dgram");
+const dns = require("node:dns");
 
 /** Keep the pre-SSH LAN probe short so dead hosts do not stall the dial. */
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
+/** Hold the connected UDP socket briefly so TCC can present the alert (FB16131937). */
+const DEFAULT_PROBE_HOLD_MS = 500;
+/** IANA discard service — Apple's TN3179 sample uses this port for the trigger. */
+const DISCARD_PORT = 9;
 const LOCAL_NETWORK_HINT =
   "macOS may be blocking Local Network access. Open System Settings → Privacy & Security → Local Network, enable Netcatty, then reconnect.";
+
+const defaultLookup = dns.promises.lookup.bind(dns.promises);
 
 function stripIpBrackets(value) {
   return String(value || "").replace(/^\[|\]$/g, "").trim();
@@ -88,6 +100,18 @@ function isLocalNetworkHostname(hostname) {
 }
 
 /**
+ * RFC 6762 mDNS names (*.local). Resolving or connecting to them requires
+ * Local Network access on macOS 15+ (TN3179 DNS / Bonjour sections).
+ */
+function isLocalMdnsName(hostname) {
+  if (hostname == null) return false;
+  const cleaned = stripIpBrackets(hostname).toLowerCase().replace(/\.$/, "");
+  if (!cleaned || cleaned === "localhost") return false;
+  if (net.isIP(cleaned)) return false;
+  return cleaned.endsWith(".local");
+}
+
+/**
  * First TCP hop the local process will open for this SSH dial.
  * Prefer HTTP/SOCKS proxy host when configured, else first jump host, else target.
  */
@@ -125,9 +149,45 @@ function resolveFirstTcpEndpoint(options = {}) {
   };
 }
 
+/**
+ * Decide which hostname/IP to UDP-probe for Local Network TCC attribution.
+ * @returns {Promise<{ hostname: string, reason: "literal"|"mdns"|"resolved" }|null>}
+ */
+async function resolveLanProbeTarget(hostname, options = {}) {
+  const cleaned = stripIpBrackets(hostname);
+  if (!cleaned) return null;
+  if (isLocalNetworkHostname(cleaned)) {
+    return { hostname: cleaned, reason: "literal" };
+  }
+  if (isLocalMdnsName(cleaned)) {
+    return { hostname: cleaned, reason: "mdns" };
+  }
+  if (net.isIP(cleaned)) return null;
+
+  const lookup = options.lookup || defaultLookup;
+  try {
+    const results = await lookup(cleaned, { all: true, verbatim: true });
+    const list = Array.isArray(results) ? results : results ? [results] : [];
+    for (const entry of list) {
+      const address = typeof entry === "string" ? entry : entry?.address;
+      if (address && isLocalNetworkHostname(address)) {
+        return { hostname: stripIpBrackets(address), reason: "resolved" };
+      }
+    }
+  } catch {
+    // DNS failure is not fatal; skip the probe and let SSH report its own error.
+  }
+  return null;
+}
+
 function looksLikeHostUnreachableMessage(message) {
   const text = String(message || "");
   return /EHOSTUNREACH|ENETUNREACH|host is unreachable|network is unreachable/i.test(text);
+}
+
+function extractIpv4Addresses(text) {
+  const matches = String(text || "").match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+  return matches.filter((ip) => isLocalNetworkHostname(ip));
 }
 
 function annotateMacLocalNetworkErrorMessage(message, options = {}) {
@@ -141,21 +201,34 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
     options.hostname,
     options.host,
     options.firstHopHostname,
+    ...extractIpv4Addresses(text),
   ].filter((value) => value != null && String(value).trim() !== "");
-  const touchesLan = candidates.some((value) => isLocalNetworkHostname(value));
+  const touchesLan = candidates.some((value) => (
+    isLocalNetworkHostname(value) || isLocalMdnsName(value)
+  ));
   if (!touchesLan) return text;
   return `${text}\n\n${LOCAL_NETWORK_HINT}`;
+}
+
+function pickUdpType(hostname) {
+  const cleaned = stripIpBrackets(hostname);
+  if (net.isIP(cleaned) === 6) return "udp6";
+  return "udp4";
 }
 
 function createMacLocalNetworkAccessGate(options = {}) {
   const platform = options.platform || process.platform;
   const versions = options.versions || process.versions;
-  const netModule = options.net || net;
+  const dgramModule = options.dgram || dgram;
+  const lookup = options.lookup || defaultLookup;
   const probedKeys = options.probedKeys || new Set();
   const inFlight = options.inFlight || new Map();
   const probeTimeoutMs = Number.isFinite(options.probeTimeoutMs)
     ? Math.max(500, Math.round(options.probeTimeoutMs))
     : DEFAULT_PROBE_TIMEOUT_MS;
+  const probeHoldMs = Number.isFinite(options.probeHoldMs)
+    ? Math.max(0, Math.round(options.probeHoldMs))
+    : DEFAULT_PROBE_HOLD_MS;
   const setTimer = options.setTimer || setTimeout;
   const clearTimer = options.clearTimer || clearTimeout;
   // Bare Node unit tests (and non-Electron CLIs) must never open LAN sockets.
@@ -163,32 +236,38 @@ function createMacLocalNetworkAccessGate(options = {}) {
   const electronRuntime = options.forceElectron === true
     || (options.forceElectron !== false && Boolean(versions?.electron));
 
-  function probeKey(hostname, port) {
-    return `${String(hostname).toLowerCase()}:${port}`;
+  function probeKey(hostname) {
+    return String(hostname).toLowerCase();
   }
 
-  function runProbe(hostname, port) {
+  function runUdpProbe(hostname) {
     return new Promise((resolve) => {
       let settled = false;
       let socket = null;
-      let timer = null;
+      let safetyTimer = null;
+      let holdTimer = null;
 
       const finish = () => {
         if (settled) return;
         settled = true;
-        if (timer) clearTimer(timer);
-        try { socket?.destroy(); } catch { /* ignore */ }
+        if (safetyTimer) clearTimer(safetyTimer);
+        if (holdTimer) clearTimer(holdTimer);
+        try { socket?.close(); } catch { /* ignore */ }
         resolve();
       };
 
       try {
-        socket = netModule.connect({ host: hostname, port }, finish);
+        socket = dgramModule.createSocket(pickUdpType(hostname));
         socket.once?.("error", finish);
-        if (typeof socket.setTimeout === "function") {
-          socket.setTimeout(probeTimeoutMs, finish);
-        } else {
-          timer = setTimer(finish, probeTimeoutMs);
-        }
+        safetyTimer = setTimer(finish, probeTimeoutMs);
+        socket.connect(DISCARD_PORT, hostname, () => {
+          if (settled) return;
+          if (probeHoldMs <= 0) {
+            finish();
+            return;
+          }
+          holdTimer = setTimer(finish, probeHoldMs);
+        });
       } catch {
         finish();
       }
@@ -200,11 +279,16 @@ function createMacLocalNetworkAccessGate(options = {}) {
     if (!electronRuntime) return { skipped: true, reason: "not-electron" };
 
     const endpoint = resolveFirstTcpEndpoint(connectOptions);
-    if (!endpoint.hostname || !isLocalNetworkHostname(endpoint.hostname)) {
+    if (!endpoint.hostname) {
       return { skipped: true, reason: "not-local-network" };
     }
 
-    const key = probeKey(endpoint.hostname, endpoint.port);
+    const target = await resolveLanProbeTarget(endpoint.hostname, { lookup });
+    if (!target) {
+      return { skipped: true, reason: "not-local-network" };
+    }
+
+    const key = probeKey(target.hostname);
     if (probedKeys.has(key)) return { skipped: true, reason: "cached" };
 
     const pending = inFlight.get(key);
@@ -213,20 +297,27 @@ function createMacLocalNetworkAccessGate(options = {}) {
       return { skipped: true, reason: "in-flight" };
     }
 
-    const probe = runProbe(endpoint.hostname, endpoint.port).finally(() => {
+    const probe = runUdpProbe(target.hostname).finally(() => {
       inFlight.delete(key);
       probedKeys.add(key);
     });
     inFlight.set(key, probe);
     await probe;
-    return { probed: true, hostname: endpoint.hostname, port: endpoint.port };
+    return {
+      probed: true,
+      hostname: target.hostname,
+      port: DISCARD_PORT,
+      reason: target.reason,
+    };
   }
 
   return {
     ensureAccess,
     isLocalNetworkHostname,
+    isLocalMdnsName,
     resolveFirstTcpEndpoint,
     getProbeTimeoutMs: () => probeTimeoutMs,
+    getProbeHoldMs: () => probeHoldMs,
     annotateErrorMessage(message, connectOptions = {}) {
       const endpoint = resolveFirstTcpEndpoint(connectOptions);
       return annotateMacLocalNetworkErrorMessage(message, {
@@ -243,8 +334,12 @@ const defaultGate = createMacLocalNetworkAccessGate();
 module.exports = {
   LOCAL_NETWORK_HINT,
   DEFAULT_PROBE_TIMEOUT_MS,
+  DEFAULT_PROBE_HOLD_MS,
+  DISCARD_PORT,
   isLocalNetworkHostname,
+  isLocalMdnsName,
   resolveFirstTcpEndpoint,
+  resolveLanProbeTarget,
   annotateMacLocalNetworkErrorMessage,
   createMacLocalNetworkAccessGate,
   ensureMacLocalNetworkAccess: (options) => defaultGate.ensureAccess(options),

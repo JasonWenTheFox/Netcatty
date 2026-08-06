@@ -6,8 +6,12 @@ const { EventEmitter } = require("node:events");
 
 const {
   DEFAULT_PROBE_TIMEOUT_MS,
+  DEFAULT_PROBE_HOLD_MS,
+  DISCARD_PORT,
   isLocalNetworkHostname,
+  isLocalMdnsName,
   resolveFirstTcpEndpoint,
+  resolveLanProbeTarget,
   annotateMacLocalNetworkErrorMessage,
   createMacLocalNetworkAccessGate,
 } = require("./macLocalNetworkAccess.cjs");
@@ -20,6 +24,15 @@ test("DEFAULT_PROBE_TIMEOUT_MS is a few seconds, not tens of seconds", () => {
     forceElectron: true,
   });
   assert.equal(gate.getProbeTimeoutMs(), DEFAULT_PROBE_TIMEOUT_MS);
+});
+
+test("DEFAULT_PROBE_HOLD_MS keeps the UDP socket open briefly for TCC", () => {
+  assert.ok(DEFAULT_PROBE_HOLD_MS >= 200);
+  assert.ok(DEFAULT_PROBE_HOLD_MS <= 2_000);
+});
+
+test("DISCARD_PORT is the IANA discard service used by Apple TN3179", () => {
+  assert.equal(DISCARD_PORT, 9);
 });
 
 test("isLocalNetworkHostname recognizes RFC1918, link-local, and CGNAT", () => {
@@ -51,6 +64,16 @@ test("isLocalNetworkHostname rejects public, loopback, empty, and non-IP hostnam
   assert.equal(isLocalNetworkHostname(null), false);
 });
 
+test("isLocalMdnsName recognizes .local hostnames that require Local Network access", () => {
+  assert.equal(isLocalMdnsName("nas.local"), true);
+  assert.equal(isLocalMdnsName("NAS.LOCAL."), true);
+  assert.equal(isLocalMdnsName("printer.local"), true);
+  assert.equal(isLocalMdnsName("example.com"), false);
+  assert.equal(isLocalMdnsName("192.168.1.1"), false);
+  assert.equal(isLocalMdnsName("localhost"), false);
+  assert.equal(isLocalMdnsName(""), false);
+});
+
 test("resolveFirstTcpEndpoint prefers proxy, then jump host, then target", () => {
   assert.deepEqual(
     resolveFirstTcpEndpoint({
@@ -79,6 +102,34 @@ test("resolveFirstTcpEndpoint prefers proxy, then jump host, then target", () =>
   );
 });
 
+test("resolveLanProbeTarget keeps LAN literals and .local names", async () => {
+  assert.deepEqual(
+    await resolveLanProbeTarget("192.168.7.37"),
+    { hostname: "192.168.7.37", reason: "literal" },
+  );
+  assert.deepEqual(
+    await resolveLanProbeTarget("dev-viet.local"),
+    { hostname: "dev-viet.local", reason: "mdns" },
+  );
+});
+
+test("resolveLanProbeTarget DNS-resolves hostnames and picks a LAN address", async () => {
+  const target = await resolveLanProbeTarget("dev-viet", {
+    lookup: async () => [
+      { address: "8.8.8.8", family: 4 },
+      { address: "192.168.7.37", family: 4 },
+    ],
+  });
+  assert.deepEqual(target, { hostname: "192.168.7.37", reason: "resolved" });
+});
+
+test("resolveLanProbeTarget returns null for public-only hostnames", async () => {
+  const target = await resolveLanProbeTarget("example.com", {
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+  });
+  assert.equal(target, null);
+});
+
 test("annotateMacLocalNetworkErrorMessage only rewrites LAN unreachability on darwin", () => {
   const base = "connect EHOSTUNREACH 192.168.5.22:22";
   const annotated = annotateMacLocalNetworkErrorMessage(base, {
@@ -94,12 +145,20 @@ test("annotateMacLocalNetworkErrorMessage only rewrites LAN unreachability on da
     }),
     base,
   );
-  assert.equal(
+  // Message embeds a LAN IP — annotate even when the vault hostname option is public.
+  assert.match(
     annotateMacLocalNetworkErrorMessage(base, {
       platform: "darwin",
       hostname: "8.8.8.8",
     }),
-    base,
+    /Local Network/i,
+  );
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(
+      "connect EHOSTUNREACH 8.8.8.8:22",
+      { platform: "darwin", hostname: "8.8.8.8" },
+    ),
+    "connect EHOSTUNREACH 8.8.8.8:22",
   );
   assert.equal(
     annotateMacLocalNetworkErrorMessage("All configured authentication methods failed", {
@@ -117,25 +176,52 @@ test("annotateMacLocalNetworkErrorMessage only rewrites LAN unreachability on da
   assert.match(viaJump, /Local Network/i);
 });
 
-test("createMacLocalNetworkAccessGate probes from the main process once per LAN endpoint", async () => {
-  const connects = [];
-  class FakeSocket extends EventEmitter {
+test("annotateMacLocalNetworkErrorMessage detects LAN IPs embedded in the error text", () => {
+  const message = "Error: connect EHOSTUNREACH 192.168.7.37:22 - Local (192.168.6.131:58210)";
+  const annotated = annotateMacLocalNetworkErrorMessage(message, {
+    platform: "darwin",
+    // Vault host stored as a DNS name, not a literal IP.
+    hostname: "dev-viet",
+  });
+  assert.match(annotated, /Local Network/i);
+});
+
+function createFakeUdpSocket({ onConnect, onError } = {}) {
+  class FakeUdpSocket extends EventEmitter {
     constructor() {
       super();
-      this.destroyed = false;
+      this.closed = false;
+      this.connectCalls = [];
     }
-    setTimeout() { return this; }
-    destroy() { this.destroyed = true; }
+    connect(port, host, callback) {
+      this.connectCalls.push({ port, host });
+      queueMicrotask(() => {
+        if (onError) {
+          this.emit("error", onError);
+          return;
+        }
+        if (typeof callback === "function") callback();
+        if (typeof onConnect === "function") onConnect(this);
+      });
+    }
+    close() {
+      this.closed = true;
+    }
   }
+  return new FakeUdpSocket();
+}
 
+test("createMacLocalNetworkAccessGate probes with UDP discard once per LAN endpoint", async () => {
+  const sockets = [];
   const gate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
-    net: {
-      connect(options, onConnect) {
-        connects.push(options);
-        const socket = new FakeSocket();
-        queueMicrotask(() => onConnect && onConnect());
+    probeHoldMs: 5,
+    dgram: {
+      createSocket(type) {
+        const socket = createFakeUdpSocket();
+        socket.type = type;
+        sockets.push(socket);
         return socket;
       },
     },
@@ -143,19 +229,66 @@ test("createMacLocalNetworkAccessGate probes from the main process once per LAN 
 
   await gate.ensureAccess({ hostname: "192.168.5.22", port: 22 });
   await gate.ensureAccess({ hostname: "192.168.5.22", port: 22 });
-  assert.equal(connects.length, 1);
-  assert.deepEqual(connects[0], { host: "192.168.5.22", port: 22 });
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].type, "udp4");
+  assert.deepEqual(sockets[0].connectCalls[0], { port: DISCARD_PORT, host: "192.168.5.22" });
+  assert.equal(sockets[0].closed, true);
+});
+
+test("createMacLocalNetworkAccessGate resolves hostnames before probing", async () => {
+  const sockets = [];
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeHoldMs: 5,
+    lookup: async () => [{ address: "192.168.7.37", family: 4 }],
+    dgram: {
+      createSocket() {
+        const socket = createFakeUdpSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    },
+  });
+
+  const result = await gate.ensureAccess({ hostname: "dev-viet", port: 22 });
+  assert.equal(result.probed, true);
+  assert.equal(result.hostname, "192.168.7.37");
+  assert.deepEqual(sockets[0].connectCalls[0], { port: DISCARD_PORT, host: "192.168.7.37" });
+});
+
+test("createMacLocalNetworkAccessGate probes .local names without requiring DNS", async () => {
+  const sockets = [];
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeHoldMs: 5,
+    lookup: async () => {
+      throw new Error("DNS must not be required for .local");
+    },
+    dgram: {
+      createSocket() {
+        const socket = createFakeUdpSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    },
+  });
+
+  const result = await gate.ensureAccess({ hostname: "nas.local", port: 22 });
+  assert.equal(result.probed, true);
+  assert.deepEqual(sockets[0].connectCalls[0], { port: DISCARD_PORT, host: "nas.local" });
 });
 
 test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async () => {
-  let connects = 0;
+  let creates = 0;
   const linuxGate = createMacLocalNetworkAccessGate({
     platform: "linux",
     forceElectron: true,
-    net: {
-      connect() {
-        connects += 1;
-        throw new Error("should not connect");
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("should not create socket");
       },
     },
   });
@@ -164,10 +297,11 @@ test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async
   const darwinGate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
-    net: {
-      connect() {
-        connects += 1;
-        throw new Error("should not connect");
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("should not create socket");
       },
     },
   });
@@ -177,30 +311,27 @@ test("createMacLocalNetworkAccessGate skips non-darwin and non-LAN hosts", async
   const bareNodeGate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     versions: {},
-    net: {
-      connect() {
-        connects += 1;
-        throw new Error("should not connect outside Electron");
+    dgram: {
+      createSocket() {
+        creates += 1;
+        throw new Error("should not create socket outside Electron");
       },
     },
   });
   await bareNodeGate.ensureAccess({ hostname: "192.168.5.22", port: 22 });
-  assert.equal(connects, 0);
+  assert.equal(creates, 0);
 });
 
-test("createMacLocalNetworkAccessGate treats connect errors as a completed probe", async () => {
-  class FakeSocket extends EventEmitter {
-    setTimeout() { return this; }
-    destroy() {}
-  }
+test("createMacLocalNetworkAccessGate treats UDP errors as a completed probe", async () => {
   const gate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
-    net: {
-      connect() {
-        const socket = new FakeSocket();
-        queueMicrotask(() => socket.emit("error", Object.assign(new Error("connect EHOSTUNREACH"), { code: "EHOSTUNREACH" })));
-        return socket;
+    probeHoldMs: 5,
+    dgram: {
+      createSocket() {
+        return createFakeUdpSocket({
+          onError: Object.assign(new Error("connect EHOSTUNREACH"), { code: "EHOSTUNREACH" }),
+        });
       },
     },
   });
@@ -210,14 +341,14 @@ test("createMacLocalNetworkAccessGate treats connect errors as a completed probe
     jumpHosts: [{ hostname: "192.168.1.50", port: 2200 }],
   });
   // Second call must be cached even though the first connect failed.
-  let secondConnects = 0;
+  let secondCreates = 0;
   const cachedGate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
-    probedKeys: new Set(["192.168.1.50:2200"]),
-    net: {
-      connect() {
-        secondConnects += 1;
+    probedKeys: new Set(["192.168.1.50"]),
+    dgram: {
+      createSocket() {
+        secondCreates += 1;
         throw new Error("should use cache");
       },
     },
@@ -225,30 +356,68 @@ test("createMacLocalNetworkAccessGate treats connect errors as a completed probe
   await cachedGate.ensureAccess({
     jumpHosts: [{ hostname: "192.168.1.50", port: 2200 }],
   });
-  assert.equal(secondConnects, 0);
+  assert.equal(secondCreates, 0);
 });
 
-test("createMacLocalNetworkAccessGate applies the configured probe timeout", async () => {
+test("createMacLocalNetworkAccessGate holds the UDP socket before closing", async () => {
+  const holds = [];
+  let resolveConnect;
+  const connectSeen = new Promise((resolve) => {
+    resolveConnect = resolve;
+  });
+  const gate = createMacLocalNetworkAccessGate({
+    platform: "darwin",
+    forceElectron: true,
+    probeHoldMs: 25,
+    setTimer: (fn, ms) => {
+      holds.push(ms);
+      return setTimeout(fn, ms);
+    },
+    clearTimer: clearTimeout,
+    dgram: {
+      createSocket() {
+        return createFakeUdpSocket({
+          onConnect(socket) {
+            resolveConnect(socket);
+          },
+        });
+      },
+    },
+  });
+  const pending = gate.ensureAccess({ hostname: "10.0.0.1", port: 22 });
+  const socket = await connectSeen;
+  assert.equal(socket.closed, false);
+  await pending;
+  assert.ok(holds.includes(25), `expected hold timer 25ms, got ${JSON.stringify(holds)}`);
+  assert.equal(socket.closed, true);
+});
+
+test("createMacLocalNetworkAccessGate applies the configured probe timeout as a safety net", async () => {
   const timeouts = [];
-  class FakeSocket extends EventEmitter {
-    setTimeout(ms, onTimeout) {
-      timeouts.push(ms);
-      queueMicrotask(() => onTimeout && onTimeout());
-      return this;
-    }
-    destroy() {}
-  }
   const gate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
     probeTimeoutMs: DEFAULT_PROBE_TIMEOUT_MS,
-    net: {
-      connect() {
-        return new FakeSocket();
+    probeHoldMs: 5,
+    setTimer: (fn, ms) => {
+      timeouts.push(ms);
+      // Fire only the safety timeout path by never calling the connect callback.
+      if (ms === DEFAULT_PROBE_TIMEOUT_MS) queueMicrotask(fn);
+      return { ms };
+    },
+    clearTimer() {},
+    dgram: {
+      createSocket() {
+        class HangSocket extends EventEmitter {
+          connect() {
+            // Never connects; safety timeout must finish the probe.
+          }
+          close() {}
+        }
+        return new HangSocket();
       },
     },
   });
   await gate.ensureAccess({ hostname: "10.0.0.1", port: 22 });
-  assert.deepEqual(timeouts, [DEFAULT_PROBE_TIMEOUT_MS]);
-  assert.ok(DEFAULT_PROBE_TIMEOUT_MS <= 5_000);
+  assert.ok(timeouts.includes(DEFAULT_PROBE_TIMEOUT_MS));
 });
