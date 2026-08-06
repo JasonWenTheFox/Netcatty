@@ -517,11 +517,11 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     // slot from the OPEN owner (Codex P2 on 64450bfd).
     if (reinstall && !entry.released) {
       truncatingSharedWriteOpenGates.set(key, entry);
-    }
-
-    // Channel may already have ended before poison (isolated dispose in
-    // uploadFileConcurrent finally). Arm the post-close clear now.
-    if (entry.transportGone) {
+      // Owner poison is raised from the isolated fastPut fallback after
+      // uploadFileConcurrent already ended that channel. Arm the post-close
+      // clear here instead of installing end/close listeners on every write
+      // OPEN (shared channels would accumulate listeners until teardown —
+      // Codex P2 on fe92b22c).
       releaseAfterTransportGone();
     }
   };
@@ -2334,15 +2334,6 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     transfer._failPendingWriteOpenPathGate = (error) => {
       try { pathGate.fail?.(error); } catch { /* ignore */ }
     };
-  }
-  // When the owning transport ends, clear a poisoned barrier after a short
-  // grace so reconnects are not permanently fail-closed (Codex P2 on 713719c2).
-  if (pathGate && sftp && typeof sftp.once === "function") {
-    const onTransportGone = () => {
-      try { pathGate.releaseAfterTransportGone?.(); } catch { /* ignore */ }
-    };
-    try { sftp.once("end", onTransportGone); } catch { /* ignore */ }
-    try { sftp.once("close", onTransportGone); } catch { /* ignore */ }
   }
   // Re-check ownership at unlink time: a same-id retry may already own
   // activeTransfers. Only suppress unlink when the retry's *actual* staged
