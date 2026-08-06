@@ -201,6 +201,11 @@ export type TerminalSessionStartersContext = {
   hasRunStartupCommandRef: RefObject<boolean>;
   disposeDataRef: RefObject<(() => void) | null>;
   disposeExitRef: RefObject<(() => void) | null>;
+  /**
+   * Track an async cleanup (e.g. cancelled plugin start → finishExternalSession)
+   * so Disconnect/Reconnect can await it before starting a replacement boot.
+   */
+  trackSessionCleanup?: (promise: Promise<unknown>) => void;
   disposeTelnetEchoModeRef?: RefObject<(() => void) | null>;
   fitAddonRef: RefObject<FitAddon | null>;
   serializeAddonRef: RefObject<SerializeAddon | null>;

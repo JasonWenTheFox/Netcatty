@@ -13,4 +13,6 @@ test("mismatched boot epochs are treated as stale", () => {
   assert.equal(isTerminalBootEpochCurrent("session-1", 3), true);
   assert.equal(isTerminalBootEpochCurrent("session-1", undefined), true);
   clearTerminalBootEpoch("session-1");
+  assert.equal(isTerminalBootEpochCurrent("session-1", 3), false);
+  assert.equal(isTerminalBootEpochCurrent("session-1", undefined), true);
 });

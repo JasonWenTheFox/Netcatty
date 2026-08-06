@@ -395,6 +395,7 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.match(body, /setIsCancelling\(true\)/);
   assert.match(body, /updateStatus\("disconnected"\)/);
   assert.match(body, /void cleanupSession\(\)/);
+  assert.match(source, /trackSessionCleanup/);
   assert.doesNotMatch(body, /onCloseSession/);
   assert.match(source, /handleDisconnect: \(attachExistingSession \|\| compactToolbar\) \? undefined : handleDisconnect/);
   assert.match(source, /showConnectionControls: !attachExistingSession && !compactToolbar/);

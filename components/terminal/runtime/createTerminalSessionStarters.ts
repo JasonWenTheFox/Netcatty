@@ -1562,9 +1562,12 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       startController.abort(new DOMException("Plugin connection request was cancelled", "AbortError"));
       if (ctx.terminalBackend.cancelPluginExtensionRequest) {
         try {
-          void Promise.resolve(ctx.terminalBackend.cancelPluginExtensionRequest(requestId)).catch((err) => {
+          const cancelPromise = Promise.resolve(
+            ctx.terminalBackend.cancelPluginExtensionRequest(requestId),
+          ).catch((err) => {
             logger.warn("Failed to cancel pending plugin connection request", err);
           });
+          ctx.trackSessionCleanup?.(cancelPromise);
         } catch (err) {
           logger.warn("Failed to cancel pending plugin connection request", err);
         }
@@ -1592,7 +1595,7 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     ctx.disposeExitRef.current = cancelPendingStart;
     scheduleBootMonitor();
     try {
-      const opened = await ctx.terminalBackend.startPluginConnection({
+      const startPromise = ctx.terminalBackend.startPluginConnection({
         requestId,
         sessionId: ctx.sessionId,
         protocol: ctx.host.protocol,
@@ -1611,6 +1614,10 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           : {}),
         signal: startController.signal,
       });
+      // Disconnect may cancel before this settles; reconnect must wait until
+      // finishExternalSession cleared the shared sessionId registration.
+      ctx.trackSessionCleanup?.(startPromise);
+      const opened = await startPromise;
       releasePendingStartCancellation();
       if (!isCurrentAttempt()) {
         closeOrphanBackendSession(ctx, opened.sessionId, { bootEpoch });

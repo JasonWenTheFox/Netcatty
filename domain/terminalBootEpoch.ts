@@ -19,13 +19,13 @@ export function getTerminalBootEpoch(sessionId: string): number | undefined {
   return terminalBootEpochs.get(sessionId);
 }
 
-/** Legacy prompts without bootEpoch stay eligible; mismatched epochs are stale. */
+/** Epoch-tagged prompts need a live map entry; missing entry means the session tore down. Legacy prompts without bootEpoch stay eligible. */
 export function isTerminalBootEpochCurrent(
   sessionId: string,
   requestEpoch: number | undefined,
 ): boolean {
   if (!Number.isFinite(requestEpoch)) return true;
   const current = terminalBootEpochs.get(sessionId);
-  if (current === undefined) return true;
+  if (current === undefined) return false;
   return current === requestEpoch;
 }

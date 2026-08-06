@@ -458,6 +458,22 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const wakePromiseRef = useRef<Promise<boolean> | null>(null);
   const sessionRef = useRef<string | null>(null);
   const sessionCleanupPromiseRef = useRef<Promise<void> | null>(null);
+  const trackSessionCleanup = (promise: Promise<unknown>) => {
+    const settled = Promise.resolve(promise).then(
+      () => undefined,
+      () => undefined,
+    );
+    const previous = sessionCleanupPromiseRef.current;
+    const next = previous
+      ? Promise.all([previous, settled]).then(() => undefined)
+      : settled;
+    sessionCleanupPromiseRef.current = next;
+    void next.finally(() => {
+      if (sessionCleanupPromiseRef.current === next) {
+        sessionCleanupPromiseRef.current = null;
+      }
+    });
+  };
   const isBootActiveRef = useRef(false);
   const bootEpochRef = useRef(0);
   const publishBootEpoch = () => {
@@ -1560,6 +1576,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
     if (!closingSessionId) {
       disposeSessionListeners();
+      // Plugin (and similar) cancels may still be finishing external registration
+      // after disposeExit runs; await that before reconnect can reuse sessionId.
+      const postDisposeCleanup = sessionCleanupPromiseRef.current;
+      if (postDisposeCleanup) {
+        await postDisposeCleanup;
+      }
       return;
     }
 
@@ -2085,7 +2107,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }, [sessionId]);
 
   const teardown = () => {
-    bumpBootEpoch();
+    bootEpochRef.current += 1;
+    // Unmount teardown must not republish into the process-wide map after the
+    // effect cleanup already cleared this sessionId (would leak forever).
+    clearTerminalBootEpoch(sessionId);
     isBootActiveRef.current = false;
     retryTokenRef.current = null;
     reconnectPreparationTokenRef.current = null;
@@ -2224,6 +2249,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     restoreCwdIntentRef,
     disposeDataRef,
     disposeExitRef,
+    trackSessionCleanup,
     disposeTelnetEchoModeRef,
     fitAddonRef,
     serializeAddonRef,
@@ -3216,6 +3242,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       }
       reconnectWakeInFlightRef.current = true;
       const wakeToken = Symbol();
+      reconnectWakeInvalidateModeRef.current = "dispose";
       reconnectWakeTokenRef.current = wakeToken;
       updateStatus("connecting");
       void wakeForReconnect().then((woke) => {
