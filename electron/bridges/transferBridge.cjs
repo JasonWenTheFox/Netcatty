@@ -1028,12 +1028,10 @@ async function awaitBestEffortBounded(promise, timeoutMs, label) {
 
 async function preserveTransferredDestinationMtime(transfer, options = {}) {
   try {
-    let mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
-    if ((!Number.isFinite(mtimeMs) || mtimeMs <= 0)
-      && typeof transfer?.captureSourceSoftIdentity === "function") {
-      await transfer.captureSourceSoftIdentity();
-      mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
-    }
+    // Only use the pre-transfer soft identity. Re-statting after commit can pick
+    // up a rewritten same-size source and stamp a newer mtime onto older bytes
+    // (Codex P1 on non-resumable / SCP paths).
+    const mtimeMs = Number(transfer?.sourceSoftIdentity?.mtimeMs);
     if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) return;
 
     // Compare / skip logic uses whole seconds; stamp the destination the same way.
@@ -1689,7 +1687,7 @@ async function prepareStreamFallbackAfterRangeFailure(transfer, client) {
  * cannot hang strategy fallback forever (#2755). On timeout/cancel the waiter
  * fails closed without resolving the published transfer gate (clearing that
  * poison early lets a late truncating OPEN wipe an in-place destination after
- * sendComplete — Codex P1 on e2cc8241), and also poisons the shared path map so
+ * sendComplete; Codex P1 on e2cc8241), and also poisons the shared path map so
  * later same-path waiters fail promptly (#2755 / Codex P2 on dca41093).
  */
 async function waitForPendingWriteOpenPathGate(transfer, options = {}) {
@@ -1761,7 +1759,7 @@ async function waitForPendingWriteOpenPathGate(transfer, options = {}) {
       finish(reject, err);
     }, timeoutMs);
     // Only a successful gate release unblocks safely. A poisoned/rejected gate
-    // must fail this waiter closed — do not proceed to another writer.
+    // must fail this waiter closed; do not proceed to another writer.
     Promise.resolve(gate).then(
       () => finish(resolve),
       (err) => finish(
@@ -2395,7 +2393,7 @@ async function uploadFile(
     }
   }
 
-  // fastPut always truncates and rewrites from offset 0 — skip when we
+  // fastPut always truncates and rewrites from offset 0; skip when we
   // already have a durable resume checkpoint from a prior concurrent attempt.
   // fastPut is not pause-aware; do not advertise pause while it runs.
   // In-place OPEN poison is terminal for this transfer: do not wait on/race
@@ -2464,7 +2462,7 @@ async function uploadFile(
     } catch (err) {
       // Gate-wait / snapshot / fastPut failure: end the reopened isolated
       // channel before nulling. Rethrow paths skip the post-block else-if
-      // end, and fallthrough also clears isolated — either way we must not
+      // end, and fallthrough also clears isolated; either way we must not
       // leak the SSH subsystem opened for this attempt (#2755 Bugbot).
       if (isolated && typeof isolated.end === "function") {
         try { isolated.end(); } catch { /* ignore */ }
@@ -2479,7 +2477,7 @@ async function uploadFile(
       // Source-change / hard safety errors must not be retried on another path.
       if (err?.noTransferFallback || err?.sourceChanged) throw err;
       rememberPipelineError(err);
-      // fastPut progress is not a durable contiguous checkpoint — reset so
+      // fastPut progress is not a durable contiguous checkpoint; reset so
       // concurrent-shared does not resume past holes left by the failed put.
       transfer.checkpointBytes = 0;
       sendProgress(0, fileSize, { force: true, checkpointBytes: 0 });
@@ -5381,10 +5379,12 @@ async function startTransferNow(event, payload, onProgress) {
     // and soft resume compare against the original plan, not a grown remote.
     transfer.totalBytes = fileSize;
 
-    // Baseline for soft resume (size + mtime + head sample). Full SHA-256 remains
-    // for hard reconnect / crash recovery.
-    if (transfer.resumable && typeof transfer.captureSourceSoftIdentity === "function") {
-      void transfer.captureSourceSoftIdentity();
+    // Baseline for soft resume and destination mtime preserve (size + mtime +
+    // head sample). Capture before bytes move so non-resumable / SCP paths stamp
+    // the pre-transfer identity (Codex P1). Full SHA-256 remains for hard
+    // reconnect / crash recovery.
+    if (typeof transfer.captureSourceSoftIdentity === "function") {
+      await transfer.captureSourceSoftIdentity();
     }
 
     const sourceClient = sourceType === "sftp" ? sftpClients.get(sourceSftpId) : null;

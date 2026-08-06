@@ -135,6 +135,7 @@ export async function transferDiscoveredFiles(
       if (skipUnchanged && !file.isSymlink) {
         // Re-stat source immediately before the quick check: pre-scan attrs can
         // go stale while a large tree is still being discovered (Codex P1).
+        // Missing/failed fresh stats must not fall back to listing attrs.
         const freshSource = await tryStatSource(sourcePath);
         if (freshSource && freshSource.type !== "directory") {
           skipSourceSize = freshSource.size;
@@ -145,60 +146,60 @@ export async function transferDiscoveredFiles(
             size: skipSourceSize,
             lastModified: skipSourceLastModified,
           });
-        }
-        const existing = await tryStatTarget(targetPath);
-        if (
-          existing
-          && existing.type !== "directory"
-          && isUnchangedTransferCandidate(
-            { size: skipSourceSize, lastModified: skipSourceLastModified, mtimeUnit: "ms" },
-            { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
-          )
-        ) {
-          const skippedId = persistedChild?.id ?? crypto.randomUUID();
-          setTransfers((prev) => {
-            const hasChild = prev.some((row) => row.id === skippedId);
-            const next = hasChild
-              ? prev.map((row) => row.id === skippedId
-                ? {
-                    ...row,
-                    status: "completed" as TransferStatus,
-                    transferredBytes: skipSourceSize,
+          const existing = await tryStatTarget(targetPath);
+          if (
+            existing
+            && existing.type !== "directory"
+            && isUnchangedTransferCandidate(
+              { size: skipSourceSize, lastModified: skipSourceLastModified, mtimeUnit: "ms" },
+              { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
+            )
+          ) {
+            const skippedId = persistedChild?.id ?? crypto.randomUUID();
+            setTransfers((prev) => {
+              const hasChild = prev.some((row) => row.id === skippedId);
+              const next = hasChild
+                ? prev.map((row) => row.id === skippedId
+                  ? {
+                      ...row,
+                      status: "completed" as TransferStatus,
+                      transferredBytes: skipSourceSize,
+                      totalBytes: skipSourceSize,
+                      endTime: Date.now(),
+                      speed: 0,
+                      error: undefined,
+                    }
+                  : row)
+                : [...prev, {
+                    ...rootTask,
+                    id: skippedId,
+                    fileName: file.name,
+                    originalFileName: file.name,
+                    sourcePath,
+                    targetPath,
+                    isDirectory: false,
+                    progressMode: "bytes" as const,
+                    parentTaskId: rootTaskId,
                     totalBytes: skipSourceSize,
-                    endTime: Date.now(),
+                    transferredBytes: skipSourceSize,
+                    sourceLastModified: skipSourceLastModified,
+                    directoryEntryIndex,
+                    directoryEntryIdentity,
+                    status: "completed" as TransferStatus,
                     speed: 0,
-                    error: undefined,
-                  }
-                : row)
-              : [...prev, {
-                  ...rootTask,
-                  id: skippedId,
-                  fileName: file.name,
-                  originalFileName: file.name,
-                  sourcePath,
-                  targetPath,
-                  isDirectory: false,
-                  progressMode: "bytes" as const,
-                  parentTaskId: rootTaskId,
-                  totalBytes: skipSourceSize,
-                  transferredBytes: skipSourceSize,
-                  sourceLastModified: skipSourceLastModified,
-                  directoryEntryIndex,
-                  directoryEntryIdentity,
-                  status: "completed" as TransferStatus,
-                  speed: 0,
-                  startTime: Date.now(),
-                  endTime: Date.now(),
-                }];
-            return next.map((row) => {
-              if (row.id !== rootTaskId) return row;
-              if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
-                return { ...row, speed: 0 };
-              }
-              return { ...row, transferredBytes: row.transferredBytes + 1 };
+                    startTime: Date.now(),
+                    endTime: Date.now(),
+                  }];
+              return next.map((row) => {
+                if (row.id !== rootTaskId) return row;
+                if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
+                  return { ...row, speed: 0 };
+                }
+                return { ...row, transferredBytes: row.transferredBytes + 1 };
+              });
             });
-          });
-          return;
+            return;
+          }
         }
       }
 

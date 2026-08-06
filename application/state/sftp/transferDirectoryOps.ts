@@ -877,64 +877,77 @@ export function useSftpDirectoryTransferOps({
             && !String(task.targetPath).includes(".netcatty-");
           // Symlink listing attrs are the link node; transfer follows target bytes.
           if (skipUnchanged && file.type !== "symlink") {
-            const existing = await tryStatTransferTarget(
-              targetPath,
-              targetIsLocal,
-              targetSftpId,
-              targetEncoding,
+            // Re-stat source immediately before the quick check: interleaved
+            // walks can list a file long before its transfer turn (Codex P1).
+            // Missing fresh metadata must not fall back to listing attrs.
+            const freshSource = await tryStatTransferPath(
+              sourcePath,
+              sourceIsLocal,
+              sourceSftpId,
+              sourceEncoding,
             );
-            if (
-              existing
-              && existing.type !== "directory"
-              && isUnchangedTransferCandidate(
-                { size: fileSize, lastModified: file.lastModified, mtimeUnit: "ms" },
-                { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
-              )
-            ) {
-              const skippedId = persistedChild?.id ?? crypto.randomUUID();
-              setTransfers((prev) => {
-                const hasChild = prev.some((row) => row.id === skippedId);
-                const base = hasChild
-                  ? prev.map((row) => row.id === skippedId
-                    ? {
-                        ...row,
+            if (freshSource && freshSource.type !== "directory") {
+              const skipSourceSize = freshSource.size;
+              const skipSourceLastModified = freshSource.lastModified;
+              const existing = await tryStatTransferTarget(
+                targetPath,
+                targetIsLocal,
+                targetSftpId,
+                targetEncoding,
+              );
+              if (
+                existing
+                && existing.type !== "directory"
+                && isUnchangedTransferCandidate(
+                  { size: skipSourceSize, lastModified: skipSourceLastModified, mtimeUnit: "ms" },
+                  { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
+                )
+              ) {
+                const skippedId = persistedChild?.id ?? crypto.randomUUID();
+                setTransfers((prev) => {
+                  const hasChild = prev.some((row) => row.id === skippedId);
+                  const base = hasChild
+                    ? prev.map((row) => row.id === skippedId
+                      ? {
+                          ...row,
+                          status: "completed" as TransferStatus,
+                          transferredBytes: skipSourceSize,
+                          totalBytes: skipSourceSize,
+                          endTime: Date.now(),
+                          speed: 0,
+                          error: undefined,
+                        }
+                      : row)
+                    : [...prev, {
+                        ...task,
+                        id: skippedId,
+                        fileName: file.name,
+                        originalFileName: file.name,
+                        sourcePath,
+                        targetPath,
+                        isDirectory: false,
+                        progressMode: "bytes" as const,
+                        parentTaskId: rootTaskId,
+                        totalBytes: skipSourceSize,
+                        transferredBytes: skipSourceSize,
+                        sourceLastModified: skipSourceLastModified,
+                        directoryEntryIndex,
+                        directoryEntryIdentity,
                         status: "completed" as TransferStatus,
-                        transferredBytes: fileSize,
-                        totalBytes: fileSize,
-                        endTime: Date.now(),
                         speed: 0,
-                        error: undefined,
-                      }
-                    : row)
-                  : [...prev, {
-                      ...task,
-                      id: skippedId,
-                      fileName: file.name,
-                      originalFileName: file.name,
-                      sourcePath,
-                      targetPath,
-                      isDirectory: false,
-                      progressMode: "bytes" as const,
-                      parentTaskId: rootTaskId,
-                      totalBytes: fileSize,
-                      transferredBytes: fileSize,
-                      sourceLastModified: file.lastModified,
-                      directoryEntryIndex,
-                      directoryEntryIdentity,
-                      status: "completed" as TransferStatus,
-                      speed: 0,
-                      startTime: Date.now(),
-                      endTime: Date.now(),
-                    }];
-                return base.map((row) => {
-                  if (row.id !== rootTaskId) return row;
-                  if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
-                    return { ...row, speed: 0 };
-                  }
-                  return { ...row, transferredBytes: row.transferredBytes + 1 };
+                        startTime: Date.now(),
+                        endTime: Date.now(),
+                      }];
+                  return base.map((row) => {
+                    if (row.id !== rootTaskId) return row;
+                    if (row.status === "paused" || row.status === "pausing" || isPauseLatched(rootTaskId)) {
+                      return { ...row, speed: 0 };
+                    }
+                    return { ...row, transferredBytes: row.transferredBytes + 1 };
+                  });
                 });
-              });
-              return;
+                return;
+              }
             }
           }
 

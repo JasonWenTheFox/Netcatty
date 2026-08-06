@@ -103,6 +103,57 @@ test("transferDiscoveredFiles re-stats source before skip-unchanged", async () =
   assert.equal(child?.sourceLastModified, freshMtime);
 });
 
+test("transferDiscoveredFiles does not skip when source re-stat fails", async () => {
+  const transfersRef = { current: [rootTask()] } as MutableRefObject<TransferTask[]>;
+  const cancelledTasksRef = { current: new Set<string>() } as MutableRefObject<Set<string>>;
+  const activeChildIdsRef = {
+    current: new Map<string, Set<string>>(),
+  } as MutableRefObject<Map<string, Set<string>>>;
+  let transfers = transfersRef.current;
+  let transferCalls = 0;
+  const mtime = 1_700_000_000_000;
+
+  await transferDiscoveredFiles({
+    rootTask: rootTask(),
+    files: [{
+      name: "a.txt",
+      sourcePath: "/source/a.txt",
+      targetPath: "/target/a.txt",
+      size: 10,
+      lastModified: mtime,
+    }],
+    sourceSftpId: null,
+    targetSftpId: null,
+    sourceIsLocal: true,
+    targetIsLocal: true,
+    sourceEncoding: "auto",
+    targetEncoding: "auto",
+    rootTaskId: "root",
+    skipUnchanged: true,
+    startEntryIndex: 0,
+    cancelledTasksRef,
+    activeChildIdsRef,
+    transfersRef,
+    setTransfers: (updater) => {
+      transfers = typeof updater === "function" ? updater(transfers) : updater;
+      transfersRef.current = transfers;
+    },
+    waitWhileTransferPaused: async () => {},
+    isPauseLatched: () => false,
+    transferFile: async () => {
+      transferCalls += 1;
+    },
+    tryStatTarget: async () => ({
+      size: 10,
+      lastModified: mtime,
+      type: "file",
+    }),
+    tryStatSource: async () => null,
+  });
+
+  assert.equal(transferCalls, 1, "missing fresh source meta must not skip");
+});
+
 test("transferDiscoveredFiles skips only when fresh source still matches", async () => {
   const transfersRef = { current: [rootTask()] } as MutableRefObject<TransferTask[]>;
   const cancelledTasksRef = { current: new Set<string>() } as MutableRefObject<Set<string>>;
