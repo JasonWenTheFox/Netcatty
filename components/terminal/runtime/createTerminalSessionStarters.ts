@@ -19,6 +19,7 @@ import {
   closeOrphanBackendSession,
   createBootAttemptGuard,
   getFlowController,
+  isTerminalBootActive,
   notePendingOutputScrollIfEnabled,
   resetTerminalLineTimestampState,
   tryAttachSessionToTerminal,
@@ -721,6 +722,13 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       }
 
       if (unsubscribeChainProgress) unsubscribeChainProgress();
+      // A superseded start may still resolve after reconnect; do not clear the
+      // replacement's MFA wait / connection-timeout state, and do not close the
+      // shared sessionId while the newer boot is active.
+      if (!isCurrentAttempt()) {
+        if (!isTerminalBootActive(ctx)) closeOrphanBackendSession(ctx, id);
+        return;
+      }
       ctx.setIsConnectionAwaitingUserInput?.(false);
 
       if (!tryAttachSessionToTerminal(ctx, term, id, {

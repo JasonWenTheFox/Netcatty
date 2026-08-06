@@ -780,7 +780,14 @@ export const tryAttachSessionToTerminal = (
     isCurrentAttempt?: () => boolean;
   },
 ): boolean => {
-  if (!isTerminalBootActive(ctx) || opts?.isCurrentAttempt?.() === false) {
+  const isCurrent = opts?.isCurrentAttempt?.() !== false;
+  if (!isTerminalBootActive(ctx) || !isCurrent) {
+    // Overlapping disconnect→reconnect starts share ctx.sessionId. Closing by
+    // that ID would tear down the replacement; only close when this pane is
+    // fully inactive (no newer boot owns the shared registry entry).
+    if (!isCurrent && isTerminalBootActive(ctx)) {
+      return false;
+    }
     closeOrphanBackendSession(ctx, id);
     return false;
   }

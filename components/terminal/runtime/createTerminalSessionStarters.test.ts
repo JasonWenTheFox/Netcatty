@@ -671,7 +671,106 @@ test("startSSH stale attempt cannot attach after disconnect then reconnect", asy
   await startPromise;
 
   assert.deepEqual(attached, []);
-  assert.deepEqual(closed, ["stale-ssh-session"]);
+  // Shared sessionId must not be closed while the replacement reconnect owns it.
+  assert.deepEqual(closed, []);
+});
+
+test("stale startSSH closes orphan only when boot is fully inactive", async () => {
+  let resolveStart: ((id: string) => void) | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const closed: string[] = [];
+  const isBootActiveRef = { current: true };
+  const bootEpochRef = { current: 1 };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async () => {
+      releaseStartEntered?.();
+      return await new Promise<string>((resolve) => {
+        resolveStart = resolve;
+      });
+    },
+    closeSession: (id: string) => { closed.push(id); },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: () => noop,
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      password: "secret",
+      authMethod: "password",
+    },
+    isBootActiveRef,
+    bootEpochRef,
+    terminalBackend,
+  });
+
+  const startPromise = createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = false;
+  resolveStart?.("orphan-ssh-session");
+  await startPromise;
+
+  assert.deepEqual(closed, ["orphan-ssh-session"]);
+});
+
+test("stale startSSH success does not clear replacement MFA wait state", async () => {
+  let resolveStart: ((id: string) => void) | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const awaitingUserInput: boolean[] = [];
+  const closed: string[] = [];
+  const isBootActiveRef = { current: true };
+  const bootEpochRef = { current: 1 };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async () => {
+      releaseStartEntered?.();
+      return await new Promise<string>((resolve) => {
+        resolveStart = resolve;
+      });
+    },
+    closeSession: (id: string) => { closed.push(id); },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: () => noop,
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      password: "secret",
+      authMethod: "password",
+    },
+    isBootActiveRef,
+    bootEpochRef,
+    setIsConnectionAwaitingUserInput: (value: boolean) => { awaitingUserInput.push(value); },
+    terminalBackend,
+  });
+
+  const startPromise = createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  awaitingUserInput.length = 0;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = false;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = true;
+  resolveStart?.("stale-ssh-session");
+  await startPromise;
+
+  assert.deepEqual(awaitingUserInput, []);
+  assert.deepEqual(closed, []);
 });
 
 test("stale startSSH attach failure does not disconnect a newer reconnect", async () => {
