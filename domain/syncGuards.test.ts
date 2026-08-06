@@ -201,6 +201,16 @@ test("wiping group configs while other vault data remains is suspicious (#2757)"
   }
 });
 
+test("wiping the last snippet while hosts remain is still a normal delete", () => {
+  // The groupConfigs complete-wipe guard must not broaden to every entity —
+  // deleting your only snippet with hosts present is intentional.
+  const snippets = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `s${i}`, label: `s${i}`, command: "" })) as SyncPayload["snippets"];
+  const base = payload({ hosts: hosts(1), snippets: snippets(1) });
+  const out = payload({ hosts: hosts(1), snippets: snippets(0) });
+  assert.deepEqual(detectSuspiciousShrink(out, base), { suspicious: false });
+});
+
 test("a fully empty outgoing snapshot is not a partial wipe (#2757)", () => {
   // Empty-everything against a trusted baseline is a real deletion path
   // (convergent migration). Do not flag complete wipes when no other vault
