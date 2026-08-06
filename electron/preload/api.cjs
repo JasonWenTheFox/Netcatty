@@ -876,8 +876,50 @@ function createPreloadApi(ctx) {
   statLocal: async (path) => {
     return ipcRenderer.invoke("netcatty:local:stat", { path });
   },
-  listLocalTree: async (path) => {
-    return ipcRenderer.invoke("netcatty:local:tree", { path });
+  listLocalTree: async (path, options = {}) => {
+    const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
+    const abortSignal = options?.abortSignal;
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const progressChannel = onProgress
+      ? `netcatty:local:tree-progress:${token}`
+      : undefined;
+    const cancelChannel = abortSignal
+      ? `netcatty:local:tree-cancel:${token}`
+      : undefined;
+    const handler = onProgress && progressChannel
+      ? (_event, stats) => {
+        try {
+          onProgress(stats);
+        } catch {
+          // Ignore renderer progress handler errors so the scan can finish.
+        }
+      }
+      : null;
+    if (handler && progressChannel) {
+      ipcRenderer.on(progressChannel, handler);
+    }
+    const requestCancel = () => {
+      if (cancelChannel) ipcRenderer.send(cancelChannel);
+    };
+    if (abortSignal) {
+      if (abortSignal.aborted) requestCancel();
+      else abortSignal.addEventListener("abort", requestCancel, { once: true });
+    }
+    try {
+      return await ipcRenderer.invoke("netcatty:local:tree", {
+        path,
+        progressChannel,
+        cancelChannel,
+        limits: options?.limits,
+      });
+    } finally {
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", requestCancel);
+      }
+      if (handler && progressChannel) {
+        ipcRenderer.removeListener(progressChannel, handler);
+      }
+    }
   },
   getHomeDir: async () => {
     return ipcRenderer.invoke("netcatty:local:homedir");

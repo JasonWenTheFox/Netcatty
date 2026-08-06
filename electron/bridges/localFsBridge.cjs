@@ -307,11 +307,20 @@ async function statLocal(event, payload) {
   };
 }
 
-async function collectLocalTreeEntries(rootPath, limits = {}) {
+function throwIfLocalTreeCancelled(isCancelled) {
+  if (typeof isCancelled === "function" && isCancelled()) {
+    const error = new Error("Local directory traversal cancelled");
+    error.code = "ERR_LOCAL_TREE_CANCELLED";
+    throw error;
+  }
+}
+
+async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCancelled) {
   const rootStat = await fs.promises.stat(rootPath);
   if (!rootStat.isDirectory()) {
     throw new Error("Selected path is not a directory");
   }
+  throwIfLocalTreeCancelled(isCancelled);
 
   const traversalBudget = createLocalTreeTraversalBudget(limits);
   claimLocalTreeDirectory(traversalBudget);
@@ -330,8 +339,20 @@ async function collectLocalTreeEntries(rootPath, limits = {}) {
     ancestorRealPaths: new Set([rootRealPath]),
   }];
   let queueIndex = 0;
+  let fileCount = 0;
+  let directoryCount = 1;
+  let lastReportedTotal = 0;
+  const reportProgress = (force = false) => {
+    if (typeof onProgress !== "function") return;
+    const entryCount = fileCount + directoryCount;
+    if (!force && entryCount - lastReportedTotal < 32) return;
+    lastReportedTotal = entryCount;
+    onProgress({ fileCount, directoryCount, entryCount });
+  };
+  reportProgress(true);
 
   while (queueIndex < queue.length) {
+    throwIfLocalTreeCancelled(isCancelled);
     const current = queue[queueIndex++];
     const children = await fs.promises.readdir(current.localPath, { withFileTypes: true });
     accountLocalTreeEntries(traversalBudget, children.length);
@@ -339,6 +360,7 @@ async function collectLocalTreeEntries(rootPath, limits = {}) {
 
     const metadataConcurrency = 32;
     for (let start = 0; start < children.length; start += metadataConcurrency) {
+      throwIfLocalTreeCancelled(isCancelled);
       const inspected = await Promise.all(
         children.slice(start, start + metadataConcurrency).map(async (child) => {
           const childPath = path.join(current.localPath, child.name);
@@ -386,23 +408,69 @@ async function collectLocalTreeEntries(rootPath, limits = {}) {
           size: child.stat.size,
           lastModified: child.stat.mtime.getTime(),
         });
-
         if (child.isDirectory) {
+          directoryCount += 1;
           queue.push({
             localPath: child.childPath,
             relativePath: child.childRelativePath,
             ancestorRealPaths: child.ancestorRealPaths,
           });
+        } else {
+          fileCount += 1;
         }
       }
+      reportProgress();
     }
   }
 
+  throwIfLocalTreeCancelled(isCancelled);
+  reportProgress(true);
   return entries;
 }
 
 async function listLocalTree(event, payload) {
-  return collectLocalTreeEntries(payload.path);
+  const progressChannel = typeof payload?.progressChannel === "string" && payload.progressChannel
+    ? payload.progressChannel
+    : null;
+  const cancelChannel = typeof payload?.cancelChannel === "string" && payload.cancelChannel
+    ? payload.cancelChannel
+    : null;
+  let cancelled = false;
+  const onCancel = () => {
+    cancelled = true;
+  };
+  // Lazy-require so unit tests can import collectLocalTreeEntries without a
+  // full Electron binary (top-level require("electron") breaks node --test).
+  let electronIpcMain = null;
+  if (cancelChannel) {
+    try {
+      electronIpcMain = require("electron").ipcMain;
+      electronIpcMain.on(cancelChannel, onCancel);
+    } catch {
+      electronIpcMain = null;
+    }
+  }
+  const onProgress = progressChannel
+    ? (stats) => {
+      try {
+        event.sender.send(progressChannel, stats);
+      } catch {
+        // Renderer may have gone away mid-scan.
+      }
+    }
+    : undefined;
+  try {
+    return await collectLocalTreeEntries(
+      payload.path,
+      payload.limits || {},
+      onProgress,
+      () => cancelled,
+    );
+  } finally {
+    if (cancelChannel && electronIpcMain) {
+      electronIpcMain.removeListener(cancelChannel, onCancel);
+    }
+  }
 }
 
 /**

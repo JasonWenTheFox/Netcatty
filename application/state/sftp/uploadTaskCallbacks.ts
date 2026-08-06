@@ -27,11 +27,11 @@ export const createUploadTaskCallbacks = ({
   targetConnectionKey,
   store = sftpTransferCenterStore,
 }: UploadTaskCallbacksParams): UploadCallbacks => ({
-  onScanningStart: (taskId: string) => {
+  onScanningStart: (taskId: string, info?: { label?: string }) => {
     store.upsertTasks([{
       id: taskId,
       ownerId,
-      fileName: "Scanning files...",
+      fileName: info?.label?.trim() || "Scanning files...",
       sourcePath: "local",
       targetPath,
       sourceConnectionId: "external",
@@ -42,17 +42,29 @@ export const createUploadTaskCallbacks = ({
       targetConnectionKey,
       direction: "upload",
       status: "pending" as TransferStatus,
+      // Progressive discovery: totalBytes = found so far, completed stays 0
+      // until real transfers start (UI: "0 done · N found").
       totalBytes: 0,
       transferredBytes: 0,
       speed: 0,
       startTime: Date.now(),
       isDirectory: true,
-      progressMode: "bytes",
+      progressMode: "files",
       origin: "drag-drop",
       background: false,
       resumable: true,
       phase: "scanning",
     }]);
+  },
+  onScanningProgress: (taskId: string, progress) => {
+    store.patchTask(taskId, {
+      // Found count is the growing total; nothing is completed during scan.
+      totalBytes: Math.max(0, progress.fileCount),
+      transferredBytes: 0,
+      progressMode: "files",
+      phase: "scanning",
+      ...(progress.label?.trim() ? { fileName: progress.label.trim() } : null),
+    });
   },
   onScanningEnd: (taskId: string) => {
     store.dismiss(taskId);

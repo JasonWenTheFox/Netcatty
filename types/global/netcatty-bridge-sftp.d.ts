@@ -143,7 +143,22 @@ declare global {
     renameLocalFile?(oldPath: string, newPath: string): Promise<void>;
     mkdirLocal?(path: string): Promise<void>;
     statLocal?(path: string): Promise<SftpStatResult>;
-    listLocalTree?(path: string): Promise<Array<{
+    listLocalTree?(
+      path: string,
+      options?: {
+        onProgress?: (progress: {
+          fileCount: number;
+          directoryCount: number;
+          entryCount: number;
+        }) => void;
+        /** Abort an in-flight native tree walk (main-process cooperative cancel). */
+        abortSignal?: AbortSignal;
+        limits?: {
+          maxDirectories?: number;
+          maxEntries?: number;
+        };
+      },
+    ): Promise<Array<{
       localPath: string;
       relativePath: string;
       type: 'file' | 'directory';

@@ -178,10 +178,22 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
                     ? formatTransferBytes(task.totalBytes)
                     : '';
 
-    const fileCountDisplay = isDirParent && (isActiveTransfer || isPausedLike)
-        ? (task.totalBytes > 0
-            ? t('sftp.transfers.filesProgress', { current: task.transferredBytes, total: task.totalBytes })
-            : t('sftp.transfers.filesCount', { count: task.transferredBytes }))
+    const showFileCount = isDirParent && (
+        isActiveTransfer
+        || isPausedLike
+        || task.status === 'pending'
+        || task.status === 'queued'
+        || task.phase === 'scanning'
+    );
+    // totalBytes grows during interleaved discovery — never present as a fixed total.
+    const discovered = Math.max(task.totalBytes, task.transferredBytes);
+    const fileCountDisplay = showFileCount
+        ? (discovered > 0
+            ? t('sftp.transfers.filesDiscoveredProgress', {
+                completed: task.transferredBytes,
+                discovered,
+            })
+            : '')
         : isDirParent && task.status === 'completed' && task.totalBytes > 0
             ? t('sftp.transfers.filesCount', { count: task.totalBytes })
             : '';
@@ -195,6 +207,10 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
     const resumingLabel = t('sftp.transferCenter.status.resuming');
     const progressOverlayText = isResuming
         ? resumingLabel
+        : task.phase === 'scanning'
+        ? (fileCountDisplay
+            ? `${t('sftp.transferCenter.phase.scanning')} · ${fileCountDisplay}`
+            : t('sftp.transferCenter.phase.scanning'))
         : task.status === 'pending'
         ? t('sftp.task.waiting')
         : task.status === 'pausing'
@@ -213,8 +229,11 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
                             ? `${Math.round(progress)}%`
                             : '...';
 
-    const progressBarWidth = task.status === 'pending' || (task.status === 'transferring' && !hasKnownTotal) || isIndeterminate
-        ? (task.status === 'pending' || !hasKnownTotal ? '100%' : `${progress}%`)
+    const progressBarWidth = task.status === 'pending'
+        || task.phase === 'scanning'
+        || (task.status === 'transferring' && !hasKnownTotal)
+        || isIndeterminate
+        ? (task.status === 'pending' || task.phase === 'scanning' || !hasKnownTotal ? '100%' : `${progress}%`)
         : `${progress}%`;
 
     const statusIcon = isResuming
