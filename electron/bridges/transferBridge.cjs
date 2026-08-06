@@ -2285,18 +2285,32 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       }
     });
 
-    /** Unlink with 2s bound so a dead channel cannot pin settle/gate forever. */
-    const boundUnlinkThen = (thenFn) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        thenFn();
+    /**
+     * Unlink, then settle transfer and release the path gate.
+     * Transfer settle is 2s-bounded so a dead unlink cannot hang the invoke;
+     * the path gate stays held until unlink actually settles so a delayed
+     * unlink cannot delete a same-path retry that already wrote (Codex P2 on
+     * 46ed3722).
+     */
+    const unlinkThenSettleAndReleaseGate = (settleFn) => {
+      let transferSettled = false;
+      const settleTransfer = () => {
+        if (transferSettled) return;
+        transferSettled = true;
+        settleFn();
       };
-      const timer = setTimeout(finish, 2000);
+      const settleTimer = setTimeout(settleTransfer, 2000);
       unlinkSharedWritePathBestEffort().then(
-        () => { clearTimeout(timer); finish(); },
-        () => { clearTimeout(timer); finish(); },
+        () => {
+          clearTimeout(settleTimer);
+          settleTransfer();
+          releasePathGate();
+        },
+        () => {
+          clearTimeout(settleTimer);
+          settleTransfer();
+          releasePathGate();
+        },
       );
     };
 
@@ -2331,7 +2345,8 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
           releasePathGate();
         };
         if (canUnlinkLateGeneratedStageNow()) {
-          boundUnlinkThen(finish);
+          // Gate stays held until unlink settles (no 2s force-release).
+          unlinkSharedWritePathBestEffort().then(finish, finish);
           return;
         }
         finish();
@@ -2467,10 +2482,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             // already raced. In-place finals are close-only. Same-id retries
             // that re-own activeTransfers skip unlink (resume stage reuse).
             if (canUnlinkLateGeneratedStageNow()) {
-              // Bound close + unlink so a dead channel cannot pin settle/gate
-              // when cancel wins before settle (Codex P2 on e6dfdc9e / hang).
+              // Bound close. Unlink: settle transfer after 2s if needed, but keep
+              // the path gate until unlink actually settles (Codex P2 hang +
+              // delayed-unlink race on 46ed3722).
               boundCloseSftpHandle(handle, () => {
-                boundUnlinkThen(finishCancel);
+                unlinkThenSettleAndReleaseGate(() => {
+                  settle(reject, new Error("Transfer cancelled"));
+                  completeSharedWriteDrain();
+                });
               });
               return;
             }
