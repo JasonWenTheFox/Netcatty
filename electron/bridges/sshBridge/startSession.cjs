@@ -1190,6 +1190,9 @@ printf '%s\n' '${scanCompleteMarker}'`;
             identityFilePaths: options.identityFilePaths,
             hostname: options.hostname,
             initialPassphrase: options.passphrase,
+            passphraseSignal: options._passphraseSignal,
+            sessionId,
+            bootEpoch: options.bootEpoch,
             logPrefix: "[SSH]",
             onPassphrasePromptShown: () => sendProgress(
               totalHops, totalHops, options.hostname, "auth-attempt", "waiting for user input...",
@@ -1213,6 +1216,9 @@ printf '%s\n' '${scanCompleteMarker}'`;
             keyName: options.keyId || options.username,
             hostname: options.hostname,
             initialPassphrase: effectivePassphrase,
+            passphraseSignal: options._passphraseSignal,
+            sessionId,
+            bootEpoch: options.bootEpoch,
             logPrefix: "[SSH]",
             onPassphrasePromptShown: () => sendProgress(
               totalHops, totalHops, options.hostname, "auth-attempt", "waiting for user input...",

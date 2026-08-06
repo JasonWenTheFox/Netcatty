@@ -22,6 +22,7 @@ import {
   rememberKeyPassphrase,
   shouldUpdateReferenceKeyPassphrase,
 } from './application/defaultKeyPassphrases';
+import { isTerminalBootEpochCurrent } from './domain/terminalBootEpoch';
 import { initializeFonts } from './application/state/fontStore';
 import { initializeUIFonts } from './application/state/uiFontStore';
 import { I18nProvider, useI18n } from './application/i18n/I18nProvider';
@@ -826,6 +827,16 @@ function App({ settings }: { settings: SettingsState }) {
     const unsubscribe = bridge.onPassphraseRequest(async (request) => {
       console.log('[App] Passphrase request received:', request);
 
+      // Disconnect/reconnect may leave a late passphrase prompt for a
+      // superseded boot; reject epoch-tagged requests that are no longer current.
+      if (
+        typeof request.sessionId === "string"
+        && !isTerminalBootEpochCurrent(request.sessionId, request.bootEpoch)
+      ) {
+        void bridge.respondPassphrase?.(request.requestId, "", true);
+        return;
+      }
+
       // If the bridge already tried a passphrase and it was wrong, skip auto-respond
       if (!request.passphraseInvalid) {
         // Check if a reference key exists for this path — use its passphrase
@@ -868,6 +879,8 @@ function App({ settings }: { settings: SettingsState }) {
         keyPath: request.keyPath,
         keyName: request.keyName,
         hostname: request.hostname,
+        sessionId: request.sessionId,
+        bootEpoch: request.bootEpoch,
       }]);
     });
 
@@ -875,6 +888,31 @@ function App({ settings }: { settings: SettingsState }) {
       unsubscribe?.();
     };
   }, [updateKeys]);
+
+  // Drop queued passphrase prompts when a terminal disconnects mid-boot.
+  useEffect(() => {
+    const onDisconnected = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      const disconnectedSessionId = detail?.sessionId;
+      if (!disconnectedSessionId) return;
+      const bridge = netcattyBridge.get();
+      setPassphraseQueue((prev) => {
+        const keep: typeof prev = [];
+        for (const item of prev) {
+          if (item.sessionId === disconnectedSessionId) {
+            void bridge?.respondPassphrase?.(item.requestId, "", true);
+            continue;
+          }
+          keep.push(item);
+        }
+        return keep;
+      });
+    };
+    window.addEventListener("netcatty:terminal-session-disconnected", onDisconnected);
+    return () => {
+      window.removeEventListener("netcatty:terminal-session-disconnected", onDisconnected);
+    };
+  }, []);
 
   // Handle passphrase submit
   const handlePassphraseSubmit = useCallback(async (requestId: string, passphrase: string, remember: boolean) => { return handlePassphraseSubmitImpl(() => ({ keysRef, netcattyBridge, passphrase, passphraseQueue, remember, rememberKeyPassphrase, requestId, setPassphraseQueue, updateKeys }), requestId, passphrase, remember); }, [passphraseQueue, updateKeys]);

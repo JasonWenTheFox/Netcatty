@@ -1930,7 +1930,17 @@ function clearSessionPtyBuffer(event, payload) {
  */
 function closeSession(event, payload) {
   const session = sessions.get(payload.sessionId);
-  const { sessionMatchesBootEpoch } = require("./sessionBootEpoch.cjs");
+  const {
+    abortPendingBoot,
+    sessionMatchesBootEpoch,
+  } = require("./sessionBootEpoch.cjs");
+  const passphraseHandler = require("./passphraseHandler.cjs");
+  // Abort in-flight SSH passphrase prompts even before a registry slot exists.
+  abortPendingBoot(payload.sessionId, payload?.bootEpoch);
+  passphraseHandler.cancelPassphraseRequestsForSession?.(
+    payload.sessionId,
+    "session-closed",
+  );
   if (session && !sessionMatchesBootEpoch(session, payload?.bootEpoch)) {
     return { skipped: true, reason: "boot-epoch-mismatch" };
   }

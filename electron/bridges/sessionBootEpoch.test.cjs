@@ -17,6 +17,23 @@ test("claimSessionSlot rejects a superseded lower boot epoch", () => {
   assert.equal(stale.bootEpoch, undefined);
 });
 
+test("pending boot abort cancels older generations but not newer ones", () => {
+  const {
+    abortPendingBoot,
+    clearPendingBootAbort,
+    registerPendingBootAbort,
+  } = require("./sessionBootEpoch.cjs");
+  const older = registerPendingBootAbort("s-pending", 2);
+  const newer = registerPendingBootAbort("s-pending", 4);
+  assert.equal(older.signal.aborted, true);
+  assert.equal(newer.signal.aborted, false);
+  assert.equal(abortPendingBoot("s-pending", 3), false);
+  assert.equal(newer.signal.aborted, false);
+  assert.equal(abortPendingBoot("s-pending", 4), true);
+  assert.equal(newer.signal.aborted, true);
+  clearPendingBootAbort("s-pending", newer);
+});
+
 test("claimSessionSlot replaces an older boot epoch and marks it superseded", () => {
   const sessions = new Map();
   const older = {

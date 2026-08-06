@@ -585,6 +585,8 @@ declare global {
         keyName: string;
         hostname?: string;
         passphraseInvalid?: boolean;
+        sessionId?: string;
+        bootEpoch?: number;
       }) => void
     ): () => void;
     respondPassphrase?(

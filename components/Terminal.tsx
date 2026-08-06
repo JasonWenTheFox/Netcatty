@@ -1576,8 +1576,13 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
     if (!closingSessionId) {
       disposeSessionListeners();
-      // Plugin (and similar) cancels may still be finishing external registration
-      // after disposeExit runs; await that before reconnect can reuse sessionId.
+      // Still notify main so in-flight SSH passphrase prompts for this UI
+      // sessionId are aborted even before a backend session was attached.
+      try {
+        await terminalBackend.closeSession(sessionId, { bootEpoch: bootEpochRef.current });
+      } catch (err) {
+        logger.warn("Failed to cancel pending session boot on disconnect", err);
+      }
       const postDisposeCleanup = sessionCleanupPromiseRef.current;
       if (postDisposeCleanup) {
         await postDisposeCleanup;
@@ -1683,7 +1688,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         clearTerminalSessionFlowAck(closingSessionId);
       }
       try {
-        await terminalBackend.closeSession(closingSessionId);
+        await terminalBackend.closeSession(closingSessionId, { bootEpoch: bootEpochRef.current });
       } catch (err) {
         logger.warn("Failed to close SSH session", err);
       }

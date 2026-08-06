@@ -3,6 +3,8 @@
  * A higher bootEpoch owns the registry slot; mismatched closes are no-ops.
  */
 
+const pendingBootAborts = new Map();
+
 function normalizeBootEpoch(bootEpoch) {
   if (!Number.isFinite(bootEpoch)) return undefined;
   return Number(bootEpoch);
@@ -13,6 +15,56 @@ function attachBootEpoch(session, bootEpoch) {
   if (normalized === undefined || !session || typeof session !== "object") return session;
   session.bootEpoch = normalized;
   return session;
+}
+
+/**
+ * Register an AbortController for an in-flight start that has not yet claimed
+ * the sessions registry (e.g. SSH passphrase prompts before shell open).
+ * A newer register for the same sessionId aborts the older controller.
+ */
+function registerPendingBootAbort(sessionId, bootEpoch) {
+  if (!sessionId) return new AbortController();
+  const existing = pendingBootAborts.get(sessionId);
+  if (existing) {
+    try { existing.controller.abort(); } catch { /* ignore */ }
+  }
+  const controller = new AbortController();
+  pendingBootAborts.set(sessionId, {
+    controller,
+    bootEpoch: normalizeBootEpoch(bootEpoch),
+  });
+  return controller;
+}
+
+/**
+ * Abort a pending boot. When bootEpoch is provided, only abort if the pending
+ * entry is not newer than that epoch (so a stale close cannot kill a reconnect).
+ */
+function abortPendingBoot(sessionId, bootEpoch) {
+  if (!sessionId) return false;
+  const pending = pendingBootAborts.get(sessionId);
+  if (!pending) return false;
+  const requested = normalizeBootEpoch(bootEpoch);
+  if (
+    requested !== undefined
+    && pending.bootEpoch !== undefined
+    && pending.bootEpoch > requested
+  ) {
+    return false;
+  }
+  try { pending.controller.abort(); } catch { /* ignore */ }
+  if (pendingBootAborts.get(sessionId) === pending) {
+    pendingBootAborts.delete(sessionId);
+  }
+  return true;
+}
+
+function clearPendingBootAbort(sessionId, controller) {
+  if (!sessionId || !controller) return;
+  const pending = pendingBootAborts.get(sessionId);
+  if (pending?.controller === controller) {
+    pendingBootAborts.delete(sessionId);
+  }
 }
 
 /**
@@ -140,9 +192,12 @@ function sessionMatchesBootEpoch(session, bootEpoch) {
 }
 
 module.exports = {
+  abortPendingBoot,
   attachBootEpoch,
   claimSessionSlot,
+  clearPendingBootAbort,
   disposeDisplacedSessionResources,
   normalizeBootEpoch,
+  registerPendingBootAbort,
   sessionMatchesBootEpoch,
 };
