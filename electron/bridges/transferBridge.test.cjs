@@ -4114,7 +4114,11 @@ test("growing-download prefix verification times out a stalled SFTP READ", async
         sftpReadTimeoutMs: 20,
       },
     ),
-    /SFTP READ timed out/,
+    (error) => (
+      /SFTP READ timed out/.test(error?.message || "")
+      && error?.sftpRequestTimedOut === true
+      && error?.noTransferFallback === true
+    ),
   );
 });
 
@@ -4144,9 +4148,14 @@ test("growing-download prefix stream fallback times out without data", async (t)
         remotePath: "/var/log/app.log",
         signal: new AbortController().signal,
         sftpReadTimeoutMs: 20,
+        preferSftpRanges: false,
       },
     ),
-    /SFTP stream timed out/,
+    (error) => (
+      /SFTP stream timed out/.test(error?.message || "")
+      && error?.sftpRequestTimedOut === true
+      && error?.noTransferFallback === true
+    ),
   );
 });
 
@@ -4324,7 +4333,7 @@ test("resumable SFTP downloads reject growth when the planned prefix was rewritt
   }
 });
 
-test("checkpoint-complete resume skips source open when checkpoint already covers the snapshot", async (t) => {
+test("checkpoint-complete resume verifies growth with bounded prefix ranges", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-download-complete-checkpoint-"));
   const transferId = "download-complete-checkpoint-growth";
   const targetPath = path.join(tempDir, "download.bin");
@@ -4347,14 +4356,24 @@ test("checkpoint-complete resume skips source open when checkpoint already cover
 
   let bodyOpenAtOldEof = false;
   let openCalls = 0;
+  let verifyRangeReads = 0;
   const sharedSftp = createFastSftp({
-    open() {
+    open(_remotePath, _flags, callback) {
       openCalls += 1;
-      bodyOpenAtOldEof = true;
-      throw new Error("must not open transfer body at planned EOF");
+      callback(null, Buffer.from("verify-handle"));
     },
-    read() {
-      throw new Error("must not READ after planned EOF");
+    read(_handle, buffer, offset, length, position, callback) {
+      if (position >= snapshot.length) {
+        bodyOpenAtOldEof = true;
+        throw new Error("must not READ past planned snapshot");
+      }
+      verifyRangeReads += 1;
+      const end = Math.min(position + length, snapshot.length);
+      snapshot.subarray(position, end).copy(buffer, offset);
+      setImmediate(() => callback(null, end - position));
+    },
+    close(_handle, callback) {
+      callback(null);
     },
     createReadStream(_remotePath, options = {}) {
       const start = Number.isFinite(options.start) ? options.start : 0;
@@ -4399,7 +4418,8 @@ test("checkpoint-complete resume skips source open when checkpoint already cover
   );
 
   assert.equal(result.error, undefined, result.error);
-  assert.equal(openCalls, 0, "checkpoint-complete must not open remote handle");
+  assert.ok(verifyRangeReads > 0, "checkpoint-complete growth must use bounded prefix ranges");
+  assert.ok(openCalls > 0, "prefix verification may open a read handle at offset 0");
   assert.equal(bodyOpenAtOldEof, false, "must not open transfer body at the old EOF");
   const downloaded = await fs.promises.readFile(targetPath);
   assert.deepEqual(downloaded, snapshot);

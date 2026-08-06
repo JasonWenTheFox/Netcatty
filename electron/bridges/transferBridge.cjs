@@ -3947,50 +3947,60 @@ async function assertLocalDownloadMatchesRemotePrefix(
     // SCP cannot range-hash portably; fail closed when growth needs proof.
     throw createSourceContentChangedError();
   }
-  await requireSftpChannel(client, { signal: options.signal });
-  const remoteHash = (async () => {
-    const commandDigest = await hashRemotePrefixViaSshCommand(
-      client,
-      remotePath,
-      prefixBytes,
-      options,
-    );
-    if (commandDigest) return commandDigest;
-    if (options.preferSftpRanges !== false) {
-      try {
-        const rangeDigest = await hashRemotePrefixWithSftpRanges(
-          client,
-          remotePath,
-          prefixBytes,
-          options,
-        );
-        if (rangeDigest) return rangeDigest;
-      } catch (error) {
-        if (options.signal?.aborted || error?.sftpRequestTimedOut) throw error;
+  try {
+    await requireSftpChannel(client, { signal: options.signal });
+    const remoteHash = (async () => {
+      const commandDigest = await hashRemotePrefixViaSshCommand(
+        client,
+        remotePath,
+        prefixBytes,
+        options,
+      );
+      if (commandDigest) return commandDigest;
+      if (options.preferSftpRanges !== false) {
+        try {
+          const rangeDigest = await hashRemotePrefixWithSftpRanges(
+            client,
+            remotePath,
+            prefixBytes,
+            options,
+          );
+          if (rangeDigest) return rangeDigest;
+        } catch (error) {
+          if (options.signal?.aborted || error?.sftpRequestTimedOut) throw error;
+        }
       }
-    }
-    if (typeof client.sftp?.createReadStream !== "function") {
+      if (typeof client.sftp?.createReadStream !== "function") {
+        throw createSourceContentChangedError();
+      }
+      return hashReadable(
+        client.sftp.createReadStream(remotePath, {
+          start: 0,
+          end: prefixBytes - 1,
+        }),
+        {
+          ...options,
+          inactivityTimeoutMs: Number(options.sftpReadTimeoutMs) > 0
+            ? Number(options.sftpReadTimeoutMs)
+            : SFTP_REQUEST_TIMEOUT_MS,
+        },
+      );
+    })();
+    const [localHash, verifiedRemoteHash] = await Promise.all([
+      hashLocalFile(localPath, options),
+      remoteHash,
+    ]);
+    if (!localHash || !verifiedRemoteHash || localHash !== verifiedRemoteHash) {
       throw createSourceContentChangedError();
     }
-    return hashReadable(
-      client.sftp.createReadStream(remotePath, {
-        start: 0,
-        end: prefixBytes - 1,
-      }),
-      {
-        ...options,
-        inactivityTimeoutMs: Number(options.sftpReadTimeoutMs) > 0
-          ? Number(options.sftpReadTimeoutMs)
-          : SFTP_REQUEST_TIMEOUT_MS,
-      },
-    );
-  })();
-  const [localHash, verifiedRemoteHash] = await Promise.all([
-    hashLocalFile(localPath, options),
-    remoteHash,
-  ]);
-  if (!localHash || !verifiedRemoteHash || localHash !== verifiedRemoteHash) {
-    throw createSourceContentChangedError();
+  } catch (error) {
+    // Verification OPEN/READ/stream watchdogs must fail closed — downloadFile's
+    // isolated→shared catch would otherwise retry body transfer on a channel
+    // that still owns the timed-out request and can hang indefinitely.
+    if (error && typeof error === "object" && error.sftpRequestTimedOut) {
+      error.noTransferFallback = true;
+    }
+    throw error;
   }
 }
 
@@ -4745,14 +4755,25 @@ async function downloadFile(
     }
     sendProgress(fileSize, fileSize, { force: true, checkpointBytes: fileSize });
     if (initialSource) {
-      const latestSource = await runCancelablePreflight(() => client.stat(remotePath));
-      await assertDownloadSourceAfterTransfer(initialSource, latestSource, fileSize, {
-        localPath,
-        client,
-        remotePath,
-        signal: transfer.signal,
-        preferSftpRanges: false,
-      });
+      // Growth verification may use concurrent prefix ranges (especially sudo,
+      // which skips unprivileged SSH digests). Hold the session fast-download
+      // slot so those READs do not race another download's fanout.
+      let holdSessionSlot = false;
+      try {
+        await acquireSessionFastDownloadSlot(client, transfer);
+        holdSessionSlot = true;
+        const latestSource = await runCancelablePreflight(() => client.stat(remotePath));
+        await assertDownloadSourceAfterTransfer(initialSource, latestSource, fileSize, {
+          localPath,
+          client,
+          remotePath,
+          signal: transfer.signal,
+        });
+      } finally {
+        if (holdSessionSlot) {
+          releaseSessionFastDownloadSlot(client);
+        }
+      }
     }
     return;
   }
