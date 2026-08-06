@@ -3815,6 +3815,55 @@ test("growing-download prefix verification skips unprivileged digest for sudo SF
   assert.equal(execCalls, 0, "sudo downloads must not use unprivileged digest commands");
 });
 
+test("growing-download prefix verification falls back after digest command timeout", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-digest-timeout-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(96 * 1024, 69);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  let rangeReads = 0;
+  const pipelined = createPipelinedDownloadSftp(payload, {
+    read(handle, buffer, offset, length, position, callback) {
+      rangeReads += 1;
+      const end = Math.min(position + length, payload.length);
+      const slice = payload.subarray(position, end);
+      slice.copy(buffer, offset);
+      setImmediate(() => callback(null, slice.length));
+    },
+    createReadStream() {
+      throw new Error("serial prefix stream should remain the final fallback");
+    },
+  });
+  const client = {
+    sftp: pipelined.sftp,
+    client: {
+      exec(_request, callback) {
+        const stream = new EventEmitter();
+        stream.stderr = new EventEmitter();
+        stream.destroy = () => {};
+        callback(null, stream);
+        // Open succeeds but never completes — hits SSH_EXEC_RUN_TIMEOUT.
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+      sshDigestRunTimeoutMs: 30,
+    },
+  );
+
+  assert.ok(rangeReads > 0, "digest run timeout must fall through to SFTP range hashing");
+});
+
 test("growing-download prefix verification rejects empty remote digests", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-empty-digest-"));
   t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));

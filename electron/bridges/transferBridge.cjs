@@ -709,8 +709,12 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
     try {
       const result = await executeBoundedSshCommand(sshClient, command, {
         signal: options.signal,
-        openingTimeoutMs: 15_000,
-        runTimeoutMs: 10 * 60_000,
+        openingTimeoutMs: Number(options.sshDigestOpeningTimeoutMs) > 0
+          ? Number(options.sshDigestOpeningTimeoutMs)
+          : 15_000,
+        runTimeoutMs: Number(options.sshDigestRunTimeoutMs) > 0
+          ? Number(options.sshDigestRunTimeoutMs)
+          : 10 * 60_000,
         maxOutputBytes: 64 * 1024,
       });
       if (result.code !== 0) continue;
@@ -721,13 +725,16 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
       if (digest === EMPTY_SHA256_HEX) continue;
       return digest;
     } catch (error) {
+      if (options.signal?.aborted || error?.code === "ABORT_ERR") {
+        throw error;
+      }
+      // Optional digest optimization timed out — fall through to SFTP verification
+      // instead of failing an already-completed download.
       if (
-        options.signal?.aborted
-        || error?.code === "ABORT_ERR"
-        || error?.code === "SSH_EXEC_OPEN_TIMEOUT"
+        error?.code === "SSH_EXEC_OPEN_TIMEOUT"
         || error?.code === "SSH_EXEC_RUN_TIMEOUT"
       ) {
-        throw error;
+        return null;
       }
     }
   }
