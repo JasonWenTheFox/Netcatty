@@ -100,15 +100,29 @@ export async function runBoundedConcurrency<T>(
   const limit = Math.max(1, Math.min(Math.floor(concurrency) || 1, items.length || 1));
   if (items.length === 0) return;
   let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
   const runNext = async () => {
-    while (nextIndex < items.length) {
-      if (options?.beforeClaim) {
-        await options.beforeClaim();
+    while (!failed && nextIndex < items.length) {
+      try {
+        if (options?.beforeClaim) {
+          await options.beforeClaim();
+        }
+        // Re-check after beforeClaim: a sibling may have failed while we waited.
+        if (failed || nextIndex >= items.length) return;
+        const index = nextIndex++;
+        await worker(items[index], index);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstError = err;
+        }
+        return;
       }
-      if (nextIndex >= items.length) return;
-      const index = nextIndex++;
-      await worker(items[index], index);
     }
   };
+  // Settle every started worker before propagating — Promise.all would reject
+  // while siblings keep claiming directories / transferring after the caller cleans up.
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runNext()));
+  if (failed) throw firstError;
 }

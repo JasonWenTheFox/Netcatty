@@ -82,6 +82,58 @@ test("runBoundedConcurrency respects an explicit limit", async () => {
   assert.equal(maxActive, 3);
 });
 
+test("runBoundedConcurrency drains siblings and stops new claims after an error", async () => {
+  const started: number[] = [];
+  const finished: number[] = [];
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+
+  const run = runBoundedConcurrency([0, 1, 2, 3, 4], 2, async (item) => {
+    started.push(item);
+    if (item === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      throw new Error("boom");
+    }
+    if (item === 1) {
+      await slowGate;
+    }
+    finished.push(item);
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  let settledWhileSiblingRunning = false;
+  await Promise.race([
+    run.then(
+      () => {
+        settledWhileSiblingRunning = true;
+      },
+      () => {
+        settledWhileSiblingRunning = true;
+      },
+    ),
+    new Promise((resolve) => setTimeout(resolve, 5)),
+  ]);
+  assert.equal(
+    settledWhileSiblingRunning,
+    false,
+    "must wait for in-flight siblings before propagating the error",
+  );
+  assert.ok(started.includes(1));
+  assert.equal(finished.includes(1), false);
+
+  releaseSlow();
+  await assert.rejects(run, /boom/);
+  assert.ok(finished.includes(1), "in-flight sibling must finish before reject");
+  assert.deepEqual(
+    [...started].sort((a, b) => a - b),
+    [0, 1],
+    "must not claim additional queue items after the first error",
+  );
+});
+
 test("beforeClaim runs before claiming the next queue index", async () => {
   const events: string[] = [];
   let paused = true;
