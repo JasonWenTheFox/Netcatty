@@ -459,7 +459,16 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     entry.resolve();
   };
 
-  const fail = (error) => {
+  /**
+   * @param {Error} [error]
+   * @param {{ reinstall?: boolean }} [options]
+   *   reinstall — when true (default), make this entry the durable map barrier.
+   *   Successor waiters that only propagate a prior poison must pass false so
+   *   they cannot steal the slot from the OPEN owner; otherwise a later
+   *   owner release cannot clear the barrier (Codex P2 on 64450bfd).
+   */
+  const fail = (error, options = {}) => {
+    const reinstall = options.reinstall !== false;
     const err = error instanceof Error
       ? error
       : createPoisonedWriteOpenPathGateError(String(error?.message || error || ""));
@@ -482,8 +491,9 @@ function beginTruncatingSharedWriteOpen(filePath, sessionKey = "unknown") {
     }
 
     // Reinstall this poisoned entry as the durable fail-closed barrier even if
-    // a successor replaced us. Successor release must not delete the poison.
-    if (!entry.released) {
+    // a successor replaced us. Successor-propagated fail must not steal the
+    // slot from the OPEN owner (Codex P2 on 64450bfd).
+    if (reinstall && !entry.released) {
       truncatingSharedWriteOpenGates.set(key, entry);
     }
   };
@@ -2722,7 +2732,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             ? priorErr
             : createPoisonedWriteOpenPathGateError(String(priorErr?.message || priorErr || ""));
           if (!failErr.noTransferFallback) failErr.noTransferFallback = true;
-          try { pathGate.fail?.(failErr); } catch { /* ignore */ }
+          // Propagate rejection to anyone waiting on our promise, but do not
+          // reinstall ourselves over the OPEN owner's poisoned barrier.
+          try { pathGate.fail?.(failErr, { reinstall: false }); } catch { /* ignore */ }
           try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
         },
       );
