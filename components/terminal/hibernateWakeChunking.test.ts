@@ -36,41 +36,52 @@ test("hibernate wake pauses flow before replay and resumes only after reattach",
   const mountSource = readFileSync(new URL("./terminalRuntimeMount.ts", import.meta.url), "utf8");
   const terminalSource = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
 
-  assert.match(mountSource, /prepareWakeFlow\?:\s*\(\) => Promise<void>/);
+  assert.match(mountSource, /prepareWakeFlow\?:\s*\(\) => Promise<boolean>/);
   assert.match(mountSource, /resumeWakeFlow\?:\s*\(\) => void/);
   assert.match(mountSource, /takePendingBuffer: \(\) => string/);
   assert.match(mountSource, /stopHibernateDataListener: \(\) => void/);
-  assert.match(mountSource, /await prepareWakeFlow\?\.\(\);/);
+  assert.match(mountSource, /const drainOk = \(await prepareWakeFlow\?\.\(\)\) \?\? true;/);
   assert.match(mountSource, /stopHibernateDataListener\(\);/);
   assert.match(mountSource, /const pendingAtApplyStart = takePendingBuffer\(\);/);
+  assert.match(mountSource, /const latePending = takePendingBuffer\(\);/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
   // No multi-pass drain while the hibernate listener is live: that races the
   // 512 KiB pending cap and can drop ACKed bytes under sustained output.
   assert.doesNotMatch(mountSource, /for \(let drainPass = 0;/);
   assert.doesNotMatch(mountSource, /finalPendingDelta/);
 
-  const prepareIndex = mountSource.indexOf("await prepareWakeFlow?.();");
-  const stopDataIndex = mountSource.indexOf("stopHibernateDataListener();");
+  const prepareIndex = mountSource.indexOf("const drainOk = (await prepareWakeFlow?.()) ?? true;");
+  const disableCapIndex = mountSource.indexOf("setHibernatePendingCapDisabled?.(true);");
+  const stopDataBeforeReplay = mountSource.indexOf("if (drainOk) {\n      stopHibernateDataListener();");
   const pendingIndex = mountSource.indexOf("const pendingAtApplyStart = takePendingBuffer();");
   const applyIndex = mountSource.indexOf("await applyHibernateWakeToTerminal(");
   const shouldReattachIndex = mountSource.indexOf(
     "const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);",
   );
-  const stopAllIndex = mountSource.indexOf("stopHibernateListeners();", shouldReattachIndex - 80);
+  const latePendingIndex = mountSource.indexOf("const latePending = takePendingBuffer();");
+  const stopAllIndex = mountSource.indexOf("stopHibernateListeners();", shouldReattachIndex);
   const reattachIndex = mountSource.indexOf("reattachSession(term);", shouldReattachIndex);
   const resumeIndex = mountSource.indexOf("resumeWakeFlow?.();", shouldReattachIndex);
 
   assert.ok(prepareIndex >= 0, "wake must pause backend flow before history replay");
-  assert.ok(stopDataIndex > prepareIndex, "data listener stops only after flow pause drains");
-  assert.ok(pendingIndex > stopDataIndex, "pending take must run after data listener stops");
-  assert.ok(applyIndex > pendingIndex, "history replay follows the single pending capture");
+  assert.ok(
+    disableCapIndex > prepareIndex,
+    "drain failure must disable the pending cap before keeping the live listener",
+  );
+  assert.ok(stopDataBeforeReplay > prepareIndex, "successful drain stops the data listener before replay");
+  assert.ok(pendingIndex > stopDataBeforeReplay, "pending take must run after drain handling");
+  assert.ok(applyIndex > pendingIndex, "history replay follows the pending capture");
   assert.ok(
     shouldReattachIndex > applyIndex,
-    "reattach decision must observe exit status after replay",
+    "reattach decision must observe exit status after history replay",
   );
   assert.ok(
-    stopAllIndex > shouldReattachIndex,
-    "full hibernate listener teardown must wait until after the reattach decision",
+    latePendingIndex > shouldReattachIndex,
+    "late pending take must run after history replay to keep exit/live tails",
+  );
+  assert.ok(
+    stopAllIndex > latePendingIndex,
+    "full hibernate listener teardown must wait until after the late pending drain",
   );
   assert.ok(reattachIndex > stopAllIndex, "reattach runs after hibernate listeners are cleared");
   assert.ok(resumeIndex > reattachIndex, "flow resume must wait until after reattach");
@@ -83,7 +94,7 @@ test("hibernate wake pauses flow before replay and resumes only after reattach",
   );
   assert.match(
     terminalSource,
-    /setSessionFlowPausedAndWait\?\.\(backendId,\s*true\)/,
+    /setSessionFlowPausedAndWait\(backendId,\s*true\)/,
   );
   assert.match(
     terminalSource,
@@ -92,6 +103,14 @@ test("hibernate wake pauses flow before replay and resumes only after reattach",
   assert.match(
     terminalSource,
     /resumeWakeFlow:\s*\(\)\s*=>\s*\{[\s\S]*?setSessionFlowPaused\?\.\(backendId,\s*false\)/,
+  );
+  assert.match(
+    terminalSource,
+    /hibernatePendingCapDisabledRef\.current\s*\?\s*hibernatePendingBufferRef\.current \+ chunk/,
+  );
+  assert.match(
+    terminalSource,
+    /result\?\.success === true/,
   );
 });
 

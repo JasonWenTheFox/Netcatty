@@ -12,6 +12,7 @@ import {
   type XTermRuntime,
 } from "./runtime/createXTermRuntime";
 import {
+  appendTerminalReplayData,
   applyHibernateWakeToTerminal,
   nudgeAlternateScreenRedraw,
 } from "./terminalHibernateRuntime";
@@ -50,11 +51,12 @@ export type WakeTerminalFromHibernateOptions = {
   getPayload: () => TerminalHibernateWakePayload;
   /**
    * Pause backend output and wait for in-flight chunks to drain into the
-   * hibernate pending buffer before history replay. Prevents the 512 KiB
-   * pending cap and the 64 KiB preload backlog from dropping ACKed bytes
-   * during a long full-history wake (#2762).
+   * hibernate pending buffer before history replay. Returns true when the
+   * drain succeeded (safe to detach the data listener). Returns false when
+   * pause/drain was best-effort only — caller must keep a live uncapped
+   * pending listener through history replay (#2762).
    */
-  prepareWakeFlow?: () => Promise<void>;
+  prepareWakeFlow?: () => Promise<boolean>;
   /**
    * Atomically read and clear hibernate pending output after the data listener
    * has been stopped (and preferably after prepareWakeFlow).
@@ -62,6 +64,11 @@ export type WakeTerminalFromHibernateOptions = {
   takePendingBuffer: () => string;
   /** Stop only the hibernate data listener so pending stops growing. */
   stopHibernateDataListener: () => void;
+  /**
+   * When prepareWakeFlow returns false, disable the 512 KiB pending cap so
+   * ACKed bytes that arrive during history replay are not trimmed.
+   */
+  setHibernatePendingCapDisabled?: (disabled: boolean) => void;
   /**
    * Stop hibernate data+exit listeners and clear flow-ack state.
    * Must keep the backend paused until resumeWakeFlow runs after reattach.
@@ -95,6 +102,7 @@ export async function wakeTerminalFromHibernate(
     prepareWakeFlow,
     takePendingBuffer,
     stopHibernateDataListener,
+    setHibernatePendingCapDisabled,
     stopHibernateListeners,
     resumeWakeFlow,
     reattachSession,
@@ -148,12 +156,19 @@ export async function wakeTerminalFromHibernate(
   // buffer open (or leaving no display listener while flow is live) drops
   // ACKed bytes under sustained `cat` output (#2762).
   try {
-    await prepareWakeFlow?.();
-    stopHibernateDataListener();
+    const drainOk = (await prepareWakeFlow?.()) ?? true;
+    if (drainOk) {
+      stopHibernateDataListener();
+    } else {
+      // Drain timed out / unavailable: keep the hibernate data listener so
+      // in-flight ACKed bytes still land in pending, but disable the 512 KiB
+      // cap for the wake window so a busy `cat` cannot trim the front.
+      setHibernatePendingCapDisabled?.(true);
+    }
     const initialPayload = getPayload();
     const pendingAtApplyStart = takePendingBuffer();
     const replayOptions = { chunkBytes: replayChunkBytes };
-    const replayedPendingChars = pendingAtApplyStart.length;
+    let replayedPendingChars = pendingAtApplyStart.length;
 
     await applyHibernateWakeToTerminal(term, runtime, {
       ...initialPayload,
@@ -167,6 +182,18 @@ export async function wakeTerminalFromHibernate(
     // Exit listener stays alive through replay so a close during wake still
     // updates status before we decide whether to reattach.
     const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
+
+    // Stop the data listener before the late take. Captures:
+    // - exit "[session closed]" tails appended during history replay
+    // - uncapped live arrivals when drainOk was false
+    stopHibernateDataListener();
+    setHibernatePendingCapDisabled?.(false);
+    const latePending = takePendingBuffer();
+    if (latePending) {
+      await appendTerminalReplayData(term, latePending, replayOptions);
+      replayedPendingChars += latePending.length;
+    }
+
     stopHibernateListeners();
     if (shouldReattach) {
       reattachSession(term);
@@ -211,6 +238,7 @@ export async function wakeTerminalFromHibernate(
     });
     return true;
   } finally {
+    setHibernatePendingCapDisabled?.(false);
     // Resume only after the live display listener is installed (or after we
     // choose not to reattach / wake fails). Keeps the preload backlog from
     // absorbing a burst that would exceed its 64 KiB trim.

@@ -448,6 +448,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const hibernateContextViewportSnapshotRef = useRef("");
   const hibernateContextScrollbackSnapshotRef = useRef("");
   const hibernatePendingBufferRef = useRef("");
+  const hibernatePendingCapDisabledRef = useRef(false);
   const hibernateAlternateScreenRef = useRef(false);
   const hibernateRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fullHibernateRuntimeRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -1785,10 +1786,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       backendId,
       (chunk, meta) => {
         observeTerminalInputPrompt(chunk, meta);
-        hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
-          hibernatePendingBufferRef.current,
-          chunk,
-        );
+        hibernatePendingBufferRef.current = hibernatePendingCapDisabledRef.current
+          ? hibernatePendingBufferRef.current + chunk
+          : appendHibernatePendingBuffer(
+            hibernatePendingBufferRef.current,
+            chunk,
+          );
         const pluginPipelineIngressBytes = Number.isFinite(meta?.pluginPipelineIngressBytes)
           ? Math.max(0, Number(meta.pluginPipelineIngressBytes))
           : chunk.length;
@@ -1808,10 +1811,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         setError(evt.error);
       }
       const exitMessage = `\r\n[session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`;
-      hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
-        hibernatePendingBufferRef.current,
-        exitMessage,
-      );
+      hibernatePendingBufferRef.current = hibernatePendingCapDisabledRef.current
+        ? hibernatePendingBufferRef.current + exitMessage
+        : appendHibernatePendingBuffer(
+          hibernatePendingBufferRef.current,
+          exitMessage,
+        );
       onSessionExitRef.current?.(sessionId, evt);
       scheduleAutoReconnect({ evt });
     });
@@ -3711,13 +3716,20 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       container,
       getPayload,
       prepareWakeFlow: async () => {
-        if (!options.sessionConnected) return;
+        if (!options.sessionConnected) return true;
         const backendId = sessionRef.current;
-        if (!backendId) return;
+        if (!backendId) return true;
         // Drain in-flight output into the hibernate pending buffer while the
         // listener is still attached, then keep the backend paused through
-        // history replay and reattach.
-        await terminalBackend.setSessionFlowPausedAndWait?.(backendId, true);
+        // history replay and reattach. A failed drain still pauses the
+        // backend; the wake path keeps an uncapped pending listener until
+        // after history replay so ACKed bytes are not dropped.
+        if (terminalBackend.setSessionFlowPausedAndWait) {
+          const result = await terminalBackend.setSessionFlowPausedAndWait(backendId, true);
+          return result?.success === true;
+        }
+        terminalBackend.setSessionFlowPaused?.(backendId, true);
+        return false;
       },
       takePendingBuffer: () => {
         const pending = hibernatePendingBufferRef.current;
@@ -3725,8 +3737,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         return pending;
       },
       stopHibernateDataListener,
+      setHibernatePendingCapDisabled: (disabled) => {
+        hibernatePendingCapDisabledRef.current = disabled;
+      },
       stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
       resumeWakeFlow: () => {
+        hibernatePendingCapDisabledRef.current = false;
         const backendId = sessionRef.current;
         if (!backendId) return;
         terminalBackend.setSessionFlowPaused?.(backendId, false);
