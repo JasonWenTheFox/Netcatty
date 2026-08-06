@@ -1123,7 +1123,16 @@ export const useSftpExternalOperations = (
       } catch (error) {
         if (isSessionError(error) && ensureRemoteSftpId) {
           logger.warn("[SFTP] Upload session lost; reconnecting and retrying once", error);
-          return await run(true);
+          try {
+            return await run(true);
+          } catch (retryError) {
+            if (controller.isCancelled() || /cancel/i.test(retryError instanceof Error ? retryError.message : String(retryError))) {
+              scanningTask?.cancel();
+            } else if (scanningTask?.isOpen()) {
+              scanningTask.fail(retryError);
+            }
+            throw retryError;
+          }
         }
         if (scanningTask?.isOpen()) {
           if (controller.isCancelled()) scanningTask.cancel();
