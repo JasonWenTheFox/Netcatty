@@ -1290,100 +1290,124 @@ export const useSftpExternalOperations = (
         connectionCacheKeyMapRef.current,
       );
 
+      const initialUploadTargetPath = targetPath || originatingPane.connection.currentPath;
+      const controller = new UploadController();
+      const callbacks = bindUploadControllerCallbacks(
+        controller,
+        createUploadCallbacks(
+          originatingPane.connection.id,
+          initialUploadTargetPath,
+          originatingPane.connection.isLocal ? undefined : originatingPane.connection.hostId,
+          originatingPane.connection.isLocal
+            ? undefined
+            : connectionCacheKeyMapRef.current.get(originatingPane.connection.id),
+          originatingPane.connection.isLocal ? undefined : originatingPane.connection.hostLabel,
+        ),
+      );
+      const folderName = folderPath.replace(/\\/g, "/").split("/").filter(Boolean).pop()
+        || folderPath;
+      const scanningTask = startUploadScanningTask(callbacks, crypto.randomUUID(), {
+        label: folderName,
+      });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("netcatty:open-sftp-transfer-center"));
+      }
+      const scanAbort = new AbortController();
+      const detachScanCancel = controller.addCancelListener(() => {
+        scanAbort.abort();
+      });
+      let capturedEntries: DropEntry[] | null = null;
+
       const run = async (forceReconnect = false): Promise<UploadResult[]> => {
-        const pane = resolveUploadTargetPane({
-          side,
-          tabId: originatingTabId,
-          getActivePane,
-          getPaneByTabId,
-          getPaneByConnectionId,
-        });
-        assertUploadEndpointUnchanged(
-          pane.connection,
-          originatingEndpoint,
-          connectionCacheKeyMapRef.current,
-        );
-        const bridge = netcattyBridge.get();
-        if (!bridge) throw new Error("Bridge not available");
-        if (!bridge.listLocalTree) throw new Error("Folder upload not supported");
-
-        const { sftpId, release } = await resolveRemoteSftpId(side, {
-          forceReconnect,
-          connectionId: pane.connection.id,
-          tabId: originatingTabId,
-        });
-        // Never re-resolve via getActivePane after awaits — focus may have moved.
-        const livePane = resolveUploadTargetPane({
-          side,
-          tabId: originatingTabId,
-          getActivePane,
-          getPaneByTabId,
-          getPaneByConnectionId,
-        });
-        assertUploadEndpointUnchanged(
-          livePane.connection,
-          originatingEndpoint,
-          connectionCacheKeyMapRef.current,
-        );
-
-        const uploadPaneId = livePane.id;
-        const uploadTargetPath = targetPath || livePane.connection.currentPath;
-        const controller = new UploadController();
-
-        const callbacks = bindUploadControllerCallbacks(
-          controller,
-          createUploadCallbacks(
-            livePane.connection.id,
-            uploadTargetPath,
-            livePane.connection.isLocal ? undefined : livePane.connection.hostId,
-            livePane.connection.isLocal ? undefined : connectionCacheKeyMapRef.current.get(livePane.connection.id),
-            livePane.connection.isLocal ? undefined : livePane.connection.hostLabel,
-          ),
-        );
-        // Pin connect-time Host before listLocalTree: a slow folder scan can
-        // outlive a same-hostId tab rebind, and resolveUploadConnectHost would
-        // otherwise open the pooled stream bridge on the newly selected endpoint.
-        const uploadConnectHost = resolveUploadConnectHost(
-          uploadPaneId,
-          livePane.connection.isLocal,
-        );
-        const uploadBridge = createUploadBridge(uploadConnectHost);
-        const folderName = folderPath.replace(/\\/g, "/").split("/").filter(Boolean).pop()
-          || folderPath;
-        const scanningTask = startUploadScanningTask(callbacks, crypto.randomUUID(), {
-          label: folderName,
-        });
-        const transferCallbacks = {
-          ...callbacks,
-          onTaskCreated: (task: Parameters<NonNullable<UploadCallbacks["onTaskCreated"]>>[0]) => {
-            scanningTask.complete();
-            callbacks.onTaskCreated?.(task);
-          },
-        };
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("netcatty:open-sftp-transfer-center"));
+        if (controller.isCancelled()) {
+          scanningTask.cancel();
+          return [{ fileName: "", success: false, cancelled: true }];
         }
-
-        const scanAbort = new AbortController();
-        const detachScanCancel = controller.addCancelListener(() => {
-          scanAbort.abort();
-        });
-        let transferSucceeded = false;
+        let release = () => {};
         try {
-          const localEntries = await listLocalTreeWithAbort(bridge, folderPath, {
-            abortSignal: scanAbort.signal,
-            onProgress: (progress) => {
-              callbacks.onScanningProgress?.(scanningTask.taskId, {
-                ...progress,
-                label: folderName,
-              });
-            },
+          const pane = resolveUploadTargetPane({
+            side,
+            tabId: originatingTabId,
+            getActivePane,
+            getPaneByTabId,
+            getPaneByConnectionId,
           });
+          assertUploadEndpointUnchanged(
+            pane.connection,
+            originatingEndpoint,
+            connectionCacheKeyMapRef.current,
+          );
+          const bridge = netcattyBridge.get();
+          if (!bridge) throw new Error("Bridge not available");
+          if (!bridge.listLocalTree) throw new Error("Folder upload not supported");
+
+          const resolved = await resolveRemoteSftpId(side, {
+            forceReconnect,
+            connectionId: pane.connection.id,
+            tabId: originatingTabId,
+          });
+          const sftpId = resolved.sftpId;
+          release = resolved.release;
+          // Never re-resolve via getActivePane after awaits — focus may have moved.
+          const livePane = resolveUploadTargetPane({
+            side,
+            tabId: originatingTabId,
+            getActivePane,
+            getPaneByTabId,
+            getPaneByConnectionId,
+          });
+          assertUploadEndpointUnchanged(
+            livePane.connection,
+            originatingEndpoint,
+            connectionCacheKeyMapRef.current,
+          );
+
+          const uploadPaneId = livePane.id;
+          const uploadTargetPath = targetPath || livePane.connection.currentPath;
+          // Pin connect-time Host before listLocalTree: a slow folder scan can
+          // outlive a same-hostId tab rebind, and resolveUploadConnectHost would
+          // otherwise open the pooled stream bridge on the newly selected endpoint.
+          const uploadConnectHost = resolveUploadConnectHost(
+            uploadPaneId,
+            livePane.connection.isLocal,
+          );
+          const uploadBridge = createUploadBridge(uploadConnectHost);
+          const liveCallbacks = bindUploadControllerCallbacks(
+            controller,
+            createUploadCallbacks(
+              livePane.connection.id,
+              uploadTargetPath,
+              livePane.connection.isLocal ? undefined : livePane.connection.hostId,
+              livePane.connection.isLocal
+                ? undefined
+                : connectionCacheKeyMapRef.current.get(livePane.connection.id),
+              livePane.connection.isLocal ? undefined : livePane.connection.hostLabel,
+            ),
+          );
+          const transferCallbacks = {
+            ...liveCallbacks,
+            onTaskCreated: (task: Parameters<NonNullable<UploadCallbacks["onTaskCreated"]>>[0]) => {
+              scanningTask.complete();
+              liveCallbacks.onTaskCreated?.(task);
+            },
+          };
+
+          if (capturedEntries === null) {
+            const localEntries = await listLocalTreeWithAbort(bridge, folderPath, {
+              abortSignal: scanAbort.signal,
+              onProgress: (progress) => {
+                callbacks.onScanningProgress?.(scanningTask.taskId, {
+                  ...progress,
+                  label: folderName,
+                });
+              },
+            });
+            capturedEntries = localTreeToDropEntries(localEntries);
+          }
           if (controller.isCancelled()) {
             scanningTask.cancel();
             return [{ fileName: "", success: false, cancelled: true }];
           }
-          const entries: DropEntry[] = localTreeToDropEntries(localEntries);
 
           const results = await runWithCompressedUploadSession({
             enabled: useCompressedUpload,
@@ -1397,7 +1421,7 @@ export const useSftpExternalOperations = (
               : undefined,
             shouldDiscard: isSessionError,
             run: async (uploadSftpId) => uploadEntriesDirect(
-              entries,
+              capturedEntries,
               {
                 targetPath: uploadTargetPath,
                 sftpId: uploadSftpId,
@@ -1420,28 +1444,9 @@ export const useSftpExternalOperations = (
             const refreshSide = getSideByTabId?.(uploadPaneId) ?? side;
             await refresh(refreshSide, { tabId: uploadPaneId });
           }
-          transferSucceeded = true;
           return results;
-        } catch (error) {
-          if (
-            controller.isCancelled()
-            || /cancel/i.test(error instanceof Error ? error.message : String(error))
-          ) {
-            scanningTask.cancel();
-            return [{ fileName: "", success: false, cancelled: true }];
-          }
-          if (scanningTask.isOpen()) {
-            scanningTask.fail(error);
-          }
-          throw error;
         } finally {
-          detachScanCancel();
-          if (scanningTask.isOpen()) {
-            if (controller.isCancelled()) scanningTask.cancel();
-            else if (transferSucceeded) scanningTask.complete();
-          }
           release();
-          unregisterUploadController(controller);
         }
       };
 
@@ -1450,10 +1455,29 @@ export const useSftpExternalOperations = (
       } catch (error) {
         if (isSessionError(error) && ensureRemoteSftpId) {
           logger.warn("[SFTP] Folder upload session lost; reconnecting and retrying once", error);
-          return await run(true);
+          try {
+            return await run(true);
+          } catch (retryError) {
+            if (controller.isCancelled() || /cancel/i.test(retryError instanceof Error ? retryError.message : String(retryError))) {
+              scanningTask.cancel();
+              return [{ fileName: "", success: false, cancelled: true }];
+            }
+            if (scanningTask.isOpen()) scanningTask.fail(retryError);
+            throw retryError;
+          }
         }
+        if (controller.isCancelled() || /cancel/i.test(error instanceof Error ? error.message : String(error))) {
+          scanningTask.cancel();
+          return [{ fileName: "", success: false, cancelled: true }];
+        }
+        if (scanningTask.isOpen()) scanningTask.fail(error);
         logger.error("[SFTP] Folder picker upload failed:", error);
         throw error;
+      }
+      finally {
+        detachScanCancel();
+        unregisterUploadController(controller);
+        if (scanningTask.isOpen()) scanningTask.complete();
       }
     },
     [
