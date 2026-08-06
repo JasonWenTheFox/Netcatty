@@ -357,12 +357,41 @@ export function useSftpDirectoryTransferOps({
                     await new Promise((resolve) => setTimeout(resolve, 80));
                   }
                 })();
-                let result: { error?: string; cancelled?: boolean } | undefined;
+                let result: { error?: string; cancelled?: boolean; superseded?: boolean } | undefined;
                 try {
                   result = await transferPromise;
                 } finally {
                   watchPaused = false;
                   await pauseWatch.catch(() => {});
+                }
+                // Same-id retry stole ownership while OPEN was pending. The live
+                // owner still drives progress/completion events; this invoke must
+                // not mark the child completed or failed (Codex P2 on b17f64e9).
+                if (result?.superseded === true) {
+                  const deadline = Date.now() + 30 * 60 * 1000;
+                  for (;;) {
+                    if (
+                      cancelledTasksRef.current.has(task.id)
+                      || cancelledTasksRef.current.has(rootTaskId)
+                    ) {
+                      throw new Error("Transfer cancelled");
+                    }
+                    const latest = sftpTransferCenterStore.getTask(task.id)
+                      ?? transfersRef.current.find((candidate) => candidate.id === task.id);
+                    const status = latest?.status;
+                    if (status === "completed") break;
+                    if (status === "failed") {
+                      throw new Error(latest?.error || "Transfer failed");
+                    }
+                    if (status === "cancelled") {
+                      throw new Error("Transfer cancelled");
+                    }
+                    if (Date.now() > deadline) {
+                      throw new Error("Transfer superseded wait timed out");
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 200));
+                  }
+                  break;
                 }
                 if (result?.error || result?.cancelled) {
                   throw new Error(result.error || "Transfer cancelled");
