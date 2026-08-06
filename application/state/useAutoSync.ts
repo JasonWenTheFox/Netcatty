@@ -437,13 +437,14 @@ export const useAutoSync = (config: AutoSyncConfig) => {
 
       for (const result of resultList) {
         if (result.mergedPayload && !result.mergedPayloadApplied) {
-          await Promise.resolve(onApplyPayload(result.mergedPayload));
+          const portableMerged = stripSyncPayloadEncryptedCredentials(result.mergedPayload);
+          await Promise.resolve(onApplyPayload(portableMerged));
           if (result.remoteFile) {
-            await sync.commitRemoteInspection(result.provider, result.remoteFile, result.mergedPayload, {
+            await sync.commitRemoteInspection(result.provider, result.remoteFile, portableMerged, {
               recordDownload: true,
             });
           }
-          skipNextSyncHashRef.current = allProvidersSynced ? getSyncPayloadDataHash(result.mergedPayload) : null;
+          skipNextSyncHashRef.current = allProvidersSynced ? getSyncPayloadDataHash(portableMerged) : null;
           if (!allProvidersSynced) {
             console.warn('[AutoSync] Remote payload applied locally, but not every provider synced; leaving next auto-sync enabled for retry.');
           }
@@ -819,11 +820,10 @@ export const useAutoSync = (config: AutoSyncConfig) => {
 
       // Apply merged payload to local state BEFORE committing. If the apply
       // throws, the next startup will re-run the merge with fresh data.
-      await Promise.resolve(onApplyPayloadRef.current(mergeResult.payload));
-      // Base is the last-agreed remote snapshot; `commitRemoteInspection`
-      // stores remotePayload as the base so the next diff is computed
-      // against what the cloud actually has, not against the merged
-      // local-only state.
+      const portableMerge = stripSyncPayloadEncryptedCredentials(mergeResult.payload);
+      await Promise.resolve(onApplyPayloadRef.current(portableMerge));
+      // Base is the last-agreed remote snapshot; store the portable remote
+      // view so future diffs never treat device-bound enc:v1 as cloud truth.
       await manager.commitRemoteInspection(connectedProvider, remoteFile, remotePayload);
       startupConsistent = true;
       markCurrentDataSynced = false;
@@ -844,7 +844,6 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       // that only approximated the correct ordering.
       if (mergeResult.payload) {
         try {
-          const portableMerge = stripSyncPayloadEncryptedCredentials(mergeResult.payload);
           const roundTripResults = await manager.syncAllProviders(portableMerge);
           const roundTripResultList = Array.from(roundTripResults.values());
           commitPluginSidecarsAfterSuccessfulSync(portableMerge, roundTripResultList);

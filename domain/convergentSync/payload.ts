@@ -4,6 +4,7 @@ import type {
   SyncPayload,
   SyncReliabilityMeta,
 } from '../sync';
+import { stripSyncPayloadEncryptedCredentials } from '../credentials';
 import { dotKey } from './clock';
 import {
   cloneJson,
@@ -215,7 +216,7 @@ export function materializeSyncPayloadFromConvergentState(
   const settings = Object.keys(materialized.settings).length > 0
     ? materialized.settings as unknown as NonNullable<SyncPayload['settings']>
     : undefined;
-  return {
+  return stripSyncPayloadEncryptedCredentials({
     hosts: typedCollection<import('../models').Host>(materialized.collections, 'hosts'),
     keys: typedCollection<import('../models').SSHKey>(materialized.collections, 'keys'),
     identities: typedCollection<import('../models').Identity>(materialized.collections, 'identities'),
@@ -241,7 +242,7 @@ export function materializeSyncPayloadFromConvergentState(
         },
       }
       : {}),
-  };
+  });
 }
 
 function materializedEntity(
