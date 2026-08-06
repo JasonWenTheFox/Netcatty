@@ -2255,13 +2255,16 @@ function registerHandlers(ipcMain, options = {}) {
       "netcatty:telnet:getEchoMode",
     ].forEach((channel) => registerWorkerHandle(ipcMain, terminalWorkerManager, channel));
     ipcMain.handle("netcatty:close:await", async (event, payload) => {
-      try {
-        return await terminalWorkerManager.request("netcatty:close:await", payload, {
-          webContentsId: event?.sender?.id,
-        });
-      } finally {
+      const result = await terminalWorkerManager.request("netcatty:close:await", payload, {
+        webContentsId: event?.sender?.id,
+      });
+      // A skipped epoch-mismatch close must not drop the replacement's
+      // flow-pause lease; only clear after the owned epoch was closed (or the
+      // session was already gone / returned without skipped).
+      if (!result?.skipped) {
         terminalFlowPauseArbiter.clearSession(payload?.sessionId);
       }
+      return result;
     });
     ipcMain.on("netcatty:write", (event, payload) => {
       // Session log streams started in the main process (manual/script logs)
@@ -2299,7 +2302,12 @@ function registerHandlers(ipcMain, options = {}) {
       terminalWorkerManager.send("netcatty:close", payload, {
         webContentsId: event?.sender?.id,
       });
-      terminalFlowPauseArbiter.clearSession(payload?.sessionId);
+      // Epoch-scoped closes may be no-ops in the worker; clearing here would
+      // orphan the replacement's pause lease. Unscoped closes still clear
+      // eagerly; owned closes also clear via onSessionClosed.
+      if (!Number.isFinite(payload?.bootEpoch)) {
+        terminalFlowPauseArbiter.clearSession(payload?.sessionId);
+      }
     });
     return;
   }
