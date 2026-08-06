@@ -1943,6 +1943,13 @@ async function uploadFile(
       let fastPutSourcePath = localPath;
       let fastPutSnapshotPath = null;
       try {
+        // Wait for any prior/in-flight write OPEN on this path (including our
+        // own concurrent attempt's still-pending OPEN) before fastPut truncates
+        // the same stage (Codex P1 on 7872a304).
+        if (typeof transfer.pendingWriteOpenPathGate?.then === "function") {
+          await transfer.pendingWriteOpenPathGate;
+        }
+        if (transfer.cancelled) throw new Error("Transfer cancelled");
         transfer.uploadStrategy = "fastPut-isolated";
         logTransferDiag(transfer, "strategy", { strategy: "fastPut-isolated" });
         transfer.pauseSupported = false;
@@ -2125,6 +2132,21 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
   const pathGate = isWriteOpen
     ? beginTruncatingSharedWriteOpen(filePath, sharedWriteOpenSessionKey(sftp, transfer))
     : null;
+  // Expose a promise that resolves when this OPEN's path gate is released so
+  // same-transfer fallbacks (fastPut) can wait instead of racing a still-
+  // pending truncating OPEN (Codex P1 on 7872a304).
+  if (pathGate && transfer && typeof transfer === "object") {
+    let resolvePathGate;
+    const pending = new Promise((resolve) => { resolvePathGate = resolve; });
+    transfer.pendingWriteOpenPathGate = pending;
+    transfer._resolvePendingWriteOpenPathGate = () => {
+      try { resolvePathGate(); } catch { /* ignore */ }
+      if (transfer.pendingWriteOpenPathGate === pending) {
+        transfer.pendingWriteOpenPathGate = null;
+      }
+      transfer._resolvePendingWriteOpenPathGate = null;
+    };
+  }
   // Re-check ownership at unlink time: a same-id retry may already own
   // activeTransfers. Only suppress unlink when the retry's *actual* staged
   // remote path matches this OPEN path. Do not infer ownership from
@@ -2223,6 +2245,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       if (!pathGate || pathGateReleased) return;
       pathGateReleased = true;
       pathGate.release();
+      try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
     };
 
     const clearDrainForceTimer = () => {
@@ -2538,8 +2561,14 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       // same-path attempts with no barrier while the prior OPEN is still in
       // flight (stale truncating OPEN race). Chain our release to the prior.
       pathGate.waitForPrior.then(
-        () => pathGate.release(),
-        () => pathGate.release(),
+        () => {
+          pathGate.release();
+          try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
+        },
+        () => {
+          pathGate.release();
+          try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
+        },
       );
       if (resolveSharedWriteDrain) {
         const resolveDrain = resolveSharedWriteDrain;
