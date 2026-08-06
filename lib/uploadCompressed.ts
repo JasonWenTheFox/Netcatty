@@ -123,7 +123,8 @@ export async function uploadFoldersCompressed(
       
       // Create a task for this folder compression
       // Path-only drop entries (listLocalTree) carry size without a File handle.
-      const totalBytes = entries.reduce((sum, entry) => sum + getDropEntrySize(entry), 0);
+      const fileEntries = entries.filter((entry) => !entry.isDirectory);
+      const totalBytes = fileEntries.reduce((sum, entry) => sum + getDropEntrySize(entry), 0);
       taskId = compressionId;
       
       if (callbacks?.onTaskCreated) {
@@ -136,7 +137,7 @@ export async function uploadFoldersCompressed(
           totalBytes,
           transferredBytes: 0,
           speed: 0,
-          fileCount: entries.length,
+          fileCount: fileEntries.length,
           completedCount: 0,
           sourcePath: folderPath,
           controlKind: 'compressed-upload',

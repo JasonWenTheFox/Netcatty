@@ -151,8 +151,8 @@ declare global {
           directoryCount: number;
           entryCount: number;
         }) => void;
-        /** Abort an in-flight native tree walk (main-process cooperative cancel). */
-        abortSignal?: AbortSignal;
+        /** Renderer-generated ID used by cancelLocalTreeScan. */
+        scanId?: string;
         limits?: {
           maxDirectories?: number;
           maxEntries?: number;
@@ -164,7 +164,8 @@ declare global {
       type: 'file' | 'directory';
       size: number;
       lastModified: number;
-    }>>;
+      }>>;
+    cancelLocalTreeScan?(scanId: string): Promise<void>;
     getHomeDir?(): Promise<string>;
     listDrives?(): Promise<string[]>;
     getSystemInfo?(): Promise<{ username: string; hostname: string }>;

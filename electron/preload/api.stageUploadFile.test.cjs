@@ -106,3 +106,37 @@ test("failed upload path allocation releases the staging controller", async () =
   await assert.rejects(api.stageUploadFile(createFile("file.bin", [[1]]), "failed-path"), /path unavailable/);
   assert.deepEqual(await api.cancelStagedUploadFile("failed-path"), { success: false });
 });
+
+test("native tree scans use a bridge-safe cancellation id", async () => {
+  const sent = [];
+  const invoked = [];
+  const api = createPreloadApi({
+    webUtils: {},
+    ipcRenderer: {
+      on() {},
+      removeListener() {},
+      send(...args) { sent.push(args); },
+      async invoke(channel, payload) {
+        invoked.push({ channel, payload });
+        return [];
+      },
+    },
+  });
+
+  await api.listLocalTree("/tmp/project", {
+    scanId: "scan-123",
+    onProgress: () => {},
+  });
+  await api.cancelLocalTreeScan("scan-123");
+
+  assert.deepEqual(invoked, [{
+    channel: "netcatty:local:tree",
+    payload: {
+      path: "/tmp/project",
+      progressChannel: "netcatty:local:tree-progress:scan-123",
+      cancelChannel: "netcatty:local:tree-cancel:scan-123",
+      limits: undefined,
+    },
+  }]);
+  assert.deepEqual(sent, [["netcatty:local:tree-cancel:scan-123"]]);
+});

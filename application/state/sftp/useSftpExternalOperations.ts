@@ -21,10 +21,38 @@ import {
   localTreeToDropEntries,
   materializeDropEntries,
   type DropEntry,
+  type LocalTreeListEntry,
 } from "../../../lib/sftpFileUtils";
 
 // Re-export UploadResult for external usage
 export type { UploadResult };
+
+type LocalTreeScanOptions = {
+  onProgress?: (progress: { fileCount: number; directoryCount: number; entryCount: number }) => void;
+  abortSignal?: AbortSignal;
+};
+
+async function listLocalTreeWithAbort(
+  bridge: NetcattyBridge,
+  localPath: string,
+  options: LocalTreeScanOptions = {},
+): Promise<LocalTreeListEntry[]> {
+  const scanId = `drop-scan-${crypto.randomUUID()}`;
+  const abortSignal = options.abortSignal;
+  const requestCancel = () => {
+    void bridge.cancelLocalTreeScan?.(scanId);
+  };
+  if (abortSignal?.aborted) {
+    throw new Error("Drop scan cancelled");
+  }
+  abortSignal?.addEventListener("abort", requestCancel, { once: true });
+  const { abortSignal: _abortSignal, ...bridgeOptions } = options;
+  try {
+    return await bridge.listLocalTree!(localPath, { ...bridgeOptions, scanId });
+  } finally {
+    abortSignal?.removeEventListener("abort", requestCancel);
+  }
+}
 
 import type { UseSftpExternalOperationsParams, SftpExternalOperationsResult } from "./useSftpExternalOperations.types";
 import { getSftpTransferResourceKeys, globalSftpTransferScheduler } from "./globalTransferScheduler";
@@ -949,7 +977,7 @@ export const useSftpExternalOperations = (
           abortSignal: scanAbort.signal,
           isCancelled: () => controller.isCancelled(),
           listLocalTree: bridge.listLocalTree
-            ? (localPath, treeOptions) => bridge.listLocalTree!(localPath, {
+            ? (localPath, treeOptions) => listLocalTreeWithAbort(bridge, localPath, {
               ...treeOptions,
               abortSignal: scanAbort.signal,
             })
@@ -1322,7 +1350,7 @@ export const useSftpExternalOperations = (
           scanAbort.abort();
         });
         try {
-          const localEntries = await bridge.listLocalTree(folderPath, {
+          const localEntries = await listLocalTreeWithAbort(bridge, folderPath, {
             abortSignal: scanAbort.signal,
             onProgress: (progress) => {
               callbacks.onScanningProgress?.(scanningTask.taskId, {

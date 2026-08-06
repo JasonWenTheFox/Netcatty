@@ -878,14 +878,13 @@ function createPreloadApi(ctx) {
   },
   listLocalTree: async (path, options = {}) => {
     const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
-    const abortSignal = options?.abortSignal;
-    const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const token = typeof options?.scanId === "string" && options.scanId
+      ? options.scanId
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const progressChannel = onProgress
       ? `netcatty:local:tree-progress:${token}`
       : undefined;
-    const cancelChannel = abortSignal
-      ? `netcatty:local:tree-cancel:${token}`
-      : undefined;
+    const cancelChannel = `netcatty:local:tree-cancel:${token}`;
     const handler = onProgress && progressChannel
       ? (_event, stats) => {
         try {
@@ -898,13 +897,6 @@ function createPreloadApi(ctx) {
     if (handler && progressChannel) {
       ipcRenderer.on(progressChannel, handler);
     }
-    const requestCancel = () => {
-      if (cancelChannel) ipcRenderer.send(cancelChannel);
-    };
-    if (abortSignal) {
-      if (abortSignal.aborted) requestCancel();
-      else abortSignal.addEventListener("abort", requestCancel, { once: true });
-    }
     try {
       return await ipcRenderer.invoke("netcatty:local:tree", {
         path,
@@ -913,12 +905,14 @@ function createPreloadApi(ctx) {
         limits: options?.limits,
       });
     } finally {
-      if (abortSignal) {
-        abortSignal.removeEventListener("abort", requestCancel);
-      }
       if (handler && progressChannel) {
         ipcRenderer.removeListener(progressChannel, handler);
       }
+    }
+  },
+  cancelLocalTreeScan: async (scanId) => {
+    if (typeof scanId === "string" && scanId) {
+      ipcRenderer.send(`netcatty:local:tree-cancel:${scanId}`);
     }
   },
   getHomeDir: async () => {
