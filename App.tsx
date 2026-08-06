@@ -827,12 +827,14 @@ function App({ settings }: { settings: SettingsState }) {
     const unsubscribe = bridge.onPassphraseRequest(async (request) => {
       console.log('[App] Passphrase request received:', request);
 
+      const isRequestCurrent = () => (
+        typeof request.sessionId !== "string"
+        || isTerminalBootEpochCurrent(request.sessionId, request.bootEpoch)
+      );
+
       // Disconnect/reconnect may leave a late passphrase prompt for a
       // superseded boot; reject epoch-tagged requests that are no longer current.
-      if (
-        typeof request.sessionId === "string"
-        && !isTerminalBootEpochCurrent(request.sessionId, request.bootEpoch)
-      ) {
+      if (!isRequestCurrent()) {
         void bridge.respondPassphrase?.(request.requestId, "", true);
         return;
       }
@@ -843,6 +845,10 @@ function App({ settings }: { settings: SettingsState }) {
         const currentKeys = keysRef.current;
         const refKey = currentKeys.find((k: SSHKey) => k.source === 'reference' && k.filePath === request.keyPath);
         if (refKey?.passphrase && refKey.savePassphrase !== false && !isEncryptedCredentialPlaceholder(refKey.passphrase)) {
+          if (!isRequestCurrent()) {
+            void bridge.respondPassphrase?.(request.requestId, "", true);
+            return;
+          }
           console.log('[App] Auto-responding with reference key passphrase for:', request.keyPath);
           void bridge.respondPassphrase?.(request.requestId, refKey.passphrase, false);
           return;
@@ -850,6 +856,10 @@ function App({ settings }: { settings: SettingsState }) {
 
         // Fallback: try old storage for passphrase
         const saved = await loadDefaultKeyPassphrase(request.keyPath);
+        if (!isRequestCurrent()) {
+          void bridge.respondPassphrase?.(request.requestId, "", true);
+          return;
+        }
         if (saved) {
           console.log('[App] Auto-responding with saved passphrase for:', request.keyPath);
           // Migrate to reference key if one exists
@@ -867,10 +877,19 @@ function App({ settings }: { settings: SettingsState }) {
             } catch (err) {
               console.warn('[App] Failed to migrate passphrase to reference key:', err);
             }
+            if (!isRequestCurrent()) {
+              void bridge.respondPassphrase?.(request.requestId, "", true);
+              return;
+            }
           }
           void bridge.respondPassphrase?.(request.requestId, saved, false);
           return;
         }
+      }
+
+      if (!isRequestCurrent()) {
+        void bridge.respondPassphrase?.(request.requestId, "", true);
+        return;
       }
 
       // No saved passphrase or it was invalid, show modal

@@ -1940,6 +1940,7 @@ function closeSession(event, payload) {
   passphraseHandler.cancelPassphraseRequestsForSession?.(
     payload.sessionId,
     "session-closed",
+    payload?.bootEpoch,
   );
   if (session && !sessionMatchesBootEpoch(session, payload?.bootEpoch)) {
     return { skipped: true, reason: "boot-epoch-mismatch" };

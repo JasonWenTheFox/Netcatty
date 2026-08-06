@@ -73,11 +73,20 @@ function cancelPassphraseRequest(requestId, reason = "cancelled") {
   return cancelled;
 }
 
-function cancelPassphraseRequestsForSession(sessionId, reason = "session-closed") {
+function cancelPassphraseRequestsForSession(sessionId, reason = "session-closed", bootEpoch) {
   if (!sessionId) return 0;
+  const requestedEpoch = Number.isFinite(bootEpoch) ? Number(bootEpoch) : undefined;
   let cancelled = 0;
   for (const [requestId, pending] of [...passphraseRequests.entries()]) {
     if (pending.sessionId !== sessionId) continue;
+    // A stale close for an older boot must not cancel a newer reconnect's prompt.
+    if (
+      requestedEpoch !== undefined
+      && Number.isFinite(pending.bootEpoch)
+      && pending.bootEpoch > requestedEpoch
+    ) {
+      continue;
+    }
     if (cancelPassphraseRequest(requestId, reason)) cancelled += 1;
   }
   return cancelled;

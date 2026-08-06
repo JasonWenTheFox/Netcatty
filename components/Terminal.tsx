@@ -458,6 +458,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const wakePromiseRef = useRef<Promise<boolean> | null>(null);
   const sessionRef = useRef<string | null>(null);
   const sessionCleanupPromiseRef = useRef<Promise<void> | null>(null);
+  /** Epoch owned by an in-flight disconnect/teardown close (before bump). */
+  const pendingCloseBootEpochRef = useRef<number | undefined>(undefined);
   const trackSessionCleanup = (promise: Promise<unknown>) => {
     const settled = Promise.resolve(promise).then(
       () => undefined,
@@ -482,6 +484,21 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const bumpBootEpoch = () => {
     bootEpochRef.current += 1;
     publishBootEpoch();
+  };
+  /** Invalidate the current boot and remember its epoch for the matching closeSession. */
+  const invalidateBootEpochForClose = () => {
+    const closingEpoch = bootEpochRef.current;
+    bumpBootEpoch();
+    pendingCloseBootEpochRef.current = closingEpoch;
+    return closingEpoch;
+  };
+  const resolveCloseBootEpoch = () => {
+    if (pendingCloseBootEpochRef.current !== undefined) {
+      const epoch = pendingCloseBootEpochRef.current;
+      pendingCloseBootEpochRef.current = undefined;
+      return epoch;
+    }
+    return bootEpochRef.current;
   };
   const hasConnectedRef = useRef(false);
   const hasRunStartupCommandRef = useRef(false);
@@ -1579,7 +1596,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       // Still notify main so in-flight SSH passphrase prompts for this UI
       // sessionId are aborted even before a backend session was attached.
       try {
-        await terminalBackend.closeSession(sessionId, { bootEpoch: bootEpochRef.current });
+        await terminalBackend.closeSession(sessionId, { bootEpoch: resolveCloseBootEpoch() });
       } catch (err) {
         logger.warn("Failed to cancel pending session boot on disconnect", err);
       }
@@ -1688,7 +1705,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         clearTerminalSessionFlowAck(closingSessionId);
       }
       try {
-        await terminalBackend.closeSession(closingSessionId, { bootEpoch: bootEpochRef.current });
+        await terminalBackend.closeSession(closingSessionId, { bootEpoch: resolveCloseBootEpoch() });
       } catch (err) {
         logger.warn("Failed to close SSH session", err);
       }
@@ -2112,9 +2129,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   }, [sessionId]);
 
   const teardown = () => {
-    bootEpochRef.current += 1;
-    // Unmount teardown must not republish into the process-wide map after the
-    // effect cleanup already cleared this sessionId (would leak forever).
+    // Capture the live epoch before invalidating so closeSession still matches
+    // the registered backend session / pending passphrase boot.
+    invalidateBootEpochForClose();
     clearTerminalBootEpoch(sessionId);
     isBootActiveRef.current = false;
     retryTokenRef.current = null;
@@ -3166,8 +3183,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     // Cancel closes the tab (effect cleanup flips boot-active). Disconnect keeps
     // the pane mounted, so mark boot inactive here or a late startSSH/startMosh
     // attach can still bring the session back after the user asked to stop.
-    // Bump the epoch so a later reconnect cannot revive this aborted attempt.
-    bumpBootEpoch();
+    // Bump the epoch so a later reconnect cannot revive this aborted attempt,
+    // but closeSession must still target the pre-bump epoch.
+    invalidateBootEpochForClose();
     isBootActiveRef.current = false;
     setIsCancelling(true);
     auth.setNeedsAuth(false);
