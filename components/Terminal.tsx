@@ -3107,6 +3107,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     retryTokenRef.current = null;
     reconnectPreparationTokenRef.current = null;
     restoreCwdIntentRef.current = null;
+    // Cancel closes the tab (effect cleanup flips boot-active). Disconnect keeps
+    // the pane mounted, so mark boot inactive here or a late startSSH/startMosh
+    // attach can still bring the session back after the user asked to stop.
+    isBootActiveRef.current = false;
+    setIsCancelling(true);
     auth.setNeedsAuth(false);
     auth.setAuthRetryMessage(null);
     setNeedsHostKeyVerification(false);
@@ -3118,6 +3123,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     updateStatus("disconnected");
     setChainProgress(null);
     setIsDisconnectedDialogDismissed(false);
+    setTimeout(() => setIsCancelling(false), 600);
   };
 
   const handleDismissDisconnectedDialog = () => {

@@ -387,6 +387,8 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.notEqual(disconnectEnd, -1);
   const body = source.slice(disconnectStart, disconnectEnd);
   assert.match(body, /clearAutoReconnect\(\{ stopLoop: true \}\)/);
+  assert.match(body, /isBootActiveRef\.current = false/);
+  assert.match(body, /setIsCancelling\(true\)/);
   assert.match(body, /updateStatus\("disconnected"\)/);
   assert.match(body, /void cleanupSession\(\)/);
   assert.doesNotMatch(body, /onCloseSession/);
