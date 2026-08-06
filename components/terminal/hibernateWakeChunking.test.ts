@@ -34,15 +34,28 @@ test("hibernate wake consumes pending via take-and-clear so capped arrivals are 
   const terminalSource = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
 
   assert.match(mountSource, /takePendingBuffer: \(\) => string/);
+  assert.match(mountSource, /stopHibernateDataListener: \(\) => void/);
   assert.match(mountSource, /const pendingAtApplyStart = takePendingBuffer\(\);/);
   assert.match(mountSource, /const pendingDelta = takePendingBuffer\(\);/);
   assert.match(mountSource, /const finalPendingDelta = takePendingBuffer\(\);/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
 
-  const stopListenersIndex = mountSource.indexOf("stopHibernateListeners();");
+  const stopDataIndex = mountSource.indexOf("stopHibernateDataListener();");
   const finalPendingIndex = mountSource.indexOf("const finalPendingDelta = takePendingBuffer();");
-  assert.ok(stopListenersIndex >= 0, "wake must stop hibernate listeners");
-  assert.ok(finalPendingIndex > stopListenersIndex, "final pending take must run after listeners stop");
+  const shouldReattachIndex = mountSource.indexOf(
+    "const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);",
+  );
+  const stopAllIndex = mountSource.indexOf("stopHibernateListeners();", shouldReattachIndex - 80);
+  assert.ok(stopDataIndex >= 0, "wake must stop the hibernate data listener before final drain");
+  assert.ok(finalPendingIndex > stopDataIndex, "final pending take must run after data listener stops");
+  assert.ok(
+    shouldReattachIndex > finalPendingIndex,
+    "reattach decision must observe exit status after final replay",
+  );
+  assert.ok(
+    stopAllIndex > shouldReattachIndex,
+    "full hibernate listener teardown must wait until after the reattach decision",
+  );
 
   assert.match(
     terminalSource,

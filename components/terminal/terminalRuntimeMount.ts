@@ -55,7 +55,9 @@ export type WakeTerminalFromHibernateOptions = {
    * slicing misses bytes when capHibernateBuffer trims the front during wake.
    */
   takePendingBuffer: () => string;
-  /** Stop hibernate IPC listeners before reading the final replay payload. */
+  /** Stop only the hibernate data listener so pending stops growing. */
+  stopHibernateDataListener: () => void;
+  /** Stop hibernate data+exit listeners and release flow pause state. */
   stopHibernateListeners: () => void;
   reattachSession: (term: XTerm) => void;
   safeFit: (options?: { force?: boolean; requireVisible?: boolean }) => void;
@@ -81,6 +83,7 @@ export async function wakeTerminalFromHibernate(
     container,
     getPayload,
     takePendingBuffer,
+    stopHibernateDataListener,
     stopHibernateListeners,
     reattachSession,
     safeFit,
@@ -151,10 +154,10 @@ export async function wakeTerminalFromHibernate(
     replayedPendingChars += pendingDelta.length;
   }
 
-  // Stop hibernate IPC first so no further bytes land in the pending ref, then
-  // take any remainder once. Awaiting a final write while listeners are still
-  // live can lose already-acked chunks that arrive during that write.
-  stopHibernateListeners();
+  // Stop only the data listener so pending stops growing, but keep the exit
+  // listener alive through the final replay. An exit during that await must
+  // still update session status before we decide whether to reattach.
+  stopHibernateDataListener();
   const finalPendingDelta = takePendingBuffer();
   if (finalPendingDelta) {
     await appendTerminalReplayData(term, finalPendingDelta, replayOptions);
@@ -162,6 +165,7 @@ export async function wakeTerminalFromHibernate(
   }
 
   const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
+  stopHibernateListeners();
   if (shouldReattach) {
     reattachSession(term);
     updateStatus("connected");

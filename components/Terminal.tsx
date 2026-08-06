@@ -3686,10 +3686,14 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     wakeInProgressRef.current = true;
     setPasswordPickerState(null);
 
-    const stopHibernateListeners = () => {
-      const backendId = sessionRef.current;
+    const stopHibernateDataListener = () => {
       disposeDataRef.current?.();
       disposeDataRef.current = null;
+    };
+
+    const stopHibernateListeners = () => {
+      const backendId = sessionRef.current;
+      stopHibernateDataListener();
       disposeExitRef.current?.();
       disposeExitRef.current = null;
       if (backendId) {
@@ -3709,6 +3713,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         hibernatePendingBufferRef.current = "";
         return pending;
       },
+      stopHibernateDataListener,
       stopHibernateListeners,
       sessionConnected: options.sessionConnected,
       getSessionConnected: () => getSessionConnectedRef.current(),
