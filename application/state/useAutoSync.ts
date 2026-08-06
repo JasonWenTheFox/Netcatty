@@ -14,6 +14,7 @@ import { getCloudSyncManager } from '../../infrastructure/services/CloudSyncMana
 import { netcattyBridge } from '../../infrastructure/services/netcattyBridge';
 import {
   findSyncPayloadEncryptedCredentialPaths,
+  healPoisonedRemoteSecretsForMerge,
   stripSyncPayloadEncryptedCredentials,
 } from '../../domain/credentials';
 import { isProviderReadyForSync, type CloudProvider, type SyncPayload } from '../../domain/sync';
@@ -708,9 +709,11 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       inspectedRemoteChange = true;
 
       const remoteFile = inspection.remoteFile;
-      // Strip any device-bound enc:v1 blobs before apply/round-trip so a
-      // previously poisoned cloud snapshot cannot be re-uploaded (#2702).
-      const remotePayload = stripSyncPayloadEncryptedCredentials(inspection.payload);
+      const remoteRaw = inspection.payload;
+      // Strip device-bound enc:v1 for download/apply paths so poisoned cloud
+      // snapshots restore usable host shells. Smart-merge heals from local/base
+      // separately below so good secrets are not treated as remote deletions.
+      const remotePayload = stripSyncPayloadEncryptedCredentials(remoteRaw);
       const localPayload = await buildPayloadRef.current();
 
       // If local vault is empty but cloud has data, this almost certainly
@@ -808,7 +811,11 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         throw new Error('Startup local-wins sync failed for one or more providers');
       }
 
-      const mergeResult = mergeSyncPayloads(base, localPayload, remotePayload);
+      const mergeResult = mergeSyncPayloads(
+        base,
+        localPayload,
+        healPoisonedRemoteSecretsForMerge(remoteRaw, localPayload, base),
+      );
 
       // Apply merged payload to local state BEFORE committing. If the apply
       // throws, the next startup will re-run the merge with fresh data.
@@ -837,19 +844,10 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       // that only approximated the correct ordering.
       if (mergeResult.payload) {
         try {
-          const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(mergeResult.payload);
-          if (encryptedCredentialPaths.length > 0) {
-            console.warn(
-              '[AutoSync] Startup merge round-trip blocked: encrypted credential placeholders found at:',
-              encryptedCredentialPaths.join(', '),
-            );
-            // Local merge is already applied; refuse only the cloud push so we
-            // never upload device-bound enc:v1 ciphertext (#2702).
-            throw new Error(tRef.current('sync.credentialsUnavailable'));
-          }
-          const roundTripResults = await manager.syncAllProviders(mergeResult.payload);
+          const portableMerge = stripSyncPayloadEncryptedCredentials(mergeResult.payload);
+          const roundTripResults = await manager.syncAllProviders(portableMerge);
           const roundTripResultList = Array.from(roundTripResults.values());
-          commitPluginSidecarsAfterSuccessfulSync(mergeResult.payload, roundTripResultList);
+          commitPluginSidecarsAfterSuccessfulSync(portableMerge, roundTripResultList);
           const wasShrinkBlocked = roundTripResultList.some((r) => r.shrinkBlocked === true);
           const roundTripFullySynced = roundTripResultList.length > 0
             && roundTripResultList.every((result) => result.success);

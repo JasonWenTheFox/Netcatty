@@ -8,7 +8,7 @@ import {
 } from "./credentials.ts";
 import type { SyncPayload } from "./sync.ts";
 
-const completeBlob = Buffer.alloc(31, 0);
+const completeBlob = Buffer.alloc(19, 0);
 Buffer.from("v10", "utf8").copy(completeBlob, 0);
 const ENC = `enc:v1:${completeBlob.toString("base64")}`;
 

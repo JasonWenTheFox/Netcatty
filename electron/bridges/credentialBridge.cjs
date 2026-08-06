@@ -20,8 +20,11 @@ const ENC_PREFIX = "enc:v1:";
  * - macOS/Linux: plaintext bytes start with "v10" or "v11"
  * - Windows (legacy DPAPI blob): leading bytes are 0x01 0x00 0x00 0x00
  *
- * AES-GCM blobs are at least prefix(3) + nonce(12) + tag(16) = 31 bytes.
  * Keep in sync with domain/credentials.ts.
+ *
+ * v10/v11 CBC blobs are at least header(3) + one AES block(16) = 19 bytes.
+ * AES-GCM blobs are larger (nonce+tag), but CBC is the lower bound we must
+ * accept so short credentials are not mistaken for plaintext coincidences.
  */
 const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
   "djEw", // "v10"
@@ -29,12 +32,17 @@ const SAFE_STORAGE_BASE64_HEADER_PREFIXES = [
   "AQAAAA", // 0x01 0x00 0x00 0x00 (DPAPI blob header)
 ];
 
-/** Minimum decoded ciphertext size for a complete Chromium AES-GCM blob. */
-const MIN_SAFE_STORAGE_CIPHERTEXT_BYTES = 31;
+const MIN_V10_V11_CIPHERTEXT_BYTES = 19;
+const MIN_DPAPI_CIPHERTEXT_BYTES = 20;
 
 const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
 
 let safeStorage = null;
+
+function minimumCiphertextBytesForPayload(payload) {
+  if (payload.startsWith("AQAAAA")) return MIN_DPAPI_CIPHERTEXT_BYTES;
+  return MIN_V10_V11_CIPHERTEXT_BYTES;
+}
 
 function looksLikeEncryptedCredential(value) {
   if (typeof value !== "string" || !value.startsWith(ENC_PREFIX)) {
@@ -47,7 +55,7 @@ function looksLikeEncryptedCredential(value) {
   }
   // Reject header-only / truncated base64 that is not a full platform blob.
   const decoded = Buffer.from(payload, "base64");
-  return decoded.byteLength >= MIN_SAFE_STORAGE_CIPHERTEXT_BYTES;
+  return decoded.byteLength >= minimumCiphertextBytesForPayload(payload);
 }
 
 /**
@@ -147,7 +155,8 @@ function registerHandlers(ipcMain, electronModule) {
 
 module.exports = {
   ENC_PREFIX,
-  MIN_SAFE_STORAGE_CIPHERTEXT_BYTES,
+  MIN_V10_V11_CIPHERTEXT_BYTES,
+  MIN_DPAPI_CIPHERTEXT_BYTES,
   looksLikeEncryptedCredential,
   encryptCredentialValue,
   decryptCredentialValue,

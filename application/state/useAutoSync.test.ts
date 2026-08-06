@@ -201,18 +201,17 @@ test("startup local-wins and merge round-trips refuse device-bound credential pl
   );
   const uploadPushIndex = source.indexOf("manager.syncAllProviders(localPayload)", uploadGuardIndex);
   const mergeRoundTripBlockIndex = source.indexOf(
-    "Startup merge round-trip blocked: encrypted credential placeholders",
+    "stripSyncPayloadEncryptedCredentials(mergeResult.payload)",
   );
   const mergeGuardIndex = source.indexOf(
-    "findSyncPayloadEncryptedCredentialPaths(mergeResult.payload)",
-    mergeRoundTripBlockIndex - 200,
+    "healPoisonedRemoteSecretsForMerge(remoteRaw, localPayload, base)",
   );
   const mergePushIndex = source.indexOf(
-    "manager.syncAllProviders(mergeResult.payload)",
-    mergeGuardIndex,
+    "manager.syncAllProviders(portableMerge)",
+    mergeRoundTripBlockIndex,
   );
   const stripRemoteIndex = source.indexOf(
-    "stripSyncPayloadEncryptedCredentials(inspection.payload)",
+    "stripSyncPayloadEncryptedCredentials(remoteRaw)",
   );
 
   assert.notEqual(uploadLocalIndex, -1);
@@ -227,7 +226,11 @@ test("startup local-wins and merge round-trips refuse device-bound credential pl
     "startup local-wins must guard placeholders before syncAllProviders",
   );
   assert.ok(
-    mergeGuardIndex < mergePushIndex,
-    "startup merge round-trip must guard placeholders before syncAllProviders",
+    mergeGuardIndex !== -1 && mergeRoundTripBlockIndex !== -1 && mergePushIndex !== -1,
+    "startup merge must heal remote secrets and strip before syncAllProviders",
+  );
+  assert.ok(
+    mergeGuardIndex < mergeRoundTripBlockIndex && mergeRoundTripBlockIndex < mergePushIndex,
+    "startup merge must heal, then strip, then upload",
   );
 });

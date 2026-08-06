@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   ENC_PREFIX,
-  MIN_SAFE_STORAGE_CIPHERTEXT_BYTES,
+  MIN_V10_V11_CIPHERTEXT_BYTES,
   encryptCredentialValue,
   decryptCredentialValue,
   looksLikeEncryptedCredential,
@@ -16,9 +16,8 @@ function fakeSafeStorage({ decryptThrows = false } = {}) {
     isEncryptionAvailable: () => true,
     encryptString(plaintext) {
       const id = `cipher-${nextId++}`;
-      blobs.set(id, plaintext);
-      // Pad to a complete AES-GCM-sized blob (prefix + nonce + tag).
-      const body = Buffer.alloc(MIN_SAFE_STORAGE_CIPHERTEXT_BYTES, 0);
+      // Pad to a complete CBC-sized blob (header + one AES block).
+      const body = Buffer.alloc(MIN_V10_V11_CIPHERTEXT_BYTES, 0);
       Buffer.from("v10", "utf8").copy(body, 0);
       Buffer.from(id, "utf8").copy(body, 3);
       blobs.set(body.toString("base64"), plaintext);
@@ -34,13 +33,13 @@ function fakeSafeStorage({ decryptThrows = false } = {}) {
 }
 
 function completeCiphertextPlaceholder(seed = "stale-key-material") {
-  const body = Buffer.alloc(MIN_SAFE_STORAGE_CIPHERTEXT_BYTES, 0);
+  const body = Buffer.alloc(MIN_V10_V11_CIPHERTEXT_BYTES, 0);
   Buffer.from("v10", "utf8").copy(body, 0);
   Buffer.from(seed, "utf8").copy(body, 3);
   return `${ENC_PREFIX}${body.toString("base64")}`;
 }
 
-test("looksLikeEncryptedCredential accepts complete v10 safeStorage payloads", () => {
+test("looksLikeEncryptedCredential accepts complete CBC-sized v10 payloads", () => {
   assert.equal(looksLikeEncryptedCredential(completeCiphertextPlaceholder()), true);
 });
 
