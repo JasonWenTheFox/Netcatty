@@ -22,18 +22,30 @@ test("claimSessionSlot replaces an older boot epoch and marks it superseded", ()
   const older = {
     bootEpoch: 1,
     proc: { killed: false, kill() { this.killed = true; } },
+    externalAuthArtifacts: ["/tmp/et-auth-artifact"],
+    externalAuthArtifactsCleaned: false,
   };
-  sessions.set("s1", older);
-  const newer = {};
-  const result = claimSessionSlot(sessions, "s1", newer, 4);
-  assert.equal(result.ok, true);
-  assert.equal(sessions.get("s1"), newer);
-  assert.equal(newer.bootEpoch, 4);
-  assert.equal(older.closed, true);
-  assert.equal(older.supersededByBootEpoch, 4);
-  assert.equal(older.proc.killed, true);
-  assert.equal(older._displacedDisposed, true);
-  assert.equal(result.displaced, older);
+  const removed = [];
+  const fs = require("node:fs");
+  const originalRmSync = fs.rmSync;
+  fs.rmSync = (target) => { removed.push(target); };
+  try {
+    sessions.set("s1", older);
+    const newer = {};
+    const result = claimSessionSlot(sessions, "s1", newer, 4);
+    assert.equal(result.ok, true);
+    assert.equal(sessions.get("s1"), newer);
+    assert.equal(newer.bootEpoch, 4);
+    assert.equal(older.closed, true);
+    assert.equal(older.supersededByBootEpoch, 4);
+    assert.equal(older.proc.killed, true);
+    assert.equal(older._displacedDisposed, true);
+    assert.equal(older.externalAuthArtifactsCleaned, true);
+    assert.deepEqual(removed, ["/tmp/et-auth-artifact"]);
+    assert.equal(result.displaced, older);
+  } finally {
+    fs.rmSync = originalRmSync;
+  }
 });
 
 test("sessionMatchesBootEpoch ignores closes for a different generation", () => {

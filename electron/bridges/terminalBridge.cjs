@@ -1930,10 +1930,10 @@ function closeSession(event, payload) {
   const session = sessions.get(payload.sessionId);
   const { sessionMatchesBootEpoch } = require("./sessionBootEpoch.cjs");
   if (session && !sessionMatchesBootEpoch(session, payload?.bootEpoch)) {
-    return;
+    return { skipped: true, reason: "boot-epoch-mismatch" };
   }
   releaseAttachedSessionState(payload.sessionId);
-  if (!session) return;
+  if (!session) return { closed: false, reason: "missing" };
   terminalFlowPauseArbiter.clearSession(payload.sessionId);
   session.closed = true;
   fanoutSessionLifecycleEvent(
@@ -2005,6 +2005,7 @@ function closeSession(event, payload) {
   }
   ptyProcessTree.unregisterPid(payload.sessionId);
   sessions.delete(payload.sessionId);
+  return { closed: true };
 }
 
 /**

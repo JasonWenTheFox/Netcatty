@@ -46,6 +46,20 @@ function disposeDisplacedSessionResources(session) {
       try { session.proc.kill(); } catch { /* ignore */ }
       try { session.moshStatsConn?.end?.(); } catch { /* ignore */ }
       try { session.etStatsConn?.end?.(); } catch { /* ignore */ }
+      // ET stores private HOME/key/askpass paths on the session; normal close
+      // and owning-exit handlers clean them, but displaced owners skip those
+      // paths once the registry slot is overwritten.
+      if (Array.isArray(session.externalAuthArtifacts) && !session.externalAuthArtifactsCleaned) {
+        session.externalAuthArtifactsCleaned = true;
+        const fs = require("node:fs");
+        for (const artifactPath of session.externalAuthArtifacts) {
+          try {
+            fs.rmSync(artifactPath, { recursive: true, force: true });
+          } catch {
+            // ignore cleanup failures
+          }
+        }
+      }
     } else if (session.socket) {
       try { session.socket.destroy(); } catch { /* ignore */ }
     } else if (session.serialPort) {
