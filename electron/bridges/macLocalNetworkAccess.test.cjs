@@ -216,6 +216,26 @@ test("annotateMacLocalNetworkErrorMessage detects embedded IPv6 LAN destinations
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage ignores .local targets behind a public first hop", () => {
+  const message = "connect EHOSTUNREACH 93.184.216.34:1080";
+  assert.equal(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "nas.local",
+      firstHopHostname: "93.184.216.34",
+    }),
+    message,
+  );
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "nas.local",
+      firstHopHostname: "nas.local",
+    }),
+    /Local Network/i,
+  );
+});
+
 function createFakeUdpSocket({ onConnect, onError } = {}) {
   class FakeUdpSocket extends EventEmitter {
     constructor() {

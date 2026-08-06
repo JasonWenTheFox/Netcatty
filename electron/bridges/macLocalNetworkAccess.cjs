@@ -255,9 +255,18 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   if (!looksLikeHostUnreachableMessage(text)) return text;
   if (text.includes("Local Network")) return text;
 
+  const firstHop = String(options.firstHopHostname || "").trim();
+  const targetHost = String(options.hostname || options.host || "").trim();
+  const normalizeHost = (value) => stripIpBrackets(value).toLowerCase();
+  // Only treat the vault target as LAN evidence when it is also the first TCP
+  // hop. A .local final host reached via a public proxy/jump must not force
+  // the Local Network hint when the failing dial never touched the LAN.
+  const targetIsFirstHop = !firstHop
+    || !targetHost
+    || normalizeHost(targetHost) === normalizeHost(firstHop);
+
   const candidates = [
-    options.hostname,
-    options.host,
+    ...(targetIsFirstHop ? [options.hostname, options.host] : []),
     options.firstHopHostname,
     ...extractRemoteUnreachableAddresses(text),
   ].filter((value) => value != null && String(value).trim() !== "");
