@@ -58,15 +58,24 @@ test("looksLikeEncryptedCredential accepts GCM-sized v10 payloads", () => {
 });
 
 test("looksLikeEncryptedCredential accepts real Windows DPAPI base64 prefixes", () => {
-  // 01 00 00 00 d0 8c ... encodes as AQAAANCM..., not AQAAAA...
+  // Version + provider GUID {df9d8cd0-1501-11d1-8c7a-00c04fc297eb} + payload.
+  const body = Buffer.from([
+    0x01, 0x00, 0x00, 0x00,
+    0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11,
+    0x8c, 0x7a, 0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+    0xaa,
+  ]);
+  const encoded = body.toString("base64");
+  assert.equal(encoded.startsWith("AQAAANCMnd8"), true);
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${encoded}`), true);
+});
+
+test("looksLikeEncryptedCredential rejects version-only DPAPI-looking blobs", () => {
   const body = Buffer.alloc(MIN_DPAPI_CIPHERTEXT_BYTES, 0);
   body[0] = 0x01;
   body[4] = 0xd0;
   body[5] = 0x8c;
-  const encoded = body.toString("base64");
-  assert.equal(encoded.startsWith("AQAAANCM"), true);
-  assert.equal(encoded.startsWith("AQAAAA"), false);
-  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${encoded}`), true);
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${body.toString("base64")}`), false);
 });
 
 test("looksLikeEncryptedCredential rejects header-only enc:v1 payloads", () => {
@@ -77,10 +86,12 @@ test("looksLikeEncryptedCredential rejects header-only enc:v1 payloads", () => {
 
 test("encrypt leaves undecryptable DPAPI enc:v1 ciphertext unchanged", () => {
   const storage = fakeSafeStorage({ decryptThrows: true });
-  const body = Buffer.alloc(MIN_DPAPI_CIPHERTEXT_BYTES, 0);
-  body[0] = 0x01;
-  body[4] = 0xd0;
-  body[5] = 0x8c;
+  const body = Buffer.from([
+    0x01, 0x00, 0x00, 0x00,
+    0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11,
+    0x8c, 0x7a, 0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+    0xaa,
+  ]);
   const stale = `${ENC_PREFIX}${body.toString("base64")}`;
   assert.equal(encryptCredentialValue(stale, storage), stale);
 });

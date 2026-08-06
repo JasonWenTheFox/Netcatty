@@ -58,13 +58,14 @@ test("isEncryptedCredentialPlaceholder rejects intermediate v10 lengths that are
 });
 
 test("isEncryptedCredentialPlaceholder detects real Windows DPAPI base64 prefixes", () => {
-  const body = Buffer.alloc(20, 0);
-  body[0] = 0x01;
-  body[4] = 0xd0;
-  body[5] = 0x8c;
+  const body = Buffer.from([
+    0x01, 0x00, 0x00, 0x00,
+    0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11,
+    0x8c, 0x7a, 0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+    0xaa,
+  ]);
   const encoded = body.toString("base64");
-  assert.equal(encoded.startsWith("AQAAANCM"), true);
-  assert.equal(encoded.startsWith("AQAAAA"), false);
+  assert.equal(encoded.startsWith("AQAAANCMnd8"), true);
   assert.equal(isEncryptedCredentialPlaceholder(`enc:v1:${encoded}`), true);
 });
 

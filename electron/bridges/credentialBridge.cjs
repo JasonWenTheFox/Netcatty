@@ -20,9 +20,9 @@ const ENC_PREFIX = "enc:v1:";
  * - macOS/Linux: plaintext bytes start with "v10" or "v11"
  * - Windows (legacy DPAPI blob): leading bytes are 0x01 0x00 0x00 0x00
  *
- * Detect headers on *decoded* bytes. A four-byte DPAPI header alone base64-
- * encodes as `AQAAAA==`, but real blobs continue with `d0 8c ...` and encode
- * as `AQAAANCM...` — matching the six-character `AQAAAA` prefix rejects them.
+ * Detect headers on *decoded* bytes. A four-byte DPAPI version alone is not
+ * enough — real blobs continue with provider GUID
+ * {df9d8cd0-1501-11d1-8c7a-00c04fc297eb} (base64 `AQAAANCMnd8...`).
  *
  * Keep in sync with domain/credentials.ts.
  *
@@ -32,11 +32,17 @@ const ENC_PREFIX = "enc:v1:";
  */
 const V10_HEADER = Buffer.from("v10", "utf8");
 const V11_HEADER = Buffer.from("v11", "utf8");
-const DPAPI_HEADER = Buffer.from([0x01, 0x00, 0x00, 0x00]);
+// Version (4) + provider GUID {df9d8cd0-1501-11d1-8c7a-00c04fc297eb} (16).
+const DPAPI_BLOB_PREFIX = Buffer.from([
+  0x01, 0x00, 0x00, 0x00,
+  0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11,
+  0x8c, 0x7a, 0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+]);
 
 const MIN_V10_V11_CIPHERTEXT_BYTES = 19;
 const MIN_V10_V11_GCM_CIPHERTEXT_BYTES = 31; // header(3) + nonce(12) + tag(16)
-const MIN_DPAPI_CIPHERTEXT_BYTES = 20;
+// Header alone is 20 bytes; require at least one trailing payload byte.
+const MIN_DPAPI_CIPHERTEXT_BYTES = DPAPI_BLOB_PREFIX.byteLength + 1;
 
 const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
 
@@ -70,7 +76,7 @@ function looksLikeEncryptedCredential(value) {
   if (startsWithBytes(decoded, V10_HEADER) || startsWithBytes(decoded, V11_HEADER)) {
     return isValidV10V11CiphertextLength(decoded.byteLength);
   }
-  if (startsWithBytes(decoded, DPAPI_HEADER)) {
+  if (startsWithBytes(decoded, DPAPI_BLOB_PREFIX)) {
     return decoded.byteLength >= MIN_DPAPI_CIPHERTEXT_BYTES;
   }
   return false;
