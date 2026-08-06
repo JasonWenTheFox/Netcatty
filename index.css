@@ -409,6 +409,11 @@ html.tray-window #root {
   background-color: transparent !important;
 }
 
+html.tray-window .splash-screen {
+  display: none !important;
+  background: transparent !important;
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: 220ms;

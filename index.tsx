@@ -144,6 +144,7 @@ const syncTrayWindowClass = (route: string) => {
   const rootEl = document.documentElement;
   if (route === 'tray') {
     rootEl.classList.add('tray-window');
+    document.getElementById('splash')?.remove();
   } else {
     rootEl.classList.remove('tray-window');
   }

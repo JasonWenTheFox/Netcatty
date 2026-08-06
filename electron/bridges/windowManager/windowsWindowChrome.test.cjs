@@ -83,7 +83,9 @@ test("main/settings/tray call sites wire Windows chrome helpers", () => {
   assert.match(tray, /windowsCssRoundedOverlayChromeOptions/);
   assert.match(tray, /#2505/);
   assert.match(css, /html\.tray-window/);
+  assert.match(css, /html\.tray-window \.splash-screen/);
   assert.match(html, /tray-window/);
+  assert.match(html, /removeTraySplash|splash\.remove\(\)/);
   assert.match(helper, /not resizable/);
   const contentHelperMatch = helper.match(
     /function windowsFramelessContentChromeOptions\([\s\S]*?\n\}/,
