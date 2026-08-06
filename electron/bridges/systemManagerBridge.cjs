@@ -161,7 +161,12 @@ function createSystemManagerBridge(deps) {
 
   const tmuxOps = createTmuxOpsApi({ execOnSession });
   const dockerOps = createDockerOpsApi({ execOnSession, getSession });
-  const gpuOps = createGpuOpsApi({ execOnSession });
+  const gpuOps = createGpuOpsApi({
+    execOnSession,
+    execOnLocalMachine,
+    isLocalSession,
+    process,
+  });
 
   async function probeCapabilities(event, payload) {
     const sessionId = payload?.sessionId;

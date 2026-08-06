@@ -15,6 +15,29 @@ const NVIDIA_PROCESS_QUERY = [
 ].join(" ");
 
 /**
+ * Local Windows collector — PowerShell (execOnLocalMachine uses powershell.exe).
+ * Ascend on Windows is uncommon; still attempt npu-smi when present.
+ */
+const ACCELERATOR_COLLECT_SCRIPT_WINDOWS = [
+  'Write-Output "__NC_ACCEL_BEGIN__"; ',
+  "if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { ",
+  'Write-Output "__NC_NVIDIA_DEVICES__"; ',
+  `${NVIDIA_GPU_QUERY} 2>$null; `,
+  'Write-Output "__NC_NVIDIA_PROCESSES__"; ',
+  `${NVIDIA_PROCESS_QUERY} 2>$null; `,
+  "}; ",
+  "if (Get-Command npu-smi -ErrorAction SilentlyContinue) { ",
+  'Write-Output "__NC_NPU_BEGIN__"; ',
+  'Write-Output "__NC_NPU_INFO__"; ',
+  "npu-smi info 2>$null; ",
+  'Write-Output "__NC_NPU_PROCS__"; ',
+  "npu-smi info -t proc-mem 2>$null; ",
+  'Write-Output "__NC_NPU_END__"; ',
+  "}; ",
+  'Write-Output "__NC_ACCEL_END__"',
+].join("");
+
+/**
  * Remote script emits marked sections so Node can parse vendors independently.
  * Ascend uses typed queries per NPU id when `npu-smi info -l` works; falls back
  * to a single `npu-smi info` table dump.
@@ -158,23 +181,40 @@ function parseAscendDeviceBlock(index, block) {
     "Aicore Usage Rate",
     "AI Core Usage",
   ]);
+  // Absolute MB fields only — never treat "HBM Usage Rate(%)" as megabytes.
   const hbmUsed = extractKvNumber(block, [
-    "HBM Usage Rate\\(%\\)",
     "HBM Used Memory\\(MB\\)",
     "HBM Memory Usage\\(MB\\)",
+    "Used HBM Memory\\(MB\\)",
     "Used HBM Memory",
   ]);
   const hbmTotal = extractKvNumber(block, [
     "HBM Total Memory\\(MB\\)",
     "HBM Capacity\\(MB\\)",
+    "Total HBM Memory\\(MB\\)",
     "Total HBM Memory",
+  ]);
+  const hbmUsageRate = extractKvNumber(block, [
+    "HBM Usage Rate\\(%\\)",
+    "HBM Usage Rate",
   ]);
   // memory command sometimes reports "Used / Total"
   const hbmPair = String(block || "").match(
-    /HBM[^\n]*?(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/i,
+    /HBM[^\n]*?(?:Memory|Usage)\([^\n]*?(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/i,
+  ) || String(block || "").match(
+    /HBM Used Memory[^\n]*?(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/i,
   );
-  const memoryUsedMb = hbmPair ? Number.parseFloat(hbmPair[1]) : hbmUsed;
-  const memoryTotalMb = hbmPair ? Number.parseFloat(hbmPair[2]) : hbmTotal;
+  let memoryUsedMb = hbmPair ? Number.parseFloat(hbmPair[1]) : hbmUsed;
+  let memoryTotalMb = hbmPair ? Number.parseFloat(hbmPair[2]) : hbmTotal;
+  // Derive used MB from rate only when total is known and used is missing.
+  if (
+    !Number.isFinite(memoryUsedMb)
+    && Number.isFinite(hbmUsageRate)
+    && Number.isFinite(memoryTotalMb)
+    && memoryTotalMb > 0
+  ) {
+    memoryUsedMb = (hbmUsageRate / 100) * memoryTotalMb;
+  }
   const temperatureC = extractKvNumber(block, [
     "Temperature\\(C\\)",
     "Temp\\(C\\)",
@@ -356,10 +396,27 @@ function parseAcceleratorSnapshot(stdout) {
   };
 }
 
-function createGpuOpsApi({ execOnSession }) {
+function createGpuOpsApi({
+  execOnSession,
+  execOnLocalMachine,
+  isLocalSession,
+  process: nodeProcess = process,
+}) {
   async function listAccelerators(event, sessionId) {
     if (!sessionId) return { success: false, error: "Missing sessionId" };
-    const result = await execOnSession(event, sessionId, ACCELERATOR_COLLECT_SCRIPT, 15000);
+
+    let result;
+    if (
+      typeof isLocalSession === "function"
+      && isLocalSession(sessionId)
+      && nodeProcess.platform === "win32"
+      && typeof execOnLocalMachine === "function"
+    ) {
+      result = await execOnLocalMachine(ACCELERATOR_COLLECT_SCRIPT_WINDOWS, 15000);
+    } else {
+      result = await execOnSession(event, sessionId, ACCELERATOR_COLLECT_SCRIPT, 15000);
+    }
+
     if (result.pending) return { success: false, pending: true };
     if (!result.success) return { success: false, error: result.error || "Failed to query accelerators" };
     const snapshot = parseAcceleratorSnapshot(result.stdout);
@@ -378,4 +435,5 @@ module.exports = {
   parseAscendInfoTable,
   parseAscendProcesses,
   ACCELERATOR_COLLECT_SCRIPT,
+  ACCELERATOR_COLLECT_SCRIPT_WINDOWS,
 };

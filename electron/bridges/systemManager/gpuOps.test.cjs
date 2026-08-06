@@ -61,6 +61,46 @@ Health                         : OK
   assert.equal(device.health, "OK");
 });
 
+test("parseAscendDeviceBlock does not treat HBM usage rate percent as megabytes", () => {
+  const device = parseAscendDeviceBlock(
+    2,
+    `
+Product Name                   : Ascend 910B
+Aicore Usage Rate(%)           : 3
+HBM Usage Rate(%)              : 25
+HBM Capacity(MB)               : 32768
+Temperature(C)                 : 40
+`,
+  );
+  assert.equal(device.memoryTotalMb, 32768);
+  assert.equal(device.memoryUsedMb, 8192);
+});
+
+test("listAccelerators uses PowerShell collector for local Windows sessions", async () => {
+  const { createGpuOpsApi, ACCELERATOR_COLLECT_SCRIPT_WINDOWS } = require("./gpuOps.cjs");
+  let seenCommand = "";
+  const gpuOps = createGpuOpsApi({
+    execOnSession: async () => {
+      throw new Error("POSIX collector should not run on local Windows");
+    },
+    execOnLocalMachine: async (command) => {
+      seenCommand = command;
+      return {
+        success: true,
+        stdout: "__NC_ACCEL_BEGIN__\n__NC_NVIDIA_DEVICES__\n0, GPU-w, RTX, 1, 2, 3, 4, 5, 6, 7, 8.0\n__NC_ACCEL_END__\n",
+      };
+    },
+    isLocalSession: () => true,
+    process: { platform: "win32" },
+  });
+
+  const result = await gpuOps.listAccelerators(null, "local-1");
+  assert.equal(result.success, true);
+  assert.equal(seenCommand, ACCELERATOR_COLLECT_SCRIPT_WINDOWS);
+  assert.equal(result.devices.length, 1);
+  assert.equal(result.devices[0].name, "RTX");
+});
+
 test("parseAscendInfoTable reads summary and chip rows", () => {
   const devices = parseAscendInfoTable(`
 | NPU   Name                    | Health          | Power(W)   Temp(C)                        |

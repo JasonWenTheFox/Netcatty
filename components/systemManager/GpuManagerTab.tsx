@@ -1,5 +1,5 @@
 import { CircuitBoard, Cpu, Thermometer, Zap } from 'lucide-react';
-import React, { memo, useCallback, useMemo } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { useSystemManagerBackend } from '../../application/state/useSystemManagerBackend';
 import type {
@@ -156,10 +156,19 @@ export const GpuManagerTab = memo(function GpuManagerTab({
   const { t } = useI18n();
   const stableT = useStableTranslate();
   const intervalMs = Math.max(2, refreshIntervalSec) * 1000;
+  const [gpuListPending, setGpuListPending] = useState(false);
+
+  useEffect(() => {
+    setGpuListPending(false);
+  }, [sessionId]);
 
   const fetcher = useCallback(async (): Promise<AcceleratorSnapshot | null> => {
     const result = await backend.listAccelerators(sessionId);
-    if (result.pending) return null;
+    if (result.pending) {
+      setGpuListPending(true);
+      return null;
+    }
+    setGpuListPending(false);
     if (!result.success) {
       throw new Error(result.error || stableT('systemManager.errors.loadGpu'));
     }
@@ -181,6 +190,7 @@ export const GpuManagerTab = memo(function GpuManagerTab({
 
   const devices = useMemo(() => data?.devices ?? [], [data?.devices]);
   const processes = useMemo(() => data?.processes ?? [], [data?.processes]);
+  const isRefreshActive = loading || gpuListPending;
 
   const meta = useMemo(() => {
     const nvidiaCount = devices.filter((d) => d.vendor === 'nvidia').length;
@@ -197,7 +207,18 @@ export const GpuManagerTab = memo(function GpuManagerTab({
     return null;
   }
 
-  if (loading && !data) {
+  if (!data) {
+    if (error && !isRefreshActive) {
+      return (
+        <SystemPanelShell section="system-manager-gpu">
+          <SystemPanelError
+            message={error}
+            retryLabel={t('history.action.refresh')}
+            onRetry={() => void refresh()}
+          />
+        </SystemPanelShell>
+      );
+    }
     return (
       <SystemPanelShell section="system-manager-gpu">
         <SystemPanelLoading message={t('systemManager.gpu.loading')} />
@@ -205,25 +226,13 @@ export const GpuManagerTab = memo(function GpuManagerTab({
     );
   }
 
-  if (error && !data) {
-    return (
-      <SystemPanelShell section="system-manager-gpu">
-        <SystemPanelError
-          message={error}
-          retryLabel={t('history.action.refresh')}
-          onRetry={() => void refresh()}
-        />
-      </SystemPanelShell>
-    );
-  }
-
-  if (!devices.length) {
+  if (!devices.length && !processes.length) {
     return (
       <SystemPanelShell section="system-manager-gpu">
         <SystemPanelToolbar trailing={(
           <SystemPanelRefreshButton
             title={t('history.action.refresh')}
-            loading={loading}
+            loading={isRefreshActive}
             onClick={() => void refresh()}
           />
         )}>
@@ -239,13 +248,13 @@ export const GpuManagerTab = memo(function GpuManagerTab({
       <SystemPanelToolbar trailing={(
         <SystemPanelRefreshButton
           title={t('history.action.refresh')}
-          loading={loading}
+          loading={isRefreshActive}
           onClick={() => void refresh()}
         />
       )}>
         <span className="text-[11px] text-muted-foreground truncate">{meta}</span>
       </SystemPanelToolbar>
-      {error ? (
+      {error && !isRefreshActive ? (
         <SystemPanelInlineError
           message={error}
           retryLabel={t('history.action.refresh')}
@@ -257,9 +266,15 @@ export const GpuManagerTab = memo(function GpuManagerTab({
           <Cpu size={10} />
           {t('systemManager.gpu.devices')}
         </div>
-        {devices.map((device) => (
-          <DeviceCard key={`${device.vendor}-${device.index}-${device.uuid || device.name}`} device={device} />
-        ))}
+        {devices.length === 0 ? (
+          <div className="px-3 py-2 text-[11px] text-muted-foreground">
+            {t('systemManager.gpu.empty')}
+          </div>
+        ) : (
+          devices.map((device) => (
+            <DeviceCard key={`${device.vendor}-${device.index}-${device.uuid || device.name}`} device={device} />
+          ))
+        )}
         <div className="px-3 pt-3 pb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
           {t('systemManager.gpu.processes')}
         </div>
