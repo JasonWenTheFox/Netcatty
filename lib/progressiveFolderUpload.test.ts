@@ -355,3 +355,87 @@ test("progressive folder upload stops enqueueing children while soft-paused", as
   );
   assert.equal(transferred.length, 3);
 });
+
+test("progressive multi-root pause does not HOL-block an unpaused sibling root", async () => {
+  const transferred: string[] = [];
+  const pausedParents = new Set<string>(["parent-a"]);
+  const parentIds = new Map([
+    ["folderA", "parent-a"],
+    ["folderB", "parent-b"],
+  ]);
+
+  const waitWhilePaused = async (parentId: string) => {
+    while (pausedParents.has(parentId)) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  const listLocalTree = async (
+    localPath: string,
+    options: {
+      onEntries?: (entries: LocalTreeListEntry[]) => void;
+    },
+  ) => {
+    if (localPath.endsWith("folderA")) {
+      options.onEntries?.([
+        {
+          localPath: "/tmp/folderA/a.txt",
+          relativePath: "folderA/a.txt",
+          type: "file",
+          size: 1,
+          lastModified: 1,
+        },
+      ]);
+    } else {
+      options.onEntries?.([
+        {
+          localPath: "/tmp/folderB/b.txt",
+          relativePath: "folderB/b.txt",
+          type: "file",
+          size: 1,
+          lastModified: 1,
+        },
+      ]);
+    }
+    return [];
+  };
+
+  const uploadPromise = uploadLocalFoldersProgressively(
+    [
+      { name: "folderA", localPath: "/tmp/folderA" },
+      { name: "folderB", localPath: "/tmp/folderB" },
+    ],
+    {
+      targetPath: "/remote",
+      sftpId: "sftp-1",
+      isLocal: false,
+      joinPath: (base, name) => `${base}/${name}`,
+      parentTaskIds: parentIds,
+      waitWhilePaused,
+      isPaused: (parentId) => pausedParents.has(parentId),
+      bridge: {
+        mkdirSftp: async () => {},
+        startStreamTransfer: async (payload) => {
+          transferred.push(payload.sourcePath);
+          // Unpause A only after B has uploaded — proves HOL skip works.
+          if (payload.sourcePath.includes("folderB")) {
+            pausedParents.delete("parent-a");
+          }
+          return { transferId: payload.transferId };
+        },
+      },
+      listLocalTree,
+    },
+  );
+
+  const results = await uploadPromise;
+  assert.equal(results.filter((row) => row.success).length, 2);
+  assert.ok(transferred.some((p) => p.includes("folderB")), "unpaused root must transfer");
+  assert.ok(transferred.some((p) => p.includes("folderA")), "paused root resumes after unlatch");
+  // folderB must not wait behind folderA indefinitely — B completes first.
+  assert.ok(
+    transferred.indexOf(transferred.find((p) => p.includes("folderB"))!)
+      < transferred.indexOf(transferred.find((p) => p.includes("folderA"))!),
+    `expected B before A, got ${transferred.join(",")}`,
+  );
+});

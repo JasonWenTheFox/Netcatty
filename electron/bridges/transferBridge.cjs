@@ -2283,10 +2283,11 @@ async function uploadFile(
   const finishSuccessfulUpload = async () => {
     if (initialSource) {
       const latestSource = await fs.promises.stat(originalLocalPath);
-      // Soft size/mtime check only (no full-file re-hash). macOS ctime noise is
-      // ignored when size still matches the planned total.
+      // Soft size + mtime/ino (no full-file re-hash). Do not claim separate
+      // content proof — same-size rewrites that bump mtime still fail closed.
+      // ignoreCtime: macOS xattr/Spotlight noise must not abort a true match.
       assertSourceMetadataUnchanged(initialSource, latestSource, fileSize, {
-        contentVerifiedSeparately: true,
+        ignoreCtime: true,
       });
     }
     await assertRemoteUploadSize(client, remotePath, fileSize);
@@ -3946,7 +3947,7 @@ async function readVerifiedUploadRange(
  * @param {object|null|undefined} initialSource
  * @param {object|null|undefined} latestSource
  * @param {number} expectedSize
- * @param {{ contentVerifiedSeparately?: boolean, allowSourceGrowth?: boolean }} [options]
+ * @param {{ contentVerifiedSeparately?: boolean, allowSourceGrowth?: boolean, ignoreCtime?: boolean }} [options]
  */
 function assertSourceMetadataUnchanged(initialSource, latestSource, expectedSize, options = {}) {
   const latestSize = Number(latestSource?.size);
@@ -3973,8 +3974,11 @@ function assertSourceMetadataUnchanged(initialSource, latestSource, expectedSize
     return;
   }
   // No digest / per-range content proof: timestamps + inode are the durable
-  // same-size rewrite signal (remote SFTP download path).
-  const versionFields = ["mtimeMs", "ctimeMs", "mtime", "ctime", "ino"];
+  // same-size rewrite signal. Upload finish may set ignoreCtime so macOS
+  // xattr/Spotlight ctime bumps do not abort after a true size match.
+  const versionFields = options.ignoreCtime
+    ? ["mtimeMs", "mtime", "ino"]
+    : ["mtimeMs", "ctimeMs", "mtime", "ctime", "ino"];
   const changed = versionFields.some((field) => {
     const before = Number(initialSource?.[field]);
     const after = Number(latestSource?.[field]);
@@ -4483,8 +4487,9 @@ async function uploadFileConcurrent(
       options.onBytesCommitted?.();
       if (initialSource) {
         const latestSource = await localHandle.stat();
+        // Soft size + mtime/ino only — no digest, but not fail-open either.
         assertSourceMetadataUnchanged(initialSource, latestSource, fileSize, {
-          contentVerifiedSeparately: true,
+          ignoreCtime: true,
         });
       }
     } catch (error) {

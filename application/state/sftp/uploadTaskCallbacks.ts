@@ -120,6 +120,18 @@ export const createUploadTaskCallbacks = ({
       );
     // Only patch fingerprint/checkpoint while paused — do not keep animating
     // high-water transferred after the user hit Pause.
+    const isPausedLike = current?.status === "paused" || current?.status === "pausing";
+    if (isPausedLike) {
+      store.patchTask(taskId, {
+        checkpointBytes: durableCheckpoint,
+        resumable: progress.resumable,
+        pauseUnavailableReason: progress.pauseUnavailableReason,
+        ...("sourceFingerprint" in progress && progress.sourceFingerprint
+          ? { sourceFingerprint: progress.sourceFingerprint as string }
+          : null),
+      });
+      return;
+    }
     store.patchTask(taskId, {
       transferredBytes: progress.transferred,
       totalBytes: progress.total,

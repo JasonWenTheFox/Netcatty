@@ -1307,35 +1307,49 @@ export const useSftpTransfers = ({
       // Progressive / external drag-drop children never have dual-pane endpoints
       // (sourceConnectionId is "external"). Re-run startStreamTransfer in place.
       if (isExternalDragDropFileUpload(task)) {
+        if (inFlightTransferIdsRef.current.has(transferId)) return;
+        inFlightTransferIdsRef.current.add(transferId);
         clearTransferCancelled(transferId);
         cancelledTasksRef.current.delete(transferId);
-        const result = await retryExternalDragDropFileUpload(task, {
-          getBrowseSftpId: (connectionId) => sftpSessionsRef.current.get(connectionId),
-          acquireTransferSession: acquireTransferSession
-            ? (hostId, id) => acquireTransferSession(hostId, id)
-            : undefined,
-          startStreamTransfer: async (options) => {
-            const bridge = netcattyBridge.get();
-            if (!bridge?.startStreamTransfer) {
-              return { error: "Stream transfer is unavailable" };
-            }
-            return bridge.startStreamTransfer(options);
-          },
-          clearPendingCancel: (id) => netcattyBridge.get()?.clearPendingTransferCancel?.(id),
-          cleanupArtifacts: cleanupTaskArtifacts,
-          onPatch: (taskId, updates) => {
-            transferRuntime.patchTask(taskId, updates);
-            setTransfers((prev) => {
-              if (!prev.some((row) => row.id === taskId)) {
-                // Store-only child: mirror the patch by re-pulling owner rows.
-                return sftpTransferCenterStore.getOwnerTasks(ownerId);
+        try {
+          const result = await retryExternalDragDropFileUpload(task, {
+            getBrowseSftpId: (connectionId) => sftpSessionsRef.current.get(connectionId),
+            acquireTransferSession: acquireTransferSession
+              ? (hostId, id) => acquireTransferSession(hostId, id)
+              : undefined,
+            startStreamTransfer: async (options) => {
+              const bridge = netcattyBridge.get();
+              if (!bridge?.startStreamTransfer) {
+                return { error: "Stream transfer is unavailable" };
               }
-              return prev.map((row) => (row.id === taskId ? { ...row, ...updates } : row));
-            });
-          },
-        });
-        if (!result.success && result.error && !/cancelled/i.test(result.error)) {
-          notify.warning(result.error, "SFTP");
+              return bridge.startStreamTransfer(options);
+            },
+            clearPendingCancel: (id) => netcattyBridge.get()?.clearPendingTransferCancel?.(id),
+            cleanupArtifacts: cleanupTaskArtifacts,
+            getTask: (id) => sftpTransferCenterStore.getTask(id)
+              ?? transfersRef.current.find((row) => row.id === id),
+            getChildTasks: (parentId) => {
+              const fromStore = sftpTransferCenterStore.getOwnerTasks(ownerId)
+                .filter((row) => row.parentTaskId === parentId);
+              if (fromStore.length > 0) return fromStore;
+              return transfersRef.current.filter((row) => row.parentTaskId === parentId);
+            },
+            onPatch: (taskId, updates) => {
+              transferRuntime.patchTask(taskId, updates);
+              setTransfers((prev) => {
+                if (!prev.some((row) => row.id === taskId)) {
+                  // Store-only child: mirror the patch by re-pulling owner rows.
+                  return sftpTransferCenterStore.getOwnerTasks(ownerId);
+                }
+                return prev.map((row) => (row.id === taskId ? { ...row, ...updates } : row));
+              });
+            },
+          });
+          if (!result.success && result.error && !/cancelled/i.test(result.error)) {
+            notify.warning(result.error, "SFTP");
+          }
+        } finally {
+          inFlightTransferIdsRef.current.delete(transferId);
         }
         return;
       }

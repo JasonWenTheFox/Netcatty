@@ -49,6 +49,8 @@ export type ProgressiveFolderUploadConfig = {
    * UI rows so Pause does not keep filling the transfer queue.
    */
   waitWhilePaused?: (parentTaskId: string) => Promise<void>;
+  /** Sync probe so multi-root queues can skip latched parents (no HOL block). */
+  isPaused?: (parentTaskId: string) => boolean;
 };
 
 function entryToDrop(entry: LocalTreeListEntry): DropEntry {
@@ -76,6 +78,7 @@ export async function uploadLocalFoldersProgressively(
     parentTaskIds,
     abortSignal,
     waitWhilePaused,
+    isPaused,
   } = config;
 
   if (roots.length === 0) return [];
@@ -393,11 +396,23 @@ export async function uploadLocalFoldersProgressively(
         await waitForWork();
         continue;
       }
-      // Peek parent before taking work so soft-pause does not dequeue a flood of
-      // jobs that would immediately create child UI rows on resume races.
-      const peeked = fileQueue[0];
-      if (peeked && waitWhilePaused) {
-        if (!(await awaitUnpaused(peeked.parentId))) {
+      // Soft-pause is per-parent. Prefer an unpaused job so pausing parent A
+      // does not head-of-line block parent B on the shared FIFO.
+      if (fileQueue.length === 0) continue;
+      let pickIndex = 0;
+      if (isPaused) {
+        const freeIndex = fileQueue.findIndex((j) => !isPaused(j.parentId));
+        if (freeIndex < 0) {
+          // Every pending parent is latched — wait on the head's latch, then retry.
+          if (!(await awaitUnpaused(fileQueue[0].parentId))) {
+            fileQueue.length = 0;
+            return;
+          }
+          continue;
+        }
+        pickIndex = freeIndex;
+      } else if (waitWhilePaused) {
+        if (!(await awaitUnpaused(fileQueue[0].parentId))) {
           fileQueue.length = 0;
           return;
         }
@@ -407,7 +422,7 @@ export async function uploadLocalFoldersProgressively(
         return;
       }
       if (fileQueue.length === 0) continue;
-      const job = fileQueue.shift();
+      const [job] = fileQueue.splice(pickIndex, 1);
       if (!job) continue;
       maybeResumeScan();
       if (isStopped()) {

@@ -2462,6 +2462,22 @@ test("assertSourceMetadataUnchanged ignores ctime drift when content is verified
     () => transferBridge._assertSourceMetadataUnchangedForTests(initial, drifted, 100),
     /source content changed/i,
   );
+  // Upload finish soft path: ignore ctime noise but still enforce mtime/ino.
+  assert.doesNotThrow(() => transferBridge._assertSourceMetadataUnchangedForTests(
+    initial,
+    drifted,
+    100,
+    { ignoreCtime: true },
+  ));
+  assert.throws(
+    () => transferBridge._assertSourceMetadataUnchangedForTests(
+      initial,
+      { ...drifted, mtimeMs: 2, mtime: 0.002 },
+      100,
+      { ignoreCtime: true },
+    ),
+    /source content changed/i,
+  );
   // With digest / per-range verification, macOS xattr ctime bumps must not abort.
   assert.doesNotThrow(() => transferBridge._assertSourceMetadataUnchangedForTests(
     initial,

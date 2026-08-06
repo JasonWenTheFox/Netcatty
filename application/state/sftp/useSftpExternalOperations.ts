@@ -100,7 +100,10 @@ import {
   registerExternalUploadController,
   unregisterExternalUploadController,
 } from "./externalUploadRuntime";
-import { waitWhileTransferOrRootPaused } from "./transferPauseLatch";
+import {
+  isTransferPauseLatched,
+  waitWhileTransferOrRootPaused,
+} from "./transferPauseLatch";
 
 type UploadConflictResolver = {
   resolve: (action: FileConflictAction) => void;
@@ -980,7 +983,11 @@ export const useSftpExternalOperations = (
       const pathBackedFolderRoots = dropPayload.roots
         .filter((root) => root.isDirectory && !!root.localPath)
         .map((root) => ({ name: root.name, localPath: root.localPath! }));
+      // Progressive only when *every* root is a path-backed folder. Mixed drops
+      // (folder + files, path-less dirs) must fall through to materialize so
+      // sibling items are not silently dropped.
       const canProgressiveUpload = pathBackedFolderRoots.length > 0
+        && pathBackedFolderRoots.length === dropPayload.roots.length
         && !!bridge.listLocalTree
         && !useCompressedUpload;
       const needsDeepScan = dropPayload.roots.some((root) => root.isDirectory);
@@ -1059,6 +1066,7 @@ export const useSftpExternalOperations = (
                 // Soft-pause must freeze discovery enqueue + child UI rows, not
                 // only the open streams (otherwise Pause still floods the queue).
                 waitWhilePaused: (parentTaskId) => waitWhileTransferOrRootPaused(parentTaskId),
+                isPaused: (parentTaskId) => isTransferPauseLatched(parentTaskId),
                 listLocalTree: (localPath, treeOptions) => listLocalTreeWithAbort(bridge, localPath, {
                   ...treeOptions,
                   abortSignal: scanAbort.signal,

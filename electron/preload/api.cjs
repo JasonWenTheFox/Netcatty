@@ -936,11 +936,21 @@ function createPreloadApi(ctx) {
       });
       if (entriesStreamDone) {
         // Wait for the main-process end marker so late nested batches are not
-        // lost. Fallback timeout if the marker never arrives (old main, crash).
+        // lost. Fail the scan if the marker never arrives (do not pretend a
+        // partial tree is complete).
+        let timedOut = false;
         await Promise.race([
           entriesStreamDone,
-          new Promise((resolve) => setTimeout(resolve, 5_000)),
+          new Promise((resolve) => {
+            setTimeout(() => {
+              timedOut = true;
+              resolve();
+            }, 5_000);
+          }),
         ]);
+        if (timedOut) {
+          throw new Error("Local tree scan ended without a completion marker");
+        }
       }
       return result;
     } finally {

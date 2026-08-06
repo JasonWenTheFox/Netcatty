@@ -41,6 +41,7 @@ test("retry reuses the same transfer id and starts a stream upload", async () =>
   const patches: Array<{ id: string; updates: Partial<TransferTask> }> = [];
   const streams: Array<Record<string, unknown>> = [];
 
+  // No pool acquire → falls back to browse sftp id.
   const result = await retryExternalDragDropFileUpload(baseTask(), {
     getBrowseSftpId: () => "sftp-live",
     startStreamTransfer: async (options) => {
@@ -60,16 +61,20 @@ test("retry reuses the same transfer id and starts a stream upload", async () =>
   assert.equal(patches.at(-1)?.updates.status, "completed");
 });
 
-test("retry acquires a pool session when browse sftp id is missing", async () => {
+test("retry prefers a dedicated pool session over the browse sftp id", async () => {
   let released = false;
+  let acquired = false;
   const result = await retryExternalDragDropFileUpload(baseTask(), {
-    getBrowseSftpId: () => undefined,
-    acquireTransferSession: async () => ({
-      sftpId: "sftp-pool",
-      poolKey: "host-1",
-      release: () => { released = true; },
-      discard: () => {},
-    }),
+    getBrowseSftpId: () => "sftp-live",
+    acquireTransferSession: async () => {
+      acquired = true;
+      return {
+        sftpId: "sftp-pool",
+        poolKey: "host-1",
+        release: () => { released = true; },
+        discard: () => {},
+      };
+    },
     startStreamTransfer: async (options) => {
       assert.equal(options.targetSftpId, "sftp-pool");
       return {};
@@ -78,7 +83,37 @@ test("retry acquires a pool session when browse sftp id is missing", async () =>
   });
 
   assert.equal(result.success, true);
+  assert.equal(acquired, true);
   assert.equal(released, true);
+});
+
+test("retry falls back to browse when pool acquire is unavailable", async () => {
+  const result = await retryExternalDragDropFileUpload(baseTask(), {
+    getBrowseSftpId: () => "sftp-live",
+    startStreamTransfer: async (options) => {
+      assert.equal(options.targetSftpId, "sftp-live");
+      return {};
+    },
+    onPatch: () => {},
+  });
+  assert.equal(result.success, true);
+});
+
+test("retry rolls parent to completed when all siblings succeed", async () => {
+  const patches: Array<{ id: string; updates: Partial<TransferTask> }> = [];
+  const result = await retryExternalDragDropFileUpload(baseTask(), {
+    getBrowseSftpId: () => "sftp-live",
+    startStreamTransfer: async () => ({}),
+    getChildTasks: () => [
+      baseTask({ id: "child-1", status: "transferring" }),
+      baseTask({ id: "child-2", status: "completed", sourcePath: "/tmp/docs/b.txt" }),
+    ],
+    onPatch: (taskId, updates) => patches.push({ id: taskId, updates }),
+  });
+  assert.equal(result.success, true);
+  const parentPatch = patches.find((p) => p.id === "folder-1");
+  assert.ok(parentPatch);
+  assert.equal(parentPatch?.updates.status, "completed");
 });
 
 test("retry fails clearly when no sftp session can be opened", async () => {

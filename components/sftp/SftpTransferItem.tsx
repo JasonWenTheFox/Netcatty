@@ -228,7 +228,7 @@ const SftpTransferItemInner: React.FC<SftpTransferItemProps> = ({
                                 : '...';
 
     const progressBarWidth = isDirParent
-        ? (centerProgress.indeterminate || isLiveScanning || task.status === 'pending' || task.status === 'queued'
+        ? (centerProgress.indeterminate || isLiveScanning
             ? '100%'
             : `${progress}%`)
         : task.status === 'pending'

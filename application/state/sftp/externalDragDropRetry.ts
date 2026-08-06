@@ -8,6 +8,7 @@
 
 import type { TransferTask } from "../../../domain/models";
 import type { TransferConnectionLease } from "./transferConnectionPool";
+import { isTransferCancelledFlag } from "./transferCancelLatch";
 
 export function isExternalDragDropFileUpload(
   task: Pick<
@@ -53,6 +54,10 @@ export type ExternalDragDropRetryDeps = {
   clearPendingCancel?: (transferId: string) => Promise<unknown>;
   cleanupArtifacts?: (task: TransferTask) => Promise<void>;
   onPatch: (taskId: string, updates: Partial<TransferTask>) => void;
+  /** Live store lookup for terminal cancel races and completion bytes. */
+  getTask?: (taskId: string) => TransferTask | undefined;
+  /** Children of a progressive parent (for rollup after child success). */
+  getChildTasks?: (parentTaskId: string) => TransferTask[];
 };
 
 /**
@@ -84,10 +89,14 @@ export async function retryExternalDragDropFileUpload(
 
   try {
     if (!targetIsLocal) {
-      targetSftpId = deps.getBrowseSftpId(task.targetConnectionId);
-      if (!targetSftpId && task.targetHostId && deps.acquireTransferSession) {
+      // Prefer a dedicated pool session when hostId is known — same policy as
+      // progressive upload (do not pin the browse/tab session).
+      if (task.targetHostId && deps.acquireTransferSession) {
         lease = await deps.acquireTransferSession(task.targetHostId, `${task.id}:retry`);
         targetSftpId = lease.sftpId;
+      }
+      if (!targetSftpId) {
+        targetSftpId = deps.getBrowseSftpId(task.targetConnectionId);
       }
       if (!targetSftpId) {
         const error = "No SFTP session available to retry this upload. Reconnect and try again.";
@@ -127,7 +136,8 @@ export async function retryExternalDragDropFileUpload(
       checkpointBytes: 0,
     });
 
-    if (result?.cancelled) {
+    // Late cancel can settle the row before this return; never resurrect it.
+    if (isTransferCancelledFlag(task.id) || result?.cancelled) {
       deps.onPatch(task.id, {
         status: "cancelled",
         error: undefined,
@@ -148,17 +158,42 @@ export async function retryExternalDragDropFileUpload(
       return { success: false, error: result.error };
     }
 
+    const live = deps.getTask?.(task.id);
+    const completedBytes = Math.max(
+      live?.totalBytes ?? 0,
+      live?.transferredBytes ?? 0,
+      task.totalBytes,
+      0,
+    );
     deps.onPatch(task.id, {
       status: "completed",
       error: undefined,
-      transferredBytes: Math.max(task.totalBytes, task.transferredBytes, 0),
+      transferredBytes: completedBytes,
+      totalBytes: Math.max(live?.totalBytes ?? 0, task.totalBytes, completedBytes),
       endTime: Date.now(),
       speed: 0,
       phase: undefined,
     });
+
+    // Progressive parents finalize once with "N of M failed". After a child
+    // retry succeeds, re-roll the parent when no failed children remain.
+    if (task.parentTaskId && deps.getChildTasks) {
+      rollupParentAfterChildSuccess(task.parentTaskId, task.id, deps);
+    }
+
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isTransferCancelledFlag(task.id) || /cancel/i.test(message)) {
+      deps.onPatch(task.id, {
+        status: "cancelled",
+        error: undefined,
+        endTime: Date.now(),
+        speed: 0,
+        phase: undefined,
+      });
+      return { success: false, error: "Transfer cancelled" };
+    }
     deps.onPatch(task.id, {
       status: "failed",
       error: message,
@@ -174,4 +209,44 @@ export async function retryExternalDragDropFileUpload(
   } finally {
     try { lease?.release(); } catch { /* best-effort */ }
   }
+}
+
+function rollupParentAfterChildSuccess(
+  parentTaskId: string,
+  completedChildId: string,
+  deps: ExternalDragDropRetryDeps,
+): void {
+  const children = deps.getChildTasks?.(parentTaskId) ?? [];
+  if (children.length === 0) return;
+  const stillFailed = children.some(
+    (child) =>
+      child.id !== completedChildId
+      && (child.status === "failed" || child.status === "attention"),
+  );
+  if (stillFailed) return;
+  const active = children.some(
+    (child) =>
+      child.id !== completedChildId
+      && (
+        child.status === "transferring"
+        || child.status === "pending"
+        || child.status === "queued"
+        || child.status === "pausing"
+        || child.status === "paused"
+      ),
+  );
+  if (active) return;
+  const completedCount = children.filter(
+    (child) => child.id === completedChildId || child.status === "completed",
+  ).length;
+  const total = Math.max(children.length, completedCount);
+  deps.onPatch(parentTaskId, {
+    status: "completed",
+    error: undefined,
+    transferredBytes: completedCount,
+    totalBytes: total,
+    speed: 0,
+    endTime: Date.now(),
+    phase: undefined,
+  });
 }
