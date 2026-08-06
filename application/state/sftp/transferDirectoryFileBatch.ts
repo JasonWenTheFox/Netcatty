@@ -131,8 +131,8 @@ export async function transferDiscoveredFiles(
           existing
           && existing.type !== "directory"
           && isUnchangedTransferCandidate(
-            { size: fileSize, lastModified: file.lastModified },
-            { size: existing.size, lastModified: existing.lastModified },
+            { size: fileSize, lastModified: file.lastModified, mtimeUnit: "ms" },
+            { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
           )
         ) {
           const skippedId = persistedChild?.id ?? crypto.randomUUID();

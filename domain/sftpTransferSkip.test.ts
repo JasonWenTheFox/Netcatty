@@ -12,58 +12,59 @@ test("normalizeTransferMtimeSeconds accepts seconds and milliseconds", () => {
   // Year 2000 in milliseconds must not be treated as epoch seconds.
   assert.equal(normalizeTransferMtimeSeconds(946_684_800_000), 946_684_800);
   assert.equal(normalizeTransferMtimeSeconds(946_684_800), 946_684_800);
-  // Early-1970s millisecond mtimes (below the old 1e11 cutoff).
+  // Adapter-declared units cover early-1970 ms without magnitude cutoffs.
+  assert.equal(normalizeTransferMtimeSeconds(2_678_400_000, "ms"), 2_678_400);
+  assert.equal(normalizeTransferMtimeSeconds(2_678_400, "s"), 2_678_400);
   assert.equal(normalizeTransferMtimeSeconds(60_000_000_000), 60_000_000);
-  assert.equal(normalizeTransferMtimeSeconds(60_000_000), 60_000_000);
 });
 
 test("isUnchangedTransferCandidate requires matching size and second mtime", () => {
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 1_700_000_000_200 },
-      { size: 10, lastModified: 1_700_000_000 },
+      { size: 10, lastModified: 1_700_000_000_200, mtimeUnit: "ms" },
+      { size: 10, lastModified: 1_700_000_000_000, mtimeUnit: "ms" },
     ),
     true,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 946_684_800_123 },
-      { size: 10, lastModified: 946_684_800 },
+      { size: 10, lastModified: 946_684_800_123, mtimeUnit: "ms" },
+      { size: 10, lastModified: 946_684_800_000, mtimeUnit: "ms" },
     ),
     true,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 60_000_000_000 },
-      { size: 10, lastModified: 60_000_000 },
+      { size: 10, lastModified: 2_678_400_000, mtimeUnit: "ms" },
+      { size: 10, lastModified: 2_678_400_000, mtimeUnit: "ms" },
     ),
     true,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 1_700_000_000 },
-      { size: 11, lastModified: 1_700_000_000 },
+      { size: 10, lastModified: 1_700_000_000, mtimeUnit: "ms" },
+      { size: 11, lastModified: 1_700_000_000, mtimeUnit: "ms" },
     ),
     false,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 1_700_000_000 },
-      { size: 10, lastModified: 1_700_000_001 },
+      { size: 10, lastModified: 1_700_000_000_000, mtimeUnit: "ms" },
+      { size: 10, lastModified: 1_700_000_001_000, mtimeUnit: "ms" },
     ),
     false,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 0, lastModified: 1_700_000_000 },
-      { size: 0, lastModified: 1_700_000_000 },
+      { size: 0, lastModified: 1_700_000_000_000, mtimeUnit: "ms" },
+      { size: 0, lastModified: 1_700_000_000_000, mtimeUnit: "ms" },
     ),
     true,
   );
   assert.equal(
     isUnchangedTransferCandidate(
-      { size: 10, lastModified: 0 },
-      { size: 10, lastModified: 0 },
+      { size: 10, lastModified: 0, mtimeUnit: "ms" },
+      { size: 10, lastModified: 0, mtimeUnit: "ms" },
     ),
     false,
   );

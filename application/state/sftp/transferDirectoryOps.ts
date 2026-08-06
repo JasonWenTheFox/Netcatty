@@ -857,7 +857,8 @@ export function useSftpDirectoryTransferOps({
           const skipUnchanged = readSkipUnchangedEnabled()
             && !task.replaceExistingTarget
             && !String(task.targetPath).includes(".netcatty-");
-          if (skipUnchanged) {
+          // Symlink listing attrs are the link node; transfer follows target bytes.
+          if (skipUnchanged && file.type !== "symlink") {
             const existing = await tryStatTransferTarget(
               targetPath,
               targetIsLocal,
@@ -868,8 +869,8 @@ export function useSftpDirectoryTransferOps({
               existing
               && existing.type !== "directory"
               && isUnchangedTransferCandidate(
-                { size: fileSize, lastModified: file.lastModified },
-                { size: existing.size, lastModified: existing.lastModified },
+                { size: fileSize, lastModified: file.lastModified, mtimeUnit: "ms" },
+                { size: existing.size, lastModified: existing.lastModified, mtimeUnit: "ms" },
               )
             ) {
               const skippedId = persistedChild?.id ?? crypto.randomUUID();
