@@ -1,7 +1,6 @@
 /* eslint-disable no-undef */
 const {
   windowsFramelessContentChromeOptions,
-  resolveFramelessHostBackgroundColor,
 } = require("./windowsWindowChrome.cjs");
 
 function createMainWindowApi(ctx) {
@@ -444,9 +443,8 @@ function createMainWindowApi(ctx) {
       });
     
       // Ensure native background matches frontend background, even before first paint.
-      // On Windows the host stays clear so DWM rounded corners do not show a dark rim.
       try {
-        win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
+        win.setBackgroundColor(backgroundColor);
       } catch {
         // ignore
       }

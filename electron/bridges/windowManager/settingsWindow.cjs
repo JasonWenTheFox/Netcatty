@@ -1,7 +1,6 @@
 /* eslint-disable no-undef */
 const {
   windowsFramelessContentChromeOptions,
-  resolveFramelessHostBackgroundColor,
 } = require("./windowsWindowChrome.cjs");
 
 function createSettingsWindowApi(ctx) {
@@ -241,7 +240,7 @@ function createSettingsWindowApi(ctx) {
     
       // Ensure native background matches frontend background, even before first paint.
       try {
-        win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
+        win.setBackgroundColor(backgroundColor);
       } catch {
         // ignore
       }

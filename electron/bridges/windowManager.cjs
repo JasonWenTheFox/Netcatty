@@ -1106,13 +1106,9 @@ function registerWindowHandlers(ipcMain, nativeTheme) {
       ? (nativeTheme?.shouldUseDarkColors ? "dark" : "light")
       : theme;
     const themeConfig = THEME_COLORS[effectiveTheme] || THEME_COLORS.light;
-    const {
-      resolveFramelessHostBackgroundColor,
-    } = require("./windowManager/windowsWindowChrome.cjs");
-    const hostBackground = resolveFramelessHostBackgroundColor(themeConfig.background);
-    forEachMainWindow((win) => win.setBackgroundColor(hostBackground));
+    forEachMainWindow((win) => win.setBackgroundColor(themeConfig.background));
     if (settingsWindow && !settingsWindow.isDestroyed()) {
-      settingsWindow.setBackgroundColor(hostBackground);
+      settingsWindow.setBackgroundColor(themeConfig.background);
     }
     return true;
   });
@@ -1120,13 +1116,9 @@ function registerWindowHandlers(ipcMain, nativeTheme) {
   ipcMain.handle("netcatty:setBackgroundColor", (_event, color) => {
     const normalized = normalizeBackgroundColor(color);
     if (!normalized) return false;
-    const {
-      resolveFramelessHostBackgroundColor,
-    } = require("./windowManager/windowsWindowChrome.cjs");
-    const hostBackground = resolveFramelessHostBackgroundColor(normalized);
-    forEachMainWindow((win) => win.setBackgroundColor(hostBackground));
+    forEachMainWindow((win) => win.setBackgroundColor(normalized));
     if (settingsWindow && !settingsWindow.isDestroyed()) {
-      settingsWindow.setBackgroundColor(hostBackground);
+      settingsWindow.setBackgroundColor(normalized);
     }
     return true;
   });
