@@ -661,10 +661,12 @@ test("createMacLocalNetworkAccessGate clears the safety timer so the full hold r
     probeHoldMs: holdMs,
     setTimer: (fn, ms) => {
       const handle = { ms, fn, cleared: false };
-      if (ms === safetyMs) safetyHandles.push(handle);
       if (ms === holdMs) {
         holds.push(ms);
         queueMicrotask(fn);
+      } else if (ms > holdMs) {
+        // Connect budget may be a residual (e.g. 499) after shared-deadline math.
+        safetyHandles.push(handle);
       }
       return handle;
     },
@@ -692,15 +694,19 @@ test("createMacLocalNetworkAccessGate clears the safety timer so the full hold r
   // Simulate connect completing late in the safety window.
   assert.equal(typeof connectCallback, "function");
   assert.equal(safetyHandles.length, 1);
+  assert.ok(
+    safetyHandles[0].ms <= safetyMs && safetyHandles[0].ms >= safetyMs - 50,
+    `unexpected safety budget ${safetyHandles[0].ms}`,
+  );
   connectCallback();
   await pending;
 
+  assert.equal(safetyHandles[0].cleared, true);
   assert.ok(
-    cleared.includes(safetyMs),
+    cleared.includes(safetyHandles[0].ms),
     `safety timer should be cleared on connect, cleared=${JSON.stringify(cleared)}`,
   );
   assert.deepEqual(holds, [holdMs]);
-  assert.equal(safetyHandles[0].cleared, true);
 });
 
 test("createMacLocalNetworkAccessGate skips when main process already probed", async () => {
