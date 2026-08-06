@@ -1,0 +1,103 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const {
+  parseAcceleratorSnapshot,
+  parseAscendDeviceBlock,
+  parseAscendInfoTable,
+  parseNvidiaDevices,
+  parseNvidiaProcesses,
+} = require("./gpuOps.cjs");
+
+test("parseNvidiaDevices reads csv nounits rows", () => {
+  const devices = parseNvidiaDevices(
+    "0, GPU-aaa, NVIDIA GeForce RTX 4090, 42, 1024, 24576, 61, 120.5, 450.0, 35, 550.54.15\n" +
+      "1, GPU-bbb, NVIDIA A100-SXM4-80GB, [N/A], 0, 81920, 38, 70.0, 400.0, [N/A], 550.54.15\n",
+  );
+  assert.equal(devices.length, 2);
+  assert.equal(devices[0].vendor, "nvidia");
+  assert.equal(devices[0].name, "NVIDIA GeForce RTX 4090");
+  assert.equal(devices[0].utilizationPercent, 42);
+  assert.equal(devices[0].memoryUsedMb, 1024);
+  assert.equal(devices[0].memoryTotalMb, 24576);
+  assert.equal(devices[1].utilizationPercent, null);
+  assert.equal(devices[1].fanPercent, null);
+});
+
+test("parseNvidiaProcesses maps uuid to gpu index", () => {
+  const devices = parseNvidiaDevices("0, GPU-aaa, RTX, 10, 1, 2, 30, 40, 50, 20, 1.0\n");
+  const processes = parseNvidiaProcesses("GPU-aaa, 1234, python, 2048\n", devices);
+  assert.equal(processes.length, 1);
+  assert.equal(processes[0].gpuIndex, 0);
+  assert.equal(processes[0].pid, 1234);
+  assert.equal(processes[0].processName, "python");
+  assert.equal(processes[0].memoryUsedMb, 2048);
+});
+
+test("parseAscendDeviceBlock extracts usages and memory pair", () => {
+  const device = parseAscendDeviceBlock(
+    0,
+    `
+NPU ID                         : 0
+Chip ID                        : 0
+Product Name                   : Ascend 910B
+Aicore Usage Rate(%)           : 17
+HBM Usage Rate(%)              : 6
+HBM Capacity(MB)               : 32768
+HBM Used Memory(MB)            : 2048 / 32768
+Temperature(C)                 : 41
+NPU Real-time Power(W)         : 71.7
+Health                         : OK
+`,
+  );
+  assert.equal(device.vendor, "ascend");
+  assert.equal(device.name, "Ascend 910B");
+  assert.equal(device.utilizationPercent, 17);
+  assert.equal(device.memoryUsedMb, 2048);
+  assert.equal(device.memoryTotalMb, 32768);
+  assert.equal(device.temperatureC, 41);
+  assert.equal(device.powerDrawW, 71.7);
+  assert.equal(device.health, "OK");
+});
+
+test("parseAscendInfoTable reads summary and chip rows", () => {
+  const devices = parseAscendInfoTable(`
+| NPU   Name                    | Health          | Power(W)   Temp(C)                        |
+| 0     910B3                   | OK              | 71.8       42                             |
+| Chip   Phy-ID   Chip-Logic-ID   AICore(%)   Memory-Usage(MB)   HBM-Usage(MB) |
+| 0      0        0               12          100 / 32768         2048 / 32768  |
+`);
+  assert.equal(devices.length, 1);
+  assert.equal(devices[0].name, "910B3");
+  assert.equal(devices[0].utilizationPercent, 12);
+  assert.equal(devices[0].memoryUsedMb, 2048);
+  assert.equal(devices[0].memoryTotalMb, 32768);
+  assert.equal(devices[0].temperatureC, 42);
+});
+
+test("parseAcceleratorSnapshot merges nvidia and ascend marked sections", () => {
+  const snapshot = parseAcceleratorSnapshot(`
+__NC_ACCEL_BEGIN__
+__NC_NVIDIA_DEVICES__
+0, GPU-aaa, RTX 4090, 55, 8192, 24576, 60, 200.0, 450.0, 40, 550.54
+__NC_NVIDIA_PROCESSES__
+GPU-aaa, 99, train.py, 4096
+__NC_NPU_BEGIN__
+__NC_NPU_DEVICE__=1
+Product Name                   : Ascend 910B
+Aicore Usage Rate(%)           : 8
+HBM Used Memory(MB)            : 512 / 32768
+Temperature(C)                 : 39
+NPU Real-time Power(W)         : 66.0
+Health                         : OK
+__NC_NPU_PROCS__
+__NC_NPU_END__
+__NC_ACCEL_END__
+`);
+  assert.equal(snapshot.devices.length, 2);
+  assert.equal(snapshot.devices[0].vendor, "ascend");
+  assert.equal(snapshot.devices[1].vendor, "nvidia");
+  assert.equal(snapshot.processes.length, 1);
+  assert.equal(snapshot.nvidiaDriverVersion, "550.54");
+});
