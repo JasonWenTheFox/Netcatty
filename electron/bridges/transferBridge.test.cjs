@@ -10055,3 +10055,166 @@ test("local-to-local transfer preserves source mtime on the destination", async 
   assert.equal(Math.floor(targetStat.mtimeMs / 1000), Math.floor(sourceMtimeMs / 1000));
   assert.deepEqual(await fs.promises.readFile(targetPath), Buffer.from("hello-mtime"));
 });
+
+test("waitForPendingWriteOpenPathGate timeout fails closed without clearing poison", async () => {
+  let resolveGate;
+  const gate = new Promise((resolve) => { resolveGate = resolve; });
+  const transfer = {
+    pendingWriteOpenPathGate: gate,
+    _resolvePendingWriteOpenPathGate() {
+      resolveGate();
+      transfer.pendingWriteOpenPathGate = null;
+      transfer._resolvePendingWriteOpenPathGate = null;
+    },
+  };
+
+  await assert.rejects(
+    () => transferBridge._waitForPendingWriteOpenPathGateForTests(transfer, { timeoutMs: 30 }),
+    /Timed out waiting for prior write OPEN to settle/i,
+  );
+  assert.equal(transfer.pendingWriteOpenPathGate, gate, "timeout must not clear the published gate poison");
+  resolveGate();
+});
+
+test("in-place isolated OPEN keeps path gate until late callback after channel error", async (t) => {
+  // Codex P1 on e2cc8241: force-releasing an in-place truncating OPEN lets
+  // fastPut complete, then a late OPEN truncates the reported-success file.
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-inplace-open-no-force-release-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(TRANSFER_CHUNK_SIZE, 71);
+  const localPath = path.join(tempDir, "upload.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const targetPath = "/tmp/inplace-no-force.bin";
+  const existingPayload = Buffer.from("keep-original");
+
+  const remoteFiles = new Map([[targetPath, Buffer.from(existingPayload)]]);
+  const eventLog = [];
+  let releaseOpen = null;
+  let openCalls = 0;
+  let fastPutCalls = 0;
+
+  const isolatedSftp = createFastSftp({
+    open(remotePath, flags, callback) {
+      assert.equal(flags, "w");
+      openCalls += 1;
+      const key = String(remotePath);
+      releaseOpen = () => {
+        remoteFiles.set(key, Buffer.alloc(0));
+        eventLog.push(`late-open-truncate:${key}`);
+        callback(null, Buffer.from(`handle:${key}`));
+      };
+    },
+    write() {
+      throw new Error("WRITE must not run while OPEN is pending");
+    },
+    close(_handle, callback) {
+      eventLog.push("close");
+      callback(null);
+    },
+    end() {
+      eventLog.push("isolated-end");
+    },
+    fastPut() {
+      fastPutCalls += 1;
+      throw new Error("fastPut must not run while in-place OPEN poison is held");
+    },
+  });
+
+  const sharedSftp = createFastSftp({
+    open() {
+      throw new Error("shared OPEN must not run while isolated in-place gate is held");
+    },
+    createWriteStream() {
+      throw new Error("serial WriteStream must not run");
+    },
+    lstat(remotePath, callback) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        callback(error);
+        return;
+      }
+      callback(null, {
+        size: remoteFiles.get(key).length,
+        mode: 0o120777,
+        isDirectory: () => false,
+        isSymbolicLink: () => true,
+      });
+    },
+  });
+
+  const client = {
+    sftp: sharedSftp,
+    async lstat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return {
+        size: remoteFiles.get(key).length,
+        mode: 0o120777,
+        isDirectory: () => false,
+        isSymbolicLink: () => true,
+      };
+    },
+    async stat(remotePath) {
+      const key = String(remotePath);
+      if (!remoteFiles.has(key)) {
+        const error = new Error("ENOENT");
+        error.code = 2;
+        throw error;
+      }
+      return { size: remoteFiles.get(key).length };
+    },
+    rename() {
+      return Promise.resolve();
+    },
+    async delete() {},
+    client: {
+      sftp(callback) {
+        callback(null, isolatedSftp);
+      },
+    },
+  };
+  transferBridge.init({ sftpClients: new Map([["target", client]]) });
+
+  const sender = createSender();
+  const transferId = "inplace-open-no-force-release";
+  const running = transferBridge.startTransfer({ sender }, {
+    transferId,
+    sourcePath: localPath,
+    targetPath,
+    sourceType: "local",
+    targetType: "sftp",
+    targetSftpId: "target",
+    totalBytes: payload.length,
+    resumable: false,
+    skipAdmission: true,
+  });
+
+  const opened = await waitUntil(() => openCalls >= 1, 2000);
+  assert.ok(opened, "expected isolated in-place OPEN to stall");
+
+  isolatedSftp.emit("error", new Error("isolated channel died during in-place OPEN"));
+
+  // Former force-release window (2s). Path gate must still block fallbacks.
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  assert.equal(fastPutCalls, 0, "fastPut must not run while in-place OPEN is unsettled");
+  assert.deepEqual(remoteFiles.get(targetPath), existingPayload, "destination must stay intact before late OPEN");
+
+  assert.equal(typeof releaseOpen, "function");
+  releaseOpen();
+
+  const result = await Promise.race([
+    running,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("transfer hung after late in-place OPEN")), 8000)),
+  ]);
+
+  assert.ok(result.error, "expected transfer to fail closed rather than report success after late truncate");
+  assert.equal(sender.sent.some((entry) => entry.channel === "netcatty:transfer:complete"), false);
+  assert.ok(eventLog.includes(`late-open-truncate:${targetPath}`) || eventLog.includes("close"));
+});
