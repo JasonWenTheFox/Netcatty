@@ -518,18 +518,15 @@ function createPreloadApi(ctx) {
     const epochScoped = Number.isFinite(options?.bootEpoch);
     // Unscoped closes keep the historical sync listener teardown so reconnect
     // paths that fire-and-forget closeSession still drop stale handlers.
-    // Epoch-scoped closes must wait for main-process ownership confirmation so
-    // a superseded start cannot clear the replacement's listeners.
+    // Epoch-scoped closes are only used to dispose a superseded backend owner;
+    // they must never clear preload listeners for the shared sessionId, because
+    // a replacement boot may already have registered readiness/auto-login hooks.
     if (!epochScoped) {
       markTerminalDataSessionClosed(sessionId);
       clearSessionScopedTerminalListeners(sessionId);
     }
     try {
-      const result = await ipcRenderer.invoke("netcatty:close:await", payload);
-      if (epochScoped && result?.skipped !== true) {
-        markTerminalDataSessionClosed(sessionId);
-        clearSessionScopedTerminalListeners(sessionId);
-      }
+      await ipcRenderer.invoke("netcatty:close:await", payload);
     } catch {
       ipcRenderer.send("netcatty:close", payload);
     }

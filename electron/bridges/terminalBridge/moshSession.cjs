@@ -549,6 +549,8 @@ function createMoshSessionApi(ctx) {
         const { claimSessionSlot } = require("../sessionBootEpoch.cjs");
         const claim = claimSessionSlot(sessions, sessionId, session, options.bootEpoch);
         if (!claim.ok) {
+          try { sshPty.kill(); } catch { /* ignore */ }
+          cleanupMoshAuthTempFiles(moshAuth.tempFiles);
           const supersededError = new Error("Connection superseded by a newer reconnect");
           supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
           throw supersededError;

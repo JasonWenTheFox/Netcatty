@@ -1287,6 +1287,8 @@ main();
           const { claimSessionSlot } = require("../sessionBootEpoch.cjs");
           const claim = claimSessionSlot(sessions, sessionId, session, options.bootEpoch);
           if (!claim.ok) {
+            try { proc.kill(); } catch { /* ignore */ }
+            cleanupSessionExternalAuthArtifacts(session);
             const supersededError = new Error("Connection superseded by a newer reconnect");
             supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
             throw supersededError;
