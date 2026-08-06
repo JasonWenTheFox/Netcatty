@@ -390,7 +390,7 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.match(body, /reconnectWakeTokenRef\.current = null/);
   assert.match(body, /reconnectWakeInFlightRef\.current = false/);
   assert.match(body, /netcatty:terminal-session-disconnected/);
-  assert.match(body, /bumpBootEpoch\(\)/);
+  assert.match(body, /invalidateBootEpochForClose\(\)/);
   assert.match(body, /isBootActiveRef\.current = false/);
   assert.match(body, /setIsCancelling\(true\)/);
   assert.match(body, /updateStatus\("disconnected"\)/);

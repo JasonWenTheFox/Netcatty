@@ -1209,6 +1209,24 @@ async function startSerialSession(event, options) {
     // tearing down a freshly started stream after a "Restart" reconnect on
     // the same sessionId (issue #916).
     let logStreamToken = null;
+    const {
+      registerPendingBootAbort,
+      clearPendingBootAbort,
+    } = require("./sessionBootEpoch.cjs");
+    const pendingBootAbort = registerPendingBootAbort(sessionId, options?.bootEpoch);
+    let settled = false;
+    const settleReject = (err) => {
+      if (settled) return;
+      settled = true;
+      clearPendingBootAbort(sessionId, pendingBootAbort);
+      reject(err);
+    };
+    const settleResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      clearPendingBootAbort(sessionId, pendingBootAbort);
+      resolve(value);
+    };
     try {
       const serialPort = new SerialPort({
         path: portPath,
@@ -1222,10 +1240,30 @@ async function startSerialSession(event, options) {
         autoOpen: false,
       });
 
+      const abortPendingOpen = () => {
+        try { serialPort.close(); } catch { /* ignore */ }
+        const supersededError = new Error("Connection superseded by a newer reconnect");
+        supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
+        settleReject(supersededError);
+      };
+      if (pendingBootAbort.signal.aborted) {
+        abortPendingOpen();
+        return;
+      }
+      pendingBootAbort.signal.addEventListener("abort", abortPendingOpen, { once: true });
+
       serialPort.open((err) => {
+        if (settled) {
+          try { serialPort.close(); } catch { /* ignore */ }
+          return;
+        }
+        if (pendingBootAbort.signal.aborted) {
+          abortPendingOpen();
+          return;
+        }
         if (err) {
           console.error(`[Serial] Failed to open port ${portPath}:`, err.message);
-          reject(new Error(`Failed to open serial port: ${err.message}`));
+          settleReject(new Error(`Failed to open serial port: ${err.message}`));
           return;
         }
 
@@ -1251,7 +1289,7 @@ async function startSerialSession(event, options) {
           const claim = claimSessionSlot(sessions, sessionId, session, options?.bootEpoch);
           if (!claim.ok) {
             try { serialPort.close(); } catch { /* ignore */ }
-            reject(new Error("Connection superseded by a newer reconnect"));
+            settleReject(new Error("Connection superseded by a newer reconnect"));
             return;
           }
         }
@@ -1337,11 +1375,11 @@ async function startSerialSession(event, options) {
           finalizeSerialExit({ exitCode: 0, reason: "closed" });
         });
 
-        resolve({ sessionId });
+        settleResolve({ sessionId });
       });
     } catch (err) {
       console.error("[Serial] Failed to start serial session:", err.message);
-      reject(err);
+      settleReject(err);
     }
   });
 }
