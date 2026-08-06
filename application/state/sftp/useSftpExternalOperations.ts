@@ -801,9 +801,12 @@ export const useSftpExternalOperations = (
             conflictDefaults.set(conflictType, action);
           },
         });
+        controller.addCancelListener(() => {
+          cancelPendingUploadConflicts(controller);
+        });
       });
     };
-  }, []);
+  }, [cancelPendingUploadConflicts]);
 
   // Create upload bridge that wraps netcattyBridge.
   // Pass connect-time Host so pooled stream uploads open the pinned endpoint

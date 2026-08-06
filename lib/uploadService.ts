@@ -37,7 +37,9 @@ import type { UploadBridge, UploadCallbacks, UploadConfig, UploadResult } from "
 const formatUploadError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const getDropEntrySize = (entry: DropEntry): number => entry.file?.size ?? entry.size ?? 0;
+const getDropEntrySize = (entry: DropEntry): number => (
+  entry.isDirectory ? 0 : entry.file?.size ?? entry.size ?? 0
+);
 const getRootDropLocalPath = (rootName: string, entries: DropEntry[]): string | undefined => {
   const entry = entries.find((candidate) => getDropEntryLocalPath(candidate));
   const localPath = entry ? getDropEntryLocalPath(entry) : undefined;

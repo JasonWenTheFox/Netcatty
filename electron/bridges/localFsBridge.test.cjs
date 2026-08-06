@@ -265,6 +265,34 @@ test("collectLocalTreeEntries bounds and parallelizes metadata reads within a di
   assert.ok(maxActive <= 32, `metadata concurrency must stay bounded, got ${maxActive}`);
 });
 
+test("collectLocalTreeEntries skips a child that disappears during inspection", async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-upload-tree-vanished-"));
+  const selected = path.join(root, "project");
+  await fs.promises.mkdir(selected, { recursive: true });
+  await fs.promises.writeFile(path.join(selected, "stable.txt"), "stable");
+  await fs.promises.writeFile(path.join(selected, "vanished.txt"), "vanished");
+
+  const originalLstat = fs.promises.lstat;
+  fs.promises.lstat = async (candidate, ...args) => {
+    if (candidate === path.join(selected, "vanished.txt")) {
+      const error = new Error("file disappeared");
+      error.code = "ENOENT";
+      throw error;
+    }
+    return originalLstat.call(fs.promises, candidate, ...args);
+  };
+  t.after(async () => {
+    fs.promises.lstat = originalLstat;
+    await fs.promises.rm(root, { recursive: true, force: true });
+  });
+
+  const entries = await collectLocalTreeEntries(selected);
+  assert.deepEqual(entries.map((entry) => entry.relativePath), [
+    "project",
+    "project/stable.txt",
+  ]);
+});
+
 test("collectLocalTreeEntries does not follow a directory symlink cycle", async (t) => {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-upload-tree-cycle-"));
   const selected = path.join(root, "project");

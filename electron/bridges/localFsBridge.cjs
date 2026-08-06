@@ -361,35 +361,43 @@ async function collectLocalTreeEntries(rootPath, limits = {}, onProgress, isCanc
     const metadataConcurrency = 32;
     for (let start = 0; start < children.length; start += metadataConcurrency) {
       throwIfLocalTreeCancelled(isCancelled);
-      const inspected = await Promise.all(
+      const inspected = (await Promise.all(
         children.slice(start, start + metadataConcurrency).map(async (child) => {
           const childPath = path.join(current.localPath, child.name);
           const childRelativePath = `${current.relativePath}/${child.name}`;
-          // Use lstat to distinguish links, then stat the target. Directory
-          // links retain the established folder-upload behavior, while the
-          // real-path ancestor chain prevents junction/symlink cycles.
-          const linkStat = await fs.promises.lstat(childPath);
-          const stat = linkStat.isSymbolicLink()
-            ? await fs.promises.stat(childPath).catch(() => linkStat)
-            : linkStat;
-          const isDirectory = stat.isDirectory();
-          const realPath = isDirectory
-            ? await fs.promises.realpath(childPath)
-            : null;
-          const isCycle = !!realPath && current.ancestorRealPaths.has(realPath);
-          const ancestorRealPaths = realPath
-            ? new Set([...current.ancestorRealPaths, realPath])
-            : current.ancestorRealPaths;
-          return {
-            childPath,
-            childRelativePath,
-            stat,
-            isDirectory,
-            isCycle,
-            ancestorRealPaths,
-          };
+          try {
+            // Use lstat to distinguish links, then stat the target. Directory
+            // links retain the established folder-upload behavior, while the
+            // real-path ancestor chain prevents junction/symlink cycles.
+            const linkStat = await fs.promises.lstat(childPath);
+            const stat = linkStat.isSymbolicLink()
+              ? await fs.promises.stat(childPath).catch(() => linkStat)
+              : linkStat;
+            const isDirectory = stat.isDirectory();
+            const realPath = isDirectory
+              ? await fs.promises.realpath(childPath)
+              : null;
+            const isCycle = !!realPath && current.ancestorRealPaths.has(realPath);
+            const ancestorRealPaths = realPath
+              ? new Set([...current.ancestorRealPaths, realPath])
+              : current.ancestorRealPaths;
+            return {
+              childPath,
+              childRelativePath,
+              stat,
+              isDirectory,
+              isCycle,
+              ancestorRealPaths,
+            };
+          } catch (error) {
+            // A folder can change while it is being scanned. Match the
+            // tolerant browser traversal and skip entries that disappear or
+            // become inaccessible instead of aborting the whole drop.
+            console.warn(`Could not inspect ${childPath}:`, error.message);
+            return null;
+          }
         }),
-      );
+      )).filter(Boolean);
 
       // Promise.all preserves the sorted child order, so restart manifests stay
       // deterministic while metadata I/O is parallelized.
