@@ -74,8 +74,8 @@ export type WakeTerminalFromHibernateOptions = {
    * Must keep the backend paused until resumeWakeFlow runs after reattach.
    */
   stopHibernateListeners: () => void;
-  /** Resume backend output after the live display listener is attached. */
-  resumeWakeFlow?: () => void;
+  /** Resume backend output when true (reattached, or failed wake cleanup). */
+  resumeWakeFlow?: (shouldResume: boolean) => void;
   reattachSession: (term: XTerm) => void;
   safeFit: (options?: { force?: boolean; requireVisible?: boolean }) => void;
   resizeSession: () => void;
@@ -155,6 +155,7 @@ export async function wakeTerminalFromHibernate(
   // Full-history replay can take many frames; leaving the capped pending
   // buffer open (or leaving no display listener while flow is live) drops
   // ACKed bytes under sustained `cat` output (#2762).
+  let didReattach = false;
   try {
     const drainOk = (await prepareWakeFlow?.()) ?? true;
     if (drainOk) {
@@ -179,10 +180,6 @@ export async function wakeTerminalFromHibernate(
     });
     runtime.cursorLineHighlighter.refresh({ force: true });
 
-    // Exit listener stays alive through replay so a close during wake still
-    // updates status before we decide whether to reattach.
-    const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
-
     // Stop the data listener before the late take. Captures:
     // - exit "[session closed]" tails appended during history replay
     // - uncapped live arrivals when drainOk was false
@@ -193,11 +190,21 @@ export async function wakeTerminalFromHibernate(
       await appendTerminalReplayData(term, latePending, replayOptions);
       replayedPendingChars += latePending.length;
     }
+    // Exit (or residual uncapped output) may arrive during the late await.
+    const exitTail = takePendingBuffer();
+    if (exitTail) {
+      await appendTerminalReplayData(term, exitTail, replayOptions);
+      replayedPendingChars += exitTail.length;
+    }
 
+    // Recompute after late drains so an exit during those awaits cannot leave
+    // shouldReattach stale (would reattach a dead session as connected).
+    const shouldReattach = sessionConnected && (getSessionConnected?.() ?? true);
     stopHibernateListeners();
     if (shouldReattach) {
       reattachSession(term);
       updateStatus("connected");
+      didReattach = true;
     }
 
     runtime.ensureWebglRenderer();
@@ -239,9 +246,8 @@ export async function wakeTerminalFromHibernate(
     return true;
   } finally {
     setHibernatePendingCapDisabled?.(false);
-    // Resume only after the live display listener is installed (or after we
-    // choose not to reattach / wake fails). Keeps the preload backlog from
-    // absorbing a burst that would exceed its 64 KiB trim.
-    resumeWakeFlow?.();
+    // Resume only after a live display listener is installed. Reconnect wakes
+    // that do not reattach leave the backend paused until cleanupSession.
+    resumeWakeFlow?.(didReattach);
   }
 }

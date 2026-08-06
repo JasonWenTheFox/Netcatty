@@ -3716,14 +3716,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       container,
       getPayload,
       prepareWakeFlow: async () => {
-        if (!options.sessionConnected) return true;
         const backendId = sessionRef.current;
         if (!backendId) return true;
-        // Drain in-flight output into the hibernate pending buffer while the
-        // listener is still attached, then keep the backend paused through
-        // history replay and reattach. A failed drain still pauses the
-        // backend; the wake path keeps an uncapped pending listener until
-        // after history replay so ACKed bytes are not dropped.
+        // Always pause when a backend exists — including reconnect wakes
+        // (sessionConnected=false) that will not reattach. Stopping the
+        // hibernate listener without a pause drops live output into the
+        // preload backlog without flow ACKs until cleanupSession.
         if (terminalBackend.setSessionFlowPausedAndWait) {
           const result = await terminalBackend.setSessionFlowPausedAndWait(backendId, true);
           return result?.success === true;
@@ -3741,8 +3739,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         hibernatePendingCapDisabledRef.current = disabled;
       },
       stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
-      resumeWakeFlow: () => {
+      resumeWakeFlow: (shouldResume) => {
         hibernatePendingCapDisabledRef.current = false;
+        if (!shouldResume) return;
         const backendId = sessionRef.current;
         if (!backendId) return;
         terminalBackend.setSessionFlowPaused?.(backendId, false);
