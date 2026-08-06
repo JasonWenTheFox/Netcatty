@@ -630,15 +630,17 @@ test("createMacLocalNetworkAccessGate holds the UDP socket before closing", asyn
 
 test("createMacLocalNetworkAccessGate applies the configured probe timeout as a safety net", async () => {
   const timeouts = [];
+  const holdMs = 5;
   const gate = createMacLocalNetworkAccessGate({
     platform: "darwin",
     forceElectron: true,
     probeTimeoutMs: DEFAULT_PROBE_TIMEOUT_MS,
-    probeHoldMs: 5,
+    probeHoldMs: holdMs,
     setTimer: (fn, ms) => {
       timeouts.push(ms);
-      // Fire only the safety timeout path by never calling the connect callback.
-      if (ms === DEFAULT_PROBE_TIMEOUT_MS) queueMicrotask(fn);
+      // Shared-deadline math often arms a residual (e.g. 2999) rather than the
+      // exact constant. Fire any safety-budget timer; the hang socket never connects.
+      if (ms > holdMs) queueMicrotask(fn);
       return { ms };
     },
     clearTimer() {},
@@ -655,7 +657,13 @@ test("createMacLocalNetworkAccessGate applies the configured probe timeout as a 
     },
   });
   await gate.ensureAccess({ hostname: "10.0.0.1", port: 22 });
-  assert.ok(timeouts.includes(DEFAULT_PROBE_TIMEOUT_MS));
+  const safetyTimeouts = timeouts.filter((ms) => ms > holdMs);
+  assert.equal(safetyTimeouts.length, 1);
+  assert.ok(
+    safetyTimeouts[0] >= DEFAULT_PROBE_TIMEOUT_MS - 50
+      && safetyTimeouts[0] <= DEFAULT_PROBE_TIMEOUT_MS,
+    `expected residual safety budget near ${DEFAULT_PROBE_TIMEOUT_MS}, got ${safetyTimeouts[0]}`
+  );
 });
 
 test("createMacLocalNetworkAccessGate clears the safety timer so the full hold runs after a slow connect", async () => {
