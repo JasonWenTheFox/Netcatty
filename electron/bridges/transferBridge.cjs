@@ -5430,6 +5430,13 @@ async function startTransferNow(event, payload, onProgress) {
         transfer.stagedRemote = null;
       }
     }
+    // Superseded before cancelled: a cancelled attempt can still lose ownership
+    // to a same-id retry while OPEN is pending. Treat as superseded so we do not
+    // delete the retry stage, release its leases, or emit cancelled (Codex P2).
+    if (/superseded/i.test(err?.message || String(err))) {
+      sendError(err);
+      return { transferId, superseded: true };
+    }
     if (!err?.recoveryFailed && (transfer.cancelled || err.message === 'Transfer cancelled')) {
       if (transfer.stagedLocalPath) {
         try { await fs.promises.unlink(transfer.stagedLocalPath); } catch { }
@@ -5453,12 +5460,6 @@ async function startTransferNow(event, payload, onProgress) {
         transfer.stagedLocalPath = null;
       }
       sendError(err);
-    }
-    // Superseded attempts lost ownership to a same-id retry. Do not return
-    // result.error — renderer directory ops treat any error as task failure
-    // and would mark the live retry failed (Codex P2 on f4a92074).
-    if (/superseded/i.test(err?.message || String(err))) {
-      return { transferId, superseded: true };
     }
     return { transferId, error: err.message };
   }
