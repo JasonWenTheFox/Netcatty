@@ -36,6 +36,7 @@ test("hibernate wake consumes pending via take-and-clear so capped arrivals are 
   assert.match(mountSource, /takePendingBuffer: \(\) => string/);
   assert.match(mountSource, /const pendingAtApplyStart = takePendingBuffer\(\);/);
   assert.match(mountSource, /const pendingDelta = takePendingBuffer\(\);/);
+  assert.match(mountSource, /const finalPendingDelta = takePendingBuffer\(\);/);
   assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
 
   assert.match(
