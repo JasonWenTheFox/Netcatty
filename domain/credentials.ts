@@ -33,6 +33,7 @@ const DPAPI_HEADER = [0x01, 0x00, 0x00, 0x00] as const;
 
 /** Minimum decoded sizes for complete Chromium OSCrypt blobs. */
 const MIN_V10_V11_CIPHERTEXT_BYTES = 19; // CBC: header(3) + one AES block(16)
+const MIN_V10_V11_GCM_CIPHERTEXT_BYTES = 31; // header(3) + nonce(12) + tag(16)
 const MIN_DPAPI_CIPHERTEXT_BYTES = 20; // header(4) + protected payload
 
 /**
@@ -71,6 +72,13 @@ const startsWithBytes = (
   return prefix.every((byte, index) => decoded[index] === byte);
 };
 
+/** CBC is header(3) + 16-byte blocks; GCM is at least header+nonce+tag (31). */
+const isValidV10V11CiphertextLength = (byteLength: number): boolean => {
+  if (byteLength >= MIN_V10_V11_GCM_CIPHERTEXT_BYTES) return true;
+  return byteLength >= MIN_V10_V11_CIPHERTEXT_BYTES
+    && (byteLength - 3) % 16 === 0;
+};
+
 export const isEncryptedCredentialPlaceholder = (
   value: string | undefined | null,
 ): value is string => {
@@ -82,7 +90,7 @@ export const isEncryptedCredentialPlaceholder = (
   const decoded = decodeBase64Bytes(payload);
   if (!decoded) return false;
   if (startsWithBytes(decoded, V10_HEADER) || startsWithBytes(decoded, V11_HEADER)) {
-    return decoded.byteLength >= MIN_V10_V11_CIPHERTEXT_BYTES;
+    return isValidV10V11CiphertextLength(decoded.byteLength);
   }
   if (startsWithBytes(decoded, DPAPI_HEADER)) {
     return decoded.byteLength >= MIN_DPAPI_CIPHERTEXT_BYTES;

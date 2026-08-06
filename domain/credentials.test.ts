@@ -51,6 +51,12 @@ test("isEncryptedCredentialPlaceholder detects complete v10 device-bound ciphert
   assert.equal(isEncryptedCredentialPlaceholder(ENC), true);
 });
 
+test("isEncryptedCredentialPlaceholder rejects intermediate v10 lengths that are neither CBC nor GCM", () => {
+  const body = Buffer.alloc(24, 0);
+  Buffer.from("v10", "utf8").copy(body, 0);
+  assert.equal(isEncryptedCredentialPlaceholder(`enc:v1:${body.toString("base64")}`), false);
+});
+
 test("isEncryptedCredentialPlaceholder detects real Windows DPAPI base64 prefixes", () => {
   const body = Buffer.alloc(20, 0);
   body[0] = 0x01;

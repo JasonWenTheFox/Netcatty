@@ -44,6 +44,19 @@ test("looksLikeEncryptedCredential accepts complete CBC-sized v10 payloads", () 
   assert.equal(looksLikeEncryptedCredential(completeCiphertextPlaceholder()), true);
 });
 
+test("looksLikeEncryptedCredential rejects impossible intermediate v10 lengths", () => {
+  // 20–30 bytes starting with v10 cannot be CBC (19+16n) or GCM (>=31).
+  const body = Buffer.alloc(24, 0);
+  Buffer.from("v10", "utf8").copy(body, 0);
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${body.toString("base64")}`), false);
+});
+
+test("looksLikeEncryptedCredential accepts GCM-sized v10 payloads", () => {
+  const body = Buffer.alloc(31, 0);
+  Buffer.from("v10", "utf8").copy(body, 0);
+  assert.equal(looksLikeEncryptedCredential(`${ENC_PREFIX}${body.toString("base64")}`), true);
+});
+
 test("looksLikeEncryptedCredential accepts real Windows DPAPI base64 prefixes", () => {
   // 01 00 00 00 d0 8c ... encodes as AQAAANCM..., not AQAAAA...
   const body = Buffer.alloc(MIN_DPAPI_CIPHERTEXT_BYTES, 0);
