@@ -364,6 +364,12 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
   useEffect(() => {
     const dispose = terminalBackend.onHostKeyVerification?.((request) => {
       if (request.sessionId !== sessionId) return;
+      // Disconnect keeps the pane mounted; reject late host-key prompts instead
+      // of reopening approval UI on a disconnected / aborted boot.
+      if (!isBootActiveRef.current || statusRef.current === "disconnected") {
+        void terminalBackend.respondHostKeyVerification?.(request.requestId, false);
+        return;
+      }
 
       setPendingHostKeyRequestId(request.requestId);
       setPendingHostKeyInfo(toHostKeyInfo(request));
