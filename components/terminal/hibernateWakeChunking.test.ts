@@ -29,6 +29,21 @@ const writeAndWait = (term: XTerm, data: string): Promise<void> =>
     term.write(data, () => resolve());
   });
 
+test("hibernate wake consumes pending via take-and-clear so capped arrivals are not skipped", () => {
+  const mountSource = readFileSync(new URL("./terminalRuntimeMount.ts", import.meta.url), "utf8");
+  const terminalSource = readFileSync(new URL("../Terminal.tsx", import.meta.url), "utf8");
+
+  assert.match(mountSource, /takePendingBuffer: \(\) => string/);
+  assert.match(mountSource, /const pendingAtApplyStart = takePendingBuffer\(\);/);
+  assert.match(mountSource, /const pendingDelta = takePendingBuffer\(\);/);
+  assert.doesNotMatch(mountSource, /pending\.slice\(replayedPendingLength\)/);
+
+  assert.match(
+    terminalSource,
+    /takePendingBuffer:\s*\(\)\s*=>\s*\{\s*const pending = hibernatePendingBufferRef\.current;\s*hibernatePendingBufferRef\.current = "";\s*return pending;\s*\}/,
+  );
+});
+
 test("writeTerminalPayloadChunked splits large buffers (shipped wake helper)", async () => {
   const writes: string[] = [];
   const term = {

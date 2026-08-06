@@ -49,6 +49,12 @@ export type WakeTerminalFromHibernateOptions = {
   runtimeContext: Omit<CreateXTermRuntimeContext, "container" | "initiallyVisible" | "deferWebglUntilReplayComplete">;
   container: HTMLDivElement;
   getPayload: () => TerminalHibernateWakePayload;
+  /**
+   * Atomically read and clear hibernate pending output. Required so chunked
+   * full-history replay cannot race the capped pending buffer: length-based
+   * slicing misses bytes when capHibernateBuffer trims the front during wake.
+   */
+  takePendingBuffer: () => string;
   /** Stop hibernate IPC listeners before reading the final replay payload. */
   stopHibernateListeners: () => void;
   reattachSession: (term: XTerm) => void;
@@ -74,6 +80,7 @@ export async function wakeTerminalFromHibernate(
     runtimeContext,
     container,
     getPayload,
+    takePendingBuffer,
     stopHibernateListeners,
     reattachSession,
     safeFit,
@@ -121,34 +128,27 @@ export async function wakeTerminalFromHibernate(
 
   const term = runtime.term;
   const initialPayload = getPayload();
-  const pendingAtApplyStart = initialPayload.pendingBuffer;
+  // Capture pending for this replay pass and clear the live buffer so arrivals
+  // during chunked history replay accumulate as a pure delta (survives the
+  // 512 KiB pending cap without length-slice gaps).
+  const pendingAtApplyStart = takePendingBuffer();
   const replayOptions = { chunkBytes: replayChunkBytes };
 
-  await applyHibernateWakeToTerminal(term, runtime, initialPayload, {
+  await applyHibernateWakeToTerminal(term, runtime, {
+    ...initialPayload,
+    pendingBuffer: pendingAtApplyStart,
+  }, {
     replayOptions,
     deferWebgl: true,
   });
   runtime.cursorLineHighlighter.refresh({ force: true });
 
-  let replayedPendingLength = pendingAtApplyStart.length;
+  let replayedPendingChars = pendingAtApplyStart.length;
   for (let drainPass = 0; drainPass < 16; drainPass += 1) {
-    const pending = getPayload().pendingBuffer;
-    if (pending.length <= replayedPendingLength) break;
-    await appendTerminalReplayData(
-      term,
-      pending.slice(replayedPendingLength),
-      replayOptions,
-    );
-    replayedPendingLength = pending.length;
-  }
-  const finalPending = getPayload().pendingBuffer;
-  if (finalPending.length > replayedPendingLength) {
-    await appendTerminalReplayData(
-      term,
-      finalPending.slice(replayedPendingLength),
-      replayOptions,
-    );
-    replayedPendingLength = finalPending.length;
+    const pendingDelta = takePendingBuffer();
+    if (!pendingDelta) break;
+    await appendTerminalReplayData(term, pendingDelta, replayOptions);
+    replayedPendingChars += pendingDelta.length;
   }
 
   stopHibernateListeners();
@@ -191,7 +191,7 @@ export async function wakeTerminalFromHibernate(
     snapshotChars: initialPayload.snapshot.length,
     viewportChars: initialPayload.viewportSnapshot?.length ?? initialPayload.snapshot.length,
     scrollbackChars: initialPayload.scrollbackSnapshot?.length ?? 0,
-    pendingChars: replayedPendingLength,
+    pendingChars: replayedPendingChars,
     alternateScreen: initialPayload.alternateScreen,
   });
   return true;

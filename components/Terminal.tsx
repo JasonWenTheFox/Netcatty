@@ -3704,6 +3704,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       runtimeContext,
       container,
       getPayload,
+      takePendingBuffer: () => {
+        const pending = hibernatePendingBufferRef.current;
+        hibernatePendingBufferRef.current = "";
+        return pending;
+      },
       stopHibernateListeners,
       sessionConnected: options.sessionConnected,
       getSessionConnected: () => getSessionConnectedRef.current(),
