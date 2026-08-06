@@ -863,8 +863,10 @@ printf '%s\n' '${scanCompleteMarker}'`;
                 )
                 : Promise.resolve(null);
               void newShellPidPromise.then((newShellPid) => {
+                // Bind PID only to the session this reuse opened. A higher
+                // bootEpoch reconnect may already own sessionId in the map.
                 const liveSession = sessions.get(sessionId);
-                if (liveSession && newShellPid) {
+                if (liveSession && liveSession === copiedSession && newShellPid) {
                   liveSession.shellPid = newShellPid;
                 }
                 settled = true;
