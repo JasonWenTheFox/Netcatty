@@ -725,6 +725,130 @@ test("stale startSSH attach failure does not disconnect a newer reconnect", asyn
   assert.deepEqual(statuses, []);
 });
 
+test("stale startSSH failure does not reset replacement reconnect UI state", async () => {
+  let rejectStart: ((error: Error) => void) | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const awaitingUserInput: boolean[] = [];
+  const pastTcpDial: boolean[] = [];
+  const chainProgress: Array<unknown> = [];
+  let unsubscribed = false;
+  const isBootActiveRef = { current: true };
+  const bootEpochRef = { current: 1 };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async () => {
+      releaseStartEntered?.();
+      return await new Promise<string>((_resolve, reject) => {
+        rejectStart = reject;
+      });
+    },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: () => () => { unsubscribed = true; },
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      password: "secret",
+      authMethod: "password",
+    },
+    isBootActiveRef,
+    bootEpochRef,
+    setIsConnectionAwaitingUserInput: (value: boolean) => { awaitingUserInput.push(value); },
+    setIsConnectionPastTcpDial: (value: boolean) => { pastTcpDial.push(value); },
+    setChainProgress: (value: unknown) => { chainProgress.push(value); },
+    terminalBackend,
+  });
+
+  const startPromise = createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  // Replacement reconnect is waiting for keyboard-interactive input.
+  awaitingUserInput.length = 0;
+  pastTcpDial.length = 0;
+  chainProgress.length = 0;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = false;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = true;
+  rejectStart?.(new Error("Authentication failed"));
+  await startPromise;
+
+  assert.equal(unsubscribed, true);
+  assert.deepEqual(awaitingUserInput, []);
+  assert.deepEqual(pastTcpDial, []);
+  assert.deepEqual(chainProgress, []);
+});
+
+test("stale startSSH key auth failure does not launch password fallback", async () => {
+  let rejectStart: ((error: Error) => void) | null = null;
+  let releaseStartEntered: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => { releaseStartEntered = resolve; });
+  const startCalls: Array<Record<string, unknown>> = [];
+  const progressLogs: string[] = [];
+  const isBootActiveRef = { current: true };
+  const bootEpochRef = { current: 1 };
+  const terminalBackend = {
+    backendAvailable: () => true,
+    startSSHSession: async (options: Record<string, unknown>) => {
+      startCalls.push(options);
+      releaseStartEntered?.();
+      return await new Promise<string>((_resolve, reject) => {
+        rejectStart = reject;
+      });
+    },
+    onSessionData: () => noop,
+    onSessionExit: () => noop,
+    onChainProgress: () => noop,
+    writeToSession: noop,
+    resizeSession: noop,
+  };
+  const ctx = createStarterContext({
+    host: {
+      id: "host-1",
+      label: "Target",
+      hostname: "target.example.test",
+      username: "alice",
+      authMethod: "key",
+      identityFileId: "key-1",
+      password: "login-secret",
+    },
+    keys: [{
+      id: "key-1",
+      name: "Key",
+      privateKey: "plain-private-key",
+      publicKey: "",
+      source: "embedded",
+    }],
+    isBootActiveRef,
+    bootEpochRef,
+    setProgressLogs: (updater: string[] | ((prev: string[]) => string[])) => {
+      const next = typeof updater === "function" ? updater(progressLogs) : updater;
+      progressLogs.splice(0, progressLogs.length, ...next);
+    },
+    terminalBackend,
+  });
+
+  const startPromise = createTerminalSessionStarters(ctx as never).startSSH(createTermStub() as never);
+  await started;
+  bootEpochRef.current += 1;
+  isBootActiveRef.current = false;
+  rejectStart?.(new Error("Authentication failed"));
+  await startPromise;
+
+  assert.equal(startCalls.length, 1);
+  assert.equal(startCalls[0].password, "login-secret");
+  assert.equal(
+    progressLogs.includes("Key auth failed. Trying password..."),
+    false,
+  );
+});
+
 test("startSSH keeps interactive source auth retries off unrelated pooled transports", async () => {
   const captured: Record<string, unknown>[] = [];
   const terminalBackend = {

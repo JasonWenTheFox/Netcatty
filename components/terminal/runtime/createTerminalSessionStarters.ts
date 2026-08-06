@@ -695,6 +695,9 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           id = await startAttempt({ key, password: hasPassword ? effectivePassword : undefined, useIdentityFiles: true });
         } catch (err) {
           if (isAuthError(err) && hasPassword) {
+            // Disconnect/reconnect may have invalidated this boot; do not
+            // launch a password fallback that cannot be cleaned up yet.
+            if (!isCurrentAttempt()) throw err;
             ctx.setProgressLogs((prev) => [
               ...prev,
               "Key auth failed. Trying password...",
@@ -742,11 +745,13 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         }, 600);
       }
     } catch (err) {
+      // Always drop this attempt's progress listener; only the current
+      // boot may reset shared reconnect/UI state that a replacement owns.
+      if (unsubscribeChainProgress) unsubscribeChainProgress();
+      if (ignoreStaleAttemptUi()) return;
       ctx.setChainProgress(null);
       ctx.setIsConnectionAwaitingUserInput?.(false);
       ctx.setIsConnectionPastTcpDial?.(false);
-      if (unsubscribeChainProgress) unsubscribeChainProgress();
-      if (ignoreStaleAttemptUi()) return;
 
       const message = err instanceof Error ? err.message : String(err);
       const authError = isAuthError(err);
