@@ -274,16 +274,11 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   if (!looksLikeHostUnreachableMessage(text)) return text;
   if (text.includes("Local Network")) return text;
 
-  // ProxyCommand owns the dial outside Electron — never treat the vault
-  // target as a direct LAN hop just because firstHopHostname is empty.
-  if (options.skipProbe === true) {
-    const remotes = extractRemoteUnreachableAddresses(text);
-    const touchesLan = remotes.some((value) => (
-      isLocalNetworkHostname(value) || isLocalMdnsName(value)
-    ));
-    if (!touchesLan) return text;
-    return `${text}\n\n${LOCAL_NETWORK_HINT}`;
-  }
+  // ProxyCommand owns the dial outside Electron. Never append a Netcatty
+  // Local Network hint — even when the child error embeds a LAN address —
+  // because the user would be sent to enable Netcatty for a connection the
+  // external command made.
+  if (options.skipProbe === true) return text;
 
   const firstHop = String(options.firstHopHostname || "").trim();
   const targetHost = String(options.hostname || options.host || "").trim();
