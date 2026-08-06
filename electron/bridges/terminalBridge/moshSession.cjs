@@ -784,7 +784,10 @@ function createMoshSessionApi(ctx) {
       // ephemeral handshake PTY — issue #2199).
       try {
         const readyContents = electronModule.webContents.fromId(session.webContentsId);
-        readyContents?.send("netcatty:mosh:ready", { sessionId });
+        readyContents?.send("netcatty:mosh:ready", {
+          sessionId,
+          bootEpoch: session.bootEpoch,
+        });
       } catch {
         // Best-effort; startup-command deferral falls back if the event is missed.
       }

@@ -114,11 +114,19 @@ function createTelnetSessionApi(ctx) {
           },
           onComplete() {
             const contents = electronModule.webContents.fromId(event.sender.id);
-            contents?.send("netcatty:telnet:auto-login-complete", { sessionId });
+            const liveSession = sessions.get(sessionId);
+            contents?.send("netcatty:telnet:auto-login-complete", {
+              sessionId,
+              bootEpoch: liveSession?.bootEpoch ?? options.bootEpoch,
+            });
           },
           onUserInput() {
             const contents = electronModule.webContents.fromId(event.sender.id);
-            contents?.send("netcatty:telnet:auto-login-cancelled", { sessionId });
+            const liveSession = sessions.get(sessionId);
+            contents?.send("netcatty:telnet:auto-login-cancelled", {
+              sessionId,
+              bootEpoch: liveSession?.bootEpoch ?? options.bootEpoch,
+            });
           },
         });
     

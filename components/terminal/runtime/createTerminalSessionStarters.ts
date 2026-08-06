@@ -916,7 +916,14 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       if (waitsForAutoLogin) {
         disposeAutoLoginComplete = ctx.terminalBackend.onTelnetAutoLoginComplete?.(
           ctx.sessionId,
-          () => {
+          (evt) => {
+            if (
+              Number.isFinite(bootEpoch)
+              && Number.isFinite(evt?.bootEpoch)
+              && evt.bootEpoch !== bootEpoch
+            ) {
+              return;
+            }
             disposeAutoLoginListener();
             cancelPendingStartupCommand = scheduleStartupCommand(ctx, term, telnetSessionId, () => {
               cancelPendingStartupCommand = undefined;
@@ -926,7 +933,16 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         );
         disposeAutoLoginCancelled = ctx.terminalBackend.onTelnetAutoLoginCancelled?.(
           ctx.sessionId,
-          cleanupTelnetStartupWait,
+          (evt) => {
+            if (
+              Number.isFinite(bootEpoch)
+              && Number.isFinite(evt?.bootEpoch)
+              && evt.bootEpoch !== bootEpoch
+            ) {
+              return;
+            }
+            cleanupTelnetStartupWait();
+          },
         );
       }
       attachTelnetEchoMode(ctx.sessionId);
@@ -1125,7 +1141,14 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           cancelPendingStartupCommand = undefined;
         });
       };
-      const onMoshReady = () => {
+      const onMoshReady = (evt?: { sessionId: string; bootEpoch?: number }) => {
+        if (
+          Number.isFinite(bootEpoch)
+          && Number.isFinite(evt?.bootEpoch)
+          && evt.bootEpoch !== bootEpoch
+        ) {
+          return;
+        }
         moshReadyFired = true;
         if (sessionAttached) {
           runMoshStartup();

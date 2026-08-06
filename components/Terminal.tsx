@@ -2394,7 +2394,15 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       return;
     }
     setMoshShellReady(false);
-    disposeMoshReadyRef.current = terminalBackend.onMoshSessionReady(sessionId, () => {
+    disposeMoshReadyRef.current = terminalBackend.onMoshSessionReady(sessionId, (evt) => {
+      const currentEpoch = bootEpochRef.current;
+      if (
+        Number.isFinite(currentEpoch)
+        && Number.isFinite(evt?.bootEpoch)
+        && evt.bootEpoch !== currentEpoch
+      ) {
+        return;
+      }
       setMoshShellReady(true);
     }) ?? null;
   }, [effectiveTerminalProtocol, sessionId, terminalBackend]);

@@ -73,15 +73,15 @@ export type TerminalBackendApi = {
   ) => () => void;
   onTelnetAutoLoginComplete?: (
     sessionId: string,
-    cb: (evt: { sessionId: string }) => void,
+    cb: (evt: { sessionId: string; bootEpoch?: number }) => void,
   ) => (() => void) | undefined;
   onTelnetAutoLoginCancelled?: (
     sessionId: string,
-    cb: (evt: { sessionId: string }) => void,
+    cb: (evt: { sessionId: string; bootEpoch?: number }) => void,
   ) => (() => void) | undefined;
   onMoshSessionReady?: (
     sessionId: string,
-    cb: (evt: { sessionId: string }) => void,
+    cb: (evt: { sessionId: string; bootEpoch?: number }) => void,
   ) => (() => void) | undefined;
   onTelnetEchoMode?: (
     sessionId: string,

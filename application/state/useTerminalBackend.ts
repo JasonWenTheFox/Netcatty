@@ -351,17 +351,17 @@ export const useTerminalBackend = () => {
     return bridge.onSessionExit(sessionId, cb);
   }, []);
 
-  const onTelnetAutoLoginComplete = useCallback((sessionId: string, cb: (evt: { sessionId: string }) => void) => {
+  const onTelnetAutoLoginComplete = useCallback((sessionId: string, cb: (evt: { sessionId: string; bootEpoch?: number }) => void) => {
     const bridge = netcattyBridge.get();
     return bridge?.onTelnetAutoLoginComplete?.(sessionId, cb);
   }, []);
 
-  const onTelnetAutoLoginCancelled = useCallback((sessionId: string, cb: (evt: { sessionId: string }) => void) => {
+  const onTelnetAutoLoginCancelled = useCallback((sessionId: string, cb: (evt: { sessionId: string; bootEpoch?: number }) => void) => {
     const bridge = netcattyBridge.get();
     return bridge?.onTelnetAutoLoginCancelled?.(sessionId, cb);
   }, []);
 
-  const onMoshSessionReady = useCallback((sessionId: string, cb: (evt: { sessionId: string }) => void) => {
+  const onMoshSessionReady = useCallback((sessionId: string, cb: (evt: { sessionId: string; bootEpoch?: number }) => void) => {
     const bridge = netcattyBridge.get();
     return bridge?.onMoshSessionReady?.(sessionId, cb);
   }, []);

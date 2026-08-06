@@ -499,16 +499,16 @@ declare global {
     ): () => void;
     onTelnetAutoLoginComplete?(
       sessionId: string,
-      cb: (evt: { sessionId: string }) => void
+      cb: (evt: { sessionId: string; bootEpoch?: number }) => void
     ): () => void;
     onTelnetAutoLoginCancelled?(
       sessionId: string,
-      cb: (evt: { sessionId: string }) => void
+      cb: (evt: { sessionId: string; bootEpoch?: number }) => void
     ): () => void;
     /** Fires after Mosh swaps from the SSH handshake PTY to mosh-client. */
     onMoshSessionReady?(
       sessionId: string,
-      cb: (evt: { sessionId: string }) => void
+      cb: (evt: { sessionId: string; bootEpoch?: number }) => void
     ): () => void;
     onTelnetEchoMode?(
       sessionId: string,
