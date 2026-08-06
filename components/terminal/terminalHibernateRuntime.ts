@@ -299,8 +299,8 @@ export type ApplyHibernateWakeOptions = {
  * Resolve the pre-pending history bytes to replay on hibernate wake.
  * Prefer the coherent full snapshot: SerializeAddon range slices omit a
  * trailing newline at the boundary, so concatenating scrollback+viewport can
- * merge the seam lines. Fall back to scrollback → viewport when snapshot is
- * empty (still never viewport-first — that evicts newest rows under a finite
+ * merge the seam lines. Fall back to scrollback -> viewport when snapshot is
+ * empty (still never viewport-first -- that evicts newest rows under a finite
  * scrollback cap; #2762).
  */
 export function resolveHibernateWakeHistory(payload: TerminalHibernateWakePayload): string {
