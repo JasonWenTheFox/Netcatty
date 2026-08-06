@@ -1052,14 +1052,21 @@ export const useSftpExternalOperations = (
               livePane.connection.isLocal ? undefined : livePane.connection.hostLabel,
             ),
           );
+        const transferCallbacks = scanningTask
+          ? {
+              ...liveCallbacks,
+              onTaskCreated: (task: Parameters<NonNullable<UploadCallbacks["onTaskCreated"]>>[0]) => {
+                scanningTask.complete();
+                liveCallbacks.onTaskCreated?.(task);
+              },
+            }
+          : liveCallbacks;
 
         try {
           if (controller.isCancelled()) {
             scanningTask?.cancel();
             return [{ fileName: "", success: false, cancelled: true }];
           }
-          scanningTask?.complete();
-
           const hasDirectory = capturedEntries.some((entry) => (
             entry.isDirectory || entry.relativePath.replace(/\\/g, "/").includes("/")
           ));
@@ -1083,7 +1090,7 @@ export const useSftpExternalOperations = (
                 isLocal: livePane.connection!.isLocal,
                 bridge: uploadBridge,
                 joinPath,
-                callbacks: liveCallbacks,
+                callbacks: transferCallbacks,
                 useCompressedUpload,
                 resolveConflict: createUploadConflictResolver(controller),
               },
@@ -1099,6 +1106,10 @@ export const useSftpExternalOperations = (
           }
           return results;
         } finally {
+          if (scanningTask?.isOpen()) {
+            if (controller.isCancelled()) scanningTask.cancel();
+            else scanningTask.complete();
+          }
           release();
         }
       };
@@ -1335,12 +1346,18 @@ export const useSftpExternalOperations = (
           livePane.connection.isLocal,
         );
         const uploadBridge = createUploadBridge(uploadConnectHost);
-
         const folderName = folderPath.replace(/\\/g, "/").split("/").filter(Boolean).pop()
           || folderPath;
         const scanningTask = startUploadScanningTask(callbacks, crypto.randomUUID(), {
           label: folderName,
         });
+        const transferCallbacks = {
+          ...callbacks,
+          onTaskCreated: (task: Parameters<NonNullable<UploadCallbacks["onTaskCreated"]>>[0]) => {
+            scanningTask.complete();
+            callbacks.onTaskCreated?.(task);
+          },
+        };
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("netcatty:open-sftp-transfer-center"));
         }
@@ -1363,8 +1380,6 @@ export const useSftpExternalOperations = (
             scanningTask.cancel();
             return [{ fileName: "", success: false, cancelled: true }];
           }
-          scanningTask.complete();
-
           const entries: DropEntry[] = localTreeToDropEntries(localEntries);
 
           const results = await runWithCompressedUploadSession({
@@ -1387,7 +1402,7 @@ export const useSftpExternalOperations = (
                 isLocal: livePane.connection!.isLocal,
                 bridge: uploadBridge,
                 joinPath,
-                callbacks,
+                callbacks: transferCallbacks,
                 useCompressedUpload,
                 resolveConflict: createUploadConflictResolver(controller),
               },
@@ -1417,6 +1432,10 @@ export const useSftpExternalOperations = (
           throw error;
         } finally {
           detachScanCancel();
+          if (scanningTask.isOpen()) {
+            if (controller.isCancelled()) scanningTask.cancel();
+            else scanningTask.complete();
+          }
           release();
           unregisterUploadController(controller);
         }
