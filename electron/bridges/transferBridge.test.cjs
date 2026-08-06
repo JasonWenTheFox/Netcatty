@@ -3908,6 +3908,7 @@ test("growing-download prefix verification propagates digest open timeouts", asy
     (error) => error?.code === "SSH_EXEC_OPEN_TIMEOUT" && error?.noTransferFallback === true,
   );
   assert.equal(rangeReads, 0, "open timeout must not fall through onto a poisoned session");
+  assert.equal(client.sftp, null, "exec-open timeout must drop the cached SFTP channel");
 });
 
 test("growing-download prefix verification rejects empty remote digests", async (t) => {
@@ -4120,6 +4121,7 @@ test("growing-download prefix verification times out a stalled SFTP READ", async
       && error?.noTransferFallback === true
     ),
   );
+  assert.equal(client.sftp, null, "timed-out verification must drop the wedged SFTP channel");
 });
 
 test("growing-download prefix stream fallback times out without data", async (t) => {
@@ -4157,6 +4159,7 @@ test("growing-download prefix stream fallback times out without data", async (t)
       && error?.noTransferFallback === true
     ),
   );
+  assert.equal(client.sftp, null, "stream timeout must drop the wedged SFTP channel");
 });
 
 test("resumable SFTP downloads succeed when the remote source only grows (live logs)", async (t) => {

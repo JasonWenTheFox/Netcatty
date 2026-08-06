@@ -740,6 +740,7 @@ async function hashRemotePrefixViaSshCommand(client, remotePath, bytes, options 
       // retry verification/body transfer on the invalidated transport.
       if (error?.code === "SSH_EXEC_OPEN_TIMEOUT") {
         error.noTransferFallback = true;
+        abandonWedgedVerificationSftpChannel(client);
         throw error;
       }
     }
@@ -3935,6 +3936,17 @@ function assertSourceMetadataUnchanged(initialSource, latestSource, expectedSize
  * @param {number} prefixBytes planned snapshot size
  * @param {{ signal?: AbortSignal, onProgress?: (n: number) => void }} [options]
  */
+function abandonWedgedVerificationSftpChannel(client) {
+  const sftp = client?.sftp;
+  if (!client || !sftp) return;
+  // Drop the cached channel first so requireSftpChannel cannot hand the wedged
+  // object back to later browse/transfer work (hasSftpChannelApi only checks
+  // method presence). Non-sudo sessions can reopen; sudo recovery stays disabled.
+  client.sftp = null;
+  try { sftp.end?.(); } catch { /* ignore */ }
+  try { sftp.destroy?.(); } catch { /* ignore */ }
+}
+
 async function assertLocalDownloadMatchesRemotePrefix(
   localPath,
   client,
@@ -3999,6 +4011,7 @@ async function assertLocalDownloadMatchesRemotePrefix(
     // that still owns the timed-out request and can hang indefinitely.
     if (error && typeof error === "object" && error.sftpRequestTimedOut) {
       error.noTransferFallback = true;
+      abandonWedgedVerificationSftpChannel(client);
     }
     throw error;
   }
