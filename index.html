@@ -71,6 +71,14 @@
       color: hsl(var(--foreground));
     }
 
+    /* Tray panel: keep the host fully clear so CSS rounded corners are see-through. */
+    html.tray-window,
+    html.tray-window body,
+    html.tray-window #root {
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+
     /* Windows flag/emoji fallbacks live on --font-sans (not a body font-family
        override) so Appearance UI font still reaches portaled panels (#2647). */
     html.platform-win32 {
@@ -195,6 +203,12 @@
         var ua = navigator.userAgent || '';
         if (/Win/i.test(ua)) {
           root.classList.add('platform-win32');
+        }
+
+        // Tray overlay uses CSS border-radius over a transparent BrowserWindow.
+        // Mark it before first paint so body/root never flash an opaque backdrop (#2505).
+        if ((window.location.hash || '') === '#/tray' || (window.location.hash || '').indexOf('#/tray') === 0) {
+          root.classList.add('tray-window');
         }
       } catch (e) {
         // ignore

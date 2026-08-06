@@ -269,6 +269,10 @@ function ensureTrayPanelWindow() {
   const { BrowserWindow } = electronModule;
   if (trayPanelWindow && !trayPanelWindow.isDestroyed()) return trayPanelWindow;
 
+  const {
+    windowsCssRoundedOverlayChromeOptions,
+  } = require("./windowManager/windowsWindowChrome.cjs");
+
   trayPanelWindow = new BrowserWindow({
     width: 360,
     height: 520,
@@ -281,8 +285,11 @@ function ensureTrayPanelWindow() {
     maximizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    transparent: true,
     hasShadow: true,
+    // Transparent host + clear backdrop so CSS rounded-lg corners are truly
+    // see-through. On Windows, disable OS rounding so it does not stack under
+    // the CSS radius (#2505 / Electron #46468).
+    ...windowsCssRoundedOverlayChromeOptions(),
     webPreferences: {
       preload: path.join(__dirname, "../preload.cjs"),
       contextIsolation: true,

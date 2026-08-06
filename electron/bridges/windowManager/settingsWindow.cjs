@@ -125,6 +125,11 @@ function createSettingsWindowApi(ctx) {
         settingsHeight,
       });
     
+      const {
+        windowsFramelessContentChromeOptions,
+      } = require("./windowsWindowChrome.cjs");
+      const windowsChrome = !isMac ? windowsFramelessContentChromeOptions() : {};
+
       const win = new BrowserWindow({
         title: "netcatty Settings",
         width: settingsWidth,
@@ -144,6 +149,7 @@ function createSettingsWindowApi(ctx) {
         frame: isMac,
         titleBarStyle: isMac ? "hiddenInset" : undefined,
         trafficLightPosition: isMac ? { x: 12, y: 12 } : undefined,
+        ...windowsChrome,
         webPreferences: {
           preload,
           contextIsolation: true,
@@ -233,7 +239,10 @@ function createSettingsWindowApi(ctx) {
     
       // Ensure native background matches frontend background, even before first paint.
       try {
-        win.setBackgroundColor(backgroundColor);
+        const {
+          resolveFramelessHostBackgroundColor,
+        } = require("./windowsWindowChrome.cjs");
+        win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
       } catch {
         // ignore
       }

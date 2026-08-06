@@ -121,6 +121,11 @@ function createMainWindowApi(ctx) {
         }
       }
     
+      const {
+        windowsFramelessContentChromeOptions,
+      } = require("./windowsWindowChrome.cjs");
+      const windowsChrome = !isMac ? windowsFramelessContentChromeOptions() : {};
+
       const win = new BrowserWindow({
         ...windowBounds,
         minWidth: MIN_WINDOW_WIDTH,
@@ -131,6 +136,7 @@ function createMainWindowApi(ctx) {
         frame: isMac,
         titleBarStyle: isMac ? "hiddenInset" : undefined,
         trafficLightPosition: isMac ? { x: 12, y: 12 } : undefined,
+        ...windowsChrome,
         webPreferences: {
           preload,
           contextIsolation: true,
@@ -436,8 +442,12 @@ function createMainWindowApi(ctx) {
       });
     
       // Ensure native background matches frontend background, even before first paint.
+      // On Windows the host stays clear so DWM rounded corners do not show a dark rim.
       try {
-        win.setBackgroundColor(backgroundColor);
+        const {
+          resolveFramelessHostBackgroundColor,
+        } = require("./windowsWindowChrome.cjs");
+        win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
       } catch {
         // ignore
       }
