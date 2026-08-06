@@ -133,9 +133,14 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: hsl(var(--background));
+      background: transparent;
       z-index: 9999;
       transition: opacity 0.2s ease-out;
+    }
+
+    /* Main app only: opaque splash fill. Tray overlay stays clear (#2505). */
+    html:not(.tray-window) .splash-screen {
+      background: hsl(var(--background));
     }
 
     .splash-screen.fade-out {
