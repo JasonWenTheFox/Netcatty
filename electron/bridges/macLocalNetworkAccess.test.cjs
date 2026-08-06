@@ -369,6 +369,18 @@ test("annotateMacLocalNetworkErrorMessage keeps LAN guidance for hostname-based 
   );
 });
 
+test("annotateMacLocalNetworkErrorMessage keeps LAN guidance for unqualified first hops", () => {
+  const message = "connect EHOSTUNREACH 192.168.7.37:22";
+  assert.match(
+    annotateMacLocalNetworkErrorMessage(message, {
+      platform: "darwin",
+      hostname: "app.example.com",
+      firstHopHostname: "dev-viet",
+    }),
+    /Local Network/i,
+  );
+});
+
 test("annotateMacLocalNetworkErrorMessage ignores ProxyCommand errors even with LAN evidence", () => {
   const localName = "Network is unreachable";
   assert.equal(

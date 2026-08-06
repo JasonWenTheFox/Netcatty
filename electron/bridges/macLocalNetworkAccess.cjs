@@ -123,10 +123,23 @@ function isPrivateDnsLanName(hostname) {
   return /\.(lan|internal|intranet|localdomain|home|corp|private)$/.test(cleaned);
 }
 
+/**
+ * Single-label vault/jump names (e.g. "dev-viet") are usually LAN DNS.
+ * Public first hops are typically FQDNs, so keep this narrow.
+ */
+function isUnqualifiedHostname(hostname) {
+  if (hostname == null) return false;
+  const cleaned = stripIpBrackets(hostname).toLowerCase().replace(/\.$/, "");
+  if (!cleaned || cleaned === "localhost") return false;
+  if (net.isIP(cleaned)) return false;
+  return !cleaned.includes(".");
+}
+
 function looksLikeLocalNetworkName(hostname) {
   return isLocalNetworkHostname(hostname)
     || isLocalMdnsName(hostname)
-    || isPrivateDnsLanName(hostname);
+    || isPrivateDnsLanName(hostname)
+    || isUnqualifiedHostname(hostname);
 }
 
 /**
@@ -311,10 +324,15 @@ function annotateMacLocalNetworkErrorMessage(message, options = {}) {
   // Embedded unreachable addresses often name a downstream hop that a public
   // proxy/jump dialed. Only treat them as LAN evidence when they identify the
   // local first-hop dial (or when this connection is itself the first hop).
+  // Unqualified / private-DNS first hops resolve to IPs in Node errors, so
+  // keep LAN remotes when the first-hop name itself looks local.
   const remotes = extractRemoteUnreachableAddresses(text);
   const remotesForEvidence = targetIsFirstHop
     ? remotes
-    : remotes.filter((value) => normalizeHost(value) === normalizeHost(firstHop));
+    : remotes.filter((value) => (
+      normalizeHost(value) === normalizeHost(firstHop)
+      || (looksLikeLocalNetworkName(firstHop) && isLocalNetworkHostname(value))
+    ));
 
   const candidates = [
     ...(targetIsFirstHop ? [options.hostname, options.host] : []),
