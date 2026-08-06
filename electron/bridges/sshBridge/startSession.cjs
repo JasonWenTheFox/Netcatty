@@ -823,17 +823,24 @@ printf '%s\n' '${scanCompleteMarker}'`;
               // the lease count (transferConnectionRef). setupShellSession still
               // records connRef; transfer rebinds _sshTransportLeaseId so a later
               // releaseConnectionRef(session) returns the right lease.
-              setupShellSession({
-                conn,
-                stream,
-                options: { ...options, _connRef: connRef },
-                sessionId,
-                event,
-                log,
-                detachX11Forwarding: null,
-                chainConnections: [],
-                isReused: true,
-              });
+              try {
+                setupShellSession({
+                  conn,
+                  stream,
+                  options: { ...options, _connRef: connRef },
+                  sessionId,
+                  event,
+                  log,
+                  detachX11Forwarding: null,
+                  chainConnections: [],
+                  isReused: true,
+                });
+              } catch (setupErr) {
+                // openBoundedSshShellCallback delivers this from a Promise .then
+                // without catching callback throws — reject via failReuse.
+                failReuse(setupErr);
+                return;
+              }
               const copiedSession = sessions.get(sessionId);
               if (copiedSession) {
                 if (typeof transferConnectionRef === "function") {
@@ -1953,20 +1960,32 @@ printf '%s\n' '${scanCompleteMarker}'`;
                 // Create the shared reference-counted descriptor for this
                 // connection now that the owning channel is open, then wire the
                 // shell up through the shared helper.
-                const ownerSession = setupShellSession({
-                  conn,
-                  stream,
-                  options: {
-                    ...options,
-                    _actualAgentForwarding: Boolean(connectOpts.agentForward),
-                  },
-                  sessionId,
-                  event,
-                  log,
-                  detachX11Forwarding,
-                  chainConnections,
-                  isReused: false,
-                });
+                let ownerSession;
+                try {
+                  ownerSession = setupShellSession({
+                    conn,
+                    stream,
+                    options: {
+                      ...options,
+                      _actualAgentForwarding: Boolean(connectOpts.agentForward),
+                    },
+                    sessionId,
+                    event,
+                    log,
+                    detachX11Forwarding,
+                    chainConnections,
+                    isReused: false,
+                  });
+                } catch (setupErr) {
+                  // Callback runs from openBoundedSshShellCallback's Promise
+                  // .then without a catch — reject the owning start Promise.
+                  if (detachX11Forwarding) {
+                    try { detachX11Forwarding(); } catch { /* ignore */ }
+                  }
+                  settled = true;
+                  reject(setupErr);
+                  return;
+                }
                 establishedOwnerSession = ownerSession;
                 connRef = createConnectionRef(ownerSession, conn, chainConnections);
                 if (pendingDialCoordination) {

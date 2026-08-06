@@ -232,7 +232,10 @@ function createTelnetSessionApi(ctx) {
             try { socket?.destroy?.(); } catch { /* ignore */ }
             const supersededError = new Error("Connection superseded by a newer reconnect");
             supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
-            throw supersededError;
+            // EventEmitter 'connect' callbacks are not covered by the
+            // enclosing Promise executor try/catch — reject explicitly.
+            reject(supersededError);
+            return;
           }
           openTerminalOutputSession?.(sessionId, event.sender);
     
@@ -246,6 +249,7 @@ function createTelnetSessionApi(ctx) {
               timestampsEnabled: Boolean(options.sessionLog.timestampsEnabled),
               startTime: Date.now(),
             });
+            session.logStreamToken = logStreamToken;
           }
     
           resolve({ sessionId });

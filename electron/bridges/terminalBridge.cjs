@@ -987,6 +987,7 @@ function startLocalSession(event, payload) {
       timestampsEnabled: Boolean(payload.sessionLog.timestampsEnabled),
       startTime: Date.now(),
     });
+    session.logStreamToken = logStreamToken;
   }
 
   const {
@@ -1266,6 +1267,7 @@ async function startSerialSession(event, options) {
             timestampsEnabled: Boolean(options.sessionLog.timestampsEnabled),
             startTime: Date.now(),
           });
+          session.logStreamToken = logStreamToken;
         }
 
         const serialZmodemSentry = createZmodemSentry({

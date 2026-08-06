@@ -1298,7 +1298,7 @@ main();
 
         // Start real-time session log stream if configured
         if (options.sessionLog?.enabled && options.sessionLog?.directory) {
-          sessionLogStreamManager.startStream(sessionId, {
+          const logStreamToken = sessionLogStreamManager.startStream(sessionId, {
             hostLabel: options.label || options.hostname,
             hostname: options.hostname,
             directory: options.sessionLog.directory,
@@ -1306,6 +1306,7 @@ main();
             timestampsEnabled: Boolean(options.sessionLog.timestampsEnabled),
             startTime: Date.now(),
           });
+          session.logStreamToken = logStreamToken;
         }
 
         const {
@@ -1377,7 +1378,7 @@ main();
             etExitFinalized = true;
             try { session.etStatsConn?.end(); } catch { /* ignore */ }
             cleanupSessionExternalAuthArtifacts(session);
-            sessionLogStreamManager.stopStream(sessionId);
+            sessionLogStreamManager.stopStream(sessionId, session.logStreamToken);
             closeTerminalOutputSession?.(sessionId);
             sessions.delete(sessionId);
             if (session.closed) return;

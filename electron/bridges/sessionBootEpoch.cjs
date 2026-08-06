@@ -19,13 +19,28 @@ function attachBootEpoch(session, bootEpoch) {
  * Best-effort teardown for a session object that lost its registry slot to a
  * newer bootEpoch. Must not look the session up by ID (the map already points
  * at the replacement).
+ *
+ * @param {object} session
+ * @param {string} [sessionId] Registry key the displaced session previously owned.
  */
-function disposeDisplacedSessionResources(session) {
+function disposeDisplacedSessionResources(session, sessionId) {
   if (!session || session._displacedDisposed) return;
   session._displacedDisposed = true;
   try { session.zmodemSentry?.cancel?.(); } catch { /* ignore */ }
   try { session.discardPendingData?.(); } catch { /* ignore */ }
   try { session.releaseTelnetGeneration?.(); } catch { /* ignore */ }
+  // Exit handlers for Mosh/ET/serial bail out once the registry no longer
+  // points at them, so they never stop their own log stream. Stop it here
+  // before a replacement (possibly without logging) keeps appendData-ing
+  // into the displaced file. Claim runs before the replacement starts its
+  // own stream, so a token-less stop still targets this boot's entry.
+  if (sessionId) {
+    try {
+      const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
+      const logToken = session.logStreamToken ?? session._logStreamToken;
+      void sessionLogStreamManager.stopStream(sessionId, logToken);
+    } catch { /* ignore */ }
+  }
   try {
     if (session.stream) {
       try { session.stream.close(); } catch { /* ignore */ }
@@ -112,7 +127,7 @@ function claimSessionSlot(sessions, sessionId, session, bootEpoch) {
   }
   sessions.set(sessionId, session);
   if (displaced) {
-    disposeDisplacedSessionResources(displaced);
+    disposeDisplacedSessionResources(displaced, sessionId);
   }
   return displaced ? { ok: true, displaced } : { ok: true };
 }

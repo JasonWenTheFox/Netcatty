@@ -24,11 +24,18 @@ test("claimSessionSlot replaces an older boot epoch and marks it superseded", ()
     proc: { killed: false, kill() { this.killed = true; } },
     externalAuthArtifacts: ["/tmp/et-auth-artifact"],
     externalAuthArtifactsCleaned: false,
+    logStreamToken: Symbol("displaced-log"),
   };
   const removed = [];
+  const stoppedLogs = [];
   const fs = require("node:fs");
   const originalRmSync = fs.rmSync;
   fs.rmSync = (target) => { removed.push(target); };
+  const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
+  const originalStopStream = sessionLogStreamManager.stopStream;
+  sessionLogStreamManager.stopStream = (id, token) => {
+    stoppedLogs.push({ id, token });
+  };
   try {
     sessions.set("s1", older);
     const newer = {};
@@ -43,8 +50,12 @@ test("claimSessionSlot replaces an older boot epoch and marks it superseded", ()
     assert.equal(older.externalAuthArtifactsCleaned, true);
     assert.deepEqual(removed, ["/tmp/et-auth-artifact"]);
     assert.equal(result.displaced, older);
+    assert.equal(stoppedLogs.length, 1);
+    assert.equal(stoppedLogs[0].id, "s1");
+    assert.equal(stoppedLogs[0].token, older.logStreamToken);
   } finally {
     fs.rmSync = originalRmSync;
+    sessionLogStreamManager.stopStream = originalStopStream;
   }
 });
 
