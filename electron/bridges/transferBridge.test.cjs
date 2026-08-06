@@ -3721,6 +3721,159 @@ test("resumable fast downloads clear staged data after a same-second source chan
   await assert.rejects(fs.promises.stat(stagedPath), { code: "ENOENT" });
 });
 
+test("growing-download prefix verification prefers a bounded remote digest", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-digest-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(128 * 1024, 71);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const expectedDigest = crypto.createHash("sha256").update(payload).digest("hex");
+  let command = "";
+  const client = {
+    sftp: createFastSftp({
+      createReadStream() {
+        throw new Error("SFTP prefix stream should not run when remote digest is available");
+      },
+    }),
+    client: {
+      exec(request, callback) {
+        command = request;
+        const stream = new EventEmitter();
+        stream.stderr = new EventEmitter();
+        stream.destroy = () => {};
+        callback(null, stream);
+        setImmediate(() => {
+          stream.emit("data", Buffer.from(`${expectedDigest}  -\n`));
+          stream.emit("close", 0);
+        });
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+    },
+  );
+
+  assert.match(command, new RegExp(`head -c ${payload.length}`));
+  assert.match(command, /sha256sum|busybox|openssl/);
+});
+
+test("growing-download prefix verification falls back to parallel SFTP reads", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-ranges-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(256 * 1024, 73);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const pipelined = createPipelinedDownloadSftp(payload, {
+    createReadStream() {
+      throw new Error("serial prefix stream should be the final fallback only");
+    },
+  });
+  const client = {
+    sftp: pipelined.sftp,
+    client: {
+      exec(_request, callback) {
+        const error = new Error("SSH exec unavailable");
+        error.code = "SSH_EXEC_UNAVAILABLE";
+        callback(error);
+      },
+    },
+  };
+
+  await transferBridge._assertDownloadSourceAfterTransferForTests(
+    { size: payload.length, mtimeMs: 1 },
+    { size: payload.length + 1, mtimeMs: 2 },
+    payload.length,
+    {
+      localPath,
+      client,
+      remotePath: "/var/log/app.log",
+      signal: new AbortController().signal,
+    },
+  );
+});
+
+test("growing-download prefix verification times out a stalled SFTP READ", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-timeout-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(64 * 1024, 74);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const client = {
+    sftp: createFastSftp({
+      open(_path, _flags, callback) {
+        callback(null, Buffer.from("stalled-handle"));
+      },
+      read() {},
+      createReadStream() {
+        throw new Error("serial prefix stream should not hide a stalled range");
+      },
+      close(_handle, callback) {
+        callback(null);
+      },
+    }),
+  };
+
+  await assert.rejects(
+    transferBridge._assertDownloadSourceAfterTransferForTests(
+      { size: payload.length, mtimeMs: 1 },
+      { size: payload.length + 1, mtimeMs: 2 },
+      payload.length,
+      {
+        localPath,
+        client,
+        remotePath: "/var/log/app.log",
+        signal: new AbortController().signal,
+        sftpReadTimeoutMs: 20,
+      },
+    ),
+    /SFTP READ timed out/,
+  );
+});
+
+test("growing-download prefix stream fallback times out without data", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-prefix-stream-timeout-"));
+  t.after(async () => fs.promises.rm(tempDir, { recursive: true, force: true }));
+
+  const payload = Buffer.alloc(32 * 1024, 75);
+  const localPath = path.join(tempDir, "download.bin");
+  await fs.promises.writeFile(localPath, payload);
+  const client = {
+    sftp: createFastSftp({
+      createReadStream() {
+        return new Readable({ read() {} });
+      },
+    }),
+  };
+
+  await assert.rejects(
+    transferBridge._assertDownloadSourceAfterTransferForTests(
+      { size: payload.length, mtimeMs: 1 },
+      { size: payload.length + 1, mtimeMs: 2 },
+      payload.length,
+      {
+        localPath,
+        client,
+        remotePath: "/var/log/app.log",
+        signal: new AbortController().signal,
+        sftpReadTimeoutMs: 20,
+      },
+    ),
+    /SFTP stream timed out/,
+  );
+});
+
 test("resumable SFTP downloads succeed when the remote source only grows (live logs)", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-download-growth-"));
   const transferId = "download-source-growth";
