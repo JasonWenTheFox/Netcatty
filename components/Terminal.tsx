@@ -3718,7 +3718,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       prepareWakeFlow: async () => {
         const backendId = sessionRef.current;
         if (!backendId) return true;
-        // Always pause when a backend exists — including reconnect wakes
+        // Always pause when a backend exists, including reconnect wakes
         // (sessionConnected=false) that will not reattach. Stopping the
         // hibernate listener without a pause drops live output into the
         // preload backlog without flow ACKs until cleanupSession.
@@ -3739,9 +3739,24 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         hibernatePendingCapDisabledRef.current = disabled;
       },
       stopHibernateListeners: () => stopHibernateListeners({ keepPaused: true }),
-      resumeWakeFlow: (shouldResume) => {
+      restoreAfterFailedWake: () => {
         hibernatePendingCapDisabledRef.current = false;
-        if (!shouldResume) return;
+        const pending = hibernatePendingBufferRef.current;
+        disposeRuntimeOnly();
+        const backendId = sessionRef.current;
+        if (!backendId) return;
+        beginHibernatedSessionListeners(backendId);
+        // beginHibernatedSessionListeners clears pending; restore any bytes
+        // captured during the failed wake window.
+        if (pending) {
+          hibernatePendingBufferRef.current = appendHibernatePendingBuffer(
+            pending,
+            hibernatePendingBufferRef.current,
+          );
+        }
+      },
+      resumeAfterReattach: () => {
+        hibernatePendingCapDisabledRef.current = false;
         const backendId = sessionRef.current;
         if (!backendId) return;
         terminalBackend.setSessionFlowPaused?.(backendId, false);
@@ -3771,7 +3786,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     });
     wakePromiseRef.current = wakePromise;
     return wakePromise;
-  }, [sessionId, terminalBackend, terminalRuntimeRefs, resizeSession, terminalSettings]);
+  }, [sessionId, terminalBackend, terminalRuntimeRefs, resizeSession, terminalSettings, beginHibernatedSessionListeners]);
 
   const wakeHibernatedRuntime = useCallback(async (sessionConnected: boolean): Promise<boolean> => {
     if (!hibernatedRef.current) {

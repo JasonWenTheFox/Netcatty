@@ -53,7 +53,7 @@ export type WakeTerminalFromHibernateOptions = {
    * Pause backend output and wait for in-flight chunks to drain into the
    * hibernate pending buffer before history replay. Returns true when the
    * drain succeeded (safe to detach the data listener). Returns false when
-   * pause/drain was best-effort only — caller must keep a live uncapped
+   * pause/drain was best-effort only; caller must keep a live uncapped
    * pending listener through history replay (#2762).
    */
   prepareWakeFlow?: () => Promise<boolean>;
@@ -71,11 +71,17 @@ export type WakeTerminalFromHibernateOptions = {
   setHibernatePendingCapDisabled?: (disabled: boolean) => void;
   /**
    * Stop hibernate data+exit listeners and clear flow-ack state.
-   * Must keep the backend paused until resumeWakeFlow runs after reattach.
+   * Must keep the backend paused until resumeAfterReattach runs.
    */
   stopHibernateListeners: () => void;
-  /** Resume backend output when true (reattached, or failed wake cleanup). */
-  resumeWakeFlow?: (shouldResume: boolean) => void;
+  /**
+   * On a thrown/failed wake: dispose the partial xterm runtime and restore
+   * hibernate listeners so output is ACKed again (never unpause without a
+   * listener).
+   */
+  restoreAfterFailedWake?: () => void;
+  /** Resume backend output after the live display listener is attached. */
+  resumeAfterReattach?: () => void;
   reattachSession: (term: XTerm) => void;
   safeFit: (options?: { force?: boolean; requireVisible?: boolean }) => void;
   resizeSession: () => void;
@@ -104,7 +110,8 @@ export async function wakeTerminalFromHibernate(
     stopHibernateDataListener,
     setHibernatePendingCapDisabled,
     stopHibernateListeners,
-    resumeWakeFlow,
+    restoreAfterFailedWake,
+    resumeAfterReattach,
     reattachSession,
     safeFit,
     resizeSession,
@@ -156,6 +163,7 @@ export async function wakeTerminalFromHibernate(
   // buffer open (or leaving no display listener while flow is live) drops
   // ACKed bytes under sustained `cat` output (#2762).
   let didReattach = false;
+  let wakeSucceeded = false;
   try {
     const drainOk = (await prepareWakeFlow?.()) ?? true;
     if (drainOk) {
@@ -195,6 +203,12 @@ export async function wakeTerminalFromHibernate(
     if (exitTail) {
       await appendTerminalReplayData(term, exitTail, replayOptions);
       replayedPendingChars += exitTail.length;
+    }
+    // Final sync capture after all awaits, before tearing down the exit listener.
+    const finalTail = takePendingBuffer();
+    if (finalTail) {
+      await appendTerminalReplayData(term, finalTail, replayOptions);
+      replayedPendingChars += finalTail.length;
     }
 
     // Recompute after late drains so an exit during those awaits cannot leave
@@ -243,11 +257,18 @@ export async function wakeTerminalFromHibernate(
       pendingChars: replayedPendingChars,
       alternateScreen: initialPayload.alternateScreen,
     });
+    wakeSucceeded = true;
     return true;
   } finally {
     setHibernatePendingCapDisabled?.(false);
-    // Resume only after a live display listener is installed. Reconnect wakes
-    // that do not reattach leave the backend paused until cleanupSession.
-    resumeWakeFlow?.(didReattach);
+    if (!wakeSucceeded) {
+      // Dispose the partial runtime and restore hibernate listeners so a
+      // failed wake never unpauses into a listener-less backlog gap, and so a
+      // retry can re-enter wake (hasRuntimeRef stays false).
+      restoreAfterFailedWake?.();
+    } else if (didReattach) {
+      resumeAfterReattach?.();
+    }
+    // Successful reconnect wakes (!didReattach) keep the pause until cleanupSession.
   }
 }
