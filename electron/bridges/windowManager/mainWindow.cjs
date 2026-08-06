@@ -1,4 +1,9 @@
 /* eslint-disable no-undef */
+const {
+  windowsFramelessContentChromeOptions,
+  resolveFramelessHostBackgroundColor,
+} = require("./windowsWindowChrome.cjs");
+
 function createMainWindowApi(ctx) {
   with (ctx) {
     async function createWindow(electronModule, options) {
@@ -121,9 +126,6 @@ function createMainWindowApi(ctx) {
         }
       }
     
-      const {
-        windowsFramelessContentChromeOptions,
-      } = require("./windowsWindowChrome.cjs");
       const windowsChrome = !isMac ? windowsFramelessContentChromeOptions() : {};
 
       const win = new BrowserWindow({
@@ -444,9 +446,6 @@ function createMainWindowApi(ctx) {
       // Ensure native background matches frontend background, even before first paint.
       // On Windows the host stays clear so DWM rounded corners do not show a dark rim.
       try {
-        const {
-          resolveFramelessHostBackgroundColor,
-        } = require("./windowsWindowChrome.cjs");
         win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
       } catch {
         // ignore

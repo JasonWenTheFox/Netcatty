@@ -9,6 +9,10 @@ const {
   releaseAttachPopupAuthorization,
   restoreAttachedSessionOutput,
 } = require("../terminalAttachRestore.cjs");
+const {
+  windowsFramelessContentChromeOptions,
+  resolveFramelessHostBackgroundColor,
+} = require("./windowsWindowChrome.cjs");
 
 const ATTACH_CLOSE_PREPARE_TIMEOUT_MS = 2000;
 
@@ -73,9 +77,6 @@ function createTerminalPopupWindowApi(ctx) {
         popupY,
       });
 
-      const {
-        windowsFramelessContentChromeOptions,
-      } = require("./windowsWindowChrome.cjs");
       const windowsChrome = windowsFramelessContentChromeOptions();
 
       const win = new BrowserWindow({
@@ -210,9 +211,6 @@ function createTerminalPopupWindowApi(ctx) {
       win.on("page-title-updated", (e) => { e.preventDefault(); });
 
       try {
-        const {
-          resolveFramelessHostBackgroundColor,
-        } = require("./windowsWindowChrome.cjs");
         win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
       } catch {
         // ignore

@@ -1,4 +1,9 @@
 /* eslint-disable no-undef */
+const {
+  windowsFramelessContentChromeOptions,
+  resolveFramelessHostBackgroundColor,
+} = require("./windowsWindowChrome.cjs");
+
 function createSettingsWindowApi(ctx) {
   // The extracted window helpers intentionally share the parent window-manager state.
   with (ctx) {
@@ -125,9 +130,6 @@ function createSettingsWindowApi(ctx) {
         settingsHeight,
       });
     
-      const {
-        windowsFramelessContentChromeOptions,
-      } = require("./windowsWindowChrome.cjs");
       const windowsChrome = !isMac ? windowsFramelessContentChromeOptions() : {};
 
       const win = new BrowserWindow({
@@ -239,9 +241,6 @@ function createSettingsWindowApi(ctx) {
     
       // Ensure native background matches frontend background, even before first paint.
       try {
-        const {
-          resolveFramelessHostBackgroundColor,
-        } = require("./windowsWindowChrome.cjs");
         win.setBackgroundColor(resolveFramelessHostBackgroundColor(backgroundColor));
       } catch {
         // ignore

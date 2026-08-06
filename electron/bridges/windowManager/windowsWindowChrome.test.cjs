@@ -68,9 +68,20 @@ test("main/settings/tray call sites wire Windows chrome helpers", () => {
   const css = readFileSync(path.join(here, "../../../index.css"), "utf8");
   const html = readFileSync(path.join(here, "../../../index.html"), "utf8");
 
-  for (const source of [main, settings, popup]) {
-    assert.match(source, /windowsFramelessContentChromeOptions/);
-    assert.match(source, /resolveFramelessHostBackgroundColor/);
+  for (const [label, source] of [
+    ["mainWindow", main],
+    ["settingsWindow", settings],
+    ["terminalPopupWindow", popup],
+  ]) {
+    assert.match(source, /require\("\.\/windowsWindowChrome\.cjs"\)/, `${label} must require chrome helpers`);
+    assert.match(source, /windowsFramelessContentChromeOptions/, `${label} must use content chrome helper`);
+    assert.match(source, /resolveFramelessHostBackgroundColor/, `${label} must use host backdrop helper`);
+    const requireIndex = source.indexOf('require("./windowsWindowChrome.cjs")');
+    const withIndex = source.indexOf("with (ctx)");
+    assert.ok(
+      requireIndex !== -1 && withIndex !== -1 && requireIndex < withIndex,
+      `${label}: require chrome helpers before with(ctx) so injected require cannot remount the path`,
+    );
   }
   assert.match(tray, /windowsCssRoundedOverlayChromeOptions/);
   assert.match(tray, /#2505/);
