@@ -891,8 +891,20 @@ async function preserveTransferredDestinationMtime(transfer) {
       return;
     }
     const client = sftpClients.get(transfer.targetSftpId);
-    // SCP has no SETSTAT; same-host `cp -a` already preserves mtime.
-    if (!client || isScpModeClient(client)) return;
+    if (!client) return;
+
+    if (isScpModeClient(client)) {
+      // SCP has no SETSTAT; best-effort touch via the SSH session.
+      const sshClient = client.client;
+      if (!sshClient || typeof sshClient.exec !== "function") return;
+      const escaped = String(transfer.targetPath).replace(/'/g, "'\\''");
+      const command = `touch -d @${mtimeSec} -- '${escaped}' 2>/dev/null || `
+        + `touch -t "$(date -u -r ${mtimeSec} +%Y%m%d%H%M.%S 2>/dev/null `
+        + `|| date -u -d @${mtimeSec} +%Y%m%d%H%M.%S 2>/dev/null)" -- '${escaped}' 2>/dev/null `
+        + `|| true`;
+      await executeBoundedSshCommand(sshClient, command, { runTimeoutMs: 15_000 });
+      return;
+    }
 
     await requireSftpChannel(client);
     const encoded = encodePathForSession(
@@ -2499,7 +2511,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     let pathGateReleased = false;
     // True when we released the path gate without an OPEN callback (timeout
     // after channel error / cancel). A late truncating OPEN can then wipe
-    // same-transfer fastPut/shared fallback bytes — invalidate that attempt.
+    // same-transfer fastPut/shared fallback bytes - invalidate that attempt.
     let pathGateForceReleased = false;
 
     const releasePathGate = (options = {}) => {
@@ -2571,7 +2583,7 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       drainForceTimer = setTimeout(() => {
         drainForceTimer = null;
         // Free the transfer/lease only. Path gate stays held until the OPEN
-        // callback actually settles (or never, if the channel is dead — safer
+        // callback actually settles (or never, if the channel is dead - safer
         // than reusing a path that a stale truncating OPEN can still wipe).
         completeSharedWriteDrain();
       }, 2000);

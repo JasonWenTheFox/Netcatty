@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { SftpFileEntry } from "../../../domain/models";
 import { compareDirectoryTraversalPaths } from "../../../domain/sftpDirectoryCheckpoint";
+import { createSftpDirectoryTraversalBudget } from "../../../domain/sftpDirectoryCheckpoint";
 import { discoverTransferTree } from "./transferDirectoryDiscovery";
 
 const directoryEntry = (name: string): SftpFileEntry => ({
@@ -244,4 +245,27 @@ test("discoverTransferTree counts max-depth symlink directory omissions as error
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }
+});
+
+test("discoverTransferTree bounds local folder pre-scan memory", async () => {
+  const listLocalFiles = async (path: string): Promise<SftpFileEntry[]> => {
+    if (path === "/local") return [directoryEntry("a"), fileEntry("root.txt")];
+    if (path === "/local/a") return [fileEntry("nested.txt")];
+    return [];
+  };
+
+  await assert.rejects(
+    () => discoverTransferTree({
+      sourcePath: "/local",
+      targetPath: "/target",
+      sourceIsLocal: true,
+      sourceSftpId: null,
+      sourceEncoding: "auto",
+      listLocalFiles,
+      listRemoteFiles: async () => [],
+      listingConcurrency: 2,
+      traversalBudget: createSftpDirectoryTraversalBudget({ maxDirectories: 1, maxEntries: 200_000 }),
+    }),
+    /Directory traversal directory limit exceeded/,
+  );
 });

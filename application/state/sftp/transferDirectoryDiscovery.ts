@@ -148,21 +148,23 @@ export async function discoverTransferTree(
     if (options.shouldAbort?.()) throw new Error("Transfer cancelled");
     let claimedCanonicalPath: string | null = null;
     try {
+      let canonicalPath = job.sourcePath;
       if (!options.sourceIsLocal && options.sourceSftpId) {
         const bridge = netcattyBridge.get();
-        const canonicalPath = await bridge?.realpathSftp?.(
+        canonicalPath = await bridge?.realpathSftp?.(
           options.sourceSftpId,
           job.sourcePath,
           options.sourceEncoding,
         ).catch(() => job.sourcePath) ?? job.sourcePath;
-        claimedCanonicalPath = claimSftpDirectoryVisit(
-          traversal,
-          canonicalPath,
-          job.branchAncestors,
-        );
-        // Cycle / already visited: do not create an empty target dir for this path.
-        if (!claimedCanonicalPath) return [];
       }
+      // Bound both remote and local pre-scan trees (Codex P1 on 86c64f48).
+      claimedCanonicalPath = claimSftpDirectoryVisit(
+        traversal,
+        canonicalPath,
+        job.branchAncestors,
+      );
+      // Cycle / already visited: do not create an empty target dir for this path.
+      if (!claimedCanonicalPath) return [];
 
       // Only record directories after the visit is accepted so cyclic symlink
       // children (e.g. /source/loop -> /source) are omitted from mkdir plans.
@@ -184,7 +186,7 @@ export async function discoverTransferTree(
       });
 
       const filtered = listed.filter((entry) => entry.name !== "." && entry.name !== "..");
-      if (!options.sourceIsLocal) accountSftpDirectoryEntries(traversal, filtered.length);
+      accountSftpDirectoryEntries(traversal, filtered.length);
 
       const childDirs: DirJob[] = [];
       const regularFiles: SftpFileEntry[] = [];

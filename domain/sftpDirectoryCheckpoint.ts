@@ -60,7 +60,7 @@ export function claimSftpDirectoryVisit(
   const normalized = normalizeSftpCanonicalDirectoryPath(canonicalPath);
   if (branchAncestors.has(normalized)) return null;
   if (budget.visitedDirectories >= budget.maxDirectories) {
-    throw new Error(`Remote directory traversal directory limit exceeded (${budget.maxDirectories})`);
+    throw new Error(`Directory traversal directory limit exceeded (${budget.maxDirectories})`);
   }
   budget.visitedDirectories += 1;
   branchAncestors.add(normalized);
@@ -81,7 +81,7 @@ export function accountSftpDirectoryEntries(
 ): void {
   const next = budget.visitedEntries + Math.max(0, Number(count) || 0);
   if (next > budget.maxEntries) {
-    throw new Error(`Remote directory traversal entry limit exceeded (${budget.maxEntries})`);
+    throw new Error(`Directory traversal entry limit exceeded (${budget.maxEntries})`);
   }
   budget.visitedEntries = next;
 }
