@@ -2415,12 +2415,32 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     let drainForceTimer = null;
     const previousAbort = transfer.abort;
     let pathGateReleased = false;
+    // True when we released the path gate without an OPEN callback (timeout
+    // after channel error / cancel). A late truncating OPEN can then wipe
+    // same-transfer fastPut/shared fallback bytes — invalidate that attempt.
+    let pathGateForceReleased = false;
 
-    const releasePathGate = () => {
+    const releasePathGate = (options = {}) => {
       if (!pathGate || pathGateReleased) return;
       pathGateReleased = true;
+      if (options.forced === true) pathGateForceReleased = true;
       pathGate.release();
       try { transfer._resolvePendingWriteOpenPathGate?.(); } catch { /* ignore */ }
+    };
+
+    const invalidateSameTransferAfterForcedGateRelease = () => {
+      if (!pathGateForceReleased || !isTruncatingOpenNow() || !transfer) return;
+      const transferId = transfer.transferId;
+      const active = transferId != null && transferId !== ""
+        ? activeTransfers.get(transferId)
+        : null;
+      const target = active || transfer;
+      target.staleOpenTruncatedStage = true;
+      if (target.sharedWriteOpenAccepted === true) {
+        try { target.abort?.(); } catch { /* ignore */ }
+      } else {
+        try { target.checkpointBytes = 0; } catch { /* ignore */ }
+      }
     };
 
     const clearDrainForceTimer = () => {
@@ -2537,6 +2557,9 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
     // after drain force-complete (Codex P2 on 1a8cac20).
     const finishLateSharedWriteOpen = (handle) => {
       invalidateRetryStageIfStaleOpen();
+      // Same-transfer fallback may already be writing after a forced gate
+      // release; this late truncating OPEN wiped those bytes (Codex P1).
+      invalidateSameTransferAfterForcedGateRelease();
       const afterClose = () => {
         const finish = () => {
           completeSharedWriteDrain();
@@ -2588,9 +2611,10 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
             } else {
               // Isolated write cancel: force-release path gate so fastPut /
               // shared fallback (or a same-id retry) is not stuck forever when
-              // OPEN never callbacks after sftp.end() (#2755).
+              // OPEN never callbacks after sftp.end() (#2755). Mark forced so
+              // a late OPEN invalidates that same-transfer fallback.
               completeSharedWriteDrain();
-              releasePathGate();
+              releasePathGate({ forced: true });
             }
             // Late OPEN after this still closes/unlinks via finishLateSharedWriteOpen.
           }, 2000);
@@ -2614,11 +2638,12 @@ function openSftpHandleForTransfer(sftp, filePath, flags, transfer, options = {}
       } else if (isWriteOpen) {
         // Isolated write: hold until OPEN callback, but force-release after a
         // short grace so strategy fallback / cancel cannot hang forever when
-        // the OPEN never arrives on a dead channel (#2755).
+        // the OPEN never arrives on a dead channel (#2755). Mark forced so a
+        // late truncating OPEN aborts the same-transfer fallback it wiped.
         if (!openDrainTimer) {
           openDrainTimer = setTimeout(() => {
             completeSharedWriteDrain();
-            releasePathGate();
+            releasePathGate({ forced: true });
           }, 2000);
         }
       } else {

@@ -7,7 +7,7 @@ export const MAX_SFTP_FILE_TRANSFER_CONCURRENCY = 16;
  * SFTP has no recursive LIST; FileZilla/WinSCP still walk one dir at a time on
  * a single control channel. We pipeline several OPENDIR/READDIR requests so
  * wide trees discover total file counts much faster without a second full scan.
- * Keep this modest — listing shares the transfer SFTP session with file I/O.
+ * Keep this modest - listing shares the transfer SFTP session with file I/O.
  */
 export const DEFAULT_SFTP_DIRECTORY_LISTING_CONCURRENCY = 4;
 export const MIN_SFTP_DIRECTORY_LISTING_CONCURRENCY = 1;
@@ -67,17 +67,27 @@ export async function runSftpTransferWorkers<T>(
 ): Promise<void> {
   const concurrency = resolveSftpTransferConcurrency(readStoredConcurrency);
   let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
 
   const runNext = async () => {
-    while (nextIndex < items.length) {
-      // Wait BEFORE claiming so pause does not leave a claimed-but-not-started
-      // index that arms as soon as soft-drain finishes the previous file.
-      if (options?.beforeClaim) {
-        await options.beforeClaim();
+    while (!failed && nextIndex < items.length) {
+      try {
+        // Wait BEFORE claiming so pause does not leave a claimed-but-not-started
+        // index that arms as soon as soft-drain finishes the previous file.
+        if (options?.beforeClaim) {
+          await options.beforeClaim();
+        }
+        if (failed || nextIndex >= items.length) return;
+        const index = nextIndex++;
+        await worker(items[index], index);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstError = err;
+        }
+        return;
       }
-      if (nextIndex >= items.length) return;
-      const index = nextIndex++;
-      await worker(items[index], index);
     }
   };
 
@@ -85,7 +95,10 @@ export async function runSftpTransferWorkers<T>(
     { length: Math.min(concurrency, items.length) },
     () => runNext(),
   );
+  // Settle every started worker before propagating - Promise.all would reject
+  // while siblings keep claiming files after the caller releases leases.
   await Promise.all(workers);
+  if (failed) throw firstError;
 }
 
 /** Run workers over a queue with an explicit concurrency (not settings-backed). */
@@ -121,7 +134,7 @@ export async function runBoundedConcurrency<T>(
       }
     }
   };
-  // Settle every started worker before propagating — Promise.all would reject
+  // Settle every started worker before propagating - Promise.all would reject
   // while siblings keep claiming directories / transferring after the caller cleans up.
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runNext()));
   if (failed) throw firstError;

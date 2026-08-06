@@ -123,3 +123,55 @@ test("discoverTransferTree skips symlink directory cycles across BFS waves", asy
     (globalThis as { window?: unknown }).window = previousWindow;
   }
 });
+
+test("discoverTransferTree copies sibling symlink aliases to distinct targets", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  const listCalls = new Map<string, number>();
+  (globalThis as { window?: unknown }).window = {
+    netcatty: {
+      realpathSftp: async (_sftpId: string, remotePath: string) => {
+        if (remotePath === "/source/alias-a" || remotePath === "/source/alias-b") {
+          return "/shared";
+        }
+        return remotePath;
+      },
+    },
+  };
+
+  const listRemoteFiles = async (_sftpId: string, path: string): Promise<SftpFileEntry[]> => {
+    listCalls.set(path, (listCalls.get(path) ?? 0) + 1);
+    if (path === "/source") {
+      return [
+        { ...directoryEntry("alias-a"), type: "symlink", linkTarget: "directory" },
+        { ...directoryEntry("alias-b"), type: "symlink", linkTarget: "directory" },
+      ];
+    }
+    if (path === "/source/alias-a" || path === "/source/alias-b") {
+      return [fileEntry("shared.txt")];
+    }
+    throw new Error(`unexpected list of ${path}`);
+  };
+
+  try {
+    const result = await discoverTransferTree({
+      sourcePath: "/source",
+      targetPath: "/target",
+      sourceIsLocal: false,
+      sourceSftpId: "sftp-1",
+      sourceEncoding: "auto",
+      followSymlinks: true,
+      listLocalFiles: async () => [],
+      listRemoteFiles,
+      listingConcurrency: 4,
+    });
+
+    assert.equal(listCalls.get("/source/alias-a"), 1);
+    assert.equal(listCalls.get("/source/alias-b"), 1);
+    assert.deepEqual(
+      result.files.map((file) => file.targetPath).sort(),
+      ["/target/alias-a/shared.txt", "/target/alias-b/shared.txt"],
+    );
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});

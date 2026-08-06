@@ -134,6 +134,42 @@ test("runBoundedConcurrency drains siblings and stops new claims after an error"
   );
 });
 
+test("runSftpTransferWorkers drains siblings and stops new claims after an error", async () => {
+  const started: number[] = [];
+  const finished: number[] = [];
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+
+  const run = runSftpTransferWorkers([0, 1, 2, 3, 4], () => 2, async (item) => {
+    started.push(item);
+    if (item === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      throw new Error("session lost");
+    }
+    if (item === 1) {
+      await slowGate;
+    }
+    finished.push(item);
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  let settledEarly = false;
+  await Promise.race([
+    run.then(
+      () => { settledEarly = true; },
+      () => { settledEarly = true; },
+    ),
+    new Promise((resolve) => setTimeout(resolve, 5)),
+  ]);
+  assert.equal(settledEarly, false);
+  releaseSlow();
+  await assert.rejects(run, /session lost/);
+  assert.ok(finished.includes(1));
+  assert.deepEqual([...started].sort((a, b) => a - b), [0, 1]);
+});
+
 test("beforeClaim runs before claiming the next queue index", async () => {
   const events: string[] = [];
   let paused = true;

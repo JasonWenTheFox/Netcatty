@@ -2,8 +2,8 @@ import type { SftpFileEntry, SftpFilenameEncoding } from "../../../domain/models
 import {
   accountSftpDirectoryEntries,
   claimSftpDirectoryVisit,
+  createSftpDirectoryBranchAncestors,
   createSftpDirectoryTraversalBudget,
-  normalizeSftpCanonicalDirectoryPath,
   releaseSftpDirectoryVisit,
   shouldFollowSftpSymlinkDirectory,
   type SftpDirectoryTraversalBudget,
@@ -108,10 +108,6 @@ export async function discoverTransferTree(
     ?? resolveSftpDirectoryListingConcurrency();
   const listingGate = createListingGate(listingConcurrency);
   const traversal = options.traversalBudget ?? createSftpDirectoryTraversalBudget();
-  // BFS releases each directory after listing, so active-only claims cannot
-  // catch symlink cycles the way the interleaved DFS stack does. Track every
-  // canonical path seen for the lifetime of this discovery.
-  const seenCanonicalDirectories = new Set<string>();
   const files: DiscoveredTransferFile[] = [];
   const directories: DiscoveredTransferDirectory[] = [
     { sourcePath: options.sourcePath, targetPath: options.targetPath },
@@ -121,12 +117,15 @@ export async function discoverTransferTree(
     sourcePath: string;
     targetPath: string;
     symlinkDepth: number;
+    /** Ancestors on this BFS branch (copied for parallel sibling aliases). */
+    branchAncestors: Set<string>;
   };
 
   const queue: DirJob[] = [{
     sourcePath: options.sourcePath,
     targetPath: options.targetPath,
     symlinkDepth: 0,
+    branchAncestors: createSftpDirectoryBranchAncestors(),
   }];
 
   const publishCount = () => {
@@ -144,11 +143,12 @@ export async function discoverTransferTree(
           job.sourcePath,
           options.sourceEncoding,
         ).catch(() => job.sourcePath) ?? job.sourcePath;
-        const normalized = normalizeSftpCanonicalDirectoryPath(canonicalPath);
-        if (seenCanonicalDirectories.has(normalized)) return [];
-        claimedCanonicalPath = claimSftpDirectoryVisit(traversal, canonicalPath);
+        claimedCanonicalPath = claimSftpDirectoryVisit(
+          traversal,
+          canonicalPath,
+          job.branchAncestors,
+        );
         if (!claimedCanonicalPath) return [];
-        seenCanonicalDirectories.add(claimedCanonicalPath);
       }
 
       const listed = await listingGate.run(async () => {
@@ -175,6 +175,7 @@ export async function discoverTransferTree(
             sourcePath: joinPath(job.sourcePath, entry.name),
             targetPath: joinTransferTargetPath(job.targetPath, entry.name),
             symlinkDepth: job.symlinkDepth,
+            branchAncestors: createSftpDirectoryBranchAncestors(job.branchAncestors),
           });
         } else if (
           followSymlinks
@@ -186,6 +187,7 @@ export async function discoverTransferTree(
               sourcePath: joinPath(job.sourcePath, entry.name),
               targetPath: joinTransferTargetPath(job.targetPath, entry.name),
               symlinkDepth: job.symlinkDepth + 1,
+              branchAncestors: createSftpDirectoryBranchAncestors(job.branchAncestors),
             });
           } else {
             logger.warn(
@@ -216,7 +218,7 @@ export async function discoverTransferTree(
       return childDirs;
     } finally {
       if (claimedCanonicalPath) {
-        releaseSftpDirectoryVisit(traversal, claimedCanonicalPath);
+        releaseSftpDirectoryVisit(traversal, claimedCanonicalPath, job.branchAncestors);
       }
     }
   };

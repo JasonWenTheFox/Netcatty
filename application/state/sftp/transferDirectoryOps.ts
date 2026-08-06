@@ -23,7 +23,6 @@ import {
   resolveSftpDirectoryListingConcurrency,
   resolveSftpFolderPrescanEnabled,
   resolveSftpSkipUnchangedEnabled,
-  runBoundedConcurrency,
   runSftpTransferWorkers,
 } from "./transferConcurrency";
 import {
@@ -744,11 +743,10 @@ export function useSftpDirectoryTransferOps({
       regularFiles.sort((left, right) => left.name.localeCompare(right.name));
 
       // Directory progress is discovered by the same traversal that performs
-      // the transfer (single pass — no separate countDirectoryFiles walk).
-      // Sibling directories list in parallel (bounded) so wide trees surface an
-      // accurate total much sooner than depth-first serial readdir.
-      // Counter updates are synchronous (JS single-threaded) so parallel
-      // siblings cannot lose += updates across await boundaries.
+      // the transfer (single pass - no separate countDirectoryFiles walk).
+      // Process subdirectories sequentially so directoryEntryIndex / manifest
+      // order stay deterministic for resume, and sibling symlink aliases can
+      // claim the same canonical path after the prior branch releases.
       progress.discoveredFiles += regularFiles.length;
       setTransfers((prev) => prev.map((candidate) => candidate.id === rootTaskId
         ? {
@@ -758,56 +756,41 @@ export function useSftpDirectoryTransferOps({
           }
         : candidate));
 
-      // Fan out sibling walks; the shared listingGate caps concurrent readdir.
-      const subdirErrors: number[] = new Array(dirs.length).fill(0);
-      await runBoundedConcurrency(
-        dirs,
-        resolveSftpDirectoryListingConcurrency(),
-        async (dir, dirIndex) => {
-          if (cancelledTasksRef.current.has(task.id) || cancelledTasksRef.current.has(rootTaskId)) {
-            throw new Error("Transfer cancelled");
-          }
-          await waitWhileTransferPaused(rootTaskId);
+      for (const dir of dirs) {
+        if (cancelledTasksRef.current.has(task.id) || cancelledTasksRef.current.has(rootTaskId)) {
+          throw new Error("Transfer cancelled");
+        }
+        await waitWhileTransferPaused(rootTaskId);
 
-          const childTask: TransferTask = {
-            ...task,
-            id: crypto.randomUUID(),
-            fileName: dir.name,
-            originalFileName: dir.name,
-            sourcePath: joinPath(task.sourcePath, dir.name),
-            targetPath: joinTransferTargetPath(task.targetPath, dir.name),
-            isDirectory: true,
-            progressMode: "files",
-            parentTaskId: task.id,
-          };
+        const childTask: TransferTask = {
+          ...task,
+          id: crypto.randomUUID(),
+          fileName: dir.name,
+          originalFileName: dir.name,
+          sourcePath: joinPath(task.sourcePath, dir.name),
+          targetPath: joinTransferTargetPath(task.targetPath, dir.name),
+          isDirectory: true,
+          progressMode: "files",
+          parentTaskId: task.id,
+        };
 
-          const isSymlink = dir.type === "symlink";
-          subdirErrors[dirIndex] = await transferDirectory(
-            childTask,
-            sourceSftpId,
-            targetSftpId,
-            sourceIsLocal,
-            targetIsLocal,
-            sourceEncoding,
-            targetEncoding,
-            rootTaskId,
-            sameHost,
-            isSymlink ? symlinkDepth + 1 : symlinkDepth,
-            followSymlinks,
-            progress,
-            traversal,
-          );
-        },
-        {
-          beforeClaim: async () => {
-            await waitWhileTransferPaused(rootTaskId);
-            if (cancelledTasksRef.current.has(task.id) || cancelledTasksRef.current.has(rootTaskId)) {
-              throw new Error("Transfer cancelled");
-            }
-          },
-        },
-      );
-      for (const count of subdirErrors) totalErrors += count;
+        const isSymlink = dir.type === "symlink";
+        totalErrors += await transferDirectory(
+          childTask,
+          sourceSftpId,
+          targetSftpId,
+          sourceIsLocal,
+          targetIsLocal,
+          sourceEncoding,
+          targetEncoding,
+          rootTaskId,
+          sameHost,
+          isSymlink ? symlinkDepth + 1 : symlinkDepth,
+          followSymlinks,
+          progress,
+          traversal,
+        );
+      }
     } finally {
       // Release on success, cancellation, and traversal errors.
       if (claimedCanonicalPath) {
