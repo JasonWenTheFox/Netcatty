@@ -392,8 +392,8 @@ test("manual disconnect keeps the session pane for reconnect", () => {
   assert.match(body, /updateStatus\("disconnected"\)/);
   assert.match(body, /void cleanupSession\(\)/);
   assert.doesNotMatch(body, /onCloseSession/);
-  assert.match(source, /handleDisconnect: attachExistingSession \? undefined : handleDisconnect/);
-  assert.match(source, /showConnectionControls: !attachExistingSession/);
+  assert.match(source, /handleDisconnect: \(attachExistingSession \|\| compactToolbar\) \? undefined : handleDisconnect/);
+  assert.match(source, /showConnectionControls: !attachExistingSession && !compactToolbar/);
 
   const startersSource = readFileSync(
     new URL("./runtime/createTerminalSessionStarters.ts", import.meta.url),
