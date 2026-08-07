@@ -23,3 +23,10 @@ test("virtualized snippet collections pass the snippet column policy", () => {
   assert.match(source, /getColumnCount=\{\(width, mode\) =>/);
   assert.match(source, /getSnippetsGridColumnCount\(width, \{ hasSidePanel: hasSnippetsSidePanel \}\)/);
 });
+
+test("virtualized snippet drops reset drag state without waiting for dragend", () => {
+  const source = readFileSync(new URL("./SnippetsManager.tsx", import.meta.url), "utf8");
+  assert.match(source, /handleReorderDrop = useCallback/);
+  assert.match(source, /finally \{\s*\/\/ Virtualized cards[\s\S]*resetSnippetDragState\(\);/);
+  assert.match(source, /resetSnippetDragState,/);
+});

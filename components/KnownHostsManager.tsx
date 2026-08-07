@@ -704,6 +704,9 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
             viewMode={viewMode}
             layoutKey={collectionLayoutKey}
             ariaLabel={t("vault.nav.knownHosts")}
+            getColumnCount={(width, mode) => (
+              mode === "grid" ? getKnownHostsGridColumnCount(width) : 1
+            )}
             renderItem={renderKnownHostItem}
           />
         ) : (

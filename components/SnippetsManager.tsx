@@ -1538,6 +1538,7 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
   ]);
 
   const handleReorderDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    try {
     const target = (event.target as Element | null)?.closest('[data-snippet-id], [data-pkg-path]');
     clearSnippetDropIndicator();
     if (!(target instanceof HTMLElement)) return;
@@ -1597,12 +1598,18 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
       lastPreviewReorderRef.current = null;
       setSortMode('manual');
     }
+    } finally {
+      // Virtualized cards can unmount mid-drag so dragend never fires — always
+      // clear snippet/package drag ids on drop instead of relying on capture end.
+      resetSnippetDragState();
+    }
   }, [
     onBulkSave,
     onPackagesChange,
     packages,
     parentOfPackage,
     prepareGridLayoutAnimation,
+    resetSnippetDragState,
     snippets,
     viewMode,
   ]);
