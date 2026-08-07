@@ -473,7 +473,7 @@ const deleteLexicalTextRange = (range: Range, onUpdate: () => void): boolean => 
   return didDelete;
 };
 
-export function InlineMarkdownEditor({
+export const InlineMarkdownEditor = React.memo(function InlineMarkdownEditor({
   value,
   placeholder,
   onChange,
@@ -1001,4 +1001,4 @@ export function InlineMarkdownEditor({
       )}
     </div>
   );
-}
+});

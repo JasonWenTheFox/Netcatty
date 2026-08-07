@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React from "react";
+import React, { useCallback } from "react";
 import { deleteVaultKey } from "../../application/defaultKeyPassphrases";
 import { usePluginImporterCommit } from "../../application/state/usePluginImporterCommit";
 import { preserveConcurrentHostLineTimestampUpdate } from "../../domain/host";
@@ -67,6 +67,8 @@ function VaultNotesSection({
     />
   );
 }
+
+const MemoVaultNotesSection = React.memo(VaultNotesSection);
 
 /**
  * Logs section subscribes to connectionLogsStore so every session start/exit
@@ -366,6 +368,13 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
         source.groupName === path || source.groupName.startsWith(path + "/"),
     ),
   );
+  const handleNotesOpenHost = useCallback((host: any, source?: { noteId?: string }) => {
+    if (source?.noteId && onOpenHostFromNote) {
+      onOpenHostFromNote(host, source);
+      return;
+    }
+    handleHostConnect(host);
+  }, [handleHostConnect, onOpenHostFromNote]);
   const visibleTreeGroupPaths = React.useMemo(
     () => collectVisibleVaultGroupPaths(treeViewGroupTree),
     [treeViewGroupTree],
@@ -1241,19 +1250,13 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
               )}
               data-section="vault-notes-retained"
             >
-              <VaultNotesSection
+              <MemoVaultNotesSection
                 NotesManager={NotesManager}
                 hosts={hosts}
                 isActive={currentSection === "notes"}
                 openNoteId={openNoteId ?? null}
                 onOpenNoteIdHandled={onOpenNoteIdHandled}
-                onOpenHost={(host: any, source: any) => {
-                  if (source?.noteId && onOpenHostFromNote) {
-                    onOpenHostFromNote(host, source);
-                    return;
-                  }
-                  handleHostConnect(host);
-                }}
+                onOpenHost={handleNotesOpenHost}
               />
             </div>
             {currentSection === "keys" && (

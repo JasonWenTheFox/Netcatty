@@ -35,8 +35,8 @@ import {
   resolveDisplayedSession,
 } from './ai/aiPanelViewState';
 import {
-  endDraftSend,
-  tryBeginDraftSend,
+  endSend,
+  tryBeginSend,
 } from './ai/draftSendGate';
 import { selectDraftForAgentSwitch } from '../application/state/aiDraftState';
 import {
@@ -385,7 +385,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
   currentDraftRef.current = currentDraft;
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
-  const draftSendInFlightRef = useRef(false);
+  const sendInFlightRef = useRef(false);
 
   const defaultTargetSession = useMemo<DefaultTargetSessionHint | undefined>(() => {
     const connectedSessions = terminalSessions.filter((session) => session.connected !== false);
@@ -1005,7 +1005,9 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
     const modelAttachments = attachments.filter((attachment) => !isTerminalSelectionAttachment(attachment));
     const isDraftMode = currentPanelView.mode === 'draft';
 
-    if (isDraftMode && !tryBeginDraftSend(draftSendInFlightRef)) {
+    // Sync re-entry gate: React `isStreaming` can lag a double-click / remount
+    // because setState is async, while StrictMode and rapid clicks are not.
+    if (!tryBeginSend(sendInFlightRef)) {
       return;
     }
 
@@ -1023,6 +1025,10 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       }
 
       if (!sessionId) {
+        return;
+      }
+
+      if (isAIChatSessionStreaming(sessionId)) {
         return;
       }
 
@@ -1133,9 +1139,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
         }, modelAttachments.length > 0 ? modelAttachments : undefined);
       }
     } finally {
-      if (isDraftMode) {
-        endDraftSend(draftSendInFlightRef);
-      }
+      endSend(sendInFlightRef);
     }
   }, [
     isStreaming, activeProvider, effectiveActiveProvider, effectiveActiveModelId, scopeKey, currentAgentId,
@@ -1155,11 +1159,14 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       currentAgentId !== 'catty'
       || !session
       || isStreaming
+      || isAIChatSessionStreaming(session.id)
       || !effectiveActiveProvider
       || !effectiveActiveModelId.trim()
     ) {
       return;
     }
+
+    if (!tryBeginSend(sendInFlightRef)) return;
 
     const controller = new AbortController();
     abortControllersRef.current.set(session.id, controller);
@@ -1198,6 +1205,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       if (abortControllersRef.current.get(session.id) === controller) {
         abortControllersRef.current.delete(session.id);
       }
+      endSend(sendInFlightRef);
     }
   }, [
     abortControllersRef,

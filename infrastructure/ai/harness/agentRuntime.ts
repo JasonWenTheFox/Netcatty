@@ -99,9 +99,13 @@ export class AgentRuntime {
     }
 
     const chatSessionId = input.chatSessionId;
-    const priorTurn = this.activeTurnPromises.get(chatSessionId);
-    if (priorTurn) {
-      await priorTurn.catch(() => {});
+    // Reject concurrent starts for the same session. Awaiting-then-starting a
+    // second turn made StrictMode / double-click races look like a successful
+    // "retry" that streamed twice after the first turn finished.
+    if (this.activeTurnPromises.has(chatSessionId)) {
+      const error = new Error(`Agent turn already in progress for session ${chatSessionId}`);
+      (error as Error & { code?: string }).code = 'AGENT_TURN_BUSY';
+      throw error;
     }
 
     const turnPromise = this.runTurnInternal(input, driver);

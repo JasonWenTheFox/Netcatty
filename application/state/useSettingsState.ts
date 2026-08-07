@@ -1645,8 +1645,13 @@ export const useSettingsState = (options: { enableSettingsSync?: boolean; enable
   // Fix 1: Mark all persist effects as mounted.
   // This MUST be declared AFTER all persist useEffects so that React runs it last
   // during the initial mount cycle (effects fire in declaration order).
+  // Cleanup resets the latch so StrictMode's remount treats the second pass as
+  // a fresh mount instead of emitting boot-time notifySettingsChanged/IPC.
   useEffect(() => {
     persistMountedRef.current = true;
+    return () => {
+      persistMountedRef.current = false;
+    };
   }, []);
 
   // Get merged key bindings (defaults + custom overrides)

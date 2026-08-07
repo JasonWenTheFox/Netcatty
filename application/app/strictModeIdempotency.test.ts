@@ -192,3 +192,31 @@ test('global hotkey registration cleans up across StrictMode remount', () => {
     /if \(!persistMountedRef\.current\) return;\s*\n\s*notifySettingsChanged/,
   );
 });
+
+test('settings persistMountedRef resets on StrictMode cleanup', () => {
+  const settingsSource = readFileSync(
+    new URL('../state/useSettingsState.ts', import.meta.url),
+    'utf8',
+  );
+  const markAt = settingsSource.indexOf('Mark all persist effects as mounted');
+  assert.notEqual(markAt, -1);
+  const markEffect = settingsSource.slice(markAt, markAt + 500);
+  assert.match(markEffect, /persistMountedRef\.current = true;/);
+  assert.match(
+    markEffect,
+    /return \(\) => \{\s*\n\s*persistMountedRef\.current = false;\s*\n\s*\};/,
+    'remount must treat boot as a fresh mount, not a settings change',
+  );
+});
+
+test('tray panel connect flush latches against StrictMode double invoke', () => {
+  const sideEffectsSource = readFileSync(
+    new URL('./AppSideEffects.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(sideEffectsSource, /pendingTrayConnectFlushKeyRef/);
+  assert.match(
+    sideEffectsSource,
+    /if \(pendingTrayConnectFlushKeyRef\.current === flushKey\) return;/,
+  );
+});
