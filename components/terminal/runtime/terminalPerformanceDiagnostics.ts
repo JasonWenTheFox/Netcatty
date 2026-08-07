@@ -1,3 +1,8 @@
+import { localStorageAdapter } from "../../../infrastructure/persistence/localStorageAdapter";
+import {
+  STORAGE_KEY_DEBUG_TERMINAL,
+  STORAGE_KEY_DEBUG_TERMINAL_PERF,
+} from "../../../infrastructure/config/storageKeys";
 import { netcattyBridge } from "../../../infrastructure/services/netcattyBridge";
 
 export type TerminalOutputPerfMeta = {
@@ -23,8 +28,8 @@ type TerminalOutputPerfMetaCarrier = {
 };
 
 const DEBUG_KEYS = [
-  "NETCATTY_TERMINAL_PERF_DEBUG",
-  "NETCATTY_TERMINAL_DEBUG",
+  STORAGE_KEY_DEBUG_TERMINAL_PERF,
+  STORAGE_KEY_DEBUG_TERMINAL,
 ];
 const PERF_LOG_PREFIX = "[Netcatty Terminal Perf]";
 const LOCAL_STORAGE_DEBUG_CACHE_TTL_MS = 1000;
@@ -65,7 +70,7 @@ const sendRendererDiagnostic = (
 
 const readLocalStorageDebugEnabled = (): boolean => {
   try {
-    return DEBUG_KEYS.some((key) => window.localStorage?.getItem(key) === "1");
+    return DEBUG_KEYS.some((key) => localStorageAdapter.readString(key) === "1");
   } catch {
     return false;
   }

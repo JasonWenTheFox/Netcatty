@@ -50,8 +50,6 @@ test("workspace section passes resolved session host ids to terminal panes", () 
     fontSize: 14,
     terminalTheme: {},
     followAppTerminalTheme: false,
-    accentMode: "theme",
-    customAccent: "",
     terminalSettings: {},
     hotkeyScheme: "mac",
     disableTerminalFontZoom: false,

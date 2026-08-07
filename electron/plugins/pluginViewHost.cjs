@@ -173,6 +173,7 @@ class PluginViewHost {
           devTools: false,
           disableDialogs: true,
           navigateOnDragDrop: false,
+          spellcheck: false,
           session: pluginSession,
           preload: this.preloadPath,
         },

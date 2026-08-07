@@ -49,6 +49,9 @@ import {
   vaultSnippetIconClass,
 } from './vault/VaultEntityIcon';
 import { VaultDeleteConfirmDialog } from './vault/VaultDeleteConfirmDialog';
+import { VirtualizedHostCollection } from './vault/VirtualizedHostCollection';
+import { getSnippetsGridColumnCount } from './snippetsGridLayout';
+import { getElementContentWidth } from './vault/vaultHostGridLayout';
 import {
   clearVaultDropIndicator as clearSnippetDropIndicator,
   getVaultDropIntent as getPackageDropIntent,
@@ -58,6 +61,8 @@ import {
   markVaultInsideDropIndicator as markSnippetInsideIndicator,
   useVaultGridLayoutAnimation,
 } from './vault/vaultReorderDrag';
+
+const VIRTUALIZE_THRESHOLD = 30;
 
 interface SnippetsManagerProps {
   snippets: Snippet[];
@@ -521,22 +526,18 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
   const prepareGridLayoutAnimation = useVaultGridLayoutAnimation(listRef);
   const hasSnippetsSidePanel = rightPanelMode !== 'none';
   const splitGridColsRef = useRef(2);
-  const splitViewGridStyle = hasSnippetsSidePanel && viewMode === 'grid'
+  const snippetGridStyle = viewMode === 'grid'
     ? { gridTemplateColumns: 'var(--snippets-grid-cols, repeat(2, minmax(0, 1fr)))' }
     : undefined;
 
   useEffect(() => {
     const el = listRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-
-    const GAP = 12;
-    const MIN_CARD = 220;
-    const PADDING_X = 32;
+    if (!el || viewMode !== 'grid' || typeof ResizeObserver === 'undefined') return;
 
     const recompute = () => {
-      const usable = el.clientWidth - PADDING_X;
-      if (usable <= 0) return;
-      const next = Math.max(1, Math.floor((usable + GAP) / (MIN_CARD + GAP)));
+      const next = getSnippetsGridColumnCount(getElementContentWidth(el), {
+        hasSidePanel: hasSnippetsSidePanel,
+      });
       if (next === splitGridColsRef.current) return;
       splitGridColsRef.current = next;
       el.style.setProperty('--snippets-grid-cols', `repeat(${next}, minmax(0, 1fr))`);
@@ -1015,6 +1016,16 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
   }, [snippets, selectedPackage, search, sortMode]);
 
   const isSearchActive = search.trim().length > 0;
+  const shouldVirtualizeSnippets = displayedSnippets.length >= VIRTUALIZE_THRESHOLD;
+  const snippetCollectionLayoutKey = [
+    viewMode,
+    search.trim() ? 'search' : 'browse',
+    selectedPackage ?? 'root',
+    displayedPackages.length > 0 && !search.trim() ? 'packages' : 'no-packages',
+    hasSnippetsSidePanel ? 'panel' : 'full',
+    sortMode,
+    displayedSnippets.length,
+  ].join('|');
 
   useEffect(() => {
     setSelectedSnippetIds((prev) => {
@@ -1445,6 +1456,11 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
       const sourceSnippetId = draggingSnippetIdRef.current || event.dataTransfer.getData('snippet-id');
       const position = getDropPosition(target, event.clientX, event.clientY, isGrid);
       if (isGrid && sourceSnippetId && sourceSnippetId !== targetSnippetId) {
+        // Virtualized cards can unmount mid-drag — use drop indicator instead of live reorder.
+        if (shouldVirtualizeSnippets) {
+          markSnippetDropIndicator(target, position, 'x');
+          return;
+        }
         const targetSnippet = snippets.find((snippet) => snippet.id === targetSnippetId);
         const sourceSnippet = snippets.find((snippet) => snippet.id === sourceSnippetId);
         if (!targetSnippet || !sourceSnippet) return;
@@ -1513,11 +1529,13 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
     packages,
     parentOfPackage,
     prepareGridLayoutAnimation,
+    shouldVirtualizeSnippets,
     snippets,
     viewMode,
   ]);
 
   const handleReorderDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    try {
     const target = (event.target as Element | null)?.closest('[data-snippet-id], [data-pkg-path]');
     clearSnippetDropIndicator();
     if (!(target instanceof HTMLElement)) return;
@@ -1577,12 +1595,18 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
       lastPreviewReorderRef.current = null;
       setSortMode('manual');
     }
+    } finally {
+      // Virtualized cards can unmount mid-drag so dragend never fires — always
+      // clear snippet/package drag ids on drop instead of relying on capture end.
+      resetSnippetDragState();
+    }
   }, [
     onBulkSave,
     onPackagesChange,
     packages,
     parentOfPackage,
     prepareGridLayoutAnimation,
+    resetSnippetDragState,
     snippets,
     viewMode,
   ]);
@@ -1701,6 +1725,129 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
       onRunSnippet={onRunSnippet}
     />
   );
+
+  const renderSnippetItem = (snippet: Snippet) => {
+    const isSelected = selectedSnippetIds.has(snippet.id);
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger>
+          <div
+            className={cn(
+              "vault-drop-indicator-row group cursor-pointer overflow-hidden",
+              isSelected && (viewMode === 'grid' ? "ring-2 ring-primary/45 bg-primary/5" : "bg-primary/5"),
+              viewMode === 'grid'
+                ? "soft-card elevate rounded-xl h-[68px] px-3 py-2"
+                : "h-14 px-3 py-2 hover:bg-secondary/60 rounded-lg transition-colors"
+            )}
+            data-snippet-id={isSearchActive ? undefined : snippet.id}
+            data-vault-grid-item={`snippet:${snippet.id}`}
+            data-vault-reorder-grid={viewMode === 'grid' ? 'true' : undefined}
+            data-vault-reorder-dragging={draggingSnippetId === snippet.id ? 'true' : undefined}
+            draggable={!isSearchActive && !isMultiSelectMode}
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('snippet-id', snippet.id);
+              draggingSnippetIdRef.current = snippet.id;
+              setDraggingSnippetId(snippet.id);
+              lastPreviewReorderRef.current = null;
+            }}
+            onClick={() => {
+              if (isMultiSelectMode) {
+                toggleSnippetSelection(snippet.id);
+              } else {
+                handleEdit(snippet);
+              }
+            }}
+          >
+            <div className="flex items-center gap-3 h-full min-w-0">
+              {isMultiSelectMode && (
+                <div
+                  className="shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleSnippetSelection(snippet.id);
+                  }}
+                >
+                  {isSelected ? (
+                    <CheckSquare size={18} className="text-primary" />
+                  ) : (
+                    <Square size={18} className="text-muted-foreground" />
+                  )}
+                </div>
+              )}
+              <VaultEntityIcon
+                className={isScriptSnippet(snippet) ? vaultAutomationScriptIconClass : vaultSnippetIconClass}
+                icon={isScriptSnippet(snippet) ? (
+                  <Play size={18} />
+                ) : (
+                  <Zap size={18} />
+                )}
+              />
+              <div className="w-0 flex-1">
+                <div className="text-sm font-semibold truncate">{snippet.label}</div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="text-[11px] text-muted-foreground font-mono leading-4 truncate">
+                      {flattenSnippetCommandPreview(snippet.command) || t('snippets.commandFallback')}
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    <SnippetCommandTooltipContent
+                      command={snippet.command}
+                      fallback={t('snippets.commandFallback')}
+                    />
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              {snippet.shortkey && (
+                <div className="shrink-0 px-2 py-1 text-[10px] font-mono rounded border border-border bg-muted/50 text-muted-foreground">
+                  {snippet.shortkey}
+                </div>
+              )}
+              {viewMode === 'list' && !isMultiSelectMode && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                  onClick={(e) => { e.stopPropagation(); handleEdit(snippet); }}
+                >
+                  <Edit2 size={14} />
+                </Button>
+              )}
+            </div>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            onClick={() => {
+              const runTargets = getRunnableHostsForSnippet(snippet, hosts);
+              if (runTargets.length > 0) {
+                onRunSnippet?.(snippet, runTargets);
+                return;
+              }
+              toast.error(t('scripts.actions.noRunnableHosts'));
+            }}
+            disabled={getRunnableHostsForSnippet(snippet, hosts).length === 0}
+          >
+            <Play className="mr-2 h-4 w-4" /> {t('action.run')}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => handleEdit(snippet)}>
+            <Edit2 className="mr-2 h-4 w-4" /> {t('action.edit')}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => handleCopy(snippet.id, snippet.command)}>
+            <Copy className="mr-2 h-4 w-4" /> {t('action.copy')}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => exportSingleSnippet(snippet)}>
+            <Download className="mr-2 h-4 w-4" /> {t('snippets.export.snippet')}
+          </ContextMenuItem>
+          <ContextMenuItem className="text-destructive" onClick={() => requestDeleteSnippet(snippet.id)}>
+            <Trash2 className="mr-2 h-4 w-4" /> {t('action.delete')}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    );
+  };
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -1904,15 +2051,10 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
               </div>
               <div className={cn(
                 viewMode === 'grid'
-                  ? cn(
-                    "grid gap-3",
-                    hasSnippetsSidePanel
-                      ? "grid-cols-1"
-                      : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
-                  )
+                  ? "grid gap-3"
                   : "flex flex-col gap-0"
               )}
-              style={splitViewGridStyle}
+              style={snippetGridStyle}
               >
                 {displayedPackages.map((pkg) => (
                   <ContextMenu key={pkg.path}>
@@ -1983,141 +2125,36 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
           {displayedSnippets.length > 0 && (
             <div className="space-y-2">
               <h3 className={vaultSectionTitleClass}>{t('snippets.section.snippets')}</h3>
-              <div className={cn(
-                viewMode === 'grid'
-                  ? cn(
-                    "grid gap-3",
-                    hasSnippetsSidePanel
-                      ? "grid-cols-1"
-                      : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
-                  )
-                  : "flex flex-col gap-0"
+              {shouldVirtualizeSnippets ? (
+                <VirtualizedHostCollection
+                  items={displayedSnippets}
+                  itemKey={(snippet) => snippet.id}
+                  scrollRef={listRef}
+                  viewMode={viewMode}
+                  layoutKey={snippetCollectionLayoutKey}
+                  ariaLabel={t('vault.nav.snippets')}
+                  getColumnCount={(width, mode) => (
+                    mode === 'grid'
+                      ? getSnippetsGridColumnCount(width, { hasSidePanel: hasSnippetsSidePanel })
+                      : 1
+                  )}
+                  renderItem={renderSnippetItem}
+                />
+              ) : (
+                <div className={cn(
+                  viewMode === 'grid'
+                    ? "grid gap-3"
+                    : "flex flex-col gap-0"
+                )}
+                style={snippetGridStyle}
+                >
+                  {displayedSnippets.map((snippet) => (
+                    <React.Fragment key={snippet.id}>
+                      {renderSnippetItem(snippet)}
+                    </React.Fragment>
+                  ))}
+                </div>
               )}
-              style={splitViewGridStyle}
-              >
-                {displayedSnippets.map((snippet) => {
-                  const isSelected = selectedSnippetIds.has(snippet.id);
-                  return (
-                  <ContextMenu key={snippet.id}>
-                    <ContextMenuTrigger>
-                      <div
-                        className={cn(
-                          "vault-drop-indicator-row group cursor-pointer overflow-hidden",
-                          isSelected && (viewMode === 'grid' ? "ring-2 ring-primary/45 bg-primary/5" : "bg-primary/5"),
-                          viewMode === 'grid'
-                            ? "soft-card elevate rounded-xl h-[68px] px-3 py-2"
-                            : "h-14 px-3 py-2 hover:bg-secondary/60 rounded-lg transition-colors"
-                        )}
-                        data-snippet-id={isSearchActive ? undefined : snippet.id}
-                        data-vault-grid-item={`snippet:${snippet.id}`}
-                        data-vault-reorder-grid={viewMode === 'grid' ? 'true' : undefined}
-                        data-vault-reorder-dragging={draggingSnippetId === snippet.id ? 'true' : undefined}
-                        draggable={!isSearchActive && !isMultiSelectMode}
-                        onDragStart={(e) => {
-                          e.dataTransfer.effectAllowed = 'move';
-                          e.dataTransfer.setData('snippet-id', snippet.id);
-                          draggingSnippetIdRef.current = snippet.id;
-                          setDraggingSnippetId(snippet.id);
-                          lastPreviewReorderRef.current = null;
-                        }}
-                        onClick={() => {
-                          if (isMultiSelectMode) {
-                            toggleSnippetSelection(snippet.id);
-                          } else {
-                            handleEdit(snippet);
-                          }
-                        }}
-                      >
-                        <div className="flex items-center gap-3 h-full min-w-0">
-                          {isMultiSelectMode && (
-                            <div
-                              className="shrink-0"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleSnippetSelection(snippet.id);
-                              }}
-                            >
-                              {isSelected ? (
-                                <CheckSquare size={18} className="text-primary" />
-                              ) : (
-                                <Square size={18} className="text-muted-foreground" />
-                              )}
-                            </div>
-                          )}
-                          <VaultEntityIcon
-                            className={isScriptSnippet(snippet) ? vaultAutomationScriptIconClass : vaultSnippetIconClass}
-                            icon={isScriptSnippet(snippet) ? (
-                              <Play size={18} />
-                            ) : (
-                              <Zap size={18} />
-                            )}
-                          />
-                          <div className="w-0 flex-1">
-                            <div className="text-sm font-semibold truncate">{snippet.label}</div>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div className="text-[11px] text-muted-foreground font-mono leading-4 truncate">
-                                  {flattenSnippetCommandPreview(snippet.command) || t('snippets.commandFallback')}
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom">
-                                <SnippetCommandTooltipContent
-                                  command={snippet.command}
-                                  fallback={t('snippets.commandFallback')}
-                                />
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                          {snippet.shortkey && (
-                            <div className="shrink-0 px-2 py-1 text-[10px] font-mono rounded border border-border bg-muted/50 text-muted-foreground">
-                              {snippet.shortkey}
-                            </div>
-                          )}
-                          {viewMode === 'list' && !isMultiSelectMode && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                              onClick={(e) => { e.stopPropagation(); handleEdit(snippet); }}
-                            >
-                              <Edit2 size={14} />
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent>
-                      <ContextMenuItem
-                        onClick={() => {
-                          const runTargets = getRunnableHostsForSnippet(snippet, hosts);
-                          if (runTargets.length > 0) {
-                            onRunSnippet?.(snippet, runTargets);
-                            return;
-                          }
-                          toast.error(t('scripts.actions.noRunnableHosts'));
-                        }}
-                        disabled={getRunnableHostsForSnippet(snippet, hosts).length === 0}
-                      >
-                        <Play className="mr-2 h-4 w-4" /> {t('action.run')}
-                      </ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem onClick={() => handleEdit(snippet)}>
-                        <Edit2 className="mr-2 h-4 w-4" /> {t('action.edit')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => handleCopy(snippet.id, snippet.command)}>
-                        <Copy className="mr-2 h-4 w-4" /> {t('action.copy')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => exportSingleSnippet(snippet)}>
-                        <Download className="mr-2 h-4 w-4" /> {t('snippets.export.snippet')}
-                      </ContextMenuItem>
-                      <ContextMenuItem className="text-destructive" onClick={() => requestDeleteSnippet(snippet.id)}>
-                        <Trash2 className="mr-2 h-4 w-4" /> {t('action.delete')}
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  </ContextMenu>
-                  );
-                })}
-              </div>
             </div>
           )}
           {search.trim() && displayedSnippets.length === 0 && (snippets.length > 0 || displayedPackages.length > 0) && (

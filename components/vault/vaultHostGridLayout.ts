@@ -15,3 +15,14 @@ export function getVaultHostGridColumnCount(width: number): number {
     ),
   );
 }
+
+/**
+ * Content-box width for a padded scroll container.
+ * Matches VirtualizedHostCollection's child-root measure (excludes padding).
+ */
+export function getElementContentWidth(el: HTMLElement): number {
+  const style = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+  const padLeft = style ? Number.parseFloat(style.paddingLeft) || 0 : 0;
+  const padRight = style ? Number.parseFloat(style.paddingRight) || 0 : 0;
+  return Math.max(0, el.clientWidth - padLeft - padRight);
+}

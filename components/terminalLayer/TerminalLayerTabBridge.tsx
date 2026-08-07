@@ -393,7 +393,6 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
   });
 
   const ctx = useMemo(() => ({
-    accentMode: s.accentMode,
     activeHostIdForSidebar,
     activeResizers,
     activeSidePanelTab,
@@ -410,7 +409,6 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
     cn,
     composeBarThemeColors: themeState.composeBarThemeColors,
     computeSplitHint,
-    customAccent: s.customAccent,
     customGroups: s.customGroups,
     draggingSessionId: s.draggingSessionId,
     dropHint,

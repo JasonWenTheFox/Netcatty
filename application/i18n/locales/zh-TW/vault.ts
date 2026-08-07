@@ -331,29 +331,8 @@ export const zhTWVaultMessages: Messages = {
   'hostDetails.plugin.useSsh': '改用 SSH',
 
   // Host form (legacy modal)
-  'hostForm.title.edit': '編輯主機',
-  'hostForm.title.new': '新建主機',
-  'hostForm.desc.edit': '更新該主機的連線資訊',
-  'hostForm.desc.new': '建立一個新的 SSH 主機條目',
-  'hostForm.field.label': '名稱',
-  'hostForm.placeholder.label': 'My Production Server',
-  'hostForm.field.hostname': 'Hostname / IP',
-  'hostForm.placeholder.hostname': '192.168.1.1',
-  'hostForm.field.port': '埠',
-  'hostForm.field.username': '使用者名稱',
-  'hostForm.field.osType': '作業系統型別',
-  'hostForm.placeholder.selectOs': '選擇作業系統',
-  'hostForm.field.group': '分組',
-  'hostForm.placeholder.group': '例如：AWS、DigitalOcean',
-  'hostForm.field.tags': '標籤',
-  'hostForm.placeholder.addTag': '新增標籤…',
-  'hostForm.auth.method': '認證方式',
-  'hostForm.auth.password': '密碼',
-  'hostForm.auth.sshKey': 'SSH金鑰',
+  // Host form (legacy keys still referenced by TerminalAuthDialog)
   'hostForm.auth.selectKey': '選擇 SSH金鑰',
-  'hostForm.auth.noKeys': '暫無金鑰',
-  'hostForm.auth.noKeysHint': '鑰匙串中未找到 SSH金鑰，請先建立一個。',
-  'hostForm.saveHost': '儲存主機',
 
   // Connection logs
   'logs.table.date': '日期',

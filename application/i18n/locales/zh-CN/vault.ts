@@ -331,29 +331,8 @@ export const zhCNVaultMessages: Messages = {
   'hostDetails.plugin.useSsh': '改用 SSH',
 
   // Host form (legacy modal)
-  'hostForm.title.edit': '编辑主机',
-  'hostForm.title.new': '新建主机',
-  'hostForm.desc.edit': '更新该主机的连接信息',
-  'hostForm.desc.new': '创建一个新的 SSH 主机条目',
-  'hostForm.field.label': '名称',
-  'hostForm.placeholder.label': 'My Production Server',
-  'hostForm.field.hostname': 'Hostname / IP',
-  'hostForm.placeholder.hostname': '192.168.1.1',
-  'hostForm.field.port': '端口',
-  'hostForm.field.username': '用户名',
-  'hostForm.field.osType': '操作系统类型',
-  'hostForm.placeholder.selectOs': '选择操作系统',
-  'hostForm.field.group': '分组',
-  'hostForm.placeholder.group': '例如：AWS、DigitalOcean',
-  'hostForm.field.tags': '标签',
-  'hostForm.placeholder.addTag': '添加标签…',
-  'hostForm.auth.method': '认证方式',
-  'hostForm.auth.password': '密码',
-  'hostForm.auth.sshKey': 'SSH密钥',
+  // Host form (legacy keys still referenced by TerminalAuthDialog)
   'hostForm.auth.selectKey': '选择 SSH密钥',
-  'hostForm.auth.noKeys': '暂无密钥',
-  'hostForm.auth.noKeysHint': '钥匙串中未找到 SSH密钥，请先创建一个。',
-  'hostForm.saveHost': '保存主机',
 
   // Connection logs
   'logs.table.date': '日期',

@@ -2318,7 +2318,7 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
 const browserPersistence: StorePersistence | undefined = typeof globalThis.localStorage === "undefined"
   ? undefined
   : {
-      read: () => globalThis.localStorage.getItem(STORAGE_KEY_SFTP_TRANSFER_CENTER),
+      read: () => localStorageAdapter.readString(STORAGE_KEY_SFTP_TRANSFER_CENTER),
       write: (value) => { localStorageAdapter.writeString(STORAGE_KEY_SFTP_TRANSFER_CENTER, value); },
     };
 

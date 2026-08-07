@@ -732,7 +732,6 @@ export const zhCNCoreMessages: Messages = {
   'knownHosts.empty.title': '暂无已知主机',
   'knownHosts.empty.desc':
     'Known Hosts 是你之前连接过的 SSH server。导入系统的 known_hosts 文件以开始。',
-  'knownHosts.results.showingLimited': '显示 {shown}/{total} 个主机。使用搜索查找特定主机。',
   'knownHosts.toast.scanUnavailable': '当前平台无法扫描系统 known_hosts。',
   'knownHosts.toast.scanNoFile': '未找到系统 known_hosts 文件。',
   'knownHosts.toast.scanNoEntries': 'known_hosts 中没有可用条目。',

@@ -251,6 +251,7 @@ export const STORAGE_KEY_PLUGIN_IMPORT_TRANSACTION = 'netcatty_plugin_import_tra
 
 // Side Panel
 export const STORAGE_KEY_SIDE_PANEL_WIDTH = 'netcatty_side_panel_width';
+export const STORAGE_KEY_SIDE_PANEL_POSITION = 'netcatty_side_panel_position';
 export const STORAGE_KEY_TERMINAL_SIDE_PANEL_TAB_ORDER = 'netcatty_terminal_side_panel_tab_order_v1';
 export const STORAGE_KEY_TERMINAL_SIDE_PANEL_AUTO_OPEN = 'netcatty_terminal_side_panel_auto_open_v1';
 export const STORAGE_KEY_TERMINAL_SIDE_PANEL_AUTO_OPEN_TAB = 'netcatty_terminal_side_panel_auto_open_tab_v1';
@@ -277,3 +278,9 @@ export const STORAGE_KEY_AVAILABLE_PLUGIN_SYNC_PROVIDERS = 'netcatty_available_p
 // Debug Flags (no _v1 suffix — developer-only, not persisted data)
 export const STORAGE_KEY_DEBUG_HOTKEYS = 'debug.hotkeys';
 export const STORAGE_KEY_DEBUG_UPDATE_DEMO = 'debug.updateDemo';
+/** Terminal output performance diagnostics (renderer). */
+export const STORAGE_KEY_DEBUG_TERMINAL_PERF = 'NETCATTY_TERMINAL_PERF_DEBUG';
+/** Shared terminal debug gate for perf + interrupt traces. */
+export const STORAGE_KEY_DEBUG_TERMINAL = 'NETCATTY_TERMINAL_DEBUG';
+/** Ctrl+C / interrupt path diagnostics (renderer). */
+export const STORAGE_KEY_DEBUG_TERMINAL_INTERRUPT = 'NETCATTY_CTRL_C_DEBUG';

@@ -128,8 +128,6 @@ export interface TerminalProps {
   fontSize: number;
   terminalTheme: TerminalTheme;
   followAppTerminalTheme?: boolean;
-  accentMode?: "theme" | "custom";
-  customAccent?: string;
   terminalSettings?: TerminalSettings;
   sessionId: string;
   workspaceId?: string;

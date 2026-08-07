@@ -34,6 +34,24 @@ test("host grids use the same fixed card-width column calculation", () => {
   assert.equal(getVaultHostGridColumnCount(1600), 4);
 });
 
+test("virtualized collections honor a custom getColumnCount policy", () => {
+  const items = Array.from({ length: 30 }, (_, index) => ({ id: `snippet-${index}` }));
+  const html = renderToStaticMarkup(
+    <VirtualizedHostCollection
+      items={items}
+      itemKey={(item) => item.id}
+      scrollRef={React.createRef<HTMLDivElement>()}
+      viewMode="grid"
+      getColumnCount={(width) => (width >= 1280 ? 3 : width >= 768 ? 2 : 1)}
+      ariaLabel="Snippets"
+      renderItem={(item) => <div data-snippet-id={item.id} />}
+    />,
+  );
+
+  assert.match(html, /aria-colcount="3"/);
+  assert.match(html, /aria-rowcount="10"/);
+});
+
 test("virtualized host keyboard navigation crosses rows and collection edges", () => {
   assert.equal(getNextVirtualHostIndex({
     currentIndex: 1,

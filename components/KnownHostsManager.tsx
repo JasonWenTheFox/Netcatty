@@ -43,7 +43,6 @@ import {
   ContextMenuTrigger,
 } from "./ui/context-menu";
 import { Dropdown, DropdownContent, DropdownTrigger } from "./ui/dropdown";
-import { ScrollArea } from "./ui/scroll-area";
 import { SortDropdown, SortMode } from "./ui/sort-dropdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { toast } from "./ui/toast";
@@ -55,7 +54,12 @@ import {
 } from "./vault/VaultPageHeader";
 import { VaultDeleteConfirmDialog } from "./vault/VaultDeleteConfirmDialog";
 import { VaultEntityIcon, vaultPrimaryIconClass } from "./vault/VaultEntityIcon";
+import { VirtualizedHostCollection } from "./vault/VirtualizedHostCollection";
+import { getKnownHostsGridColumnCount } from "./knownHostsGridLayout";
+import { getElementContentWidth } from "./vault/vaultHostGridLayout";
 import { useVaultItemReorder } from "./vault/vaultReorderDrag";
+
+const VIRTUALIZE_THRESHOLD = 30;
 
 interface KnownHostsManagerProps {
   knownHosts: KnownHost[];
@@ -207,6 +211,8 @@ const HostItem = React.memo<HostItemProps>(
           <ContextMenuTrigger asChild>
             <div
               {...reorderProps}
+              data-vault-focus-target
+              tabIndex={0}
               className={cn(
                 reorderProps && "vault-drop-indicator-row",
                 "group cursor-pointer soft-card elevate rounded-xl h-[68px] px-3 py-2",
@@ -256,6 +262,8 @@ const HostItem = React.memo<HostItemProps>(
         <ContextMenuTrigger asChild>
           <div
             {...reorderProps}
+            data-vault-focus-target
+            tabIndex={0}
             className={cn(
               reorderProps && "vault-drop-indicator-row",
               "group flex items-center gap-3 px-3 py-2 h-14 rounded-lg hover:bg-secondary/60 transition-colors cursor-pointer",
@@ -328,8 +336,8 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
   const [sortMode, setSortMode] = useState<SortMode>("manual");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const hasScannedRef = React.useRef(false);
-  const listRef = React.useRef<HTMLDivElement | null>(null);
-  const RENDER_LIMIT = 100; // Limit rendered items for performance
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [gridColumns, setGridColumns] = useState(2);
 
   // Define handleScanSystem before useEffect that depends on it
   const handleScanSystem = useCallback(async (silent = false) => {
@@ -454,12 +462,25 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
     return sortMode === "manual" ? sortByVaultOrder(result) : result;
   }, [knownHosts, deferredSearch, sortMode]);
 
-  // Limit rendered items for performance
-  const displayedHosts = useMemo(() => {
-    return filteredHosts.slice(0, RENDER_LIMIT);
-  }, [filteredHosts]);
+  const shouldVirtualize = filteredHosts.length >= VIRTUALIZE_THRESHOLD;
 
-  const hasMore = filteredHosts.length > RENDER_LIMIT;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || viewMode !== "grid" || typeof ResizeObserver === "undefined") return;
+    const recompute = () => {
+      setGridColumns(getKnownHostsGridColumnCount(getElementContentWidth(el)));
+    };
+    recompute();
+    const observer = new ResizeObserver(recompute);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [viewMode, filteredHosts.length]);
+  const collectionLayoutKey = [
+    viewMode,
+    deferredSearch.trim() ? "search" : "browse",
+    sortMode,
+    filteredHosts.length,
+  ].join("|");
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -541,22 +562,22 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
   const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
 
   const knownHostReorder = useVaultItemReorder({
-    containerRef: listRef,
+    containerRef: scrollRef,
     viewMode,
     dragType: "known-host-id",
     targetAttribute: "data-known-host-id",
     disabled: deferredSearch.trim().length > 0,
+    // Virtualized grid cards can unmount mid-drag — use indicators, not live reorder.
+    preferDropIndicator: shouldVirtualize,
     onReorder: (sourceId, targetId, position) => {
       onReorder(reorderVaultItems(knownHosts, sourceId, targetId, position));
       setSortMode("manual");
     },
   });
 
-  // Memoize the rendered list to prevent re-renders
-  const renderedItems = useMemo(() => {
-    return displayedHosts.map((knownHost) => (
+  const renderKnownHostItem = useCallback(
+    (knownHost: KnownHost) => (
       <HostItem
-        key={knownHost.id}
         knownHost={knownHost}
         converted={convertedMap.get(knownHost.id) || false}
         viewMode={viewMode}
@@ -564,15 +585,15 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
         onDelete={handleDelete}
         onConvertToHost={handleConvertToHost}
       />
-    ));
-  }, [
-    displayedHosts,
-    convertedMap,
-    viewMode,
-    handleDelete,
-    handleConvertToHost,
-    knownHostReorder,
-  ]);
+    ),
+    [
+      convertedMap,
+      viewMode,
+      handleDelete,
+      handleConvertToHost,
+      knownHostReorder,
+    ],
+  );
 
   return (
     <div className="h-full flex flex-col">
@@ -657,74 +678,75 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
       </VaultPageHeader>
 
       {/* Content */}
-      <ScrollArea className="flex-1">
-        <div
-          ref={listRef}
-          className={cn(
-            "p-4",
-            viewMode === "grid"
-              ? "grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3"
-              : "flex flex-col gap-0",
-          )}
-          onDragOverCapture={knownHostReorder.handleDragOverCapture}
-          onDragOver={knownHostReorder.handleDragOver}
-          onDropCapture={knownHostReorder.handleDropCapture}
-          onDragEndCapture={knownHostReorder.handleDragEndCapture}
-        >
-          {displayedHosts.length === 0 ? (
-            <div
-              className={cn(
-                "flex flex-col items-center justify-center py-16 text-muted-foreground",
-                viewMode === "grid" && "col-span-full",
-              )}
-            >
-              <div className="h-16 w-16 rounded-2xl bg-secondary/80 flex items-center justify-center mb-4">
-                <Shield size={32} className="opacity-60" />
-              </div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                {t("knownHosts.empty.title")}
-              </h3>
-              <p className="text-sm text-center max-w-sm mb-4">
-                {t("knownHosts.empty.desc")}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => handleScanSystem()}
-                  disabled={isScanning}
-                >
-                  <RefreshCw
-                    size={14}
-                    className={cn("mr-2", isScanning && "animate-spin")}
-                  />
-                  {t("knownHosts.action.scanSystem")}
-                </Button>
-                <Button variant="outline" onClick={openFilePicker}>
-                  <FolderOpen size={14} className="mr-2" />
-                  {t("knownHosts.action.browseFile")}
-                </Button>
-              </div>
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto p-4"
+        onDragOverCapture={knownHostReorder.handleDragOverCapture}
+        onDragOver={knownHostReorder.handleDragOver}
+        onDropCapture={knownHostReorder.handleDropCapture}
+        onDragEndCapture={knownHostReorder.handleDragEndCapture}
+      >
+        {filteredHosts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+            <div className="h-16 w-16 rounded-2xl bg-secondary/80 flex items-center justify-center mb-4">
+              <Shield size={32} className="opacity-60" />
             </div>
-          ) : (
-            <>
-              {renderedItems}
-              {hasMore && (
-                <div
-                  className={cn(
-                    "text-center py-4 text-sm text-muted-foreground",
-                    viewMode === "grid" && "col-span-full",
-                  )}
-                >
-                  {t("knownHosts.results.showingLimited", {
-                    shown: displayedHosts.length,
-                    total: filteredHosts.length,
-                  })}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </ScrollArea>
+            <h3 className="text-lg font-semibold text-foreground mb-2">
+              {t("knownHosts.empty.title")}
+            </h3>
+            <p className="text-sm text-center max-w-sm mb-4">
+              {t("knownHosts.empty.desc")}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => handleScanSystem()}
+                disabled={isScanning}
+              >
+                <RefreshCw
+                  size={14}
+                  className={cn("mr-2", isScanning && "animate-spin")}
+                />
+                {t("knownHosts.action.scanSystem")}
+              </Button>
+              <Button variant="outline" onClick={openFilePicker}>
+                <FolderOpen size={14} className="mr-2" />
+                {t("knownHosts.action.browseFile")}
+              </Button>
+            </div>
+          </div>
+        ) : shouldVirtualize ? (
+          <VirtualizedHostCollection
+            items={filteredHosts}
+            itemKey={(knownHost) => knownHost.id}
+            scrollRef={scrollRef}
+            viewMode={viewMode}
+            layoutKey={collectionLayoutKey}
+            ariaLabel={t("vault.nav.knownHosts")}
+            getColumnCount={(width, mode) => (
+              mode === "grid" ? getKnownHostsGridColumnCount(width) : 1
+            )}
+            renderItem={renderKnownHostItem}
+          />
+        ) : (
+          <div
+            className={cn(
+              viewMode === "grid"
+                ? "grid gap-3"
+                : "flex flex-col gap-0",
+            )}
+            style={viewMode === "grid" ? {
+              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+            } : undefined}
+          >
+            {filteredHosts.map((knownHost) => (
+              <React.Fragment key={knownHost.id}>
+                {renderKnownHostItem(knownHost)}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </div>
       <VaultDeleteConfirmDialog
         open={Boolean(deleteTargetId)}
         title={t("vault.deleteConfirm.title", {

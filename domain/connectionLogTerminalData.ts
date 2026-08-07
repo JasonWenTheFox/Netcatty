@@ -5,6 +5,21 @@ export const MAX_PERSISTED_UNSAVED_TERMINAL_DATA_ENTRIES = 50;
 
 export type ConnectionLogTerminalDataMap = Record<string, string>;
 
+/** Cheap structural equality for terminal-data side maps (avoids JSON.stringify). */
+export function connectionLogTerminalDataMapsEqual(
+  a: ConnectionLogTerminalDataMap,
+  b: ConnectionLogTerminalDataMap,
+): boolean {
+  if (a === b) return true;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 export const readTerminalDataFromLog = (log: ConnectionLog): string | undefined =>
   log.terminalData;
 

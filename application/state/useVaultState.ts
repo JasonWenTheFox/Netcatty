@@ -58,6 +58,7 @@ import {
 } from "../../domain/globalHistory";
 import {
   buildTerminalDataMapFromLogs,
+  connectionLogTerminalDataMapsEqual,
   mergeConnectionLogsFromStorage,
   mergeTerminalDataIntoLogs,
   mergeTerminalDataMapsForStorage,
@@ -261,7 +262,7 @@ const writeConnectionLogTerminalDataMap = (
     localMaps,
     buildPersistedLogIds(logs, usePersistedLogIdsFromDisk),
   );
-  if (JSON.stringify(existing) === JSON.stringify(pruned)) return true;
+  if (connectionLogTerminalDataMapsEqual(existing, pruned)) return true;
   return localStorageAdapter.write(STORAGE_KEY_CONNECTION_LOG_TERMINAL_DATA, pruned);
 };
 

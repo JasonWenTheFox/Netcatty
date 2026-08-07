@@ -1,3 +1,5 @@
+import { fnv1a32 } from '../../../lib/fnv1a';
+
 export interface ToolResultDedupEntry {
   fingerprint: string;
   toolName: string;
@@ -127,10 +129,5 @@ export function hashToolResult(result: unknown): string {
   } catch {
     value = String(result);
   }
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(36);
+  return fnv1a32(value).toString(36);
 }

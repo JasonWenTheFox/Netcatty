@@ -12,6 +12,11 @@ const OVERSCAN_ROWS = 3;
 
 export type VirtualizedHostViewMode = "grid" | "list";
 
+export type VirtualizedHostColumnCountResolver = (
+  width: number,
+  viewMode: VirtualizedHostViewMode,
+) => number;
+
 export function getVaultHostColumnCount(
   width: number,
   viewMode: VirtualizedHostViewMode,
@@ -90,6 +95,7 @@ export function VirtualizedHostCollection<T>({
   viewMode,
   layoutKey,
   ariaLabel,
+  getColumnCount = getVaultHostColumnCount,
   onActiveItemChange,
   activeItemKey,
   onBoundaryNavigation,
@@ -103,6 +109,8 @@ export function VirtualizedHostCollection<T>({
   viewMode: VirtualizedHostViewMode;
   layoutKey?: React.Key;
   ariaLabel?: string;
+  /** Override host grid column policy (e.g. snippets caps at 3 columns). */
+  getColumnCount?: VirtualizedHostColumnCountResolver;
   onActiveItemChange?: (item: T) => void;
   activeItemKey?: React.Key | null;
   onBoundaryNavigation?: (direction: "previous" | "next") => void;
@@ -116,7 +124,7 @@ export function VirtualizedHostCollection<T>({
     viewMode === "grid" ? 1280 : 0,
   );
   const [scrollMargin, setScrollMargin] = React.useState(0);
-  const columns = getVaultHostColumnCount(containerWidth, viewMode);
+  const columns = getColumnCount(containerWidth, viewMode);
   const rowCount = Math.ceil(items.length / columns);
   const rowHeight = viewMode === "grid" ? GRID_CARD_HEIGHT : LIST_ROW_HEIGHT;
   const rowGap = viewMode === "grid" ? VAULT_HOST_GRID_GAP : 0;

@@ -58,8 +58,6 @@ function TerminalLayerWorkspaceSectionInner({ ctx }: { ctx: WorkspaceContext }) 
     fontSize,
     terminalTheme,
     followAppTerminalTheme,
-    accentMode,
-    customAccent,
     terminalSettings,
     hotkeyScheme,
     disableTerminalFontZoom,
@@ -181,8 +179,6 @@ function TerminalLayerWorkspaceSectionInner({ ctx }: { ctx: WorkspaceContext }) 
           fontSize={fontSize}
           terminalTheme={terminalTheme}
           followAppTerminalTheme={followAppTerminalTheme}
-          accentMode={accentMode}
-          customAccent={customAccent}
           terminalSettings={terminalSettings}
           hotkeyScheme={hotkeyScheme}
           disableTerminalFontZoom={disableTerminalFontZoom}

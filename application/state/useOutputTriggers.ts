@@ -782,6 +782,9 @@ export function useOutputTriggers({
       resetTriggerScanState();
     },
     schedule: (callback) => {
+      // Prefer setTimeout over rAF: terminal output can continue while the
+      // Electron renderer is hidden/minimized, when rAF is throttled or paused.
+      // Pending scan buffers are capped, so delayed flushes can drop matches.
       const timer = globalThis.setTimeout(callback, OUTPUT_TRIGGER_SCAN_DELAY_MS);
       return () => globalThis.clearTimeout(timer);
     },
