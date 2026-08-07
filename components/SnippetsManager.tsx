@@ -2050,15 +2050,10 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
               </div>
               <div className={cn(
                 viewMode === 'grid'
-                  ? cn(
-                    "grid gap-3",
-                    hasSnippetsSidePanel
-                      ? "grid-cols-1"
-                      : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
-                  )
+                  ? "grid gap-3"
                   : "flex flex-col gap-0"
               )}
-              style={splitViewGridStyle}
+              style={snippetGridStyle}
               >
                 {displayedPackages.map((pkg) => (
                   <ContextMenu key={pkg.path}>
