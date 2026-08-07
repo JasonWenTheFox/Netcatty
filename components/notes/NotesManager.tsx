@@ -756,10 +756,12 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   }, []);
 
   const exportNoteToMarkdown = useCallback((note: VaultNote) => {
+    flushNoteDraft();
+    const latest = sortedNotesRef.current.find((item) => item.id === note.id) ?? note;
     try {
-      const fileName = `${sanitizeNoteExportFileNamePart(note.title, "note")}.md`;
+      const fileName = `${sanitizeNoteExportFileNamePart(latest.title, "note")}.md`;
       downloadNotesBlob(
-        new Blob([note.content], { type: "text/markdown;charset=utf-8" }),
+        new Blob([latest.content], { type: "text/markdown;charset=utf-8" }),
         fileName,
       );
       toast.success(t("notes.export.toast.success", { count: 1 }));
@@ -767,9 +769,10 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
       logger.error("Failed to export note:", err);
       toast.error(t("notes.export.toast.failed"));
     }
-  }, [downloadNotesBlob, t]);
+  }, [downloadNotesBlob, flushNoteDraft, t]);
 
   const exportNotesToZip = useCallback((scope: VaultNotesExportScope, fileNamePart: string) => {
+    flushNoteDraft();
     try {
       const files = buildVaultNoteMarkdownExportFiles(sortedNotesRef.current, scope);
       if (files.length === 0) {
