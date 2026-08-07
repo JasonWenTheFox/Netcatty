@@ -288,6 +288,7 @@ export const useVaultState = () => {
   const hostsRef = useRef<Host[]>([]);
   const notesRef = useRef<VaultNote[]>([]);
   const noteGroupsRef = useRef<string[]>([]);
+  const notesPersistFailureNotifiedAtRef = useRef(0);
   customGroupsRef.current = customGroups;
   managedSourcesRef.current = managedSources;
   hostsRef.current = hosts;
@@ -611,10 +612,15 @@ export const useVaultState = () => {
     setNotes(cleaned);
     publishNotesSnapshot({ notes: cleaned, noteGroups: noteGroupsRef.current });
     if (!persisted) {
-      notify.error(
-        "Notes could not be saved. Free some local storage space and try again.",
-        "Notes",
-      );
+      const now = Date.now();
+      // Debounced autosave can hit quota repeatedly; avoid toast spam.
+      if (now - notesPersistFailureNotifiedAtRef.current > 10_000) {
+        notesPersistFailureNotifiedAtRef.current = now;
+        notify.error(
+          "Notes could not be saved. Free some local storage space and try again.",
+          "Notes",
+        );
+      }
       return false;
     }
     return true;

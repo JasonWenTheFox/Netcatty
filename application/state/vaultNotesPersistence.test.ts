@@ -50,4 +50,6 @@ test("useVaultState updateNotes surfaces storage write failures", () => {
   assert.match(source, /notify\.error/);
   assert.match(source, /!persisted|persisted === false/);
   assert.match(source, /return false/);
+  assert.match(source, /notesPersistFailureNotifiedAtRef/);
+  assert.match(source, /10_000/);
 });
