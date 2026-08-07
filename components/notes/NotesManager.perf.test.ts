@@ -68,6 +68,14 @@ test("notes manager prefetches the MDXEditor chunk when becoming active", () => 
   );
 });
 
+test("mode toggle flushes ref-only content drafts before remounting the editor", () => {
+  assert.match(
+    managerSource,
+    /flushNoteDraft\(\);\s*\n\s*setNoteEditorMode/,
+    "preview/edit remount must see the in-progress body",
+  );
+});
+
 test("host-link annotation does not re-run on every markdown value keystroke", () => {
   const editorSource = readFileSync(
     new URL("./InlineMarkdownEditor.tsx", import.meta.url),
@@ -79,4 +87,13 @@ test("host-link annotation does not re-run on every markdown value keystroke", (
     "value in annotateHostLinks effect deps walks the DOM on every keystroke",
   );
   assert.match(editorSource, /\[annotateHostLinks, editorMode\]/);
+  assert.match(
+    editorSource,
+    /syncedPropValueRef/,
+    "external note publishes must not clobber an in-progress local draft",
+  );
+  assert.match(
+    editorSource,
+    /latestMarkdownRef\.current !== syncedPropValueRef\.current/,
+  );
 });

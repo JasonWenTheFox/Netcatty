@@ -679,9 +679,14 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
             data-note-mode-switch
             aria-label={label}
             className="app-no-drag h-8 w-8 shrink-0 rounded-md p-0 text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
-            onClick={() => setNoteEditorMode((currentMode) => (
-              currentMode === "edit" ? "preview" : "edit"
-            ))}
+            onClick={() => {
+              // Flush ref-only content drafts before remounting MDX on mode
+              // toggle so preview/edit sees the in-progress body.
+              flushNoteDraft();
+              setNoteEditorMode((currentMode) => (
+                currentMode === "edit" ? "preview" : "edit"
+              ));
+            }}
           >
             <Icon size={16} />
           </Button>
