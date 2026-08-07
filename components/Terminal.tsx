@@ -1267,9 +1267,14 @@ const TerminalComponent: React.FC<TerminalProps> = ({
 
   const baseEffectiveTheme = useMemo(() => {
     // Always re-apply appearanceChromeStore accent. appearanceTheme from the
-    // layer may be stale while TerminalLayer memo ignores accent churn.
+    // layer may still carry a previously baked custom accent while TerminalLayer
+    // memo ignores accent churn — re-resolve the catalog theme by id first.
     const resolveBase = (): typeof terminalTheme => {
-      if (appearanceTheme) return appearanceTheme;
+      if (appearanceTheme) {
+        const clean = getBuiltinTerminalThemeById(appearanceTheme.id)
+          || customThemes.find((t) => t.id === appearanceTheme.id);
+        if (clean) return clean;
+      }
       if (followAppTerminalTheme) return terminalTheme;
       const themeId = resolveHostTerminalThemeId(
         { theme: host.theme, themeOverride: host.themeOverride } as Pick<Host, 'theme' | 'themeOverride'>,
