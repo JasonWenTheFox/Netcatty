@@ -174,6 +174,11 @@ export const useVaultItemReorder = ({
   targetAttribute,
   onReorder,
   disabled = false,
+  /**
+   * When true, grid drag uses a drop indicator instead of live-reordering.
+   * Required for virtualized lists where the drag source can unmount mid-drag.
+   */
+  preferDropIndicator = false,
 }: {
   containerRef: React.RefObject<HTMLElement | null>;
   viewMode: "grid" | "list" | string;
@@ -185,6 +190,7 @@ export const useVaultItemReorder = ({
     position: VaultDropPosition,
   ) => void;
   disabled?: boolean;
+  preferDropIndicator?: boolean;
 }) => {
   const lastPreviewReorderRef = React.useRef<string | null>(null);
   const draggingIdRef = React.useRef<string | null>(null);
@@ -216,8 +222,8 @@ export const useVaultItemReorder = ({
     const isGrid = viewMode === "grid";
     const position = getVaultDropPosition(target, event.clientX, event.clientY, isGrid);
 
-    if (!isGrid) {
-      markVaultDropIndicator(target, position);
+    if (!isGrid || preferDropIndicator) {
+      markVaultDropIndicator(target, position, isGrid ? "x" : "y");
       return;
     }
 
@@ -231,6 +237,7 @@ export const useVaultItemReorder = ({
     disabled,
     dragType,
     onReorder,
+    preferDropIndicator,
     prepareGridLayoutAnimation,
     selector,
     targetAttribute,
@@ -238,7 +245,7 @@ export const useVaultItemReorder = ({
   ]);
 
   const handleDragOver = React.useCallback((event: React.DragEvent<HTMLElement>) => {
-    if (disabled || viewMode === "grid") return;
+    if (disabled || (viewMode === "grid" && !preferDropIndicator)) return;
     const target = (event.target as Element | null)?.closest(selector);
     if (!(target instanceof HTMLElement)) return;
     if (!draggingIdRef.current && !hasVaultDragType(event.dataTransfer, dragType)) return;
@@ -250,11 +257,13 @@ export const useVaultItemReorder = ({
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     if (sourceId === targetId) return;
+    const isGrid = viewMode === "grid";
     markVaultDropIndicator(
       target,
-      getVaultDropPosition(target, event.clientX, event.clientY),
+      getVaultDropPosition(target, event.clientX, event.clientY, isGrid),
+      isGrid ? "x" : "y",
     );
-  }, [disabled, dragType, selector, targetAttribute, viewMode]);
+  }, [disabled, dragType, preferDropIndicator, selector, targetAttribute, viewMode]);
 
   const handleDropCapture = React.useCallback((event: React.DragEvent<HTMLElement>) => {
     if (disabled) return;
@@ -288,7 +297,10 @@ export const useVaultItemReorder = ({
       viewMode === "grid",
     );
     const previewKey = `${sourceId}:${targetId}:${position}`;
-    if (viewMode !== "grid" || lastPreviewReorderRef.current !== previewKey) {
+    const usedLiveGridPreview = viewMode === "grid"
+      && !preferDropIndicator
+      && lastPreviewReorderRef.current === previewKey;
+    if (!usedLiveGridPreview) {
       prepareGridLayoutAnimation();
       onReorder(sourceId, targetId, position);
     }
@@ -299,6 +311,7 @@ export const useVaultItemReorder = ({
     disabled,
     dragType,
     onReorder,
+    preferDropIndicator,
     prepareGridLayoutAnimation,
     selector,
     targetAttribute,

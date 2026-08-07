@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { formatBytes as formatBytesDomain } from '../../domain/formatBytes';
 import { SftpFileEntry } from '../../types';
 import {
   formatDate as formatDateFromState,
@@ -187,26 +188,29 @@ const EXTENSION_ICON_MAP = new Map<string, IconDef>([
 ]);
 
 /**
- * Format bytes with appropriate unit (B, KB, MB, GB)
+ * Format bytes with appropriate unit (B, KB, MB, GB, TB)
  */
 export const formatBytes = (bytes: number | string): string => {
     const numBytes = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
-    if (isNaN(numBytes) || numBytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(numBytes) / Math.log(1024));
-    const size = numBytes / Math.pow(1024, i);
-    return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    if (typeof numBytes !== 'number' || isNaN(numBytes)) return '0 B';
+    return formatBytesDomain(numBytes, {
+        zeroDisplay: '0 B',
+        includeTB: true,
+        fractionDigits: 1,
+        byteUnit: 'B',
+    });
 };
 
 /**
  * Format bytes for transfer display
  */
 export const formatTransferBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    const size = bytes / Math.pow(1024, i);
-    return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    return formatBytesDomain(bytes, {
+        zeroDisplay: '0 B',
+        includeTB: false,
+        fractionDigits: 1,
+        byteUnit: 'B',
+    });
 };
 
 /**

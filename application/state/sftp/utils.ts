@@ -1,11 +1,13 @@
 import { SftpFileEntry, TransferTask } from "../../../domain/models";
+import { formatBytes } from "../../../domain/formatBytes";
 
 export const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return "--";
-  const units = ["Bytes", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = bytes / Math.pow(1024, i);
-  return `${size.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+  return formatBytes(bytes, {
+    zeroDisplay: "--",
+    includeTB: true,
+    fractionDigits: 2,
+    byteUnit: "Bytes",
+  });
 };
 
 /**
