@@ -59,6 +59,18 @@ test("keeps raw input when a standard shell prompt echo is still behind", () => 
   assert.equal(result.prompt.cursorOffset, 2);
   assert.equal(result.alignedTyped, null);
 });
+
+test("uses reliable typed buffer when prompt echo has not started (IME / high-latency commit)", () => {
+  const term = createFakeTerm("$ ", 2);
+
+  const result = getAlignedPrompt(term as never, "部署", true);
+
+  assert.equal(result.prompt.isAtPrompt, true);
+  assert.equal(result.prompt.promptText, "$ ");
+  assert.equal(result.prompt.userInput, "部署");
+  assert.equal(result.prompt.cursorOffset, 2);
+  assert.equal(result.alignedTyped, "部署");
+});
 test("still trims prompt decorations out of the detected input", () => {
   const term = createFakeTerm("➜  ~ do", 7);
 

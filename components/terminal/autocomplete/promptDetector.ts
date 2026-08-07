@@ -392,8 +392,15 @@ function canUseReliablePromptPrefix(
   raw: PromptDetectionResult,
   typedBuffer: string,
 ): boolean {
-  if (!raw.isAtPrompt || typedBuffer.length === 0 || raw.userInput.length === 0) {
+  if (!raw.isAtPrompt || typedBuffer.length === 0) {
     return false;
+  }
+  // No echo yet (common after CJK IME commits a whole word before SSH
+  // round-trip): trust the keystroke buffer on standard shell prompts so
+  // autocomplete can query immediately (#2813). Skip ambiguous REPL-style
+  // prompts (e.g. bare Mongo `test>`) that must not record pre-echo input.
+  if (raw.userInput.length === 0) {
+    return allowsShortPromptEcho(raw.promptText);
   }
   if (typedBuffer.length <= raw.userInput.length) return false;
   return isReliableTypedPrefix(raw.userInput, typedBuffer, {
