@@ -27,7 +27,6 @@ import { useI18n } from "../application/i18n/I18nProvider";
 import { useSftpState } from "../application/state/useSftpState";
 import {
   useReportSftpTransferOwnerActivity,
-  useWarmSftpTransferPool,
 } from "../application/state/sftp/useSftpTransferLifecycle";
 import { registerEditorSftpWriterScoped } from "../application/state/editorSftpBridge";
 import {
@@ -299,12 +298,6 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
 
   const sftpRef = useRef(sftp);
   sftpRef.current = sftp;
-
-  useWarmSftpTransferPool({
-    hostIds: connectedHosts.map((entry) => entry.host.id),
-    activeHostId: activeHost?.protocol === "serial" ? undefined : activeHost?.id,
-    warmTransferPoolForHost: sftp.warmTransferPoolForHost,
-  });
 
   const { getConnectionCacheKey, leftPane } = sftp;
 

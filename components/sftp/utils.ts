@@ -24,6 +24,16 @@ import {
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { SftpFileEntry } from '../../types';
+import {
+  formatDate as formatDateFromState,
+  isNavigableDirectory,
+} from '../../application/state/sftp/utils';
+
+export { isNavigableDirectory };
+
+/** Accept undefined timestamps from file-list rows. */
+export const formatDate = (timestamp: number | undefined): string =>
+  formatDateFromState(timestamp ?? 0);
 
 // Pre-built icon maps for O(1) lookup in getFileIcon
 type IconDef = [LucideIcon, string?];
@@ -200,17 +210,6 @@ export const formatTransferBytes = (bytes: number): string => {
 };
 
 /**
- * Format date as YYYY-MM-DD hh:mm in local timezone
- */
-export const formatDate = (timestamp: number | undefined): string => {
-    if (!timestamp) return '--';
-    const date = new Date(timestamp);
-    if (isNaN(date.getTime())) return '--';
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
-
-/**
  * Format speed with appropriate unit
  */
 export const formatSpeed = (bytesPerSecond: number): string => {
@@ -337,14 +336,6 @@ export const sortSftpEntries = (
     });
 
     return sorted;
-};
-
-/**
- * Check if an entry is navigable like a directory
- * This includes regular directories and symlinks that point to directories
- */
-export const isNavigableDirectory = (entry: SftpFileEntry): boolean => {
-    return entry.type === 'directory' || (entry.type === 'symlink' && entry.linkTarget === 'directory');
 };
 
 /**

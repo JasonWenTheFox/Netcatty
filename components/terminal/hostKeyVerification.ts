@@ -1,5 +1,6 @@
 import type { Host, KnownHost } from "../../types";
 import type { HostKeyInfo } from "./TerminalHostKeyVerification";
+import { createKnownHostFromHostKeyInfo as createKnownHostFromHostKeyInfoDomain } from "../../domain/knownHosts";
 
 export type HostKeyVerificationRequest = {
   hostname: string;
@@ -28,12 +29,8 @@ export const createKnownHostFromHostKeyInfo = (
   host: Pick<Host, "port">,
   now = Date.now(),
   idSuffix = Math.random().toString(36).slice(2, 11),
-): KnownHost => ({
-  id: hostKeyInfo.knownHostId || `kh-${now}-${idSuffix}`,
-  hostname: hostKeyInfo.hostname,
-  port: hostKeyInfo.port || host.port || 22,
-  keyType: hostKeyInfo.keyType,
-  publicKey: hostKeyInfo.publicKey || `SHA256:${hostKeyInfo.fingerprint}`,
-  fingerprint: hostKeyInfo.fingerprint,
-  discoveredAt: now,
+): KnownHost => createKnownHostFromHostKeyInfoDomain(hostKeyInfo, {
+  defaultPort: host.port,
+  now,
+  idSuffix,
 });
