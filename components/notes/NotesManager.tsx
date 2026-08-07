@@ -470,6 +470,18 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     flushNoteDraft();
   }, [flushNoteDraft]);
 
+  useEffect(() => {
+    const flushOnTeardown = () => {
+      flushNoteDraft();
+    };
+    window.addEventListener("pagehide", flushOnTeardown);
+    window.addEventListener("beforeunload", flushOnTeardown);
+    return () => {
+      window.removeEventListener("pagehide", flushOnTeardown);
+      window.removeEventListener("beforeunload", flushOnTeardown);
+    };
+  }, [flushNoteDraft]);
+
   const noteTree = useMemo(() => {
     const tree = buildNoteTree(groups, sortedNotes);
     return {
