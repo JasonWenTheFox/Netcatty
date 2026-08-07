@@ -43,7 +43,7 @@ import { SftpContextProvider, activeTabStore } from "./sftp";
 import { useSftpViewPaneCallbacks } from "./sftp/hooks/useSftpViewPaneCallbacks";
 import { useSftpViewTabs } from "./sftp/hooks/useSftpViewTabs";
 import { useSftpKeyboardShortcuts } from "./sftp/hooks/useSftpKeyboardShortcuts";
-import { sftpFocusStore, SftpFocusedSide, useSftpFocusedSide } from "./sftp/hooks/useSftpFocusedPane";
+import { sftpFocusStore, SftpFocusedSide, useSftpFocusedSide } from "../application/state/sftp/sftpFocusStore";
 import { keepOnlyActivePaneSelections, keepOnlyPaneSelections } from "./sftp/hooks/selectionScope";
 
 

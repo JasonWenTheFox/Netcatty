@@ -60,7 +60,7 @@ import { SftpContextProvider } from "./sftp";
 import { useSftpViewPaneCallbacks } from "./sftp/hooks/useSftpViewPaneCallbacks";
 import { useSftpViewTabs } from "./sftp/hooks/useSftpViewTabs";
 import { useSftpKeyboardShortcuts } from "./sftp/hooks/useSftpKeyboardShortcuts";
-import { sftpFocusStore } from "./sftp/hooks/useSftpFocusedPane";
+import { sftpFocusStore } from "../application/state/sftp/sftpFocusStore";
 import { keepOnlyPaneSelections } from "./sftp/hooks/selectionScope";
 import { KeyBinding, HotkeyScheme } from "../domain/models";
 import {

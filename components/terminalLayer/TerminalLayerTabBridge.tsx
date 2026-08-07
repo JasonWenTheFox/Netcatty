@@ -7,13 +7,13 @@ import { useSystemManagerBackend } from '../../application/state/useSystemManage
 import { canReuseTerminalConnection } from '../../application/state/terminalConnectionReuse';
 import { resolveSystemSidebarSession } from '../../domain/systemManager/resolveSystemSession';
 import type { TerminalContextReader } from '../../domain/terminalContextRead';
-import { useSystemCapabilitiesWarmup } from '../systemManager/hooks/useSystemManager';
+import { useSystemCapabilitiesWarmup } from '../../application/state/useSystemManager';
 import { cn } from '../../lib/utils';
 import type { Host, TerminalSession, Workspace } from '../../types';
 import { resolveTerminalHibernateEnabled } from '../../domain/terminalHibernate';
 import { shouldMeasureTerminalLayerLayout } from '../terminalPaneVisibility';
 import { TerminalLayerView } from './TerminalLayerView';
-import { useTerminalAiContexts } from './useTerminalAiContexts';
+import { useTerminalAiContexts } from '../../application/state/useTerminalAiContexts';
 import { useTerminalLayerEffects } from './useTerminalLayerEffects';
 import { useTerminalThemePanelState } from './useTerminalThemePanelState';
 import { useManualTerminalChromeSurfaceInjection } from '../../application/state/useManualTerminalChromeSurfaceInjection';

@@ -147,7 +147,7 @@ import { Badge } from "./ui/badge";
 import { HotkeyScheme, KeyBinding } from "../domain/models";
 import { VaultViewLayout } from "./vault/VaultViewLayout";
 import { useVaultHostCollections } from "./vault/useVaultHostCollections";
-import { useVaultImportHandlers } from "./vault/useVaultImportHandlers";
+import { useVaultImportHandlers } from "../application/state/useVaultImportHandlers";
 import { useVaultGroupDragHandlers } from "./vault/useVaultGroupDragHandlers";
 
 const LazyProtocolSelectDialog = lazy(() => import("./ProtocolSelectDialog"));

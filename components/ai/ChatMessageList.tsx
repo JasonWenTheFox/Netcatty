@@ -67,7 +67,7 @@ import {
   compactionStatusText,
   resolveCompactionStatusText,
   type ActiveCompactionUi,
-} from './hooks/useAgentCompactionUi';
+} from '../../application/state/useAgentCompactionUi';
 import {
   getAIPanelDiagnosticHiddenParts,
   getAIPanelProfilerProps,
