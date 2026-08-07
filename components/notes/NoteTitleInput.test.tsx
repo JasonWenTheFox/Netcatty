@@ -17,10 +17,22 @@ test("NoteTitleInput keeps a local draft and only commits when IME composition i
   );
 });
 
+test("NoteTitleInput stashes live drafts during composition without idle-only commits", () => {
+  assert.match(source, /onLiveDraft\?\.\(next\)/);
+  assert.match(source, /onLiveDraft\?: \(title: string\) => void/);
+});
+
 test("NoteTitleInput commits the local draft on blur before parent flush", () => {
   assert.match(source, /onBlur=\{\(event\) => \{/);
   assert.match(source, /onCommit\(next\)/);
+  assert.match(source, /onCommit\(value\)/);
   assert.match(source, /onBlur\?\.\(\)/);
+});
+
+test("NotesManager title rows stash live IME drafts into refs", () => {
+  assert.match(managerSource, /stashNoteTitleDraft/);
+  assert.match(managerSource, /onLiveDraft=\{\(title\) => stashNoteTitleDraft/);
+  assert.match(managerSource, /draftTitleRef\.current = title/);
 });
 
 test("NoteTitleInput resets IME guards when the active note changes", () => {

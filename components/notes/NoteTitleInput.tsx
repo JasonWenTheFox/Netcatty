@@ -10,7 +10,14 @@ type NoteTitleInputProps = {
   value: string;
   placeholder?: string;
   className?: string;
+  /** Commit into parent draft state (may rewrite controlled value). Idle IME only. */
   onCommit: (title: string) => void;
+  /**
+   * Stash title for crash/teardown flush without updating controlled React state.
+   * Called during IME composition so pagehide/note-switch can persist without
+   * fighting the composition buffer.
+   */
+  onLiveDraft?: (title: string) => void;
   onBlur?: () => void;
 };
 
@@ -25,6 +32,7 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
   placeholder,
   className,
   onCommit,
+  onLiveDraft,
   onBlur,
 }) => {
   const [draft, setDraft] = useState(value);
@@ -71,10 +79,14 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
       value={draft}
       placeholder={placeholder}
       onBlur={(event) => {
-        // Blur finalizes IME: commit the local draft before parent flushNoteDraft
-        // so composition-only titles are not lost when draftTitleRef was never set.
-        if (!supersededRef.current) {
-          composingRef.current = false;
+        // Blur finalizes IME. Sync parent before flushNoteDraft so composition-only
+        // titles and superseded external adoptions both land in draftTitleRef.
+        composingRef.current = false;
+        if (supersededRef.current) {
+          supersededRef.current = false;
+          setDraft(value);
+          onCommit(value);
+        } else {
           const next = event.currentTarget.value;
           setDraft(next);
           onCommit(next);
@@ -97,6 +109,8 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
 
         const next = event.target.value;
         setDraft(next);
+        // Always stash for teardown/note-switch flush; do not fight IME via onCommit.
+        onLiveDraft?.(next);
         if (
           shouldCommitImeControlledChange({
             isComposingSession: composingRef.current,

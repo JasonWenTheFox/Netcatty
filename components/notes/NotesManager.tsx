@@ -631,6 +631,15 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     updateNoteDraft(note.id, { title });
   };
 
+  /** Ref-only title stash for IME composition — avoids controlled value rewrite. */
+  const stashNoteTitleDraft = (note: VaultNote, title: string) => {
+    if (draftNoteIdRef.current && draftNoteIdRef.current !== note.id) {
+      flushNoteDraft();
+    }
+    draftNoteIdRef.current = note.id;
+    draftTitleRef.current = title;
+  };
+
   const saveNoteContentDraft = (note: VaultNote, content: string) => {
     updateNoteDraft(note.id, { content });
   };
@@ -1673,6 +1682,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
                     value={selectedNoteView.title}
                     placeholder={t("notes.title.placeholder")}
                     onCommit={(title) => saveNoteTitleDraft(selectedNoteView, title)}
+                    onLiveDraft={(title) => stashNoteTitleDraft(selectedNoteView, title)}
                     onBlur={() => flushNoteDraft()}
                   />
                 </div>
@@ -1763,6 +1773,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
                   value={overlayNoteView.title}
                   placeholder={t("notes.title.placeholder")}
                   onCommit={(title) => saveNoteTitleDraft(overlayNoteView, title)}
+                  onLiveDraft={(title) => stashNoteTitleDraft(overlayNoteView, title)}
                   onBlur={() => flushNoteDraft()}
                 />
               </div>
