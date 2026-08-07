@@ -112,6 +112,23 @@ test('aiSessionIdSetEqual ignores sibling updatedAt when scoped', () => {
   assert.equal(aiSessionIdSetEqual([own1, sib1], [own1, sib2]), false);
 });
 
+test('aiSessionIdSetEqual tracks sibling workspace updatedAt for history sort', () => {
+  const own = { ...session('own', 'workspace', 'w1'), title: 'mine', updatedAt: 1 };
+  const sib1 = { ...session('sib', 'workspace', 'w2'), title: 'other', updatedAt: 1 };
+  const sib2 = { ...session('sib', 'workspace', 'w2'), title: 'other', updatedAt: 99 };
+  const terminalSib1 = { ...session('term', 'terminal', 't1'), title: 'term', updatedAt: 1 };
+  const terminalSib2 = { ...session('term', 'terminal', 't1'), title: 'term', updatedAt: 99 };
+  assert.equal(
+    aiSessionIdSetEqual([own, sib1], [own, sib2], 'workspace', 'w1'),
+    false,
+  );
+  // Unrelated terminal stream ticks still ignored for workspace panels.
+  assert.equal(
+    aiSessionIdSetEqual([own, terminalSib1], [own, terminalSib2], 'workspace', 'w1'),
+    true,
+  );
+});
+
 test('aiSessionIdSetEqual scoped still tracks selected cross-scope updatedAt', () => {
   const exact = { ...session('exact', 'terminal', 't-new'), title: 'a', updatedAt: 1 };
   const hist1 = { ...session('hist', 'terminal', 't-old'), title: 'b', updatedAt: 1 };

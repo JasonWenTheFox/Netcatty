@@ -64,10 +64,14 @@ export function aiSessionByIdEqual<T extends AISessionLike>(
  * matching history chrome. Detects create/delete/rename without treating
  * message-body object replacement alone as a reason to re-render.
  *
- * When `scopeType` is provided, `updatedAt` is compared only for sessions that
- * match that exact scope (plus optional `selectedSessionId`). Sibling stream
- * ticks that bump unrelated sessions' `updatedAt` do not invalidate. The full
- * session list remains available to callers for fuzzy history ranking.
+ * When `scopeType` is provided, `updatedAt` is compared for:
+ * - exact-scope sessions (active chat stream)
+ * - optional `selectedSessionId` (history resume under a newer terminal)
+ * - all sessions with the same `scope.type` when that type is `workspace`
+ *   (workspace history drawer sorts sibling workspaces by `updatedAt`)
+ * Sibling *terminal* stream ticks that only bump unrelated terminals' 
+ * `updatedAt` still do not invalidate. The full session list remains
+ * available to callers for fuzzy history ranking.
  *
  * When `scopeType` is omitted, `updatedAt` is compared for every session
  * (legacy / unscoped chrome equality).
@@ -91,6 +95,7 @@ export function aiSessionIdSetEqual<T extends AISessionLike>(
     if ((prevSession.title ?? '') !== (session.title ?? '')) return false;
     const compareUpdatedAt = !scopeUpdatedAt
       || sessionMatchesAIScope(session, scopeType, scopeTargetId)
+      || (scopeType === 'workspace' && session.scope.type === 'workspace')
       || (selectedSessionId != null && session.id === selectedSessionId);
     if (
       compareUpdatedAt

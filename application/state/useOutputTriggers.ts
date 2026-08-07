@@ -782,14 +782,9 @@ export function useOutputTriggers({
       resetTriggerScanState();
     },
     schedule: (callback) => {
-      const raf = globalThis.requestAnimationFrame;
-      if (typeof raf === 'function') {
-        const frameId = raf.call(globalThis, callback);
-        return () => {
-          const cancel = globalThis.cancelAnimationFrame;
-          if (typeof cancel === 'function') cancel.call(globalThis, frameId);
-        };
-      }
+      // Prefer setTimeout over rAF: terminal output can continue while the
+      // Electron renderer is hidden/minimized, when rAF is throttled or paused.
+      // Pending scan buffers are capped, so delayed flushes can drop matches.
       const timer = globalThis.setTimeout(callback, OUTPUT_TRIGGER_SCAN_DELAY_MS);
       return () => globalThis.clearTimeout(timer);
     },

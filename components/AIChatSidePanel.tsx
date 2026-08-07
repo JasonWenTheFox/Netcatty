@@ -1600,10 +1600,10 @@ export function aiChatSidePanelPropsAreEqual(
     return false;
   }
   // History drawer / recent list need create/delete/title chrome for the full
-  // list (fuzzy ranking still receives every session). updatedAt is only
-  // compared for this panel's exact scope (+ selected resume) so sibling
-  // stream ticks do not invalidate an unrelated visible panel.
-  // Hidden retained panels skip this check entirely.
+  // list (fuzzy ranking still receives every session). updatedAt is compared
+  // for this panel's exact scope (+ selected resume) and, for workspace
+  // panels, sibling workspace timestamps so history sort/relative time stay
+  // fresh — without letting unrelated terminal stream ticks invalidate.
   const prevVisible = prev.isVisible ?? true;
   const nextVisible = next.isVisible ?? true;
   if (
