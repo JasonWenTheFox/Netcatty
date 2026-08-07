@@ -360,8 +360,6 @@ function aiChatPanelsHostAreEqual(
   return true;
 }
 
-// Remount-safe: StrictMode remount resets component refs, but the same
-// pendingTerminalSelection can still be non-null until parent state clears.
 const consumedTerminalSelectionRequestIds = new Set<string>();
 const CONSUMED_TERMINAL_SELECTION_REQUEST_ID_LIMIT = 64;
 
