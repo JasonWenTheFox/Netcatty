@@ -9,10 +9,6 @@ const layoutSource = readFileSync(
 );
 
 test("note content drafts stay in refs so MDX keystrokes do not rebuild the shell", () => {
-  assert.match(
-    managerSource,
-    /Content drafts stay in refs only/,
-  );
   assert.doesNotMatch(
     managerSource,
     /const \[draftContent, setDraftContent\]/,

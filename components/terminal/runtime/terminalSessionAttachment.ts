@@ -843,8 +843,6 @@ export const attachSessionToTerminal = (
   },
 ) => {
   if (!isTerminalBootActive(ctx)) {
-    // Scope the orphan close to this boot attempt so a StrictMode remount's
-    // newer start is not killed by a stale inactive attach path.
     closeOrphanBackendSession(ctx, id, { bootEpoch: ctx.bootEpochRef?.current });
     return;
   }

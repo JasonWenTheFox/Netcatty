@@ -193,8 +193,6 @@ export function requestApproval(
     return Promise.resolve(true);
   }
 
-  // Same toolCallId must not orphan a prior Promise (e.g. double-started turn).
-  // Join the existing waiter instead of replacing the map entry.
   const existing = pendingApprovals.get(toolCallId);
   if (existing) {
     return new Promise<boolean>((resolve) => {

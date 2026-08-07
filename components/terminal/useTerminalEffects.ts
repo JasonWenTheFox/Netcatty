@@ -410,11 +410,6 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
 
     let disposed = false;
     let initialFitTimer: ReturnType<typeof setTimeout> | undefined;
-    // Runtime owned by this effect instance. StrictMode remount must dispose
-    // THIS node synchronously — async completeClose can be skipped by the
-    // close-generation guard after the remount bumps the counter, which would
-    // leave an orphaned .xterm in the shared container (prompt appears glued
-    // to the bottom under the empty first terminal).
     let ownedRuntime: { dispose: () => void } | null = null;
     // Every boot owns a controller so cleanup can cancel an in-flight start
     // instead of waiting for the async capture/teardown below to finish.
@@ -807,11 +802,6 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       }
     };
 
-    // Defer past StrictMode's synchronous effect re-invoke. An inline boot()
-    // lets Mount1 issue netcatty:start (and on macOS await a LAN probe) before
-    // cleanup can abort — the remount then races close/orphan against Mount2
-    // and the first user-visible connect fails. A microtask runs after Mount1
-    // cleanup + Mount2 setup, so only the surviving effect starts the backend.
     queueMicrotask(() => {
       if (disposed) return;
       void boot();
@@ -835,8 +825,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       // closes anything. Tell the main process now so it can abort the pending
       // boot (passphrase prompt, TCP dial) for this epoch instead of letting it
       // finish against a pane that is already gone. Attached popups never own
-      // the backend session (skip closeSession) but still sync-dispose xterm so
-      // StrictMode remount does not stack a second .xterm.
+      // the backend session (skip closeSession) but still sync-dispose xterm.
       if (!hasConnectedRef.current) {
         if (!attachExistingSession) {
           try {

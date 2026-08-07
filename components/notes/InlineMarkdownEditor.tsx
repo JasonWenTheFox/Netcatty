@@ -486,9 +486,6 @@ export const InlineMarkdownEditor = React.memo(function InlineMarkdownEditor({
   const { t } = useI18n();
   const editorRef = useRef<MDXEditorMethods>(null);
   const latestMarkdownRef = useRef(value);
-  // Last markdown value we accepted from props into the editor. Diverging
-  // latestMarkdownRef means an in-progress local draft — do not clobber it
-  // when sync / another notes surface publishes a newer committed snapshot.
   const syncedPropValueRef = useRef(value);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -540,7 +537,6 @@ export const InlineMarkdownEditor = React.memo(function InlineMarkdownEditor({
       return;
     }
     if (latestMarkdownRef.current !== syncedPropValueRef.current) {
-      // Local draft is ahead of the last applied prop; keep Lexical content.
       return;
     }
     syncedPropValueRef.current = value;
@@ -662,8 +658,6 @@ export const InlineMarkdownEditor = React.memo(function InlineMarkdownEditor({
     });
   }, [hosts]);
 
-  // Host-link chrome follows hosts / mode, not every markdown keystroke.
-  // Preview mode also watches DOM mutations (coalesced to rAF) after note open.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;

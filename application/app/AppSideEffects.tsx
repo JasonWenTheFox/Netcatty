@@ -654,8 +654,6 @@ export function AppSideEffects() {
       pendingTrayConnectFlushKeyRef.current = null;
       return;
     }
-    // StrictMode re-invokes this effect with the same pending snapshot before
-    // setState([]) lands — latch on the host-id key so connectNow runs once.
     const flushKey = pendingTrayPanelConnectHostIds.join('\0');
     if (pendingTrayConnectFlushKeyRef.current === flushKey) return;
     pendingTrayConnectFlushKeyRef.current = flushKey;

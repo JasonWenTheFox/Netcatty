@@ -602,9 +602,6 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   const searchAddon = new SearchAddon();
   term.loadAddon(searchAddon);
 
-  // StrictMode remount can leave an orphaned .xterm when async boot teardown
-  // skips dispose after the close-generation bump. Drop leftovers before open
-  // so the live terminal is the only child and fit/layout stay correct.
   for (const orphan of Array.from(ctx.container.querySelectorAll(":scope > .xterm"))) {
     orphan.remove();
   }

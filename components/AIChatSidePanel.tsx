@@ -1003,8 +1003,6 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
     const modelAttachments = attachments.filter((attachment) => !isTerminalSelectionAttachment(attachment));
     const isDraftMode = currentPanelView.mode === 'draft';
 
-    // Remount-safe sync gate (module Set). Component refs reset under StrictMode
-    // remount of AIChatSidePanelActive; React `isStreaming` also lags double-clicks.
     const sendGateKey = currentSessionView?.id ?? `draft:${scopeKey}`;
     if (!tryBeginSendForKey(sendGateKey)) {
       return;
@@ -1022,8 +1020,6 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
         clearScopeDraft();
         showScopeSessionView(createdSession.id);
         setActiveSessionId(createdSession.id);
-        // Latch the created session id so a remount cannot start a second turn
-        // against the new session while this draft send is still in flight.
         sessionSendGateKey = sessionId;
         if (!tryBeginSendForKey(sessionSendGateKey)) {
           return;

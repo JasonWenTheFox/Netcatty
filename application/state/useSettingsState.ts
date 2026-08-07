@@ -756,8 +756,6 @@ export const useSettingsState = (options: { enableSettingsSync?: boolean; enable
 
   // Push idle TTL to the main-process transport registry on load and whenever
   // it changes (including cross-window IPC/storage updates to local state).
-  // Latch the last pushed value so StrictMode double-invoke (and notify fn
-  // identity churn) does not spam the main process with identical IPC.
   const lastPushedSshTransportIdleTtlRef = useRef<number | null>(null);
   useEffect(() => {
     if (lastPushedSshTransportIdleTtlRef.current === sshTransportIdleTtlMs) return;
@@ -1647,11 +1645,8 @@ export const useSettingsState = (options: { enableSettingsSync?: boolean; enable
     notifySettingsChanged,
   });
 
-  // Fix 1: Mark all persist effects as mounted.
-  // This MUST be declared AFTER all persist useEffects so that React runs it last
-  // during the initial mount cycle (effects fire in declaration order).
-  // Cleanup resets the latch so StrictMode's remount treats the second pass as
-  // a fresh mount instead of emitting boot-time notifySettingsChanged/IPC.
+  // Mark persist effects mounted AFTER all persist useEffects so React runs
+  // this last (declaration order). Cleanup clears the latch for remount.
   useEffect(() => {
     persistMountedRef.current = true;
     return () => {

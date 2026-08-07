@@ -393,8 +393,6 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
     updateDraft,
   } = aiConfig;
 
-  // StrictMode re-invokes this effect with the same pending payload before
-  // parent state clears — latch on requestId so the chip is appended once.
   const consumedTerminalSelectionRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -407,7 +405,6 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
     if (!context) return;
 
     const attachment = createTerminalSelectionAttachment(pendingTerminalSelection.text);
-    // Mark consumed before draft mutation so a StrictMode re-run is a no-op.
     consumedTerminalSelectionRequestIdRef.current = pendingTerminalSelection.requestId;
     onPendingTerminalSelectionConsumed?.(pendingTerminalSelection.requestId);
     if (!attachment) return;

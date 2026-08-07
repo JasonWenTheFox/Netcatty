@@ -198,7 +198,7 @@ test('settings persistMountedRef resets on StrictMode cleanup', () => {
     new URL('../state/useSettingsState.ts', import.meta.url),
     'utf8',
   );
-  const markAt = settingsSource.indexOf('Mark all persist effects as mounted');
+  const markAt = settingsSource.indexOf('Mark persist effects mounted AFTER all persist useEffects');
   assert.notEqual(markAt, -1);
   const markEffect = settingsSource.slice(markAt, markAt + 500);
   assert.match(markEffect, /persistMountedRef\.current = true;/);

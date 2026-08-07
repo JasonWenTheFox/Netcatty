@@ -86,8 +86,6 @@ const MemoVaultNotesSection = React.memo(
     ) {
       return false;
     }
-    // Host catalog identity only matters while Notes is visible (host picker /
-    // link annotation). Ignore hosts churn for the retained hidden mount.
     if (next.isActive && prev.hosts !== next.hosts) return false;
     return true;
   },

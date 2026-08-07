@@ -83,7 +83,7 @@ const InlineMarkdownEditor = lazy(() =>
   import("./InlineMarkdownEditor").then((module) => ({ default: module.InlineMarkdownEditor })),
 );
 
-/** Warm the MDXEditor chunk before Suspense (vault notes open / StrictMode). */
+/** Warm the MDXEditor chunk before Suspense. */
 export function prefetchInlineMarkdownEditor(): void {
   void import("./InlineMarkdownEditor");
 }
@@ -417,8 +417,6 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   const draftTimerRef = useRef<number | null>(null);
   const [draftNoteId, setDraftNoteId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState<string | null>(null);
-  // Content drafts stay in refs only. setState on every MDX keystroke was
-  // rebuilding the notes shell and pushing a new controlled `value` into the editor.
 
   const clearDraftTimer = useCallback(() => {
     if (draftTimerRef.current !== null) {
@@ -470,8 +468,6 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     }
     if (fields.content !== undefined) {
       draftContentRef.current = fields.content;
-      // Ref-only: do not setDraftNoteId/setState — content keystrokes must not
-      // re-render the tree or remount MDXEditor via a changing value prop.
     }
     scheduleNoteDraftFlush();
   }, [flushNoteDraft, scheduleNoteDraftFlush]);
@@ -479,8 +475,6 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   const flushNoteDraftRef = useRef(flushNoteDraft);
   flushNoteDraftRef.current = flushNoteDraft;
 
-  // Stable teardown flush so StrictMode remount / identity churn of flushNoteDraft
-  // does not repeatedly commit mid-edit drafts.
   useEffect(() => () => {
     flushNoteDraftRef.current();
   }, []);
@@ -680,8 +674,6 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
             aria-label={label}
             className="app-no-drag h-8 w-8 shrink-0 rounded-md p-0 text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
             onClick={() => {
-              // Flush ref-only content drafts before remounting MDX on mode
-              // toggle so preview/edit sees the in-progress body.
               flushNoteDraft();
               setNoteEditorMode((currentMode) => (
                 currentMode === "edit" ? "preview" : "edit"
