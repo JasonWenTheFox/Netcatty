@@ -519,7 +519,6 @@ export class KeywordHighlighter implements IDisposable {
       }
     });
     this.lineDecorations.set(state.indexedLine, state);
-    this.prunePersistentDecorations();
     this.markTerminalRefreshNeeded(lineY);
   }
 
@@ -1558,6 +1557,7 @@ export class KeywordHighlighter implements IDisposable {
     this.removeDirtyRange(start, end);
     this.dirtyAllInRenderRange = false;
     this.lastViewportRange = { start, end };
+    this.prunePersistentDecorations();
   }
 
   private cancelQueuedRefreshSchedule() {
