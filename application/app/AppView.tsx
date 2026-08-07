@@ -319,9 +319,9 @@ function AppViewInner({ domains }: AppViewProps) {
     return false;
   }, []);
 
-  useEffect(() => {
-    handleRequestCloseEditorTabRef.current = handleRequestCloseEditorTab;
-  }, [handleRequestCloseEditorTab, handleRequestCloseEditorTabRef]);
+  // Keep the hotkey ref current during render so Cmd/Ctrl+W never sees the
+  // App.tsx stub `() => false` between commit and useEffect.
+  handleRequestCloseEditorTabRef.current = handleRequestCloseEditorTab;
 
   const handleSaveSessionRename = useCallback((name: string) => {
     if (!sessionRenameTarget) return;
