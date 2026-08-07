@@ -29,12 +29,12 @@ import {
   getNetcattyBridge,
   type DefaultTargetSessionHint,
   type TerminalSessionInfo,
-} from '../../components/ai/hooks/aiChatStreamingSupport';
+} from '../../infrastructure/ai/aiChatStreamingSupport';
 import { useAgentCompactionUi } from './useAgentCompactionUi';
 
-export { getNetcattyBridge } from '../../components/ai/hooks/aiChatStreamingSupport';
+export { getNetcattyBridge } from '../../infrastructure/ai/aiChatStreamingSupport';
 export type { ActiveCompactionUi } from './useAgentCompactionUi';
-export type { DefaultTargetSessionHint } from '../../components/ai/hooks/aiChatStreamingSupport';
+export type { DefaultTargetSessionHint } from '../../infrastructure/ai/aiChatStreamingSupport';
 
 const sharedStreamingSessionIds = new Set<string>();
 const sharedAbortControllers = new Map<string, AbortController>();

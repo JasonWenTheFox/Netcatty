@@ -9,7 +9,7 @@ import {
   generateId,
   resolveUserSkillsContext,
   isToolResultError,
-} from '../../../../components/ai/hooks/aiChatStreamingSupport';
+} from '../../aiChatStreamingSupport';
 import type { AgentActivity, AgentUsage, ChatMessage } from '../../types';
 import type {
   ExternalTurnInput,
