@@ -164,6 +164,13 @@ export class KeywordHighlighter implements IDisposable {
             clearTimeout(this.enterInputIdleTimer);
             this.enterInputIdleTimer = null;
           }
+          // Drop any pending user-scroll refresh so Enter echo cannot finish a
+          // scroll pass that prunes still-visible keyword decorations.
+          this.cancelScrollRefresh();
+          if (this.pendingRefreshReason === "scroll") {
+            this.cancelQueuedRefreshSchedule();
+            this.pendingRefreshReason = "write";
+          }
         }
       }),
       // When new data is written, refresh on the next frame so highlights land
@@ -686,6 +693,17 @@ export class KeywordHighlighter implements IDisposable {
 
   private triggerViewportChangeRefresh() {
     this.cancelScrollRefresh();
+    // Enter echo often emits onScroll before onWriteParsed. After an idle gap
+    // lastWriteAt looks stale, so the user-scroll path would prune overscan
+    // decorations and flash keywords still on screen. While Enter output is
+    // pending, let onWriteParsed own refresh scheduling.
+    if (this.enterInputPending) {
+      if (this.pendingRefreshReason === "scroll") {
+        this.cancelQueuedRefreshSchedule();
+        this.pendingRefreshReason = "write";
+      }
+      return;
+    }
     const now = performance.now();
     const isOutputDrivenViewportChange =
       this.lastWriteAt > 0 &&

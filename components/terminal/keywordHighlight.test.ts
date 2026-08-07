@@ -1120,6 +1120,93 @@ test("pressing Enter keeps unchanged keyword decorations mounted", async () => {
   }
 });
 
+test("Enter-driven scroll before writeParsed does not prune keyword decorations", async () => {
+  const raf = installAnimationFrameQueue();
+  try {
+    const { term, decorationStates, markers, handlers } = createFakeTerminal("hello DEPLOY world", {
+      lineCount: 40,
+    });
+    term.buffer.active.viewportY = 20;
+    term.buffer.active.baseY = 20;
+    term.buffer.active.cursorY = 2;
+    const highlighter = new KeywordHighlighter(term as never);
+    highlighter.setRules([{
+      id: "deploy",
+      label: "Deploy",
+      patterns: ["DEPLOY"],
+      color: "#F87171",
+      enabled: true,
+    }], true);
+    raf.flush();
+    const existingDecorations = [...decorationStates];
+    assert.ok(existingDecorations.length > 0);
+
+    // Idle long enough that Enter echo scroll is no longer classified as a
+    // recent write burst. xterm emits onScroll during the write, before
+    // onWriteParsed — that must not take the user-scroll prune path.
+    const internals = highlighter as unknown as { lastWriteAt: number };
+    internals.lastWriteAt = performance.now() - 10_000;
+
+    handlers.data?.("\r");
+    for (const marker of markers) marker.line += 1;
+    term.buffer.active.viewportY += 1;
+    term.buffer.active.baseY += 1;
+    term.buffer.active.length += 1;
+    handlers.scroll?.();
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+    assert.equal(
+      existingDecorations.filter(({ isDisposed }) => isDisposed).length,
+      0,
+      "Enter-driven scroll before writeParsed should not dispose keyword decorations",
+    );
+    highlighter.dispose();
+  } finally {
+    raf.restore();
+  }
+});
+
+test("Enter cancels a queued user-scroll prune before it can flash keywords", async () => {
+  const raf = installAnimationFrameQueue();
+  try {
+    const { term, decorationStates, handlers } = createFakeTerminal("hello DEPLOY world", {
+      lineCount: 40,
+    });
+    term.buffer.active.viewportY = 20;
+    term.buffer.active.baseY = 20;
+    term.buffer.active.cursorY = 2;
+    const highlighter = new KeywordHighlighter(term as never);
+    highlighter.setRules([{
+      id: "deploy",
+      label: "Deploy",
+      patterns: ["DEPLOY"],
+      color: "#F87171",
+      enabled: true,
+    }], true);
+    raf.flush();
+    const existingDecorations = [...decorationStates];
+    assert.ok(existingDecorations.length > 0);
+
+    const internals = highlighter as unknown as { lastWriteAt: number };
+    internals.lastWriteAt = performance.now() - 10_000;
+
+    // Arm a user-scroll refresh, then press Enter before the debounce fires.
+    term.buffer.active.viewportY += 1;
+    handlers.scroll?.();
+    handlers.data?.("\r");
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+    assert.equal(
+      existingDecorations.filter(({ isDisposed }) => isDisposed).length,
+      0,
+      "pressing Enter should cancel a pending scroll prune of keyword decorations",
+    );
+    highlighter.dispose();
+  } finally {
+    raf.restore();
+  }
+});
+
 test("pasted Enter remains protected when more input arrives before output", async () => {
   const raf = installAnimationFrameQueue();
   try {
