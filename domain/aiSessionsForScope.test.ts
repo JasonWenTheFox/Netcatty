@@ -94,3 +94,49 @@ test('aiSessionIdSetEqual detects updatedAt chrome without message thrash', () =
   assert.equal(aiSessionIdSetEqual([a1], [a2]), true);
   assert.equal(aiSessionIdSetEqual([a1], [a3]), false);
 });
+
+test('aiSessionIdSetEqual ignores sibling updatedAt when scoped', () => {
+  const own1 = { ...session('own', 'terminal', 't1'), title: 'mine', updatedAt: 1 };
+  const sib1 = { ...session('sib', 'terminal', 't2'), title: 'other', updatedAt: 1 };
+  const sib2 = { ...session('sib', 'terminal', 't2'), title: 'other', updatedAt: 99 };
+  const own2 = { ...session('own', 'terminal', 't1'), title: 'mine', updatedAt: 2 };
+  assert.equal(
+    aiSessionIdSetEqual([own1, sib1], [own1, sib2], 'terminal', 't1'),
+    true,
+  );
+  assert.equal(
+    aiSessionIdSetEqual([own1, sib1], [own2, sib1], 'terminal', 't1'),
+    false,
+  );
+  // Unscoped still compares every updatedAt (legacy).
+  assert.equal(aiSessionIdSetEqual([own1, sib1], [own1, sib2]), false);
+});
+
+test('aiSessionIdSetEqual scoped still tracks selected cross-scope updatedAt', () => {
+  const exact = { ...session('exact', 'terminal', 't-new'), title: 'a', updatedAt: 1 };
+  const hist1 = { ...session('hist', 'terminal', 't-old'), title: 'b', updatedAt: 1 };
+  const hist2 = { ...session('hist', 'terminal', 't-old'), title: 'b', updatedAt: 5 };
+  assert.equal(
+    aiSessionIdSetEqual([exact, hist1], [exact, hist2], 'terminal', 't-new'),
+    true,
+  );
+  assert.equal(
+    aiSessionIdSetEqual([exact, hist1], [exact, hist2], 'terminal', 't-new', 'hist'),
+    false,
+  );
+});
+
+test('aiSessionIdSetEqual scoped still detects sibling create/delete and title', () => {
+  const own = { ...session('own', 'terminal', 't1'), title: 'mine', updatedAt: 1 };
+  const sib1 = { ...session('sib', 'terminal', 't2'), title: 'other', updatedAt: 1 };
+  const sibRenamed = { ...session('sib', 'terminal', 't2'), title: 'renamed', updatedAt: 1 };
+  const sibNew = { ...session('sib2', 'terminal', 't2'), title: 'new', updatedAt: 1 };
+  assert.equal(
+    aiSessionIdSetEqual([own, sib1], [own, sibRenamed], 'terminal', 't1'),
+    false,
+  );
+  assert.equal(
+    aiSessionIdSetEqual([own, sib1], [own, sib1, sibNew], 'terminal', 't1'),
+    false,
+  );
+});

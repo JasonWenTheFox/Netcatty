@@ -252,3 +252,68 @@ test('AI side panel skips re-render when only a sibling scope session object cha
     false,
   );
 });
+
+test('AI side panel skips re-render when sibling stream only bumps updatedAt', () => {
+  const own = session({
+    id: 'session-1',
+    scope: { type: 'terminal', targetId: 'terminal-1' },
+    updatedAt: 10,
+  });
+  const siblingA = session({
+    id: 'session-2',
+    scope: { type: 'terminal', targetId: 'terminal-2' },
+    title: 'Sibling',
+    updatedAt: 10,
+  });
+  const siblingStreamed = session({
+    id: 'session-2',
+    scope: { type: 'terminal', targetId: 'terminal-2' },
+    title: 'Sibling',
+    updatedAt: 99,
+  });
+  const prev = baseProps({
+    isVisible: true,
+    scopeType: 'terminal',
+    scopeTargetId: 'terminal-1',
+    sessions: [own, siblingA],
+  });
+  assert.equal(
+    aiChatSidePanelPropsAreEqual(prev, {
+      ...prev,
+      sessions: [own, siblingStreamed],
+    }),
+    true,
+  );
+});
+
+test('AI side panel re-renders when sibling history chrome title changes', () => {
+  const own = session({
+    id: 'session-1',
+    scope: { type: 'terminal', targetId: 'terminal-1' },
+  });
+  const siblingA = session({
+    id: 'session-2',
+    scope: { type: 'terminal', targetId: 'terminal-2' },
+    title: 'Old',
+    updatedAt: 10,
+  });
+  const siblingRenamed = session({
+    id: 'session-2',
+    scope: { type: 'terminal', targetId: 'terminal-2' },
+    title: 'New',
+    updatedAt: 10,
+  });
+  const prev = baseProps({
+    isVisible: true,
+    scopeType: 'terminal',
+    scopeTargetId: 'terminal-1',
+    sessions: [own, siblingA],
+  });
+  assert.equal(
+    aiChatSidePanelPropsAreEqual(prev, {
+      ...prev,
+      sessions: [own, siblingRenamed],
+    }),
+    false,
+  );
+});

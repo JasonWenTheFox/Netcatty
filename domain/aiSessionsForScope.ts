@@ -61,24 +61,43 @@ export function aiSessionByIdEqual<T extends AISessionLike>(
 
 /**
  * True when both arrays contain the same session ids (order-insensitive) and
- * matching history chrome (title + updatedAt). Detects create/delete/rename and
- * timestamp/order changes without treating message-body object replacement alone
- * as a reason to re-render when chrome is unchanged.
+ * matching history chrome. Detects create/delete/rename without treating
+ * message-body object replacement alone as a reason to re-render.
+ *
+ * When `scopeType` is provided, `updatedAt` is compared only for sessions that
+ * match that exact scope (plus optional `selectedSessionId`). Sibling stream
+ * ticks that bump unrelated sessions' `updatedAt` do not invalidate. The full
+ * session list remains available to callers for fuzzy history ranking.
+ *
+ * When `scopeType` is omitted, `updatedAt` is compared for every session
+ * (legacy / unscoped chrome equality).
  */
 export function aiSessionIdSetEqual<T extends AISessionLike>(
   prev: readonly T[] | null | undefined,
   next: readonly T[] | null | undefined,
+  scopeType?: string,
+  scopeTargetId?: string,
+  selectedSessionId?: string | null,
 ): boolean {
   if (prev === next) return true;
   if (!prev || !next) return false;
   if (prev.length !== next.length) return false;
   if (prev.length === 0) return true;
   const prevById = new Map(prev.map((session) => [session.id, session]));
+  const scopeUpdatedAt = scopeType !== undefined;
   for (const session of next) {
     const prevSession = prevById.get(session.id);
     if (!prevSession) return false;
     if ((prevSession.title ?? '') !== (session.title ?? '')) return false;
-    if ((prevSession.updatedAt ?? 0) !== (session.updatedAt ?? 0)) return false;
+    const compareUpdatedAt = !scopeUpdatedAt
+      || sessionMatchesAIScope(session, scopeType, scopeTargetId)
+      || (selectedSessionId != null && session.id === selectedSessionId);
+    if (
+      compareUpdatedAt
+      && (prevSession.updatedAt ?? 0) !== (session.updatedAt ?? 0)
+    ) {
+      return false;
+    }
   }
   return true;
 }
