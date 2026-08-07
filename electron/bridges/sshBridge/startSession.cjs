@@ -700,48 +700,17 @@ printf '%s\n' '${scanCompleteMarker}'`;
       const rows = options.rows || 24;
       const sender = event.sender;
       const conn = sourceSession.conn;
-      let discoveryConnectionError = null;
-      const onDiscoveryConnectionError = (err) => {
-        discoveryConnectionError = err;
-      };
-      let shellDiscoveryBeforeOpen = { available: false, pids: [] };
-      // Bastions (whether configured as jumpHosts or used as the direct SSH
-      // target) often rate-limit rapid session channel opens ("channelOpen too
-      // offen"). Retry rate-limited PID scans on every Copy Tab reuse so a
-      // successful shell open still gets shellPid tracking. Only the optional
-      // pre-scan pause is jump-host specific to avoid delaying the happy path
-      // on ordinary direct hosts.
-      const hasJumpHosts = Array.isArray(options.jumpHosts) && options.jumpHosts.length > 0;
+      // Bastions (jumpHosts or direct targets) rate-limit rapid session channel
+      // opens ("channelOpen too offen"). Opening a discovery exec *before* the
+      // shell burns that budget and Copy Tab falls back to a fresh login
+      // (issue #2704). Open the shell first; discover shellPid afterwards.
       const configuredBackoffMs = Number(options.sshChannelOpenRateLimitBackoffMs);
       const discoveryBackoffMs = Number.isFinite(configuredBackoffMs) && configuredBackoffMs > 0
         ? configuredBackoffMs
         : 150;
-      if (!options.skipShellPidDiscovery) {
-        conn.once("error", onDiscoveryConnectionError);
-        shellDiscoveryBeforeOpen = await listInteractiveShellPidsResilient(conn, {
-          initialDelayMs: hasJumpHosts ? discoveryBackoffMs : 0,
-          attempts: 4,
-          backoffMs: discoveryBackoffMs,
-        });
-        conn.removeListener("error", onDiscoveryConnectionError);
-      }
-      const shellPidsBeforeOpen = shellDiscoveryBeforeOpen.pids;
-      if (discoveryConnectionError) {
-        releaseConnectionRef(refHolder);
-        throw discoveryConnectionError;
-      }
-      const assignedPids = new Set(
-        [...sessions.values()]
-          .filter((candidate) => candidate?.connRef === connRef && candidate.shellPid)
-          .map((candidate) => String(candidate.shellPid)),
-      );
-      const unclaimedPids = shellPidsBeforeOpen.filter((pid) => !assignedPids.has(pid));
-      const unassignedSessions = [...sessions.values()].filter(
-        (candidate) => candidate?.connRef === connRef && !candidate.shellPid,
-      );
-      if (unclaimedPids.length === 1 && unassignedSessions.length === 1) {
-        unassignedSessions[0].shellPid = unclaimedPids[0];
-      }
+      const shellPidsBeforeOpen = [...sessions.values()]
+        .filter((candidate) => candidate?.connRef === connRef && candidate.shellPid)
+        .map((candidate) => String(candidate.shellPid));
 
       log("reusing existing connection for new shell channel", {
         sessionId,
@@ -856,17 +825,64 @@ printf '%s\n' '${scanCompleteMarker}'`;
               } else {
                 refHolder.connRef = null;
               }
-              const newShellPidPromise = shellDiscoveryBeforeOpen.available
-                ? waitForNewInteractiveShellPid(
-                  conn,
-                  shellPidsBeforeOpen,
-                  {
-                    initialDelayMs: hasJumpHosts ? discoveryBackoffMs : 0,
+
+              const discoverCopiedShellPid = async () => {
+                if (options.skipShellPidDiscovery) return null;
+                const liveBaseline = () => [...sessions.values()]
+                  .filter((candidate) => (
+                    candidate?.connRef === connRef
+                    && candidate !== copiedSession
+                    && candidate.shellPid
+                  ))
+                  .map((candidate) => String(candidate.shellPid));
+                // Prefer PIDs already recorded on sibling tabs of this shared
+                // transport. Fall back to the pre-shell snapshot when the source
+                // closed before discovery runs but had a known shellPid.
+                let baseline = liveBaseline();
+                if (baseline.length === 0) {
+                  baseline = shellPidsBeforeOpen;
+                }
+                if (baseline.length === 0) {
+                  const discovery = await listInteractiveShellPidsResilient(conn, {
+                    initialDelayMs: discoveryBackoffMs,
+                    attempts: 4,
                     backoffMs: discoveryBackoffMs,
-                  },
-                )
-                : Promise.resolve(null);
-              void newShellPidPromise.then((newShellPid) => {
+                  });
+                  if (!discovery.available && !discovery.rateLimited) {
+                    // Discovery is permanently unavailable (not rate-limited).
+                    return null;
+                  }
+                  if (discovery.available && discovery.pids.length > 0) {
+                    const assignedPids = new Set(liveBaseline());
+                    const unclaimed = discovery.pids.filter((pid) => !assignedPids.has(pid));
+                    const unassignedSiblings = [...sessions.values()].filter(
+                      (candidate) => (
+                        candidate?.connRef === connRef
+                        && candidate !== copiedSession
+                        && !candidate.shellPid
+                      ),
+                    );
+                    if (unclaimed.length === 1 && unassignedSiblings.length === 1) {
+                      unassignedSiblings[0].shellPid = unclaimed[0];
+                      baseline = [String(unclaimed[0])];
+                    } else if (unassignedSiblings.length === 0 && unclaimed.length === 1) {
+                      return unclaimed[0];
+                    } else if (assignedPids.size > 0) {
+                      baseline = [...assignedPids];
+                    }
+                  }
+                  // Empty successful scans (shell not visible yet) must not
+                  // abort — waitForNew retries until the new shell appears.
+                }
+                return waitForNewInteractiveShellPid(conn, baseline, {
+                  // Brief pause after the shell channel so bastion rate limits
+                  // have a chance to clear before the discovery exec.
+                  initialDelayMs: discoveryBackoffMs,
+                  backoffMs: discoveryBackoffMs,
+                });
+              };
+
+              void discoverCopiedShellPid().then((newShellPid) => {
                 // Bind PID only to the session this reuse opened. A higher
                 // bootEpoch reconnect may already own sessionId in the map.
                 const liveSession = sessions.get(sessionId);
