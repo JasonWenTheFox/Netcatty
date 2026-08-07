@@ -242,12 +242,17 @@ test('terminal selection Ask-AI payload is consumed once under StrictMode', () =
     new URL('../../components/terminalLayer/TerminalLayerSupport.tsx', import.meta.url),
     'utf8',
   );
-  assert.match(hostSource, /consumedTerminalSelectionRequestIdRef/);
+  assert.match(hostSource, /consumedTerminalSelectionRequestIds/);
+  assert.doesNotMatch(
+    hostSource,
+    /consumedTerminalSelectionRequestIdRef/,
+    'component refs reset on StrictMode remount; use a module Set',
+  );
   assert.match(
     hostSource,
-    /if \(consumedTerminalSelectionRequestIdRef\.current === pendingTerminalSelection\.requestId\)/,
+    /if \(consumedTerminalSelectionRequestIds\.has\(pendingTerminalSelection\.requestId\)\)/,
   );
-  const latchAt = hostSource.indexOf('consumedTerminalSelectionRequestIdRef.current = pendingTerminalSelection.requestId');
+  const latchAt = hostSource.indexOf('markTerminalSelectionRequestConsumed(pendingTerminalSelection.requestId)');
   const draftAt = hostSource.indexOf('updateDraft(scopeKey, defaultAgentId');
   assert.ok(latchAt > 0 && draftAt > latchAt, 'must latch before mutating the draft');
 });

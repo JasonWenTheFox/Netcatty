@@ -360,6 +360,20 @@ function aiChatPanelsHostAreEqual(
   return true;
 }
 
+// Remount-safe: StrictMode remount resets component refs, but the same
+// pendingTerminalSelection can still be non-null until parent state clears.
+const consumedTerminalSelectionRequestIds = new Set<string>();
+const CONSUMED_TERMINAL_SELECTION_REQUEST_ID_LIMIT = 64;
+
+function markTerminalSelectionRequestConsumed(requestId: string): void {
+  consumedTerminalSelectionRequestIds.add(requestId);
+  if (consumedTerminalSelectionRequestIds.size <= CONSUMED_TERMINAL_SELECTION_REQUEST_ID_LIMIT) {
+    return;
+  }
+  const oldest = consumedTerminalSelectionRequestIds.values().next().value;
+  if (oldest !== undefined) consumedTerminalSelectionRequestIds.delete(oldest);
+}
+
 const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
   mountedTabIds,
   activeTabId,
@@ -393,11 +407,9 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
     updateDraft,
   } = aiConfig;
 
-  const consumedTerminalSelectionRequestIdRef = useRef<string | null>(null);
-
   useEffect(() => {
     if (!pendingTerminalSelection) return;
-    if (consumedTerminalSelectionRequestIdRef.current === pendingTerminalSelection.requestId) {
+    if (consumedTerminalSelectionRequestIds.has(pendingTerminalSelection.requestId)) {
       return;
     }
 
@@ -405,7 +417,7 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
     if (!context) return;
 
     const attachment = createTerminalSelectionAttachment(pendingTerminalSelection.text);
-    consumedTerminalSelectionRequestIdRef.current = pendingTerminalSelection.requestId;
+    markTerminalSelectionRequestConsumed(pendingTerminalSelection.requestId);
     onPendingTerminalSelectionConsumed?.(pendingTerminalSelection.requestId);
     if (!attachment) return;
 
