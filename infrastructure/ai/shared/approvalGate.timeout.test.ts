@@ -269,3 +269,13 @@ test('cancelApprovalTimeout asks main to drop Codex App Server interaction timer
     clearAllPendingApprovals();
   }
 });
+
+test('requestApproval joins an existing waiter for the same toolCallId', async () => {
+  clearAllPendingApprovals();
+  const toolCallId = `dup-approval-${Date.now()}`;
+  const first = requestApproval(toolCallId, 'sftp_write', { path: '/tmp/a' }, 'chat-1', 60_000);
+  const second = requestApproval(toolCallId, 'sftp_write', { path: '/tmp/a' }, 'chat-1', 60_000);
+  resolveApproval(toolCallId, { approved: true, scope: 'once' });
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  clearAllPendingApprovals();
+});

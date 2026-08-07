@@ -393,17 +393,24 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
     updateDraft,
   } = aiConfig;
 
+  // StrictMode re-invokes this effect with the same pending payload before
+  // parent state clears — latch on requestId so the chip is appended once.
+  const consumedTerminalSelectionRequestIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!pendingTerminalSelection) return;
+    if (consumedTerminalSelectionRequestIdRef.current === pendingTerminalSelection.requestId) {
+      return;
+    }
 
     const context = contextsByTabId.get(pendingTerminalSelection.tabId);
     if (!context) return;
 
     const attachment = createTerminalSelectionAttachment(pendingTerminalSelection.text);
-    if (!attachment) {
-      onPendingTerminalSelectionConsumed?.(pendingTerminalSelection.requestId);
-      return;
-    }
+    // Mark consumed before draft mutation so a StrictMode re-run is a no-op.
+    consumedTerminalSelectionRequestIdRef.current = pendingTerminalSelection.requestId;
+    onPendingTerminalSelectionConsumed?.(pendingTerminalSelection.requestId);
+    if (!attachment) return;
 
     const scopeKey = `${context.scopeType}:${context.scopeTargetId ?? ''}`;
     const isSessionView =
@@ -416,7 +423,6 @@ const AIChatPanelsHostInner: React.FC<AIChatPanelsHostProps> = ({
       ...draft,
       attachments: [...draft.attachments, attachment],
     }));
-    onPendingTerminalSelectionConsumed?.(pendingTerminalSelection.requestId);
   }, [
     activeSessionIdMap,
     contextsByTabId,

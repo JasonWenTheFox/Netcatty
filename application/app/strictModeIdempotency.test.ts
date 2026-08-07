@@ -236,3 +236,31 @@ test('ssh transport idle TTL notify latches against StrictMode double invoke', (
     /lastPushedSshTransportIdleTtlRef\.current = sshTransportIdleTtlMs;/,
   );
 });
+
+test('terminal selection Ask-AI payload is consumed once under StrictMode', () => {
+  const hostSource = readFileSync(
+    new URL('../../components/terminalLayer/TerminalLayerSupport.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(hostSource, /consumedTerminalSelectionRequestIdRef/);
+  assert.match(
+    hostSource,
+    /if \(consumedTerminalSelectionRequestIdRef\.current === pendingTerminalSelection\.requestId\)/,
+  );
+  const latchAt = hostSource.indexOf('consumedTerminalSelectionRequestIdRef.current = pendingTerminalSelection.requestId');
+  const draftAt = hostSource.indexOf('updateDraft(scopeKey, defaultAgentId');
+  assert.ok(latchAt > 0 && draftAt > latchAt, 'must latch before mutating the draft');
+});
+
+test('Codex App Server interaction bridge is app-singleton like MCP approvals', () => {
+  assert.match(appSource, /setupCodexAppServerInteractionBridge/);
+  const panelSource = readFileSync(
+    new URL('../../components/AIChatSidePanel.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    panelSource,
+    /setupCodexAppServerInteractionBridge/,
+    'per-panel Codex IPC listeners fan out approvals under retained multi-tab mounts',
+  );
+});
