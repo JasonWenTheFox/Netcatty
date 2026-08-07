@@ -164,33 +164,51 @@ async function runExternalTurn(
   };
   let pendingText = '';
   let rafId: number | null = null;
+  const appendTextToActiveAssistant = (textChunk: string) => {
+    updateActiveAssistant(msg => ({
+      ...msg,
+      content: msg.content + textChunk,
+      statusText: undefined,
+      thinkingDurationMs: msg.thinking && !msg.thinkingDurationMs
+        ? Date.now() - msg.timestamp : msg.thinkingDurationMs,
+    }));
+  };
   const flushPendingText = () => {
     if (pendingText) {
       const textChunk = pendingText;
       pendingText = '';
-      runOrBufferUiOperation(() => {
-        updateActiveAssistant(msg => ({
-          ...msg,
-          content: msg.content + textChunk,
-          statusText: undefined,
-          thinkingDurationMs: msg.thinking && !msg.thinkingDurationMs
-            ? Date.now() - msg.timestamp : msg.thinkingDurationMs,
-        }));
-      });
+      runOrBufferUiOperation(() => appendTextToActiveAssistant(textChunk));
     }
     rafId = null;
   };
+  const scheduleFrame = (cb: () => void): number => (
+    typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(cb)
+      : setTimeout(cb, 0) as unknown as number
+  );
+  const cancelFrame = (id: number): void => {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(id);
+      return;
+    }
+    clearTimeout(id);
+  };
   const cancelPendingTextFlush = () => {
     if (rafId !== null) {
-      cancelAnimationFrame(rafId);
+      cancelFrame(rafId);
       rafId = null;
     }
   };
   const enqueueTextDelta = (textChunk: string) => {
     if (!textChunk) return;
+    // While steering buffers UI ops, skip rAF so text enters the buffer immediately.
+    if (steerInFlight) {
+      runOrBufferUiOperation(() => appendTextToActiveAssistant(textChunk));
+      return;
+    }
     pendingText += textChunk;
     if (rafId === null) {
-      rafId = requestAnimationFrame(flushPendingText);
+      rafId = scheduleFrame(flushPendingText);
     }
   };
   const flushTextBeforeNonTextEvent = () => {
@@ -380,6 +398,8 @@ async function runExternalTurn(
     async steer(steerInput) {
       if (steerInFlight) return { status: 'busy' };
       if (ended || signal.aborted) return { status: 'cancelled' };
+      // Commit any rAF-batched text before steering buffers UI ops.
+      flushTextBeforeNonTextEvent();
       steerInFlight = true;
       const result = await steerSdkAgentTurn(
         netcattyBridge,
@@ -391,7 +411,6 @@ async function runExternalTurn(
       );
 
       if (result.status === 'accepted' && !ended && !signal.aborted) {
-        flushTextBeforeNonTextEvent();
         flushBufferedUiOperations(entry => entry.flushBeforeSteerBoundary);
         ui.addMessageToSession(sessionId, {
           id: steerInput.userMessageId,
