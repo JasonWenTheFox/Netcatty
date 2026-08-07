@@ -1,13 +1,18 @@
+import { localStorageAdapter } from "../../../infrastructure/persistence/localStorageAdapter";
+import {
+  STORAGE_KEY_DEBUG_TERMINAL,
+  STORAGE_KEY_DEBUG_TERMINAL_INTERRUPT,
+} from "../../../infrastructure/config/storageKeys";
 import type { TerminalInputPrioritySnapshot } from "./terminalOutputPipeline";
 
 const DEBUG_KEYS = [
-  "NETCATTY_CTRL_C_DEBUG",
-  "NETCATTY_TERMINAL_DEBUG",
+  STORAGE_KEY_DEBUG_TERMINAL_INTERRUPT,
+  STORAGE_KEY_DEBUG_TERMINAL,
 ];
 
 function isDebugEnabled(): boolean {
   try {
-    return DEBUG_KEYS.some((key) => window.localStorage?.getItem(key) === "1");
+    return DEBUG_KEYS.some((key) => localStorageAdapter.readString(key) === "1");
   } catch {
     return false;
   }

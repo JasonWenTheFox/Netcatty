@@ -782,6 +782,14 @@ export function useOutputTriggers({
       resetTriggerScanState();
     },
     schedule: (callback) => {
+      const raf = globalThis.requestAnimationFrame;
+      if (typeof raf === 'function') {
+        const frameId = raf.call(globalThis, callback);
+        return () => {
+          const cancel = globalThis.cancelAnimationFrame;
+          if (typeof cancel === 'function') cancel.call(globalThis, frameId);
+        };
+      }
       const timer = globalThis.setTimeout(callback, OUTPUT_TRIGGER_SCAN_DELAY_MS);
       return () => globalThis.clearTimeout(timer);
     },

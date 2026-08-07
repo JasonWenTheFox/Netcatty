@@ -277,3 +277,9 @@ export const STORAGE_KEY_AVAILABLE_PLUGIN_SYNC_PROVIDERS = 'netcatty_available_p
 // Debug Flags (no _v1 suffix — developer-only, not persisted data)
 export const STORAGE_KEY_DEBUG_HOTKEYS = 'debug.hotkeys';
 export const STORAGE_KEY_DEBUG_UPDATE_DEMO = 'debug.updateDemo';
+/** Terminal output performance diagnostics (renderer). */
+export const STORAGE_KEY_DEBUG_TERMINAL_PERF = 'NETCATTY_TERMINAL_PERF_DEBUG';
+/** Shared terminal debug gate for perf + interrupt traces. */
+export const STORAGE_KEY_DEBUG_TERMINAL = 'NETCATTY_TERMINAL_DEBUG';
+/** Ctrl+C / interrupt path diagnostics (renderer). */
+export const STORAGE_KEY_DEBUG_TERMINAL_INTERRUPT = 'NETCATTY_CTRL_C_DEBUG';
