@@ -126,3 +126,30 @@ test('cancelled startup update check resets its latch instead of skipping foreve
   assert.match(tail, /startupCheckTimeoutRef\.current = setTimeout\(async \(\) => \{\s*\n\s*checkArmed = false;/);
   assert.match(tail, /if \(checkArmed\) \{\s*\n\s*hasCheckedOnStartupRef\.current = false;\s*\n\s*\}/);
 });
+
+test('terminal popup config survives StrictMode unsubscribe/resubscribe', () => {
+  const preloadSource = readFileSync(new URL('../../electron/preload.cjs', import.meta.url), 'utf8');
+  const apiSource = readFileSync(new URL('../../electron/preload/api.cjs', import.meta.url), 'utf8');
+
+  assert.match(preloadSource, /lastPayload:\s*null/);
+  assert.match(
+    preloadSource,
+    /terminalPopupConfigState\.lastPayload = payload/,
+    'incoming popup config must be retained beyond the one-shot pending slot',
+  );
+
+  const subscribeAt = apiSource.indexOf('onTerminalPopupConfig:');
+  assert.notEqual(subscribeAt, -1);
+  const subscribe = apiSource.slice(subscribeAt, subscribeAt + 700);
+  assert.match(
+    subscribe,
+    /terminalPopupConfigState\.pending \?\? terminalPopupConfigState\.lastPayload/,
+    'resubscribe must replay lastPayload after pending was drained',
+  );
+  assert.match(subscribe, /terminalPopupConfigState\.pending = null/);
+  assert.doesNotMatch(
+    subscribe,
+    /terminalPopupConfigState\.lastPayload = null/,
+    'StrictMode remount must not clear lastPayload on subscribe',
+  );
+});

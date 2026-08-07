@@ -403,6 +403,12 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
   useEffect(() => {
     let disposed = false;
     let initialFitTimer: ReturnType<typeof setTimeout> | undefined;
+    // Runtime owned by this effect instance. StrictMode remount must dispose
+    // THIS node synchronously — async completeClose can be skipped by the
+    // close-generation guard after the remount bumps the counter, which would
+    // leave an orphaned .xterm in the shared container (prompt appears glued
+    // to the bottom under the empty first terminal).
+    let ownedRuntime: { dispose: () => void } | null = null;
     // Every boot owns a controller so cleanup can cancel an in-flight start
     // instead of waiting for the async capture/teardown below to finish.
     const bootAbort = new AbortController();
@@ -424,6 +430,25 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     setIsCancelling(false);
     setIsDisconnectedDialogDismissed(false);
     promptLineBreakStateRef.current = createPromptLineBreakState();
+
+    const disposeOwnedRuntime = () => {
+      const runtime = ownedRuntime;
+      ownedRuntime = null;
+      if (!runtime) return;
+      if (xtermRuntimeRef.current === runtime) {
+        xtermRuntimeRef.current = null;
+        termRef.current = null;
+        fitAddonRef.current = null;
+        serializeAddonRef.current = null;
+        searchAddonRef.current = null;
+        hasRuntimeRef.current = false;
+      }
+      try {
+        runtime.dispose();
+      } catch (err) {
+        logger.warn("Failed to dispose terminal runtime on unmount", err);
+      }
+    };
 
     const boot = async () => {
       try {
@@ -514,6 +539,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
           return;
         }
 
+        ownedRuntime = runtime;
         xtermRuntimeRef.current = runtime;
         termRef.current = runtime.term;
         fitAddonRef.current = runtime.fitAddon;
@@ -785,6 +811,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       isBootActiveRef.current = false;
       if (hibernatedRef?.current) {
         forceCloseHibernatedSession?.();
+        disposeOwnedRuntime();
         return;
       }
 
@@ -806,6 +833,11 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
         } catch (err) {
           logger.warn("Failed to cancel pending terminal boot on unmount", err);
         }
+        // StrictMode remounts before async completeClose can finish. Dispose
+        // this boot's xterm now so the remount does not stack a second .xterm
+        // under an orphaned empty terminal (prompt glued to the bottom).
+        disposeOwnedRuntime();
+        return;
       }
 
       const persistCloseCapture = (data: string, source: string, dataLength: number) => {
@@ -828,13 +860,25 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
             closeGeneration,
             terminalBootCloseGenerationRef.current,
           )) {
+            // Remount already replaced the live refs; still drop this boot's
+            // orphaned DOM node if dispose was deferred past the generation bump.
+            disposeOwnedRuntime();
             return;
           }
           if (!flushed) {
             logger.warn("Terminal output did not drain before close capture; skipping stale capture");
             teardown();
+            ownedRuntime = null;
             return;
           }
+        }
+
+        if (!isTerminalCloseGenerationCurrent(
+          closeGeneration,
+          terminalBootCloseGenerationRef.current,
+        )) {
+          disposeOwnedRuntime();
+          return;
         }
 
         const connectionLogPayload = !terminalDataCapturedRef.current
@@ -846,6 +890,7 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
             connectionLogPayload.source,
             connectionLogPayload.data.length,
           );
+          ownedRuntime = null;
           scheduleTerminalCloseTeardown(teardown);
           return;
         }
@@ -859,25 +904,30 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
               closeGeneration,
               terminalBootCloseGenerationRef.current,
             )) {
+              disposeOwnedRuntime();
               return;
             }
             if (payload) {
               persistCloseCapture(payload.data, payload.source, payload.data.length);
             }
+            ownedRuntime = null;
             scheduleTerminalCloseTeardown(teardown);
           } catch (err) {
             if (!isTerminalCloseGenerationCurrent(
               closeGeneration,
               terminalBootCloseGenerationRef.current,
             )) {
+              disposeOwnedRuntime();
               return;
             }
             logger.warn("Failed to serialize terminal data on unmount:", err);
+            ownedRuntime = null;
             scheduleTerminalCloseTeardown(teardown);
           }
           return;
         }
 
+        ownedRuntime = null;
         teardown();
       };
 
