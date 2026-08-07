@@ -2,11 +2,14 @@ import type React from 'react';
 import { useCallback, useMemo, useRef } from 'react';
 
 import { retainStableAiPanelContexts } from '../../domain/aiPanelContextsEqual';
+import {
+  buildAITerminalSessionInfo,
+  type AIPanelContext,
+} from '../../domain/buildAITerminalSessionInfo';
 import { collectSessionIds } from '../../domain/workspace';
 import type { TerminalContextReader } from '../../domain/terminalContextRead';
 import { detectLocalOs } from '../../lib/localShell';
 import type { Host, PortForwardingRule, TerminalSession, Workspace } from '../../types';
-import { buildAITerminalSessionInfo, type AIPanelContext } from '../../components/terminalLayer/TerminalLayerSupport';
 
 interface UseTerminalAiContextsOptions {
   hosts: Host[];

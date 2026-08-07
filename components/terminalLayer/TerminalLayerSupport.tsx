@@ -12,9 +12,13 @@ import { getTopTabInsertionTarget, isPointInsideRect, WORKSPACE_SESSION_DRAG_TYP
 import { useAIState } from '../../application/state/useAIState';
 import { useStoredBoolean } from '../../application/state/useStoredBoolean';
 import { isSavedVaultHost } from '../../domain/ephemeralHosts';
-import { buildAITerminalSessionInfo, type AITerminalSessionInfo } from './buildAITerminalSessionInfo';
+import {
+  buildAITerminalSessionInfo,
+  type AIPanelContext,
+  type AITerminalSessionInfo,
+} from '../../domain/buildAITerminalSessionInfo';
 export { buildAITerminalSessionInfo };
-export type { AITerminalSessionInfo };
+export type { AIPanelContext, AITerminalSessionInfo };
 import { collectSessionIds, SplitDirection } from '../../domain/workspace';
 import { resolveSessionTabTitle } from '../../domain/sessionTabTitle';
 import { terminalPaneSessionsEqual } from '../../domain/terminalPaneSessionsEqual';
@@ -237,14 +241,6 @@ export const filterTabsMap = <T,>(source: Map<string, T>, validIds: Set<string>)
 };
 
 export { ChunkedEscapeFilter, hasNotifiableTerminalOutput } from './activityEscapeFilter';
-
-export type AIPanelContext = {
-  scopeType: 'terminal' | 'workspace';
-  scopeTargetId?: string;
-  scopeHostIds: string[];
-  scopeLabel: string;
-  terminalSessions: AITerminalSessionInfo[];
-};
 
 type AIStateValue = ReturnType<typeof useAIState>;
 
