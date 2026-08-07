@@ -455,6 +455,11 @@ test("terminal boot is cancelable and closes eagerly on cleanup", () => {
 
   assert.match(effectsSource, /const bootAbort = new AbortController\(\)/);
   assert.match(effectsSource, /const bootStartOptions = \{ signal: bootAbort\.signal \}/);
+  assert.match(
+    effectsSource,
+    /queueMicrotask\(\(\) => \{\s*\n\s*if \(disposed\) return;\s*\n\s*void boot\(\);/,
+    "backend boot must defer past StrictMode's synchronous re-invoke",
+  );
   for (const starter of [
     "startPluginConnection",
     "startSerial",
@@ -477,7 +482,7 @@ test("terminal boot is cancelable and closes eagerly on cleanup", () => {
   assert.notEqual(cleanupStart, -1);
   const cleanup = effectsSource.slice(cleanupStart);
   const abortAt = cleanup.indexOf("bootAbort.abort()");
-  const neverConnectedAt = cleanup.indexOf("!attachExistingSession && !hasConnectedRef.current");
+  const neverConnectedAt = cleanup.indexOf("if (!hasConnectedRef.current)");
   assert.ok(abortAt !== -1 && neverConnectedAt !== -1);
   assert.ok(abortAt < neverConnectedAt, "cleanup must abort before the never-connected close branch");
   const neverConnectedBranch = cleanup.slice(
@@ -493,9 +498,8 @@ test("terminal boot is cancelable and closes eagerly on cleanup", () => {
     syncDisposeAt < earlyReturnAt,
     "never-connected boots must sync-dispose before leaving cleanup",
   );
-  // Attached popups never own the backend session, and a connected pane keeps
-  // the existing capture-then-teardown path.
-  assert.match(cleanup, /!attachExistingSession && !hasConnectedRef\.current/);
+  // Owner panes close the pending backend; attach popups only dispose xterm.
+  assert.match(neverConnectedBranch, /if \(!attachExistingSession\)/);
   assert.match(effectsSource, /let ownedRuntime:/);
   assert.match(
     cleanup,

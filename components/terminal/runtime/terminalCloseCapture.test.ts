@@ -67,7 +67,7 @@ test("terminal close fully drains pending output before finalizing capture", () 
     new URL("../useTerminalEffects.ts", import.meta.url),
     "utf8",
   );
-  const cleanupStart = source.indexOf("return () => {", source.indexOf("boot();"));
+  const cleanupStart = source.indexOf("return () => {", source.indexOf("void boot();"));
   const flushIndex = source.indexOf("await flushPendingTerminalWritesBeforeHibernate(term)", cleanupStart);
   const incompleteIndex = source.indexOf("if (!flushed)", flushIndex);
   const finalizeIndex = source.indexOf("resolveConnectionLogCapturePayload(finalizeTerminalLogData)", cleanupStart);
@@ -83,10 +83,10 @@ test("never-connected StrictMode cleanup sync-disposes its owned xterm runtime",
     new URL("../useTerminalEffects.ts", import.meta.url),
     "utf8",
   );
-  const cleanupStart = source.indexOf("return () => {", source.indexOf("boot();"));
+  const cleanupStart = source.indexOf("return () => {", source.indexOf("void boot();"));
   assert.ok(cleanupStart >= 0);
   const neverConnectedClose = source.indexOf(
-    "if (!attachExistingSession && !hasConnectedRef.current)",
+    "if (!hasConnectedRef.current)",
     cleanupStart,
   );
   assert.ok(neverConnectedClose > cleanupStart);
@@ -94,6 +94,7 @@ test("never-connected StrictMode cleanup sync-disposes its owned xterm runtime",
     neverConnectedClose,
     source.indexOf("const persistCloseCapture", neverConnectedClose),
   );
+  assert.match(branch, /if \(!attachExistingSession\)/);
   assert.match(branch, /disposeOwnedRuntime\(\);/);
   assert.match(branch, /return;/);
   assert.ok(

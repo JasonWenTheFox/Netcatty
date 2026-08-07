@@ -153,3 +153,42 @@ test('terminal popup config survives StrictMode unsubscribe/resubscribe', () => 
     'StrictMode remount must not clear lastPayload on subscribe',
   );
 });
+
+test('vault init cancels the superseded StrictMode effect before publishing ready', () => {
+  const vaultSource = readFileSync(
+    new URL('../state/useVaultState.ts', import.meta.url),
+    'utf8',
+  );
+  const initAt = vaultSource.indexOf('let cancelled = false;');
+  assert.notEqual(initAt, -1, 'vault init must track cancellation');
+  const initSlice = vaultSource.slice(initAt, initAt + 12000);
+  assert.match(initSlice, /return \(\) => \{\s*\n\s*cancelled = true;\s*\n\s*\};/);
+  assert.match(
+    initSlice,
+    /if \(!cancelled\) \{\s*\n\s*setIsInitialized\(true\);\s*\n\s*setVaultInitialized\(true\);\s*\n\s*\}/,
+    'only the surviving init may mark the vault ready',
+  );
+  assert.match(initSlice, /if \(cancelled\) return;/);
+});
+
+test('global hotkey registration cleans up across StrictMode remount', () => {
+  const systemEffectsSource = readFileSync(
+    new URL('../state/systemSettingsEffects.ts', import.meta.url),
+    'utf8',
+  );
+  const hotkeyAt = systemEffectsSource.indexOf('Persist and sync toggle window hotkey setting');
+  assert.notEqual(hotkeyAt, -1);
+  const hotkeyEffect = systemEffectsSource.slice(hotkeyAt, hotkeyAt + 2200);
+  assert.match(hotkeyEffect, /let cancelled = false;/);
+  assert.match(hotkeyEffect, /if \(cancelled\) return;/);
+  assert.match(
+    hotkeyEffect,
+    /if \(didRegister\) \{\s*\n\s*bridge\?\.unregisterGlobalHotkey/,
+    'cleanup must unregister a registration started by this effect',
+  );
+  // Early return before notify must not skip returning the cleanup function.
+  assert.doesNotMatch(
+    hotkeyEffect,
+    /if \(!persistMountedRef\.current\) return;\s*\n\s*notifySettingsChanged/,
+  );
+});

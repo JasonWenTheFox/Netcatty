@@ -165,7 +165,7 @@ export function resolveSelectionOverlayPosition(term: any, container: HTMLElemen
 }
 
 export function useTerminalEffects(ctx: TerminalEffectsContext) {
-  const { CONNECTION_TIMEOUT, Error, XTERM_PERFORMANCE_CONFIG, applyUserCursorPreference, auth, autocompleteCloseRef, autocompleteInputRef, autocompleteKeyEventRef, captureTerminalLogData, chainHosts, chainProgress, clearTerminalCwd, commandBufferRef, connectionLogBufferRef, containerRef, createPromptLineBreakState, createReplaySafeTerminalLogSanitizer, createXTermRuntime, deferTerminalResizeRef, disableTerminalFontZoomRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippetCommand, finalizeTerminalLogData, fitAddonRef, fontFamilyId, fontSize, fontWeightFixupDoneRef, forceCloseHibernatedSession, forceSyncRenderAfterResize, handleOsc52ReadRequest, handleTerminalDataCaptureOnce, hasConnectedRef, hasRuntimeRef, host, hotkeySchemeRef, hibernatedRef, identities, inWorkspace, isBootActiveRef, bootEpochRef, isBroadcastEnabledRef, isComposeBarOpen, isConnectionAwaitingUserInput, isConnectionPastTcpDial, isFocusMode, isFocused, isLocalConnection, isNetworkDevice, isResizing, isRestoringSelectionRef, isSearchOpen, isSerialConnection, isVisible, isVisibleRef, keyBindingsRef, keys, kittyKeyboardProtocolEnabledForSession, knownCwdRef, lastFittedSizeRef, lastToastedErrorRef, logger, mouseTrackingRef, needsHostKeyVerification, onBroadcastInputRef, onBroadcastInterruptPriorityChange, onCommandExecuted, onCommandSubmitted, onHotkeyActionRef, onOpenExternalError, onOutputTriggerUserInputRef, onPluginRuntimeCwdChange, onSnippetExecutorChange, onTerminalCwdChange, onTerminalTitleChange, onTerminalBell, onTerminalFontSizeChange, paneLayoutKey, passwordPromptActiveRef, pendingAuthRef, pendingOutputScrollRef, pluginDecorationRules, pluginTerminalLifecycle, pluginTerminalProviderRevision, isPluginTerminalProviderAvailable, requestPluginTerminalProviders, prepareRestoredReconnect, prepareInitialCwdIntent, prevIsResizingRef, promptLineBreakStateRef, resizeSession, resolveHostAuth, resolvedFontFamily, safeFit, scriptRecorderRef, searchAddonRef, serialConfig, serialLineBufferRef, serializeAddonRef, sessionId, sessionRef, sessionStarters, setError, setHasMouseTracking, setIsCancelling, setIsDisconnectedDialogDismissed, requestSearchFocus, setNeedsHostKeyVerification, setPendingHostKeyInfo, setPendingHostKeyRequestId, setProgressLogs, setProgressValue, setShowLogs, setStatus, setTimeLeft, shouldEnableNativeUserInputAutoScroll, shouldProbeSessionCwd, shouldStartTerminalBackend, attachExistingSession, attachAuthorization, attachHomeWebContentsIdRef, onSnippetShortkeyRef, snippetsRef, splitResizeActive, status, statusRef, sudoAutofillRef, t, teardown, telnetLocalEchoRef, termRef, terminalAltKeyOptions, terminalBackend, terminalContextActionsRef, terminalCwdTracker, terminalDataCapturedRef, terminalLogSanitizerRef, terminalSettings, terminalSettingsRef, terminalTitleRef, toHostKeyInfo, toast, updateStatus, useEffect, useLayoutEffect, xtermRuntimeRef, zmodem, zmodemToastedRef, restoreState } = ctx;
+  const { CONNECTION_TIMEOUT, Error, XTERM_PERFORMANCE_CONFIG, applyUserCursorPreference, auth, autocompleteCloseRef, autocompleteInputRef, autocompleteKeyEventRef, captureTerminalLogData, chainHosts, chainProgress, clearTerminalCwd, commandBufferRef, connectionLogBufferRef, containerRef, createPromptLineBreakState, createReplaySafeTerminalLogSanitizer, createXTermRuntime, deferTerminalResizeRef, disableTerminalFontZoomRef, effectiveFontSize, effectiveFontWeight, effectiveTheme, error, executeSnippetCommand, finalizeTerminalLogData, fitAddonRef, fontFamilyId, fontSize, fontWeightFixupDoneRef, forceCloseHibernatedSession, forceSyncRenderAfterResize, handleOsc52ReadRequest, handleTerminalDataCaptureOnce, hasConnectedRef, hasRuntimeRef, host, hotkeySchemeRef, hibernatedRef, identities, inWorkspace, isBootActiveRef, bootEpochRef, isBroadcastEnabledRef, isComposeBarOpen, isConnectionAwaitingUserInput, isConnectionPastTcpDial, isFocusMode, isFocused, isLocalConnection, isNetworkDevice, isResizing, isRestoringSelectionRef, isSearchOpen, isSerialConnection, isVisible, isVisibleRef, keyBindingsRef, keys, kittyKeyboardProtocolEnabledForSession, knownCwdRef, lastFittedSizeRef, lastToastedErrorRef, logger, mouseTrackingRef, needsHostKeyVerification, onBroadcastInputRef, onBroadcastInterruptPriorityChange, onCommandExecuted, onCommandSubmitted, onHotkeyActionRef, onOpenExternalError, onOutputTriggerUserInputRef, onPluginRuntimeCwdChange, onSnippetExecutorChange, onTerminalCwdChange, onTerminalTitleChange, onTerminalBell, onTerminalFontSizeChange, paneLayoutKey, passwordPromptActiveRef, pendingAuthRef, pendingOutputScrollRef, pluginDecorationRules, pluginTerminalLifecycle, pluginTerminalProviderRevision, isPluginTerminalProviderAvailable, requestPluginTerminalProviders, prepareRestoredReconnect, prepareInitialCwdIntent, prevIsResizingRef, promptLineBreakStateRef, resizeSession, resolveHostAuth, resolvedFontFamily, safeFit, scriptRecorderRef, searchAddonRef, serialConfig, serialLineBufferRef, serializeAddonRef, sessionId, sessionRef, sessionStarters, setError, setHasMouseTracking, setIsCancelling, setIsDisconnectedDialogDismissed, requestSearchFocus, setNeedsHostKeyVerification, setPendingHostKeyInfo, setPendingHostKeyRequestId, setProgressLogs, setProgressValue, setShowLogs, setStatus, setTimeLeft, shouldEnableNativeUserInputAutoScroll, shouldProbeSessionCwd, shouldStartTerminalBackend, attachExistingSession, attachAuthorization, attachHomeWebContentsIdRef, onSnippetShortkeyRef, snippetsRef, splitResizeActive, status, statusRef, sudoAutofillRef, t, teardown, telnetLocalEchoRef, termRef, terminalAltKeyOptions, terminalBackend, terminalContextActionsRef, terminalCwdTracker, terminalDataCapturedRef, terminalLogSanitizerRef, terminalSettings, terminalSettingsRef, terminalTitleRef, toHostKeyInfo, toast, updateStatus, useEffect, useLayoutEffect, xtermRuntimeRef, zmodem, zmodemToastedRef, restoreState, vaultInitialized } = ctx;
   const effectiveTerminalProtocol = resolveEffectiveTerminalProtocol(host);
   const hibernateHiddenTabs = resolveTerminalHibernateEnabledForProtocol(
     terminalSettings,
@@ -401,6 +401,13 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
 
 
   useEffect(() => {
+    // Restored sessions can mount while vault init has published hosts but not
+    // yet decrypted keys. Wait for hydration (and re-run when it flips) so the
+    // first SSH dial does not go out with an empty keychain.
+    if (!attachExistingSession && !vaultInitialized) {
+      return;
+    }
+
     let disposed = false;
     let initialFitTimer: ReturnType<typeof setTimeout> | undefined;
     // Runtime owned by this effect instance. StrictMode remount must dispose
@@ -800,7 +807,15 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       }
     };
 
-    boot();
+    // Defer past StrictMode's synchronous effect re-invoke. An inline boot()
+    // lets Mount1 issue netcatty:start (and on macOS await a LAN probe) before
+    // cleanup can abort — the remount then races close/orphan against Mount2
+    // and the first user-visible connect fails. A microtask runs after Mount1
+    // cleanup + Mount2 setup, so only the surviving effect starts the backend.
+    queueMicrotask(() => {
+      if (disposed) return;
+      void boot();
+    });
 
     return () => {
       disposed = true;
@@ -820,22 +835,22 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       // closes anything. Tell the main process now so it can abort the pending
       // boot (passphrase prompt, TCP dial) for this epoch instead of letting it
       // finish against a pane that is already gone. Attached popups never own
-      // the backend session, so they keep the display-route handoff path.
-      if (!attachExistingSession && !hasConnectedRef.current) {
-        try {
-          const closeResult = terminalBackend.closeSession(
-            sessionRef.current ?? sessionId,
-            { bootEpoch: bootEpochRef ? bootEpochRef.current : undefined },
-          );
-          void Promise.resolve(closeResult).catch((err: unknown) => {
+      // the backend session (skip closeSession) but still sync-dispose xterm so
+      // StrictMode remount does not stack a second .xterm.
+      if (!hasConnectedRef.current) {
+        if (!attachExistingSession) {
+          try {
+            const closeResult = terminalBackend.closeSession(
+              sessionRef.current ?? sessionId,
+              { bootEpoch: bootEpochRef ? bootEpochRef.current : undefined },
+            );
+            void Promise.resolve(closeResult).catch((err: unknown) => {
+              logger.warn("Failed to cancel pending terminal boot on unmount", err);
+            });
+          } catch (err) {
             logger.warn("Failed to cancel pending terminal boot on unmount", err);
-          });
-        } catch (err) {
-          logger.warn("Failed to cancel pending terminal boot on unmount", err);
+          }
         }
-        // StrictMode remounts before async completeClose can finish. Dispose
-        // this boot's xterm now so the remount does not stack a second .xterm
-        // under an orphaned empty terminal (prompt glued to the bottom).
         disposeOwnedRuntime();
         return;
       }
@@ -934,7 +949,14 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
       void completeClose();
     };
      
-  }, [forceCloseHibernatedSession, handleTerminalDataCaptureOnce, host.id, sessionId]);
+  }, [
+    attachExistingSession,
+    forceCloseHibernatedSession,
+    handleTerminalDataCaptureOnce,
+    host.id,
+    sessionId,
+    vaultInitialized,
+  ]);
 
 
   // Connection timeline and timeout visuals
