@@ -121,6 +121,8 @@ export interface NotesManagerProps {
   onUpdateNoteGroups: (groups: string[]) => void;
   onOpenHost?: (host: Host, source?: { noteId: string }) => void;
   displayMode?: "full" | "sidebar";
+  /** When false (hidden retained mount), flush any pending draft immediately. */
+  isActive?: boolean;
   openNoteId?: string | null;
   openNoteRequestId?: number | null;
   /** Called after a one-shot openNoteId focus request has been applied. */
@@ -340,6 +342,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   onUpdateNoteGroups,
   onOpenHost,
   displayMode = "full",
+  isActive = true,
   openNoteId = null,
   openNoteRequestId = null,
   onOpenNoteIdHandled,
@@ -471,14 +474,24 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   }, [flushNoteDraft]);
 
   useEffect(() => {
+    if (isActive) return;
+    flushNoteDraft();
+  }, [flushNoteDraft, isActive]);
+
+  useEffect(() => {
     const flushOnTeardown = () => {
       flushNoteDraft();
     };
+    const flushOnHidden = () => {
+      if (document.visibilityState === "hidden") flushNoteDraft();
+    };
     window.addEventListener("pagehide", flushOnTeardown);
     window.addEventListener("beforeunload", flushOnTeardown);
+    document.addEventListener("visibilitychange", flushOnHidden);
     return () => {
       window.removeEventListener("pagehide", flushOnTeardown);
       window.removeEventListener("beforeunload", flushOnTeardown);
+      document.removeEventListener("visibilitychange", flushOnHidden);
     };
   }, [flushNoteDraft]);
 
@@ -806,7 +819,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
       logger.error("Failed to export notes:", err);
       toast.error(t("notes.export.toast.failed"));
     }
-  }, [downloadNotesBlob, t]);
+  }, [downloadNotesBlob, flushNoteDraft, t]);
 
   const exportAllNotes = useCallback(() => {
     exportNotesToZip({ type: "all" }, "all");

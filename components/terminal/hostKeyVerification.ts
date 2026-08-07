@@ -1,5 +1,5 @@
 import type { Host, KnownHost } from "../../types";
-import type { HostKeyInfo, HostKeyVerificationRequest } from "../../domain/hostKey";
+import type { HostKeyInfo } from "../../domain/hostKey";
 import { createKnownHostFromHostKeyInfo as createKnownHostFromHostKeyInfoDomain } from "../../domain/knownHosts";
 
 export type { HostKeyInfo, HostKeyVerificationRequest } from "../../domain/hostKey";
