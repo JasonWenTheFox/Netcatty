@@ -1531,31 +1531,53 @@ export class KeywordHighlighter implements IDisposable {
     if (!overlapsPreviousRange || previousRange === null) {
       this.processLineRange(start, end, cursorAbsoluteY, wrappedBlockCache);
       this.lastRenderRange = { start, end };
+      this.removeDirtyRange(start, end);
+      this.dirtyAllInRenderRange = false;
     } else {
       if (start < previousRange.start) {
+        const exposedEnd = Math.min(end, previousRange.start - 1);
         this.processLineRange(
           start,
-          Math.min(end, previousRange.start - 1),
+          exposedEnd,
           cursorAbsoluteY,
           wrappedBlockCache,
         );
+        this.removeDirtyRange(start, exposedEnd);
       }
       if (end > previousRange.end) {
+        const exposedStart = Math.max(start, previousRange.end + 1);
         this.processLineRange(
-          Math.max(start, previousRange.end + 1),
+          exposedStart,
           end,
           cursorAbsoluteY,
           wrappedBlockCache,
         );
+        this.removeDirtyRange(exposedStart, end);
       }
+
+      // Overlap was previously indexed; only rescan lines still marked dirty by
+      // writes (in-place redraws). Never clear the whole viewport dirty set here —
+      // scroll can outrank/cancel a pending write refresh.
+      const overlapStart = Math.max(start, previousRange.start);
+      const overlapEnd = Math.min(end, previousRange.end);
+      if (
+        overlapStart <= overlapEnd
+        && (this.dirtyAllInRenderRange || this.dirtySegments.length > 0)
+      ) {
+        this.processDirtyLinesInRange(
+          overlapStart,
+          overlapEnd,
+          cursorAbsoluteY,
+          "write",
+        );
+      }
+
       this.lastRenderRange = {
         start: Math.min(start, previousRange.start),
         end: Math.max(end, previousRange.end),
       };
     }
 
-    this.removeDirtyRange(start, end);
-    this.dirtyAllInRenderRange = false;
     this.lastViewportRange = { start, end };
     this.prunePersistentDecorations();
   }

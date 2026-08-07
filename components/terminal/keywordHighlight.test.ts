@@ -1025,6 +1025,57 @@ test("in-place redraw removes a persistent highlight when text stops matching", 
   }
 });
 
+test("overlapping scroll rescans write-dirtied lines instead of clearing them", async () => {
+  const raf = installAnimationFrameQueue();
+  try {
+    const {
+      term,
+      handlers,
+      getActiveDecorationCount,
+      setLineText,
+    } = createFakeTerminal("hello DEPLOY world", { lineCount: 12 });
+    term.rows = 4;
+    term.buffer.active.viewportY = 0;
+    term.buffer.active.baseY = 0;
+    const highlighter = new KeywordHighlighter(term as never);
+    highlighter.setRules([{
+      id: "deploy",
+      label: "Deploy",
+      patterns: ["DEPLOY"],
+      color: "#F87171",
+      enabled: true,
+    }], true);
+    raf.flush();
+    assert.equal(getActiveDecorationCount(), 12);
+
+    const internals = highlighter as unknown as {
+      lastRenderRange: { start: number; end: number } | null;
+      addDirtyRange: (start: number, end: number) => void;
+      dirtySegments: Array<{ start: number; end: number }>;
+    };
+    assert.ok(internals.lastRenderRange);
+
+    // Simulate an in-place redraw that dirtied an overlapping line, then a
+    // one-row scroll that cancels the pending write refresh. Scroll must still
+    // rescan that dirty overlap.
+    setLineText(1, "hello SAFE world 1");
+    internals.addDirtyRange(1, 1);
+    assert.ok(internals.dirtySegments.length > 0);
+    term.buffer.active.viewportY = 1;
+    handlers.scroll?.();
+    raf.flush();
+
+    assert.equal(
+      getActiveDecorationCount(),
+      11,
+      "overlapping scroll should rescan write-dirtied lines in the overlap",
+    );
+    highlighter.dispose();
+  } finally {
+    raf.restore();
+  }
+});
+
 test("Enter-driven scroll does not dispose nearby keyword decorations", async () => {
   const raf = installAnimationFrameQueue();
   try {
