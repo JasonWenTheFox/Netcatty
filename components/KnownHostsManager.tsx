@@ -332,6 +332,7 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const hasScannedRef = React.useRef(false);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [gridColumns, setGridColumns] = useState(2);
 
   // Define handleScanSystem before useEffect that depends on it
   const handleScanSystem = useCallback(async (silent = false) => {
@@ -457,6 +458,18 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
   }, [knownHosts, deferredSearch, sortMode]);
 
   const shouldVirtualize = filteredHosts.length >= VIRTUALIZE_THRESHOLD;
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || viewMode !== "grid" || typeof ResizeObserver === "undefined") return;
+    const recompute = () => {
+      setGridColumns(getKnownHostsGridColumnCount(el.clientWidth));
+    };
+    recompute();
+    const observer = new ResizeObserver(recompute);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [viewMode, filteredHosts.length]);
   const collectionLayoutKey = [
     viewMode,
     deferredSearch.trim() ? "search" : "browse",
@@ -714,9 +727,12 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
           <div
             className={cn(
               viewMode === "grid"
-                ? "grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3"
+                ? "grid gap-3"
                 : "flex flex-col gap-0",
             )}
+            style={viewMode === "grid" ? {
+              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+            } : undefined}
           >
             {filteredHosts.map((knownHost) => (
               <React.Fragment key={knownHost.id}>

@@ -1,4 +1,4 @@
-/** Match Tailwind `grid-cols-2 sm:grid-cols-3 xl:grid-cols-4` for known hosts. */
+/** Container-width column policy (mirrors former 2 / sm:3 / xl:4 breakpoints). */
 const KNOWN_HOSTS_SM_MIN_WIDTH = 640;
 const KNOWN_HOSTS_XL_MIN_WIDTH = 1280;
 

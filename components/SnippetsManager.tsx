@@ -525,22 +525,18 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
   const prepareGridLayoutAnimation = useVaultGridLayoutAnimation(listRef);
   const hasSnippetsSidePanel = rightPanelMode !== 'none';
   const splitGridColsRef = useRef(2);
-  const splitViewGridStyle = hasSnippetsSidePanel && viewMode === 'grid'
+  const snippetGridStyle = viewMode === 'grid'
     ? { gridTemplateColumns: 'var(--snippets-grid-cols, repeat(2, minmax(0, 1fr)))' }
     : undefined;
 
   useEffect(() => {
     const el = listRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-
-    const GAP = 12;
-    const MIN_CARD = 220;
-    const PADDING_X = 32;
+    if (!el || viewMode !== 'grid' || typeof ResizeObserver === 'undefined') return;
 
     const recompute = () => {
-      const usable = el.clientWidth - PADDING_X;
-      if (usable <= 0) return;
-      const next = Math.max(1, Math.floor((usable + GAP) / (MIN_CARD + GAP)));
+      const next = getSnippetsGridColumnCount(el.clientWidth, {
+        hasSidePanel: hasSnippetsSidePanel,
+      });
       if (next === splitGridColsRef.current) return;
       splitGridColsRef.current = next;
       el.style.setProperty('--snippets-grid-cols', `repeat(${next}, minmax(0, 1fr))`);
@@ -2151,15 +2147,10 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
               ) : (
                 <div className={cn(
                   viewMode === 'grid'
-                    ? cn(
-                      "grid gap-3",
-                      hasSnippetsSidePanel
-                        ? "grid-cols-1"
-                        : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
-                    )
+                    ? "grid gap-3"
                     : "flex flex-col gap-0"
                 )}
-                style={splitViewGridStyle}
+                style={snippetGridStyle}
                 >
                   {displayedSnippets.map((snippet) => (
                     <React.Fragment key={snippet.id}>

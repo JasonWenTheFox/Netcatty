@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { getKnownHostsGridColumnCount } from "./knownHostsGridLayout.ts";
 
-test("known-host grids follow grid-cols-2 sm:grid-cols-3 xl:grid-cols-4", () => {
+test("known-host grids use container-width column steps", () => {
   assert.equal(getKnownHostsGridColumnCount(400), 2);
   assert.equal(getKnownHostsGridColumnCount(640), 3);
   assert.equal(getKnownHostsGridColumnCount(1000), 3);
@@ -12,8 +12,10 @@ test("known-host grids follow grid-cols-2 sm:grid-cols-3 xl:grid-cols-4", () => 
   assert.equal(getKnownHostsGridColumnCount(1800), 4);
 });
 
-test("virtualized known hosts pass the known-hosts column policy", () => {
+test("virtualized and non-virtual known hosts share container column policy", () => {
   const source = readFileSync(new URL("./KnownHostsManager.tsx", import.meta.url), "utf8");
   assert.match(source, /getColumnCount=\{\(width, mode\) =>/);
   assert.match(source, /getKnownHostsGridColumnCount\(width\)/);
+  assert.match(source, /gridTemplateColumns: `repeat\(\$\{gridColumns\}, minmax\(0, 1fr\)\)`/);
+  assert.doesNotMatch(source, /sm:grid-cols-3|xl:grid-cols-4/);
 });

@@ -1,11 +1,11 @@
 const SNIPPETS_GRID_GAP = 12;
 const SNIPPETS_GRID_MIN_CARD_WIDTH = 220;
-/** Match Tailwind `md:` / `xl:` used by the non-virtualized snippet grid. */
+/** Container-width thresholds (mirrors former md / xl column steps). */
 const SNIPPETS_GRID_MD_MIN_WIDTH = 768;
 const SNIPPETS_GRID_XL_MIN_WIDTH = 1280;
 const SNIPPETS_GRID_MAX_COLUMNS = 3;
 
-/** Column policy for virtualized snippets — mirrors the CSS grid below the threshold. */
+/** Column policy for snippets — shared by virtualized and CSS-var grids. */
 export function getSnippetsGridColumnCount(
   width: number,
   options: { hasSidePanel: boolean },
