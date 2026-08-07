@@ -25,6 +25,7 @@ import { useStoredString } from '../application/state/useStoredString';
 import { useStoredNumber } from '../application/state/useStoredNumber';
 import { useStoredBoolean } from '../application/state/useStoredBoolean';
 import {
+  STORAGE_KEY_SIDE_PANEL_POSITION,
   STORAGE_KEY_SIDE_PANEL_WIDTH,
   STORAGE_KEY_TERMINAL_COMPOSE_BAR_OPEN,
 } from '../infrastructure/config/storageKeys';
@@ -551,7 +552,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     { min: TERMINAL_SIDE_PANEL_MIN_WIDTH, max: TERMINAL_SIDE_PANEL_MAX_WIDTH },
   );
   const [sidePanelPosition, setSidePanelPosition] = useStoredString<'left' | 'right'>(
-    'netcatty_side_panel_position',
+    STORAGE_KEY_SIDE_PANEL_POSITION,
     'left',
     (v): v is 'left' | 'right' => v === 'left' || v === 'right',
   );

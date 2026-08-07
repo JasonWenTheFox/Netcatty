@@ -173,15 +173,6 @@ export const useUIFontsLoaded = (): boolean => {
 };
 
 /**
- * Check if a font ID is valid
- */
-export const isValidUiFontId = (fontId: string): boolean => {
-  // Local fonts are always considered valid (they start with 'local-')
-  if (fontId.startsWith('local-')) return true;
-  return uiFontStore.getAvailableFonts().some(f => f.id === fontId);
-};
-
-/**
  * Initialize UI fonts eagerly
  */
 export const initializeUIFonts = (): void => {

@@ -111,9 +111,4 @@ export interface SftpStateOptions {
    * This keeps side-panel tab switches on the already-authenticated SSH transport.
    */
   resolveBrowseSourceSessionId?: (hostId: string, host?: Host) => string | undefined;
-  /**
-   * @deprecated Transfer channels no longer park independently. SSH keep-alive
-   * is controlled by sshTransportIdleTtlMs in settings.
-   */
-  transferPoolIdleTtlMs?: number;
 }

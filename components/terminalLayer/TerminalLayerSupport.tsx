@@ -629,8 +629,6 @@ interface TerminalPaneProps {
   fontSize: number;
   terminalTheme: TerminalTheme;
   followAppTerminalTheme?: boolean;
-  accentMode?: 'theme' | 'custom';
-  customAccent?: string;
   terminalSettings?: TerminalSettings;
   hotkeyScheme?: 'disabled' | 'mac' | 'pc';
   disableTerminalFontZoom?: boolean;
@@ -757,7 +755,6 @@ const terminalPanePropsAreEqual = (
   prev.fontSize === next.fontSize &&
   prev.terminalTheme === next.terminalTheme &&
   prev.followAppTerminalTheme === next.followAppTerminalTheme &&
-  // accentMode / customAccent intentionally omitted — Terminal reads appearanceChromeStore.
   prev.terminalSettings === next.terminalSettings &&
   prev.hotkeyScheme === next.hotkeyScheme &&
   prev.disableTerminalFontZoom === next.disableTerminalFontZoom &&
@@ -1051,8 +1048,6 @@ const TerminalPane: React.FC<TerminalPaneProps> = memo(({
   fontSize,
   terminalTheme,
   followAppTerminalTheme,
-  accentMode,
-  customAccent,
   terminalSettings,
   hotkeyScheme,
   disableTerminalFontZoom,
@@ -1345,8 +1340,6 @@ const TerminalPane: React.FC<TerminalPaneProps> = memo(({
         fontSize={fontSize}
         terminalTheme={terminalTheme}
         followAppTerminalTheme={followAppTerminalTheme}
-        accentMode={accentMode}
-        customAccent={customAccent}
         terminalSettings={terminalSettings}
         sessionId={session.id}
         workspaceId={session.workspaceId}
@@ -1444,8 +1437,6 @@ interface TerminalPanesHostProps {
   fontSize: number;
   terminalTheme: TerminalTheme;
   followAppTerminalTheme?: boolean;
-  accentMode?: 'theme' | 'custom';
-  customAccent?: string;
   terminalSettings?: TerminalSettings;
   hotkeyScheme?: 'disabled' | 'mac' | 'pc';
   disableTerminalFontZoom?: boolean;
@@ -1529,7 +1520,6 @@ const terminalPanesHostPropsAreEqual = (
   if (prev.fontSize !== next.fontSize) return false;
   if (prev.terminalTheme !== next.terminalTheme) return false;
   if (prev.followAppTerminalTheme !== next.followAppTerminalTheme) return false;
-  // accentMode / customAccent intentionally omitted — Terminal reads appearanceChromeStore.
   if (prev.terminalSettings !== next.terminalSettings) return false;
   if (prev.hotkeyScheme !== next.hotkeyScheme) return false;
   if (prev.disableTerminalFontZoom !== next.disableTerminalFontZoom) return false;

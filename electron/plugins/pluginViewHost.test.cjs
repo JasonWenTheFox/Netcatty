@@ -177,6 +177,7 @@ test("custom views use an ephemeral sandbox and deny direct browser capabilities
     devTools: false,
     disableDialogs: true,
     navigateOnDragDrop: false,
+    spellcheck: false,
     session: value.sessions[0],
     preload: "/runtime/viewPreload.cjs",
   });

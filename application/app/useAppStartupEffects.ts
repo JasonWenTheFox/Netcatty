@@ -9,7 +9,10 @@ import { sftpTransferCenterStore } from '../state/sftpTransferCenterStore';
 import { resumeTransferWithDedicatedSession } from '../state/sftp/dedicatedTransferResume';
 import { getSftpTransferResourceKeys, globalSftpTransferScheduler } from '../state/sftp/globalTransferScheduler';
 import { hasNewSourceFingerprint } from '../state/sftp/transferProgressMetadata';
-import { STORAGE_KEY_SFTP_TRANSFER_CONCURRENCY } from '../../infrastructure/config/storageKeys';
+import {
+  STORAGE_KEY_AUTO_UPDATE_ENABLED,
+  STORAGE_KEY_SFTP_TRANSFER_CONCURRENCY,
+} from '../../infrastructure/config/storageKeys';
 import type { TransferTask } from '../../domain/models';
 import { isTerminalBootEpochCurrent } from '../../domain/terminalBootEpoch';
 import {
@@ -218,7 +221,7 @@ export function useAppStartupEffects(ctx: StartupEffectsContext) {
     // Skip "update available" toast if auto-download has already started or completed
     if (updateState.autoDownloadStatus !== 'idle') return;
     // Don't show automatic notification when auto-update is disabled
-    if (localStorageAdapter.readString('netcatty_auto_update_enabled_v1') === 'false') return;
+    if (localStorageAdapter.readString(STORAGE_KEY_AUTO_UPDATE_ENABLED) === 'false') return;
     if (updateState.hasUpdate && updateState.latestRelease) {
       const version = updateState.latestRelease.version;
       toast.info(
