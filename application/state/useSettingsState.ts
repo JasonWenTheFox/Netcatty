@@ -1844,7 +1844,7 @@ export const useSettingsState = (options: { enableSettingsSync?: boolean; enable
     // Opaque version that changes when any synced setting changes, used by useAutoSync.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     settingsVersion: useMemo(() => Math.random(), [
-      theme, lightUiThemeId, darkUiThemeId, accentMode, customAccent,
+      theme, lightUiThemeId, darkUiThemeId, accentMode,
       uiFontFamilyId, uiLanguage, customCSS,
       terminalThemeId, terminalFontFamilyId, terminalFontSize, terminalSettings,
       customKeyBindings, editorWordWrap,

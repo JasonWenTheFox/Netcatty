@@ -167,6 +167,16 @@ export type VaultSection =
   | "knownhosts"
   | "logs";
 
+/** Memo section tracker: areEqual ignores connectionLogs unless on logs. */
+let vaultViewMemoSection: VaultSection = "hosts";
+/** Always stashed from areEqual so skipped updates stay available when opening logs. */
+let vaultViewLatestConnectionLogs: ConnectionLog[] | null = null;
+
+/** Test/helper: sync the section used by vaultViewAreEqual. */
+export function syncVaultViewMemoSection(section: VaultSection): void {
+  vaultViewMemoSection = section;
+}
+
 const haveSameHostOrderResult = (previous: Host[], next: Host[]) => {
   if (previous.length !== next.length) return false;
   return next.every((host, index) => {
@@ -365,6 +375,8 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
   const [currentSection, setCurrentSection] = useState<VaultSection>("hosts");
+  vaultViewMemoSection = currentSection;
+  const resolvedConnectionLogs = vaultViewLatestConnectionLogs ?? connectionLogs;
   const [search, setSearch] = useState("");
   const [selectedGroupPath, setSelectedGroupPath] = useState<string | null>(
     null,
@@ -1414,7 +1426,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
           Clock,
           cn,
           commitInlineGroupRename,
-          connectionLogs,
+          connectionLogs: resolvedConnectionLogs,
           connectSelectedHosts,
           ContextMenu,
           ContextMenuContent,
@@ -1667,6 +1679,11 @@ export const vaultViewAreEqual = (
   prev: VaultViewProps,
   next: VaultViewProps,
 ): boolean => {
+  vaultViewLatestConnectionLogs = next.connectionLogs;
+  const connectionLogsEqual =
+    vaultViewMemoSection === "logs"
+      ? prev.connectionLogs === next.connectionLogs
+      : true;
   const isEqual =
     prev.hosts === next.hosts &&
     prev.keys === next.keys &&
@@ -1679,7 +1696,7 @@ export const vaultViewAreEqual = (
     prev.customGroups === next.customGroups &&
     prev.knownHosts === next.knownHosts &&
     // shellHistory is not a VaultView prop; SnippetsManager reads shellHistoryStore.
-    prev.connectionLogs === next.connectionLogs &&
+    connectionLogsEqual &&
     prev.sessionCount === next.sessionCount &&
     prev.managedSources === next.managedSources &&
     prev.groupConfigs === next.groupConfigs &&

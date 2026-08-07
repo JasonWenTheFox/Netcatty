@@ -1391,9 +1391,12 @@ export const useVaultState = () => {
 
   const updateHostLastConnected = useCallback((hostId: string) => {
     setHosts((prev) => {
-      const next = prev.map((h) =>
-        h.id === hostId ? { ...h, lastConnectedAt: Date.now() } : h,
-      );
+      const idx = prev.findIndex((h) => h.id === hostId);
+      if (idx < 0) return prev;
+      const now = Date.now();
+      if (prev[idx].lastConnectedAt === now) return prev;
+      const next = prev.slice();
+      next[idx] = { ...prev[idx], lastConnectedAt: now };
       const ver = ++hostsWriteVersion.current;
       const encryptPromise = encryptHosts(next);
       hostsEncryptPendingRef.current = encryptPromise.then(() => undefined);
