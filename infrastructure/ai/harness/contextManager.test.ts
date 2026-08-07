@@ -213,6 +213,51 @@ test('prepareStepContext emits step compaction trace when over budget', async ()
   assert.ok(events.includes('step'));
 });
 
+test('prepareStepContext never returns empty messages after tiny context-window budget prune', async () => {
+  const messages: ModelMessage[] = [
+    { role: 'user', content: 'which processes use the most resources?' },
+    {
+      role: 'assistant',
+      content: [{
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'terminal_execute',
+        input: { command: "ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu | head -n 11" },
+      }],
+    },
+    {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        toolName: 'terminal_execute',
+        output: {
+          type: 'text',
+          value: 'PID CPU% MEM% RSS COMMAND\n1 0.1 0.2 1024 init\n'.repeat(40),
+        },
+      }],
+    },
+  ];
+
+  const prepared = await prepareStepContext({
+    messages,
+    stepNumber: 1,
+    sessionId: 'chat-tiny-window',
+    chatSessionId: 'chat-tiny-window',
+    contextWindow: 1,
+    maxOutputTokens: 512,
+    runtimeContext: createInitialCattyRuntimeContext({
+      chatSessionId: 'chat-tiny-window',
+      turnId: 'turn-tiny',
+      permissionMode: 'confirm',
+      scopeType: 'terminal',
+    }),
+  });
+
+  assert.ok(prepared.messages.length > 0, 'step budget prune must not empty the prompt');
+  assert.match(JSON.stringify(prepared.messages), /tool-result|processes use the most/);
+});
+
 test('prepareStepContext retains handle notice after step budget guard', async () => {
   const store = new ToolOutputStore();
   store.store({

@@ -11,6 +11,7 @@ import {
   formatMessagesForCompaction,
   prepareContextCompaction,
   resolveContextWindow,
+  sanitizeContextWindow,
   shouldCompactContext,
 } from "./contextCompaction.ts";
 
@@ -308,6 +309,36 @@ test("resolveContextWindow prefers manual override, then fetched model metadata,
   assert.equal(
     resolveContextWindow({
       provider: {},
+      modelId: "unknown",
+      defaultContextWindow: 128000,
+    }),
+    128000,
+  );
+});
+
+test("sanitizeContextWindow rejects values below the minimum floor", () => {
+  assert.equal(sanitizeContextWindow(1), undefined);
+  assert.equal(sanitizeContextWindow(1023), undefined);
+  assert.equal(sanitizeContextWindow(1024), 1024);
+  assert.equal(sanitizeContextWindow("128000"), 128000);
+});
+
+test("resolveContextWindow ignores tiny manual overrides and falls back", () => {
+  assert.equal(
+    resolveContextWindow({
+      provider: {
+        contextWindow: 1,
+        modelContextWindows: { "qwen/test": 131072 },
+      },
+      modelId: "qwen/test",
+      defaultContextWindow: 128000,
+    }),
+    131072,
+  );
+
+  assert.equal(
+    resolveContextWindow({
+      provider: { contextWindow: 1 },
       modelId: "unknown",
       defaultContextWindow: 128000,
     }),

@@ -362,17 +362,24 @@ function applyStepBudgetGuard(
     reservedTokens: input.reservedTokens,
   });
   if (afterTotal >= threshold && splitAt > 0) {
-    next = keepRecentContextMessages(next, input.protectRecentMessages);
-    didAdjust = true;
-    afterTotal = computeTotalInputTokens({
-      messages: next,
-      providerId: input.providerId,
-      reservedTokens: input.reservedTokens,
-    });
+    const recent = keepRecentContextMessages(next, input.protectRecentMessages);
+    // Never accept an empty keep-recent slice — an empty prompt is worse than over-budget.
+    if (recent.length > 0) {
+      next = recent;
+      didAdjust = true;
+      afterTotal = computeTotalInputTokens({
+        messages: next,
+        providerId: input.providerId,
+        reservedTokens: input.reservedTokens,
+      });
+    }
   }
   while (afterTotal >= threshold && next.length > 2) {
     const pruned = pruneFirstModelMessage(next);
     if (pruned.length === next.length) break;
+    // A single head prune can drop a whole user+tool-call+result unit and empty the list
+    // (e.g. contextWindow=1). Reject empty prunes so the follow-up model call still has a prompt.
+    if (pruned.length === 0) break;
     next = pruned;
     didAdjust = true;
     afterTotal = computeTotalInputTokens({
@@ -380,6 +387,10 @@ function applyStepBudgetGuard(
       providerId: input.providerId,
       reservedTokens: input.reservedTokens,
     });
+  }
+
+  if (next.length === 0 && messages.length > 0) {
+    return { messages, didAdjust: false, didTypedCompression: false };
   }
 
   return {
@@ -514,6 +525,15 @@ export async function prepareStepContext(
     ...(trace ? { lastCompaction: trace, lastStepAdjusted: didBudgetAdjust } : {}),
     ...(didAdjust ? { lastStepAdjusted: true } : {}),
   };
+
+  // Last-resort guard: never hand an empty prompt to the model after a tool step.
+  if (working.length === 0 && input.messages.length > 0) {
+    return {
+      messages: integrity.messages.length > 0 ? integrity.messages : input.messages,
+      didAdjust: false,
+      runtimeContext,
+    };
+  }
 
   return {
     messages: working,

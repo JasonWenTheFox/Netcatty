@@ -13,6 +13,8 @@ import { redactSecretsForModel } from "./harness/modelSecretRedaction";
 const REDACTED_PAYLOAD_PREVIEW_CHARS = 80;
 
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+/** Floor for manual/discovered windows — values below this are treated as unset. */
+export const MIN_CONTEXT_WINDOW_TOKENS = 1_024;
 export const DEFAULT_PROTECT_RECENT_MESSAGES = 10;
 
 export const CONTEXT_COMPACTION_SYSTEM_PROMPT = `You are summarizing a long Netcatty agent conversation so it can continue without exceeding the model context window.
@@ -85,8 +87,8 @@ export function resolveContextWindow({
 
 export function sanitizeContextWindow(value: unknown): number | undefined {
   const num = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(num) || num <= 0) return undefined;
-  return Math.max(1, Math.round(num));
+  if (!Number.isFinite(num) || num < MIN_CONTEXT_WINDOW_TOKENS) return undefined;
+  return Math.round(num);
 }
 
 export function estimateModelMessagesTokens(

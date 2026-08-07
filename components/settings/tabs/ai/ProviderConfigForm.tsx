@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Check, ChevronDown, ChevronRight, Eye, EyeOff, Pencil, Upload, RotateCcw, X } from "lucide-react";
 import type { ProviderConfig, ProviderAdvancedParams, ProviderStyle } from "../../../../infrastructure/ai/types";
 import { PROVIDER_PRESETS, resolveProviderStyle } from "../../../../infrastructure/ai/types";
-import { sanitizeContextWindow } from "../../../../infrastructure/ai/contextCompaction";
+import { sanitizeContextWindow, MIN_CONTEXT_WINDOW_TOKENS } from "../../../../infrastructure/ai/contextCompaction";
 import { encryptField, decryptField } from "../../../../infrastructure/persistence/secureFieldAdapter";
 import { useI18n } from "../../../../application/i18n/I18nProvider";
 import { Button } from "../../../ui/button";
@@ -193,7 +193,10 @@ export const ProviderConfigForm: React.FC<{
     const defaultName = PROVIDER_PRESETS[provider.providerId]?.name ?? "";
     const rawContextWindow = form.contextWindow.trim();
     const rawContextWindowNumber = Number(rawContextWindow);
-    if (rawContextWindow && (!Number.isInteger(rawContextWindowNumber) || rawContextWindowNumber <= 0)) {
+    if (
+      rawContextWindow
+      && (!Number.isInteger(rawContextWindowNumber) || rawContextWindowNumber < MIN_CONTEXT_WINDOW_TOKENS)
+    ) {
       setContextWindowError(t("ai.providers.contextWindow.error"));
       return;
     }
