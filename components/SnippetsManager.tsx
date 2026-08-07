@@ -50,6 +50,7 @@ import {
 } from './vault/VaultEntityIcon';
 import { VaultDeleteConfirmDialog } from './vault/VaultDeleteConfirmDialog';
 import { VirtualizedHostCollection } from './vault/VirtualizedHostCollection';
+import { getSnippetsGridColumnCount } from './snippetsGridLayout';
 import {
   clearVaultDropIndicator as clearSnippetDropIndicator,
   getVaultDropIntent as getPackageDropIntent,
@@ -2133,6 +2134,11 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
                   viewMode={viewMode}
                   layoutKey={snippetCollectionLayoutKey}
                   ariaLabel={t('vault.nav.snippets')}
+                  getColumnCount={(width, mode) => (
+                    mode === 'grid'
+                      ? getSnippetsGridColumnCount(width, { hasSidePanel: hasSnippetsSidePanel })
+                      : 1
+                  )}
                   renderItem={renderSnippetItem}
                 />
               ) : (
