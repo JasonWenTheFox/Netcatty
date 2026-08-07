@@ -432,6 +432,7 @@ function SidePanelNotesSlotInner({
         onUpdateNoteGroups={updateNoteGroups}
         onOpenHost={handleOpenHostFromNotes}
         displayMode="sidebar"
+        isActive={isVisible}
         openNoteId={openNoteRequest?.noteId ?? null}
         openNoteRequestId={openNoteRequest?.requestId ?? null}
       />

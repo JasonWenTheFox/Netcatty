@@ -120,15 +120,18 @@ export function useTerminalThemePanelState({
   // intentionally stable across accent drag (and TerminalLayer memo ignores
   // accent props).
   const appearanceChrome = useAppearanceChromeStore();
-  const focusedAppearance = useMemo(
-    () => resolveFocusedAppearance(focusedHostScope),
-    [
-      appearanceChrome.accentMode,
-      appearanceChrome.customAccent,
-      focusedHostScope,
-      resolveFocusedAppearance,
-    ],
-  );
+  const focusedAppearance = useMemo(() => {
+    // resolveFocusedAppearance reads accent from the chrome store; pin these
+    // deps so compose-bar chrome updates while focusedHostScope stays stable.
+    void appearanceChrome.accentMode;
+    void appearanceChrome.customAccent;
+    return resolveFocusedAppearance(focusedHostScope);
+  }, [
+    appearanceChrome.accentMode,
+    appearanceChrome.customAccent,
+    focusedHostScope,
+    resolveFocusedAppearance,
+  ]);
 
   const previewTargetSessionId = activeWorkspace?.focusedSessionId ?? activeSession?.id ?? null;
 

@@ -253,6 +253,13 @@ test("NotesManager flushes drafts on pagehide/beforeunload", () => {
   assert.match(source, /flushNoteDraft/);
 });
 
+test("NotesManager flushes drafts when retained mounts become inactive", () => {
+  const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
+  assert.match(source, /isActive\?: boolean/);
+  assert.match(source, /if \(isActive\) return;/);
+  assert.match(source, /visibilitychange/);
+});
+
 test("NotesManager tree rename allows clearing note titles", () => {
   const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
   const renameBlock = source.match(/onRenameCommit=\{\(name\) => \{[\s\S]*?\}\}/)?.[0] ?? "";
