@@ -1266,21 +1266,23 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const { accentMode, customAccent } = useAppearanceChromeStore();
 
   const baseEffectiveTheme = useMemo(() => {
-    if (appearanceTheme) return appearanceTheme;
-    if (followAppTerminalTheme) {
-      return applyCustomAccentToTerminalTheme(terminalTheme, accentMode, customAccent);
-    }
-    const themeId = resolveHostTerminalThemeId(
-      { theme: host.theme, themeOverride: host.themeOverride } as Pick<Host, 'theme' | 'themeOverride'>,
-      terminalTheme.id,
-    );
-    let baseTheme = terminalTheme;
-    if (themeId) {
-      const hostTheme = getBuiltinTerminalThemeById(themeId)
-        || customThemes.find((t) => t.id === themeId);
-      if (hostTheme) baseTheme = hostTheme;
-    }
-    return applyCustomAccentToTerminalTheme(baseTheme, accentMode, customAccent);
+    // Always re-apply appearanceChromeStore accent. appearanceTheme from the
+    // layer may be stale while TerminalLayer memo ignores accent churn.
+    const resolveBase = (): typeof terminalTheme => {
+      if (appearanceTheme) return appearanceTheme;
+      if (followAppTerminalTheme) return terminalTheme;
+      const themeId = resolveHostTerminalThemeId(
+        { theme: host.theme, themeOverride: host.themeOverride } as Pick<Host, 'theme' | 'themeOverride'>,
+        terminalTheme.id,
+      );
+      if (themeId) {
+        const hostTheme = getBuiltinTerminalThemeById(themeId)
+          || customThemes.find((t) => t.id === themeId);
+        if (hostTheme) return hostTheme;
+      }
+      return terminalTheme;
+    };
+    return applyCustomAccentToTerminalTheme(resolveBase(), accentMode, customAccent);
   }, [accentMode, appearanceTheme, customAccent, customThemes, followAppTerminalTheme, host.theme, host.themeOverride, terminalTheme]);
 
   const resolvedChainHosts =

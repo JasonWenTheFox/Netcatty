@@ -585,9 +585,14 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   const expandAllGroups = () => setExpandedGroups(new Set(allGroupPaths));
   const collapseAllGroups = () => setExpandedGroups(new Set());
 
-  const saveNote = (nextNote: VaultNote) => {
+  /** Flush pending draft, then mutate from the post-flush ref snapshot. */
+  const commitNotesAfterFlush = useCallback((mutator: (notes: VaultNote[]) => VaultNote[]) => {
     flushNoteDraft();
-    commitNotes(sortedNotes.map((note) => (note.id === nextNote.id ? nextNote : note)));
+    return commitNotes(mutator(sortedNotesRef.current));
+  }, [commitNotes, flushNoteDraft]);
+
+  const saveNote = (nextNote: VaultNote) => {
+    commitNotesAfterFlush((notes) => notes.map((note) => (note.id === nextNote.id ? nextNote : note)));
   };
 
   const saveNoteTitleDraft = (note: VaultNote, title: string) => {
@@ -629,10 +634,14 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   };
 
   const addNoteToGroup = (group: string | null) => {
-    const note = createNote(group, getNextVaultOrder(sortedNotes));
-    commitNotes([...sortedNotes, note]);
+    let created: VaultNote | null = null;
+    commitNotesAfterFlush((notes) => {
+      created = createNote(group, getNextVaultOrder(notes));
+      return [...notes, created];
+    });
+    if (!created) return;
     if (group) expandPath(group);
-    const nextSelection = getNoteSelectionState(note, isSidebarMode);
+    const nextSelection = getNoteSelectionState(created, isSidebarMode);
     setSelectedNoteId(nextSelection.selectedNoteId);
     setSelectedGroup(nextSelection.selectedGroup);
     setOverlayNoteId(nextSelection.overlayNoteId);
@@ -689,7 +698,10 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
 
       const result = importMarkdownPayloadsToVaultNotes(
         payloads,
-        sortedNotesRef.current,
+        (() => {
+          flushNoteDraft();
+          return sortedNotesRef.current;
+        })(),
         targetGroup,
       );
 
@@ -721,6 +733,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   }, [
     isSidebarMode,
     commitNotes,
+    flushNoteDraft,
     selectedGroup,
     selectedNote,
     t,
@@ -743,10 +756,12 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   }, []);
 
   const exportNoteToMarkdown = useCallback((note: VaultNote) => {
+    flushNoteDraft();
+    const latest = sortedNotesRef.current.find((item) => item.id === note.id) ?? note;
     try {
-      const fileName = `${sanitizeNoteExportFileNamePart(note.title, "note")}.md`;
+      const fileName = `${sanitizeNoteExportFileNamePart(latest.title, "note")}.md`;
       downloadNotesBlob(
-        new Blob([note.content], { type: "text/markdown;charset=utf-8" }),
+        new Blob([latest.content], { type: "text/markdown;charset=utf-8" }),
         fileName,
       );
       toast.success(t("notes.export.toast.success", { count: 1 }));
@@ -754,9 +769,10 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
       logger.error("Failed to export note:", err);
       toast.error(t("notes.export.toast.failed"));
     }
-  }, [downloadNotesBlob, t]);
+  }, [downloadNotesBlob, flushNoteDraft, t]);
 
   const exportNotesToZip = useCallback((scope: VaultNotesExportScope, fileNamePart: string) => {
+    flushNoteDraft();
     try {
       const files = buildVaultNoteMarkdownExportFiles(sortedNotesRef.current, scope);
       if (files.length === 0) {
@@ -801,7 +817,8 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   );
 
   const duplicateNoteById = (noteId: string) => {
-    const source = sortedNotes.find((note) => note.id === noteId);
+    flushNoteDraft();
+    const source = sortedNotesRef.current.find((note) => note.id === noteId);
     if (!source) return;
     const now = Date.now();
     const copy: VaultNote = {
@@ -810,9 +827,9 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
       title: `${source.title} (${t("action.copy")})`,
       createdAt: now,
       updatedAt: now,
-      order: getNextVaultOrder(sortedNotes),
+      order: getNextVaultOrder(sortedNotesRef.current),
     };
-    commitNotes([...sortedNotes, copy]);
+    commitNotes([...sortedNotesRef.current, copy]);
     if (copy.group) expandPath(copy.group);
     const nextSelection = getNoteSelectionState(copy, isSidebarMode);
     setSelectedNoteId(nextSelection.selectedNoteId);
@@ -821,8 +838,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   };
 
   const performDeleteNoteById = (noteId: string) => {
-    const next = sortedNotes.filter((note) => note.id !== noteId);
-    commitNotes(next);
+    const next = commitNotesAfterFlush((notes) => notes.filter((note) => note.id !== noteId));
     if (selectedNoteId === noteId) {
       const nextSelection = getFallbackNoteSelectionState(next, isSidebarMode);
       setSelectedNoteId(nextSelection.selectedNoteId);
@@ -870,12 +886,11 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     const nextGroups = normalizeNoteGroups(
       groups.map((item) => replaceNoteGroupPrefix(item, group, nextPath) || ""),
     );
-    const nextNotes = sortedNotes.map((note) => ({
+    onUpdateNoteGroups(nextGroups);
+    commitNotesAfterFlush((notes) => notes.map((note) => ({
       ...note,
       group: replaceNoteGroupPrefix(note.group, group, nextPath),
-    }));
-    onUpdateNoteGroups(nextGroups);
-    commitNotes(nextNotes);
+    })));
     setExpandedGroups((current) => {
       const next = new Set<string>();
       current.forEach((item) => {
@@ -892,7 +907,9 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
 
   const performDeleteGroup = (group: string) => {
     onUpdateNoteGroups(groups.filter((item) => !isNoteGroupInside(item, group)));
-    commitNotes(sortedNotes.map((note) => isNoteGroupInside(note.group, group) ? { ...note, group: undefined } : note));
+    commitNotesAfterFlush((notes) => notes.map((note) => (
+      isNoteGroupInside(note.group, group) ? { ...note, group: undefined } : note
+    )));
     if (selectedGroup && isNoteGroupInside(selectedGroup, group)) setSelectedGroup(null);
     setEditingGroupPath(null);
   };
@@ -942,12 +959,13 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   };
 
   const moveNoteToGroup = (noteId: string, group: string | null) => {
-    const source = sortedNotes.find((note) => note.id === noteId);
+    flushNoteDraft();
+    const source = sortedNotesRef.current.find((note) => note.id === noteId);
     if (!source) return;
     const nextGroup = group || undefined;
     if ((source.group || undefined) === nextGroup) return;
 
-    commitNotes(sortedNotes.map((note) => (
+    commitNotes(sortedNotesRef.current.map((note) => (
       note.id === noteId ? { ...note, group: nextGroup, updatedAt: Date.now() } : note
     )));
     if (group) expandPath(group);
@@ -956,29 +974,31 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   const reorderNoteToNote = (sourceId: string, targetNote: VaultNote, event: React.DragEvent<HTMLElement>) => {
     if (!sourceId || sourceId === targetNote.id) return;
     const position = getVaultDropPosition(event.currentTarget, event.clientX, event.clientY);
-    const movedNotes = sortedNotes.map((note) => (
-      note.id === sourceId
-        ? { ...note, group: targetNote.group, updatedAt: Date.now() }
-        : note
-    ));
-    commitNotes(reorderVaultItems(movedNotes, sourceId, targetNote.id, position));
+    commitNotesAfterFlush((notes) => {
+      const movedNotes = notes.map((note) => (
+        note.id === sourceId
+          ? { ...note, group: targetNote.group, updatedAt: Date.now() }
+          : note
+      ));
+      return reorderVaultItems(movedNotes, sourceId, targetNote.id, position);
+    });
     if (targetNote.group) expandPath(targetNote.group);
   };
 
   const moveGroupToParent = (group: string, parent: string | null) => {
+    flushNoteDraft();
     const knownGroups = normalizeNoteGroups([
       ...groups,
-      ...sortedNotes.map((note) => note.group).filter((item): item is string => Boolean(item)),
+      ...sortedNotesRef.current.map((note) => note.group).filter((item): item is string => Boolean(item)),
     ]);
     const nextPath = resolveMovedNoteGroupPath(group, parent, knownGroups);
     if (!nextPath) return;
     const nextGroups = normalizeNoteGroups(groups.map((item) => replaceNoteGroupPrefix(item, group, nextPath) || ""));
-    const nextNotes = sortedNotes.map((note) => ({
+    onUpdateNoteGroups(nextGroups);
+    commitNotes(sortedNotesRef.current.map((note) => ({
       ...note,
       group: replaceNoteGroupPrefix(note.group, group, nextPath),
-    }));
-    onUpdateNoteGroups(nextGroups);
-    commitNotes(nextNotes);
+    })));
     setExpandedGroups((current) => remapExpandedNoteGroupPaths(current, group, nextPath));
     if (selectedGroup && isNoteGroupInside(selectedGroup, group)) {
       setSelectedGroup(replaceNoteGroupPrefix(selectedGroup, group, nextPath) ?? null);
@@ -993,10 +1013,11 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     if (!sourceGroup || !targetGroup || sourceGroup === targetGroup) return;
     if (targetGroup.startsWith(`${sourceGroup}/`)) return;
 
+    flushNoteDraft();
     const targetParent = getNoteGroupParentPath(targetGroup);
     const knownGroups = normalizeNoteGroups([
       ...groups,
-      ...sortedNotes.map((note) => note.group).filter((item): item is string => Boolean(item)),
+      ...sortedNotesRef.current.map((note) => note.group).filter((item): item is string => Boolean(item)),
     ]);
     const nextSourceGroup = getNoteGroupParentPath(sourceGroup) === targetParent
       ? cleanNoteGroupPath(sourceGroup)
@@ -1014,16 +1035,13 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
       targetGroup,
       position,
     );
-    const nextNotes = nextSourceGroup === sourceGroup
-      ? sortedNotes
-      : sortedNotes.map((note) => ({
-        ...note,
-        group: replaceNoteGroupPrefix(note.group, sourceGroup, nextSourceGroup),
-      }));
 
     onUpdateNoteGroups(nextGroups);
     if (nextSourceGroup !== sourceGroup) {
-      commitNotes(nextNotes);
+      commitNotes(sortedNotesRef.current.map((note) => ({
+        ...note,
+        group: replaceNoteGroupPrefix(note.group, sourceGroup, nextSourceGroup),
+      })));
       setExpandedGroups((current) => remapExpandedNoteGroupPaths(current, sourceGroup, nextSourceGroup));
       if (selectedGroup && isNoteGroupInside(selectedGroup, sourceGroup)) {
         setSelectedGroup(replaceNoteGroupPrefix(selectedGroup, sourceGroup, nextSourceGroup) ?? null);

@@ -109,7 +109,11 @@ function RenameDraftDialog({
             id={inputId}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onSave(draft); }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return;
+              if (!draft.trim()) return;
+              onSave(draft);
+            }}
             autoFocus
             placeholder={placeholder}
           />
@@ -321,12 +325,14 @@ function AppViewInner({ domains }: AppViewProps) {
 
   const handleSaveSessionRename = useCallback((name: string) => {
     if (!sessionRenameTarget) return;
+    if (!name.trim()) return;
     submitSessionRename(sessionRenameTarget.id, name);
     resetSessionRename();
   }, [resetSessionRename, sessionRenameTarget, submitSessionRename]);
 
   const handleSaveWorkspaceRename = useCallback((name: string) => {
     if (!workspaceRenameTarget) return;
+    if (!name.trim()) return;
     submitWorkspaceRename(workspaceRenameTarget.id, name);
     resetWorkspaceRename();
   }, [resetWorkspaceRename, submitWorkspaceRename, workspaceRenameTarget]);
