@@ -83,6 +83,11 @@ const InlineMarkdownEditor = lazy(() =>
   import("./InlineMarkdownEditor").then((module) => ({ default: module.InlineMarkdownEditor })),
 );
 
+/** Warm the MDXEditor chunk before Suspense (vault notes open / StrictMode). */
+export function prefetchInlineMarkdownEditor(): void {
+  void import("./InlineMarkdownEditor");
+}
+
 interface NoteFolderNode {
   name: string;
   path: string;
@@ -484,6 +489,11 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     if (isActive) return;
     flushNoteDraft();
   }, [flushNoteDraft, isActive]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    prefetchInlineMarkdownEditor();
+  }, [isActive]);
 
   useEffect(() => {
     const flushOnTeardown = () => {

@@ -37,10 +37,19 @@ test("NotesManager teardown flush uses a stable ref under StrictMode", () => {
 });
 
 test("Vault notes section is memoized against unrelated VaultView churn", () => {
-  assert.match(layoutSource, /const MemoVaultNotesSection = React\.memo\(VaultNotesSection\)/);
+  assert.match(layoutSource, /const MemoVaultNotesSection = React\.memo/);
   assert.match(layoutSource, /<MemoVaultNotesSection\b/);
   assert.match(layoutSource, /const handleNotesOpenHost = useCallback/);
   assert.match(layoutSource, /onOpenHost=\{handleNotesOpenHost\}/);
+  assert.match(
+    layoutSource,
+    /useNotesStore\(\{\s*\n\s*enabled:\s*isActive,\s*\n\s*\}\)/,
+  );
+  assert.match(
+    layoutSource,
+    /if \(next\.isActive && prev\.hosts !== next\.hosts\) return false;/,
+    "hidden retained notes must ignore hosts identity churn",
+  );
 });
 
 test("hidden terminal notes side panel does not subscribe to notes publishes", () => {
@@ -49,6 +58,14 @@ test("hidden terminal notes side panel does not subscribe to notes publishes", (
     "utf8",
   );
   assert.match(slotsSource, /useNotesStore\(\{\s*enabled:\s*isVisible\s*\}\)/);
+});
+
+test("notes manager prefetches the MDXEditor chunk when becoming active", () => {
+  assert.match(managerSource, /prefetchInlineMarkdownEditor/);
+  assert.match(
+    managerSource,
+    /if \(!isActive\) return;\s*\n\s*prefetchInlineMarkdownEditor\(\);/,
+  );
 });
 
 test("host-link annotation does not re-run on every markdown value keystroke", () => {

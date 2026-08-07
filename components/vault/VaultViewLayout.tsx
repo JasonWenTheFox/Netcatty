@@ -36,6 +36,10 @@ const VaultSectionLoading = () => (
 /**
  * Notes section subscribes to notesStore instead of taking notes as VaultView
  * props, so note edits never invalidate the App vault domain bag.
+ *
+ * While inactive (retained but hidden), freeze hosts and drop the store
+ * subscription so Hosts/Keys churn and note publishes do not reconcile the
+ * heavy NotesManager + MDXEditor tree.
  */
 function VaultNotesSection({
   NotesManager,
@@ -52,7 +56,9 @@ function VaultNotesSection({
   onOpenNoteIdHandled: () => void;
   onOpenHost: (host: any, source?: { noteId?: string }) => void;
 }) {
-  const { notes, noteGroups, updateNotes, updateNoteGroups } = useNotesStore();
+  const { notes, noteGroups, updateNotes, updateNoteGroups } = useNotesStore({
+    enabled: isActive,
+  });
   return (
     <NotesManager
       notes={notes}
@@ -68,7 +74,24 @@ function VaultNotesSection({
   );
 }
 
-const MemoVaultNotesSection = React.memo(VaultNotesSection);
+const MemoVaultNotesSection = React.memo(
+  VaultNotesSection,
+  (prev, next) => {
+    if (
+      prev.isActive !== next.isActive
+      || prev.openNoteId !== next.openNoteId
+      || prev.NotesManager !== next.NotesManager
+      || prev.onOpenNoteIdHandled !== next.onOpenNoteIdHandled
+      || prev.onOpenHost !== next.onOpenHost
+    ) {
+      return false;
+    }
+    // Host catalog identity only matters while Notes is visible (host picker /
+    // link annotation). Ignore hosts churn for the retained hidden mount.
+    if (next.isActive && prev.hosts !== next.hosts) return false;
+    return true;
+  },
+);
 
 /**
  * Logs section subscribes to connectionLogsStore so every session start/exit
