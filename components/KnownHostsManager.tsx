@@ -56,6 +56,7 @@ import { VaultDeleteConfirmDialog } from "./vault/VaultDeleteConfirmDialog";
 import { VaultEntityIcon, vaultPrimaryIconClass } from "./vault/VaultEntityIcon";
 import { VirtualizedHostCollection } from "./vault/VirtualizedHostCollection";
 import { getKnownHostsGridColumnCount } from "./knownHostsGridLayout";
+import { getElementContentWidth } from "./vault/vaultHostGridLayout";
 import { useVaultItemReorder } from "./vault/vaultReorderDrag";
 
 const VIRTUALIZE_THRESHOLD = 30;
@@ -463,7 +464,7 @@ const KnownHostsManager: React.FC<KnownHostsManagerProps> = ({
     const el = scrollRef.current;
     if (!el || viewMode !== "grid" || typeof ResizeObserver === "undefined") return;
     const recompute = () => {
-      setGridColumns(getKnownHostsGridColumnCount(el.clientWidth));
+      setGridColumns(getKnownHostsGridColumnCount(getElementContentWidth(el)));
     };
     recompute();
     const observer = new ResizeObserver(recompute);

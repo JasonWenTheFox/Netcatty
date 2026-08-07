@@ -51,6 +51,7 @@ import {
 import { VaultDeleteConfirmDialog } from './vault/VaultDeleteConfirmDialog';
 import { VirtualizedHostCollection } from './vault/VirtualizedHostCollection';
 import { getSnippetsGridColumnCount } from './snippetsGridLayout';
+import { getElementContentWidth } from './vault/vaultHostGridLayout';
 import {
   clearVaultDropIndicator as clearSnippetDropIndicator,
   getVaultDropIntent as getPackageDropIntent,
@@ -534,7 +535,7 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
     if (!el || viewMode !== 'grid' || typeof ResizeObserver === 'undefined') return;
 
     const recompute = () => {
-      const next = getSnippetsGridColumnCount(el.clientWidth, {
+      const next = getSnippetsGridColumnCount(getElementContentWidth(el), {
         hasSidePanel: hasSnippetsSidePanel,
       });
       if (next === splitGridColsRef.current) return;

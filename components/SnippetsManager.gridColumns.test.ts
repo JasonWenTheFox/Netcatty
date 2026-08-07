@@ -22,9 +22,10 @@ test("virtualized and CSS snippet grids share container column policy", () => {
   const source = readFileSync(new URL("./SnippetsManager.tsx", import.meta.url), "utf8");
   assert.match(source, /getColumnCount=\{\(width, mode\) =>/);
   assert.match(source, /getSnippetsGridColumnCount\(width, \{ hasSidePanel: hasSnippetsSidePanel \}\)/);
-  assert.match(source, /getSnippetsGridColumnCount\(el\.clientWidth/);
+  assert.match(source, /getSnippetsGridColumnCount\(getElementContentWidth\(el\)/);
   assert.match(source, /snippetGridStyle/);
   assert.doesNotMatch(source, /md:grid-cols-2|xl:grid-cols-3/);
+  assert.doesNotMatch(source, /getSnippetsGridColumnCount\(el\.clientWidth/);
 });
 
 test("virtualized snippet drops reset drag state without waiting for dragend", () => {
