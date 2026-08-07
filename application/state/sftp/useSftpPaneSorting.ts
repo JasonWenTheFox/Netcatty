@@ -6,7 +6,7 @@ import {
   type SftpColumnVisibility,
   type SortField,
   type SortOrder,
-} from "../../../components/sftp/utils";
+} from "./columnLayout";
 import { STORAGE_KEY_SFTP_VISIBLE_COLUMNS } from "../../../infrastructure/config/storageKeys";
 import {
   LOCAL_STORAGE_ADAPTER_CHANGED_EVENT,
