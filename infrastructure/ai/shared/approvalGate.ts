@@ -321,19 +321,23 @@ export function resolveApproval(
   const entry = pendingApprovals.get(toolCallId);
   const request = entry?.request;
 
-  if (entry) {
-    pendingApprovals.delete(toolCallId);
-    entry.resolve(resolution);
+  if (!entry) {
+    // Stale UI click after the map entry was already drained — do not fan out
+    // a second MCP IPC response for a missing approval.
+    return;
   }
 
-  if (request) {
-    let persistedGrantId: string | undefined;
-    if (approved && request.source !== 'codex-app-server' && persistGrants?.length) {
-      for (const grant of persistGrants) {
-        grantPersister?.(grant);
-        persistedGrantId = grant.id;
-      }
+  pendingApprovals.delete(toolCallId);
+  entry.resolve(resolution);
+
+  let persistedGrantId: string | undefined;
+  if (approved && request?.source !== 'codex-app-server' && persistGrants?.length) {
+    for (const grant of persistGrants) {
+      grantPersister?.(grant);
+      persistedGrantId = grant.id;
     }
+  }
+  if (request) {
     emitApprovalEvent('approval_resolved', request, {
       outcome: approved ? 'approved' : 'denied',
       persistedGrantId,

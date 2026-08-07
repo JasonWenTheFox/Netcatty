@@ -35,8 +35,8 @@ import {
   resolveDisplayedSession,
 } from './ai/aiPanelViewState';
 import {
-  endSend,
-  tryBeginSend,
+  endSendForKey,
+  tryBeginSendForKey,
 } from './ai/draftSendGate';
 import { selectDraftForAgentSwitch } from '../application/state/aiDraftState';
 import {
@@ -384,7 +384,6 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
   currentDraftRef.current = currentDraft;
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
-  const sendInFlightRef = useRef(false);
 
   const defaultTargetSession = useMemo<DefaultTargetSessionHint | undefined>(() => {
     const connectedSessions = terminalSessions.filter((session) => session.connected !== false);
@@ -1004,11 +1003,13 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
     const modelAttachments = attachments.filter((attachment) => !isTerminalSelectionAttachment(attachment));
     const isDraftMode = currentPanelView.mode === 'draft';
 
-    // Sync re-entry gate: React `isStreaming` can lag a double-click / remount
-    // because setState is async, while StrictMode and rapid clicks are not.
-    if (!tryBeginSend(sendInFlightRef)) {
+    // Remount-safe sync gate (module Set). Component refs reset under StrictMode
+    // remount of AIChatSidePanelActive; React `isStreaming` also lags double-clicks.
+    const sendGateKey = currentSessionView?.id ?? `draft:${scopeKey}`;
+    if (!tryBeginSendForKey(sendGateKey)) {
       return;
     }
+    let sessionSendGateKey: string | null = null;
 
     try {
       let sessionId = currentSessionView?.id ?? null;
@@ -1021,6 +1022,12 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
         clearScopeDraft();
         showScopeSessionView(createdSession.id);
         setActiveSessionId(createdSession.id);
+        // Latch the created session id so a remount cannot start a second turn
+        // against the new session while this draft send is still in flight.
+        sessionSendGateKey = sessionId;
+        if (!tryBeginSendForKey(sessionSendGateKey)) {
+          return;
+        }
       }
 
       if (!sessionId) {
@@ -1138,7 +1145,10 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
         }, modelAttachments.length > 0 ? modelAttachments : undefined);
       }
     } finally {
-      endSend(sendInFlightRef);
+      endSendForKey(sendGateKey);
+      if (sessionSendGateKey && sessionSendGateKey !== sendGateKey) {
+        endSendForKey(sessionSendGateKey);
+      }
     }
   }, [
     isStreaming, activeProvider, effectiveActiveProvider, effectiveActiveModelId, scopeKey, currentAgentId,
@@ -1165,7 +1175,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       return;
     }
 
-    if (!tryBeginSend(sendInFlightRef)) return;
+    if (!tryBeginSendForKey(session.id)) return;
 
     const controller = new AbortController();
     abortControllersRef.current.set(session.id, controller);
@@ -1204,7 +1214,7 @@ const AIChatSidePanelActive: React.FC<AIChatSidePanelProps> = ({
       if (abortControllersRef.current.get(session.id) === controller) {
         abortControllersRef.current.delete(session.id);
       }
-      endSend(sendInFlightRef);
+      endSendForKey(session.id);
     }
   }, [
     abortControllersRef,

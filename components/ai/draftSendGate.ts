@@ -14,3 +14,21 @@ export function endDraftSend(gate: { current: boolean }): void {
 /** Alias kept for call sites that gate every send (draft + session), not just draft. */
 export const tryBeginSend = tryBeginDraftSend;
 export const endSend = endDraftSend;
+
+/**
+ * Remount-safe send latch. Component refs reset when StrictMode remounts
+ * AIChatSidePanelActive mid-flight; a module Set keyed by session/draft scope
+ * does not.
+ */
+const sendInFlightByKey = new Set<string>();
+
+export function tryBeginSendForKey(key: string): boolean {
+  if (!key || sendInFlightByKey.has(key)) return false;
+  sendInFlightByKey.add(key);
+  return true;
+}
+
+export function endSendForKey(key: string): void {
+  if (!key) return;
+  sendInFlightByKey.delete(key);
+}
