@@ -260,6 +260,8 @@ const HostItem = React.memo<HostItemProps>(
         <ContextMenuTrigger asChild>
           <div
             {...reorderProps}
+            data-vault-focus-target
+            tabIndex={0}
             className={cn(
               reorderProps && "vault-drop-indicator-row",
               "group flex items-center gap-3 px-3 py-2 h-14 rounded-lg hover:bg-secondary/60 transition-colors cursor-pointer",
