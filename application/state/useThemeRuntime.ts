@@ -32,8 +32,6 @@ export function useThemeRuntime(settings: ThemeRuntimeSettings) {
     resolvedTheme,
     lightUiThemeId,
     darkUiThemeId,
-    accentMode,
-    customAccent,
     customThemes,
     setTheme,
     setLightUiThemeId,
@@ -50,8 +48,11 @@ export function useThemeRuntime(settings: ThemeRuntimeSettings) {
     resolvedTheme,
     lightUiThemeId,
     darkUiThemeId,
-    accentMode,
-    customAccent,
+    // Accent is owned by appearanceChromeStore + Terminal leaf apply.
+    // Keep layer themes unaccented so accent drag does not churn
+    // resolveFocusedAppearance / TerminalLayer memo.
+    accentMode: 'theme',
+    customAccent: '',
   }), [
     terminalThemeId,
     terminalThemeDarkId,
@@ -60,8 +61,6 @@ export function useThemeRuntime(settings: ThemeRuntimeSettings) {
     resolvedTheme,
     lightUiThemeId,
     darkUiThemeId,
-    accentMode,
-    customAccent,
   ]);
 
   const globalAppearance = useMemo(() => resolveGlobalTerminalAppearance({
