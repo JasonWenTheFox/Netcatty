@@ -41,6 +41,9 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
   const supersededRef = useRef(false);
   const noteIdRef = useRef(noteId);
 
+  const onLiveDraftRef = useRef(onLiveDraft);
+  onLiveDraftRef.current = onLiveDraft;
+
   useEffect(() => {
     if (noteIdRef.current !== noteId) {
       noteIdRef.current = noteId;
@@ -50,6 +53,7 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
       return;
     }
 
+    let adoptedExternal: string | null = null;
     setDraft((draftValue) => {
       const composing = composingRef.current;
       const shouldAdopt = shouldAdoptExternalImeControlledValue({
@@ -60,9 +64,13 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
       });
       if (shouldAdopt && composing && value !== valueAtComposeStartRef.current) {
         supersededRef.current = true;
+        adoptedExternal = value;
       }
       return shouldAdopt ? value : draftValue;
     });
+    if (adoptedExternal !== null) {
+      onLiveDraftRef.current?.(adoptedExternal);
+    }
   }, [noteId, value]);
 
   const commit = (next: string) => {

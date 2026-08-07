@@ -636,6 +636,9 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     if (draftNoteIdRef.current && draftNoteIdRef.current !== note.id) {
       flushNoteDraft();
     }
+    // Cancel any idle-commit debounce so a prior ASCII commit cannot flush
+    // mid-composition and rewrite the controlled title.
+    clearDraftTimer();
     draftNoteIdRef.current = note.id;
     draftTitleRef.current = title;
   };

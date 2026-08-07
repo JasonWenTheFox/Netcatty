@@ -34,6 +34,15 @@ test("NoteTitleInput clears live-stashed title when composition is externally su
     source,
     /supersededRef\.current = true;[\s\S]*?setDraft\(value\);[\s\S]*?onLiveDraft\?\.\(value\)/,
   );
+  assert.match(source, /adoptedExternal/);
+  assert.match(source, /onLiveDraftRef\.current\?\.\(adoptedExternal\)/);
+});
+
+test("NotesManager cancels debounced flush while stashing IME title drafts", () => {
+  assert.match(
+    managerSource,
+    /clearDraftTimer\(\);[\s\S]*?draftNoteIdRef\.current = note\.id;[\s\S]*?draftTitleRef\.current = title/,
+  );
 });
 
 test("NoteTitleInput resets IME guards when the active note changes", () => {
