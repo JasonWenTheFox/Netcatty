@@ -1,7 +1,12 @@
 import type React from 'react';
+import {
+  STORAGE_KEY_AI_PANEL_DIAGNOSTIC_HIDE,
+  STORAGE_KEY_AI_PANEL_DIAGNOSTIC_PROFILE,
+} from '../../infrastructure/config/storageKeys';
+import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
 
-export const AI_PANEL_DIAGNOSTIC_HIDE_KEY = 'netcatty.aiDebug.hide';
-export const AI_PANEL_DIAGNOSTIC_PROFILE_KEY = 'netcatty.aiDebug.profile';
+export const AI_PANEL_DIAGNOSTIC_HIDE_KEY = STORAGE_KEY_AI_PANEL_DIAGNOSTIC_HIDE;
+export const AI_PANEL_DIAGNOSTIC_PROFILE_KEY = STORAGE_KEY_AI_PANEL_DIAGNOSTIC_PROFILE;
 export const AI_PANEL_FORCE_HIDE_ALL_CONTENT = false;
 export const AI_PANEL_FORCE_HIDE_SHELL = false;
 
@@ -17,9 +22,8 @@ export type AIPanelDiagnosticPart =
   | 'toolcalls';
 
 function readLocalStorageValue(key: string): string {
-  if (typeof window === 'undefined') return '';
   try {
-    return window.localStorage.getItem(key) ?? '';
+    return localStorageAdapter.readString(key) ?? '';
   } catch {
     return '';
   }

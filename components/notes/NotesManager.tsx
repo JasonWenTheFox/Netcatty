@@ -401,6 +401,75 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     return cleaned;
   }, [onUpdateNotes]);
 
+  const NOTE_DRAFT_DEBOUNCE_MS = 300;
+  const draftNoteIdRef = useRef<string | null>(null);
+  const draftTitleRef = useRef<string | null>(null);
+  const draftContentRef = useRef<string | null>(null);
+  const draftTimerRef = useRef<number | null>(null);
+  const [draftNoteId, setDraftNoteId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState<string | null>(null);
+  const [draftContent, setDraftContent] = useState<string | null>(null);
+
+  const clearDraftTimer = useCallback(() => {
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+  }, []);
+
+  const flushNoteDraft = useCallback(() => {
+    clearDraftTimer();
+    const noteId = draftNoteIdRef.current;
+    if (!noteId) return;
+    const title = draftTitleRef.current;
+    const content = draftContentRef.current;
+    draftNoteIdRef.current = null;
+    draftTitleRef.current = null;
+    draftContentRef.current = null;
+    setDraftNoteId(null);
+    setDraftTitle(null);
+    setDraftContent(null);
+    if (title === null && content === null) return;
+    commitNotes(sortedNotesRef.current.map((note) => {
+      if (note.id !== noteId) return note;
+      return {
+        ...note,
+        ...(title !== null ? { title } : {}),
+        ...(content !== null ? { content } : {}),
+        updatedAt: Date.now(),
+      };
+    }));
+  }, [clearDraftTimer, commitNotes]);
+
+  const scheduleNoteDraftFlush = useCallback(() => {
+    clearDraftTimer();
+    draftTimerRef.current = window.setTimeout(() => {
+      draftTimerRef.current = null;
+      flushNoteDraft();
+    }, NOTE_DRAFT_DEBOUNCE_MS);
+  }, [clearDraftTimer, flushNoteDraft]);
+
+  const updateNoteDraft = useCallback((noteId: string, fields: { title?: string; content?: string }) => {
+    if (draftNoteIdRef.current && draftNoteIdRef.current !== noteId) {
+      flushNoteDraft();
+    }
+    draftNoteIdRef.current = noteId;
+    setDraftNoteId(noteId);
+    if (fields.title !== undefined) {
+      draftTitleRef.current = fields.title;
+      setDraftTitle(fields.title);
+    }
+    if (fields.content !== undefined) {
+      draftContentRef.current = fields.content;
+      setDraftContent(fields.content);
+    }
+    scheduleNoteDraftFlush();
+  }, [flushNoteDraft, scheduleNoteDraftFlush]);
+
+  useEffect(() => () => {
+    flushNoteDraft();
+  }, [flushNoteDraft]);
+
   const noteTree = useMemo(() => {
     const tree = buildNoteTree(groups, sortedNotes);
     return {
@@ -410,6 +479,26 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   }, [groupOrderByPath, groups, sortedNotes]);
   const selectedNote = getSelectedVaultNote(sortedNotes, selectedNoteId);
   const overlayNote = sortedNotes.find((note) => note.id === overlayNoteId) ?? null;
+  const selectedNoteView = selectedNote && draftNoteId === selectedNote.id
+    ? {
+        ...selectedNote,
+        ...(draftTitle !== null ? { title: draftTitle } : {}),
+        ...(draftContent !== null ? { content: draftContent } : {}),
+      }
+    : selectedNote;
+  const overlayNoteView = overlayNote && draftNoteId === overlayNote.id
+    ? {
+        ...overlayNote,
+        ...(draftTitle !== null ? { title: draftTitle } : {}),
+        ...(draftContent !== null ? { content: draftContent } : {}),
+      }
+    : overlayNote;
+
+  useEffect(() => {
+    if (!draftNoteIdRef.current) return;
+    if (draftNoteIdRef.current === selectedNoteId || draftNoteIdRef.current === overlayNoteId) return;
+    flushNoteDraft();
+  }, [flushNoteDraft, overlayNoteId, selectedNoteId]);
 
   useEffect(() => {
     const urls = activeDownloadUrlsRef.current;
@@ -497,7 +586,16 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
   const collapseAllGroups = () => setExpandedGroups(new Set());
 
   const saveNote = (nextNote: VaultNote) => {
+    flushNoteDraft();
     commitNotes(sortedNotes.map((note) => (note.id === nextNote.id ? nextNote : note)));
+  };
+
+  const saveNoteTitleDraft = (note: VaultNote, title: string) => {
+    updateNoteDraft(note.id, { title });
+  };
+
+  const saveNoteContentDraft = (note: VaultNote, content: string) => {
+    updateNoteDraft(note.id, { content });
   };
 
   const handleOpenHostFromNote = useCallback((host: Host, noteId: string) => {
@@ -1515,41 +1613,41 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
 
         {!isSidebarMode && (
         <main className="flex min-w-0 flex-1 flex-col bg-background">
-          {selectedNote ? (
+          {selectedNoteView ? (
             <>
               <div className="flex min-h-[54px] shrink-0 items-center gap-3 px-8 pt-6 pb-1" data-note-title-row>
                 <div className="min-w-0 flex-1">
                   <input
                     className="h-8 w-full bg-transparent text-lg font-semibold leading-8 outline-none placeholder:text-muted-foreground"
-                    value={selectedNote.title}
+                    value={selectedNoteView.title}
                     placeholder={t("notes.title.placeholder")}
-                    onChange={(event) => saveNote({
-                      ...selectedNote,
-                      title: event.target.value,
-                      updatedAt: Date.now(),
-                    })}
+                    onChange={(event) => saveNoteTitleDraft(selectedNoteView, event.target.value)}
+                    onBlur={() => flushNoteDraft()}
                   />
                 </div>
-                {renderNoteExportButton(selectedNote)}
+                {renderNoteExportButton(selectedNoteView)}
                 {renderNoteModeToggle()}
               </div>
               <ScrollArea className="min-h-0 flex-1">
-                <div className="min-h-full w-full px-8 pt-2 pb-6">
-                  <LazyLoadBoundary name="Notes editor" resetKey={selectedNote.id}>
+                <div
+                  className="min-h-full w-full px-8 pt-2 pb-6"
+                  onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      flushNoteDraft();
+                    }
+                  }}
+                >
+                  <LazyLoadBoundary name="Notes editor" resetKey={selectedNoteView.id}>
                     <Suspense fallback={<InlineMarkdownEditorFallback />}>
                       <InlineMarkdownEditor
-                        key={selectedNote.id}
-                        value={selectedNote.content}
+                        key={selectedNoteView.id}
+                        value={selectedNoteView.content}
                         placeholder={t("notes.editor.placeholder")}
                         editorMode={noteEditorMode}
                         previewEmptyLabel={t("notes.preview.empty")}
-                        onChange={(content) => saveNote({
-                          ...selectedNote,
-                          content,
-                          updatedAt: Date.now(),
-                        })}
+                        onChange={(content) => saveNoteContentDraft(selectedNoteView, content)}
                         hosts={hosts}
-                        onOpenHost={(host) => handleOpenHostFromNote(host, selectedNote.id)}
+                        onOpenHost={(host) => handleOpenHostFromNote(host, selectedNoteView.id)}
                         onOpenExternalLink={openExternal}
                       />
                     </Suspense>
@@ -1582,7 +1680,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
         )}
       </div>
 
-      {isSidebarMode && overlayNote && (
+      {isSidebarMode && overlayNoteView && (
         <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background text-foreground">
           <div className={cn(
             TERMINAL_SIDE_PANEL_INNER_HEADER_CLASS,
@@ -1602,7 +1700,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
               <TooltipContent side="bottom">{t("common.back")}</TooltipContent>
             </Tooltip>
             <div className="min-w-0 flex-1 truncate px-1 text-xs font-medium leading-4 text-foreground">
-              {overlayNote.title || t("notes.title.placeholder")}
+              {overlayNoteView.title || t("notes.title.placeholder")}
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -1610,35 +1708,35 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
               <div className="min-w-0 flex-1">
                 <input
                   className="h-8 w-full bg-transparent text-lg font-semibold leading-8 outline-none placeholder:text-muted-foreground"
-                  value={overlayNote.title}
+                  value={overlayNoteView.title}
                   placeholder={t("notes.title.placeholder")}
-                  onChange={(event) => saveNote({
-                    ...overlayNote,
-                    title: event.target.value,
-                    updatedAt: Date.now(),
-                  })}
+                  onChange={(event) => saveNoteTitleDraft(overlayNoteView, event.target.value)}
+                  onBlur={() => flushNoteDraft()}
                 />
               </div>
-              {renderNoteExportButton(overlayNote)}
+              {renderNoteExportButton(overlayNoteView)}
               {renderNoteModeToggle()}
             </div>
             <ScrollArea className="min-h-0 flex-1">
-              <div className="min-h-full w-full px-4 pt-2 pb-6">
-                <LazyLoadBoundary name="Notes editor" resetKey={overlayNote.id}>
+              <div
+                className="min-h-full w-full px-4 pt-2 pb-6"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    flushNoteDraft();
+                  }
+                }}
+              >
+                <LazyLoadBoundary name="Notes editor" resetKey={overlayNoteView.id}>
                   <Suspense fallback={<InlineMarkdownEditorFallback />}>
                     <InlineMarkdownEditor
-                      key={overlayNote.id}
-                      value={overlayNote.content}
+                      key={overlayNoteView.id}
+                      value={overlayNoteView.content}
                       placeholder={t("notes.editor.placeholder")}
                       editorMode={noteEditorMode}
-                      onChange={(content) => saveNote({
-                        ...overlayNote,
-                        content,
-                        updatedAt: Date.now(),
-                      })}
+                      onChange={(content) => saveNoteContentDraft(overlayNoteView, content)}
                       previewEmptyLabel={t("notes.preview.empty")}
                       hosts={hosts}
-                      onOpenHost={(host) => handleOpenHostFromNote(host, overlayNote.id)}
+                      onOpenHost={(host) => handleOpenHostFromNote(host, overlayNoteView.id)}
                       onOpenExternalLink={openExternal}
                     />
                   </Suspense>
