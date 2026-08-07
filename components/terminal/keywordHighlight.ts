@@ -696,12 +696,14 @@ export class KeywordHighlighter implements IDisposable {
     // Enter echo often emits onScroll before onWriteParsed. After an idle gap
     // lastWriteAt looks stale, so the user-scroll path would prune overscan
     // decorations and flash keywords still on screen. While Enter output is
-    // pending, let onWriteParsed own refresh scheduling.
+    // pending, skip scroll-prune but mark the viewport dirty so idle-clear /
+    // writeParsed can catch up (including user scroll during the protection window).
     if (this.enterInputPending) {
       if (this.pendingRefreshReason === "scroll") {
         this.cancelQueuedRefreshSchedule();
         this.pendingRefreshReason = "write";
       }
+      this.markVisibleRangeDirty();
       return;
     }
     const now = performance.now();
@@ -1002,6 +1004,10 @@ export class KeywordHighlighter implements IDisposable {
     this.enterInputIdleTimer = setTimeout(() => {
       this.enterInputIdleTimer = null;
       this.enterInputPending = false;
+      // Catch up any viewport motion deferred while Enter protection blocked
+      // scroll-prune (e.g. user scrolled during the post-Enter window).
+      this.markVisibleRangeDirty();
+      this.triggerRefresh("debounced", "write");
     }, KeywordHighlighter.WRITE_PRUNE_IDLE_MS);
   }
 

@@ -1166,6 +1166,55 @@ test("Enter-driven scroll before writeParsed does not prune keyword decorations"
   }
 });
 
+test("scroll during Enter protection marks viewport dirty for idle catch-up", async () => {
+  const raf = installAnimationFrameQueue();
+  try {
+    const { term, handlers } = createFakeTerminal("hello DEPLOY world", {
+      lineCount: 40,
+    });
+    term.buffer.active.viewportY = 20;
+    term.buffer.active.baseY = 20;
+    const highlighter = new KeywordHighlighter(term as never);
+    highlighter.setRules([{
+      id: "deploy",
+      label: "Deploy",
+      patterns: ["DEPLOY"],
+      color: "#F87171",
+      enabled: true,
+    }], true);
+    raf.flush();
+
+    const internals = highlighter as unknown as {
+      lastWriteAt: number;
+      enterInputPending: boolean;
+      dirtyAllInRenderRange: boolean;
+      pendingRefreshReason: string | null;
+    };
+    internals.lastWriteAt = performance.now() - 10_000;
+
+    handlers.data?.("\r");
+    handlers.writeParsed?.();
+    assert.equal(internals.enterInputPending, true);
+
+    // User scrolls while Enter protection is still active — must not scroll-prune,
+    // but must dirty the viewport so idle-clear catch-up can rescan.
+    internals.dirtyAllInRenderRange = false;
+    term.buffer.active.viewportY += 5;
+    handlers.scroll?.();
+    assert.equal(
+      internals.dirtyAllInRenderRange,
+      true,
+      "scroll during Enter protection should mark the viewport dirty for catch-up",
+    );
+
+    await new Promise((resolve) => { setTimeout(resolve, 700); });
+    assert.equal(internals.enterInputPending, false);
+    highlighter.dispose();
+  } finally {
+    raf.restore();
+  }
+});
+
 test("Enter cancels a queued user-scroll prune before it can flash keywords", async () => {
   const raf = installAnimationFrameQueue();
   try {
