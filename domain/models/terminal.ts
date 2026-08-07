@@ -396,9 +396,16 @@ export const normalizeTerminalSettings = (
     ? 'dom' as const
     : mergedSettings.rendererType;
 
+  // Persisted installs wrote the old default (8) into localStorage with no UI
+  // to change it; bump that sentinel to the new default while keeping custom caps.
+  const autocompleteMaxSuggestions = mergedSettings.autocompleteMaxSuggestions === 8
+    ? DEFAULT_TERMINAL_SETTINGS.autocompleteMaxSuggestions
+    : mergedSettings.autocompleteMaxSuggestions;
+
   return {
     ...mergedSettings,
     rendererType,
+    autocompleteMaxSuggestions,
     hibernateHiddenTabsDelaySec: normalizeHibernateHiddenTabsDelaySec(
       mergedSettings.hibernateHiddenTabsDelaySec,
     ),
