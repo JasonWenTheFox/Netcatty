@@ -285,9 +285,13 @@ export const useVaultState = () => {
   const customGroupsRef = useRef<string[]>([]);
   const managedSourcesRef = useRef<ManagedSource[]>([]);
   const hostsRef = useRef<Host[]>([]);
+  const notesRef = useRef<VaultNote[]>([]);
+  const noteGroupsRef = useRef<string[]>([]);
   customGroupsRef.current = customGroups;
   managedSourcesRef.current = managedSources;
   hostsRef.current = hosts;
+  notesRef.current = notes;
+  noteGroupsRef.current = noteGroups;
 
   // Write-version counters prevent out-of-order async writes from overwriting
   // newer data.  Each update bumps the counter; the .then() callback only
@@ -596,14 +600,20 @@ export const useVaultState = () => {
 
   const updateNotes = useCallback((data: Partial<VaultNote>[]) => {
     const cleaned = normalizeVaultNotes(data);
+    notesRef.current = cleaned;
     setNotes(cleaned);
     localStorageAdapter.write(STORAGE_KEY_NOTES, cleaned);
+    // Publish synchronously so Notes→AI handoff does not read a stale catalog
+    // while React state is still committing (useLayoutEffect republishes too).
+    publishNotesSnapshot({ notes: cleaned, noteGroups: noteGroupsRef.current });
   }, []);
 
   const updateNoteGroups = useCallback((data: unknown) => {
     const cleaned = normalizeNoteGroups(data);
+    noteGroupsRef.current = cleaned;
     setNoteGroups(cleaned);
     localStorageAdapter.write(STORAGE_KEY_NOTE_GROUPS, cleaned);
+    publishNotesSnapshot({ notes: notesRef.current, noteGroups: cleaned });
   }, []);
 
   const updateCustomGroups = useCallback((
