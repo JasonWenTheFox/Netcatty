@@ -29,10 +29,11 @@ test("NoteTitleInput commits the local draft on blur before parent flush", () =>
   assert.match(source, /onBlur\?\.\(\)/);
 });
 
-test("NotesManager title rows stash live IME drafts into refs", () => {
-  assert.match(managerSource, /stashNoteTitleDraft/);
-  assert.match(managerSource, /onLiveDraft=\{\(title\) => stashNoteTitleDraft/);
-  assert.match(managerSource, /draftTitleRef\.current = title/);
+test("NoteTitleInput clears live-stashed title when composition is externally superseded", () => {
+  assert.match(
+    source,
+    /supersededRef\.current = true;[\s\S]*?setDraft\(value\);[\s\S]*?onLiveDraft\?\.\(value\)/,
+  );
 });
 
 test("NoteTitleInput resets IME guards when the active note changes", () => {
@@ -51,4 +52,10 @@ test("NotesManager title rows use NoteTitleInput instead of raw controlled saves
     managerSource,
     /data-note-title-row[\s\S]{0,500}<input[\s\S]{0,250}onChange=\{\(event\) => saveNoteTitleDraft/,
   );
+});
+
+test("NotesManager title rows stash live IME drafts into refs", () => {
+  assert.match(managerSource, /stashNoteTitleDraft/);
+  assert.match(managerSource, /onLiveDraft=\{\(title\) => stashNoteTitleDraft/);
+  assert.match(managerSource, /draftTitleRef\.current = title/);
 });

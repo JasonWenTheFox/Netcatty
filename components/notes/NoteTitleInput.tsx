@@ -131,6 +131,9 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
         if (value !== valueAtComposeStartRef.current || supersededRef.current) {
           supersededRef.current = true;
           setDraft(value);
+          // Drop any live-stashed composed text so teardown flush cannot persist
+          // the rejected IME draft over the authoritative external title.
+          onLiveDraft?.(value);
           window.setTimeout(() => {
             if (supersededRef.current && !composingRef.current) {
               supersededRef.current = false;
