@@ -69,8 +69,10 @@ import {
   publishNotesSnapshot,
   registerNotesActions,
 } from "./notesStore";
+import { commitVaultNotesWrite } from "./vaultNotesPersistence";
 import { publishShellHistorySnapshot } from "./shellHistoryStore";
 import { setVaultInitialized } from "./vaultInitStore";
+import { notify } from "../notification";
 import {
   decryptGroupConfigs,
   decryptHosts,
@@ -598,13 +600,24 @@ export const useVaultState = () => {
   }, []);
 
   const updateNotes = useCallback((data: Partial<VaultNote>[]) => {
-    const cleaned = normalizeVaultNotes(data);
+    const { notes: cleaned, persisted } = commitVaultNotesWrite({
+      data,
+      write: (key, value) => localStorageAdapter.write(key, value),
+    });
+    // Keep the in-session catalog updated so an autosave quota failure does not
+    // snap the editor back to stale props and discard the user's draft. Disk
+    // may still be behind — surface that explicitly.
     notesRef.current = cleaned;
     setNotes(cleaned);
-    localStorageAdapter.write(STORAGE_KEY_NOTES, cleaned);
-    // Publish synchronously so Notes→AI handoff does not read a stale catalog
-    // while React state is still committing (useLayoutEffect republishes too).
     publishNotesSnapshot({ notes: cleaned, noteGroups: noteGroupsRef.current });
+    if (!persisted) {
+      notify.error(
+        "Notes could not be saved. Free some local storage space and try again.",
+        "Notes",
+      );
+      return false;
+    }
+    return true;
   }, []);
 
   const updateNoteGroups = useCallback((data: unknown) => {
