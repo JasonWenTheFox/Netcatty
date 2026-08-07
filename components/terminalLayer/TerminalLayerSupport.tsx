@@ -511,8 +511,6 @@ export interface TerminalLayerProps {
   identities: Identity[];
   snippets: Snippet[];
   snippetPackages: string[];
-  notes: VaultNote[];
-  noteGroups: string[];
   openNoteRequest?: { tabId: string; noteId: string; requestId: number } | null;
   onOpenVaultNoteFromChat?: (noteId: string) => void;
   onOpenVaultHostFromChat?: (hostId: string) => void;
@@ -581,8 +579,6 @@ export interface TerminalLayerProps {
   updateHosts: (hosts: Host[]) => void;
   updateSnippets?: (snippets: Snippet[]) => void;
   updateSnippetPackages?: (packages: string[]) => void;
-  updateNotes: (notes: VaultNote[]) => void;
-  updateNoteGroups: (groups: string[]) => void;
   sftpDefaultViewMode: 'list' | 'tree';
   sftpDoubleClickBehavior: 'open' | 'transfer';
   sftpAutoSync: boolean;
@@ -761,8 +757,7 @@ const terminalPanePropsAreEqual = (
   prev.fontSize === next.fontSize &&
   prev.terminalTheme === next.terminalTheme &&
   prev.followAppTerminalTheme === next.followAppTerminalTheme &&
-  prev.accentMode === next.accentMode &&
-  prev.customAccent === next.customAccent &&
+  // accentMode / customAccent intentionally omitted — Terminal reads appearanceChromeStore.
   prev.terminalSettings === next.terminalSettings &&
   prev.hotkeyScheme === next.hotkeyScheme &&
   prev.disableTerminalFontZoom === next.disableTerminalFontZoom &&
@@ -1534,8 +1529,7 @@ const terminalPanesHostPropsAreEqual = (
   if (prev.fontSize !== next.fontSize) return false;
   if (prev.terminalTheme !== next.terminalTheme) return false;
   if (prev.followAppTerminalTheme !== next.followAppTerminalTheme) return false;
-  if (prev.accentMode !== next.accentMode) return false;
-  if (prev.customAccent !== next.customAccent) return false;
+  // accentMode / customAccent intentionally omitted — Terminal reads appearanceChromeStore.
   if (prev.terminalSettings !== next.terminalSettings) return false;
   if (prev.hotkeyScheme !== next.hotkeyScheme) return false;
   if (prev.disableTerminalFontZoom !== next.disableTerminalFontZoom) return false;

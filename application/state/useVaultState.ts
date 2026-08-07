@@ -65,6 +65,10 @@ import {
 } from "../../domain/connectionLogTerminalData";
 import { getNextVaultOrder, normalizeVaultOrder } from "../../domain/vaultOrder";
 import { loadSanitizedShellHistory } from "./shellHistoryPersistence";
+import {
+  publishNotesSnapshot,
+  registerNotesActions,
+} from "./notesStore";
 import { publishShellHistorySnapshot } from "./shellHistoryStore";
 import { setVaultInitialized } from "./vaultInitStore";
 import {
@@ -827,6 +831,18 @@ export const useVaultState = () => {
   useLayoutEffect(() => {
     publishShellHistorySnapshot(shellHistory);
   }, [shellHistory]);
+
+  // Notes catalog for Notes / AI side panels — keep TerminalLayer off the hot path.
+  useLayoutEffect(() => {
+    publishNotesSnapshot({ notes, noteGroups });
+  }, [notes, noteGroups]);
+
+  useLayoutEffect(() => {
+    registerNotesActions({ updateNotes, updateNoteGroups });
+    return () => {
+      registerNotesActions(null);
+    };
+  }, [updateNotes, updateNoteGroups]);
 
   const addShellHistoryEntry = useCallback(
     (entry: Omit<ShellHistoryEntry, "id" | "timestamp">) => {

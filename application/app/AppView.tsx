@@ -464,8 +464,6 @@ function AppViewInner({ domains }: AppViewProps) {
           identities={identities}
           snippets={snippets}
           snippetPackages={snippetPackages}
-          notes={notes}
-          noteGroups={noteGroups}
           sessions={sessions}
           workspaces={workspaces}
           knownHosts={effectiveKnownHosts}
@@ -529,8 +527,6 @@ function AppViewInner({ domains }: AppViewProps) {
           updateHosts={updateTerminalHosts}
           updateSnippets={updateSnippets}
           updateSnippetPackages={updateSnippetPackages}
-          updateNotes={updateNotes}
-          updateNoteGroups={updateNoteGroups}
           sftpDefaultViewMode={sftpDefaultViewMode}
           sftpDoubleClickBehavior={sftpDoubleClickBehavior}
           sftpAutoSync={sftpAutoSync}

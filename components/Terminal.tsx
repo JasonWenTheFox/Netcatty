@@ -66,6 +66,7 @@ import { useStoredBoolean } from "../application/state/useStoredBoolean";
 import { readOptionalStoredStringValue, useStoredString } from "../application/state/useStoredString";
 import { useSessionLogBackend } from "../application/state/useSessionLogBackend";
 import { useTerminalLayoutSuppressActive } from "../application/state/terminalLayoutSuppressStore";
+import { useAppearanceChromeStore } from "../application/state/appearanceChromeStore";
 import {
   shouldPublishPluginTerminalSessionMountLifecycle,
   usePluginTerminalSessionLifecycle,
@@ -260,8 +261,6 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   fontSize,
   terminalTheme,
   followAppTerminalTheme = false,
-  accentMode = "theme",
-  customAccent = "",
   terminalSettings,
   sessionId,
   workspaceId,
@@ -1263,6 +1262,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       platform,
     });
   }, [availableFonts, fontFamilyId, hasFontFamilyOverride, host.fontFamily, terminalSettings?.fallbackFont]);
+
+  const { accentMode, customAccent } = useAppearanceChromeStore();
 
   const baseEffectiveTheme = useMemo(() => {
     if (appearanceTheme) return appearanceTheme;
