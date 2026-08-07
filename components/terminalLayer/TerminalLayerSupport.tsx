@@ -242,14 +242,6 @@ export const filterTabsMap = <T,>(source: Map<string, T>, validIds: Set<string>)
 
 export { ChunkedEscapeFilter, hasNotifiableTerminalOutput } from './activityEscapeFilter';
 
-export type AIPanelContext = {
-  scopeType: 'terminal' | 'workspace';
-  scopeTargetId?: string;
-  scopeHostIds: string[];
-  scopeLabel: string;
-  terminalSessions: AITerminalSessionInfo[];
-};
-
 type AIStateValue = ReturnType<typeof useAIState>;
 
 const AIStateContext = createContext<AIStateValue | null>(null);
