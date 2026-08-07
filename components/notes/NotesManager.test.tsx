@@ -250,8 +250,9 @@ test("NotesManager tree rename allows clearing note titles", () => {
   const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
   const renameBlock = source.match(/onRenameCommit=\{\(name\) => \{[\s\S]*?\}\}/)?.[0] ?? "";
 
-  assert.match(renameBlock, /saveNote\(\{ \.\.\.note, title: name\.trim\(\)/);
+  assert.match(renameBlock, /renameNoteFromTree\(note\.id, name\)/);
   assert.doesNotMatch(renameBlock, /if \(!title\) return/);
+  assert.match(source, /note\.id === noteId \? \{ \.\.\.note, title: nextTitle, updatedAt \}/);
 });
 
 test("NotesManager sidebar mode renders list without editor by default", () => {
