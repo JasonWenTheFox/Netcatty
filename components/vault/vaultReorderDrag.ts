@@ -267,52 +267,46 @@ export const useVaultItemReorder = ({
 
   const handleDropCapture = React.useCallback((event: React.DragEvent<HTMLElement>) => {
     if (disabled) return;
-    const target = (event.target as Element | null)?.closest(selector);
-    clearVaultDropIndicator();
-    if (!(target instanceof HTMLElement)) return;
+    try {
+      const target = (event.target as Element | null)?.closest(selector);
+      clearVaultDropIndicator();
+      if (!(target instanceof HTMLElement)) return;
 
-    const sourceId = draggingIdRef.current || event.dataTransfer.getData(dragType);
-    const targetId = target.getAttribute(targetAttribute);
-    if (!sourceId || !targetId) {
-      lastPreviewReorderRef.current = null;
-      draggingIdRef.current = null;
-      setDraggingId(null);
-      return;
+      const sourceId = draggingIdRef.current || event.dataTransfer.getData(dragType);
+      const targetId = target.getAttribute(targetAttribute);
+      if (!sourceId || !targetId) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (sourceId === targetId) return;
+
+      const position = getVaultDropPosition(
+        target,
+        event.clientX,
+        event.clientY,
+        viewMode === "grid",
+      );
+      const previewKey = `${sourceId}:${targetId}:${position}`;
+      const usedLiveGridPreview = viewMode === "grid"
+        && !preferDropIndicator
+        && lastPreviewReorderRef.current === previewKey;
+      if (!usedLiveGridPreview) {
+        prepareGridLayoutAnimation();
+        onReorder(sourceId, targetId, position);
+      }
+    } finally {
+      // Virtualized cards can unmount mid-drag so dragend never fires — always
+      // clear drag ids on drop, including padding / empty-cell drops.
+      reset();
     }
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (sourceId === targetId) {
-      lastPreviewReorderRef.current = null;
-      draggingIdRef.current = null;
-      setDraggingId(null);
-      return;
-    }
-
-    const position = getVaultDropPosition(
-      target,
-      event.clientX,
-      event.clientY,
-      viewMode === "grid",
-    );
-    const previewKey = `${sourceId}:${targetId}:${position}`;
-    const usedLiveGridPreview = viewMode === "grid"
-      && !preferDropIndicator
-      && lastPreviewReorderRef.current === previewKey;
-    if (!usedLiveGridPreview) {
-      prepareGridLayoutAnimation();
-      onReorder(sourceId, targetId, position);
-    }
-    lastPreviewReorderRef.current = null;
-    draggingIdRef.current = null;
-    setDraggingId(null);
   }, [
     disabled,
     dragType,
     onReorder,
     preferDropIndicator,
     prepareGridLayoutAnimation,
+    reset,
     selector,
     targetAttribute,
     viewMode,

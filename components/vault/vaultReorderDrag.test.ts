@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   getVaultDropIntent,
@@ -131,4 +132,11 @@ test("group drop without a host leaves host drag state alone", () => {
 
   assert.equal(handled, false);
   assert.deepEqual(calls, []);
+});
+
+test("handleDropCapture always resets drag state, even without a valid target", () => {
+  const source = readFileSync(new URL("./vaultReorderDrag.ts", import.meta.url), "utf8");
+  assert.match(source, /handleDropCapture = React\.useCallback/);
+  assert.match(source, /finally \{[\s\S]*?reset\(\);/);
+  assert.match(source, /Virtualized cards can unmount mid-drag/);
 });
