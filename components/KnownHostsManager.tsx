@@ -55,6 +55,7 @@ import {
 import { VaultDeleteConfirmDialog } from "./vault/VaultDeleteConfirmDialog";
 import { VaultEntityIcon, vaultPrimaryIconClass } from "./vault/VaultEntityIcon";
 import { VirtualizedHostCollection } from "./vault/VirtualizedHostCollection";
+import { getKnownHostsGridColumnCount } from "./knownHostsGridLayout";
 import { useVaultItemReorder } from "./vault/vaultReorderDrag";
 
 const VIRTUALIZE_THRESHOLD = 30;
