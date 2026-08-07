@@ -649,10 +649,35 @@ export const InlineMarkdownEditor = React.memo(function InlineMarkdownEditor({
     });
   }, [hosts]);
 
+  // Host-link chrome follows hosts / mode, not every markdown keystroke.
+  // Preview mode also watches DOM mutations (coalesced to rAF) after note open.
   useEffect(() => {
-    const frame = window.requestAnimationFrame(annotateHostLinks);
-    return () => window.cancelAnimationFrame(frame);
-  }, [annotateHostLinks, value]);
+    const container = containerRef.current;
+    if (!container) return;
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        annotateHostLinks();
+      });
+    };
+
+    schedule();
+    if (editorMode !== "preview") {
+      return () => {
+        if (frame) window.cancelAnimationFrame(frame);
+      };
+    }
+
+    const observer = new MutationObserver(schedule);
+    observer.observe(container, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [annotateHostLinks, editorMode]);
 
   const annotateCodeBlockCopyButtons = useCallback(() => {
     const container = containerRef.current;

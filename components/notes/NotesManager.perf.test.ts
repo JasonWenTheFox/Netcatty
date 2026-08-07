@@ -42,3 +42,24 @@ test("Vault notes section is memoized against unrelated VaultView churn", () => 
   assert.match(layoutSource, /const handleNotesOpenHost = useCallback/);
   assert.match(layoutSource, /onOpenHost=\{handleNotesOpenHost\}/);
 });
+
+test("hidden terminal notes side panel does not subscribe to notes publishes", () => {
+  const slotsSource = readFileSync(
+    new URL("../terminalLayer/terminalLayerSidePanelSlots.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(slotsSource, /useNotesStore\(\{\s*enabled:\s*isVisible\s*\}\)/);
+});
+
+test("host-link annotation does not re-run on every markdown value keystroke", () => {
+  const editorSource = readFileSync(
+    new URL("./InlineMarkdownEditor.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    editorSource,
+    /annotateHostLinks,\s*value\s*\]/,
+    "value in annotateHostLinks effect deps walks the DOM on every keystroke",
+  );
+  assert.match(editorSource, /\[annotateHostLinks, editorMode\]/);
+});
