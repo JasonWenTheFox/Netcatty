@@ -900,6 +900,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
       hosts,
       keys,
       managedSources,
+      notify: toast,
       onReadPersistedHosts,
       onUpdateHosts,
       onUpdateKeys,

@@ -246,6 +246,13 @@ test("NotesManager shows placeholder label for notes without titles", () => {
   assert.match(markup, /Note title/);
 });
 
+test("NotesManager flushes drafts on pagehide/beforeunload", () => {
+  const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
+  assert.match(source, /addEventListener\("pagehide"/);
+  assert.match(source, /addEventListener\("beforeunload"/);
+  assert.match(source, /flushNoteDraft/);
+});
+
 test("NotesManager tree rename allows clearing note titles", () => {
   const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
   const renameBlock = source.match(/onRenameCommit=\{\(name\) => \{[\s\S]*?\}\}/)?.[0] ?? "";

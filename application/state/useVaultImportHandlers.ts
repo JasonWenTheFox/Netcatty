@@ -36,14 +36,14 @@ import {
   type VaultImportFormat,
 } from "../../domain/vaultImport";
 import type { GroupConfig, Host, ManagedSource, SSHKey } from "../../types";
-import type { ImportOptions } from "../../components/vault/ImportVaultDialog";
-import { toast } from "../../components/ui/toast";
+import type { VaultImportNotifier, VaultImportOptions } from "./vaultImportOptions";
 
 interface UseVaultImportHandlersOptions {
   customGroups: string[];
   hosts: Host[];
   keys: SSHKey[];
   managedSources: ManagedSource[];
+  notify: VaultImportNotifier;
   onReadPersistedHosts: () => Promise<Host[]>;
   onUpdateHosts: (hosts: Host[]) => VaultHostPersistenceResult | Promise<VaultHostPersistenceResult>;
   onUpdateKeys: (keys: SSHKey[]) => void;
@@ -73,6 +73,7 @@ export function useVaultImportHandlers({
   hosts,
   keys,
   managedSources,
+  notify,
   onReadPersistedHosts,
   onUpdateHosts,
   onUpdateKeys,
@@ -109,7 +110,7 @@ export function useVaultImportHandlers({
   }, [setIsImportOpen]);
 
   const handleImportFileSelected = useCallback(
-      async (format: VaultImportFormat, files: File[], options?: ImportOptions) => {
+      async (format: VaultImportFormat, files: File[], options?: VaultImportOptions) => {
         const file = files[0];
         if (!file) return;
         if (importInFlightRef.current) return;
@@ -287,7 +288,7 @@ export function useVaultImportHandlers({
               stage: "failed",
               error: message,
             });
-            toast.error(
+            notify.error(
               message,
               t("vault.import.sshConfig.noFilePath"),
             );
@@ -305,7 +306,7 @@ export function useVaultImportHandlers({
                 stage: "failed",
                 error: message,
               });
-              toast.error(
+              notify.error(
                 message,
                 t("vault.import.sshConfig.alreadyManaged"),
               );
@@ -601,7 +602,7 @@ export function useVaultImportHandlers({
               stage: "failed",
               error: message,
             });
-            toast.error(
+            notify.error(
               message,
               t("vault.import.toast.failedTitle"),
             );
@@ -617,7 +618,7 @@ export function useVaultImportHandlers({
               skipped,
               duplicates,
             });
-            toast.warning(
+            notify.warning(
               t("vault.import.toast.noNewHosts", { format: formatLabel }),
               t("vault.import.toast.completedTitle"),
             );
@@ -628,7 +629,7 @@ export function useVaultImportHandlers({
           rollbackSnapshot = null;
   
           if (isManaged) {
-            toast.success(
+            notify.success(
               t("vault.import.sshConfig.managedSuccess", { count: totalAffected }),
               t("vault.import.toast.completedTitle"),
             );
@@ -641,12 +642,12 @@ export function useVaultImportHandlers({
   
             if (hasWarnings) {
               const firstIssue = result.issues[0]?.message;
-              toast.warning(
+              notify.warning(
                 firstIssue ? `${details} ${t("vault.import.toast.firstIssue", { issue: firstIssue })}` : details,
                 t("vault.import.toast.completedTitle"),
               );
             } else {
-              toast.success(details, t("vault.import.toast.completedTitle"));
+              notify.success(details, t("vault.import.toast.completedTitle"));
             }
           }
           updateProgress({
@@ -684,7 +685,7 @@ export function useVaultImportHandlers({
             stage: "failed",
             error: message,
           });
-          toast.error(message, t("vault.import.toast.failedTitle"));
+          notify.error(message, t("vault.import.toast.failedTitle"));
         } finally {
           if (activeImportAbortRef.current === abortController) {
             activeImportAbortRef.current = null;
@@ -694,6 +695,7 @@ export function useVaultImportHandlers({
         }
       },
       [
+        notify,
         onReadPersistedHosts,
         onCommitVaultImportTransaction,
         onReadPersistedManagedSources,
