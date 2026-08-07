@@ -113,8 +113,6 @@ export const enVaultMessages: Messages = {
   'knownHosts.empty.title': 'No Known Hosts',
   'knownHosts.empty.desc':
     "Known hosts are SSH servers you've connected to before. Import from your system's known_hosts file to get started.",
-  'knownHosts.results.showingLimited':
-    'Showing {shown} of {total} hosts. Use search to find specific hosts.',
   'knownHosts.toast.scanUnavailable': 'System scan is unavailable on this platform.',
   'knownHosts.toast.scanNoFile': 'No system known_hosts file found.',
   'knownHosts.toast.scanNoEntries': 'No usable entries found in known_hosts.',

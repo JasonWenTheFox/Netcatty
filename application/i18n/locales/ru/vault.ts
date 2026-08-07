@@ -150,8 +150,6 @@ export const ruVaultMessages: Messages = {
   'knownHosts.empty.title': 'Нет известных хостов',
   'knownHosts.empty.desc':
     'Известные хосты — это SSH-серверы, к которым вы подключались раньше. Импортируйте системный файл known_hosts, чтобы начать.',
-  'knownHosts.results.showingLimited':
-    'Показано {shown} из {total} хостов. Используйте поиск, чтобы найти нужные хосты.',
   'knownHosts.toast.scanUnavailable': 'Сканирование системы недоступно на этой платформе.',
   'knownHosts.toast.scanNoFile': 'Системный файл known_hosts не найден.',
   'knownHosts.toast.scanNoEntries': 'В known_hosts не найдено пригодных записей.',

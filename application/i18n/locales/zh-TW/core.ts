@@ -732,7 +732,6 @@ export const zhTWCoreMessages: Messages = {
   'knownHosts.empty.title': '暫無已知主機',
   'knownHosts.empty.desc':
     'Known Hosts 是你之前連線過的 SSH server。匯入系統的 known_hosts 檔案以開始。',
-  'knownHosts.results.showingLimited': '顯示 {shown}/{total} 個主機。使用搜索查詢特定主機。',
   'knownHosts.toast.scanUnavailable': '目前平台無法掃描系統 known_hosts。',
   'knownHosts.toast.scanNoFile': '未找到系統 known_hosts 檔案。',
   'knownHosts.toast.scanNoEntries': 'known_hosts 中沒有可用條目。',
