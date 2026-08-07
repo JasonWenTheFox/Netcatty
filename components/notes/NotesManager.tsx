@@ -591,8 +591,14 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     return commitNotes(mutator(sortedNotesRef.current));
   }, [commitNotes, flushNoteDraft]);
 
-  const saveNote = (nextNote: VaultNote) => {
-    commitNotesAfterFlush((notes) => notes.map((note) => (note.id === nextNote.id ? nextNote : note)));
+  /** Rename from the tree row: merge title into the post-flush note so an
+   *  unflushed body edit is not discarded by a stale tree-row snapshot. */
+  const renameNoteFromTree = (noteId: string, title: string) => {
+    const nextTitle = title.trim();
+    const updatedAt = Date.now();
+    commitNotesAfterFlush((notes) => notes.map((note) => (
+      note.id === noteId ? { ...note, title: nextTitle, updatedAt } : note
+    )));
   };
 
   const saveNoteTitleDraft = (note: VaultNote, title: string) => {
@@ -1208,7 +1214,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
             editingInitialName={note.title}
             onRenameCommit={(name) => {
               setEditingNoteId(null);
-              saveNote({ ...note, title: name.trim(), updatedAt: Date.now() });
+              renameNoteFromTree(note.id, name);
             }}
             onRenameCancel={() => setEditingNoteId(null)}
             icon={<FileText size={16} className="mr-2 shrink-0 text-muted-foreground" />}

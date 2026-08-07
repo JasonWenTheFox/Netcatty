@@ -215,11 +215,9 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
   }, [historySessionId, sessionHostsMap]);
 
   const themeState = useTerminalThemePanelState({
-    accentMode: s.accentMode,
     activeSession,
     activeSidePanelTab: activeSidePanelTools.has('theme') ? 'theme' : activeSidePanelTab,
     activeWorkspace,
-    customAccent: s.customAccent,
     followAppTerminalTheme: s.followAppTerminalTheme,
     focusedSessionId,
     fontSize: s.fontSize,
