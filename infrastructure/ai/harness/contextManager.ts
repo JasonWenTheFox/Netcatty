@@ -372,7 +372,8 @@ function applyStepBudgetGuard(
   }
   while (afterTotal >= threshold && next.length > 2) {
     const pruned = pruneFirstModelMessage(next);
-    if (pruned.length === next.length) break;
+    // Never accept a prune that empties the conversation — streamText rejects [].
+    if (pruned.length === 0 || pruned.length === next.length) break;
     next = pruned;
     didAdjust = true;
     afterTotal = computeTotalInputTokens({
@@ -430,6 +431,7 @@ export async function prepareStepContext(
     didHandleNotice = true;
   }
 
+  const preBudgetMessages = working;
   const budgetGuard = applyStepBudgetGuard(working, {
     contextWindow,
     reservedTokens: input.reservedTokens ?? 0,
@@ -437,7 +439,9 @@ export async function prepareStepContext(
     providerId: input.providerId,
     protectRecentMessages: protectRecent,
   });
-  working = budgetGuard.messages;
+  working = budgetGuard.messages.length > 0 || preBudgetMessages.length === 0
+    ? budgetGuard.messages
+    : preBudgetMessages;
   if (didHandleNotice && pendingHandles.length > 0) {
     const hasHandleNotice = working.some(
       (message) => message.role === 'user' && isStepHandleNoticeMessage(message.content),
@@ -467,8 +471,15 @@ export async function prepareStepContext(
       providerId: input.providerId,
       protectRecentMessages: protectRecent,
     });
-    working = [...notices, ...finalGuard.messages];
+    const guardedBody = finalGuard.messages.length > 0 || body.length === 0
+      ? finalGuard.messages
+      : body;
+    working = [...notices, ...guardedBody];
     budgetGuard.didAdjust = budgetGuard.didAdjust || finalGuard.didAdjust;
+  }
+  // Last-resort: never hand streamText an empty messages array when the input had content.
+  if (working.length === 0 && input.messages.length > 0) {
+    working = preBudgetMessages.length > 0 ? preBudgetMessages : input.messages;
   }
   const didBudgetAdjust = integrity.didAdjust || stale.didAdjust || typed.didAdjust || budgetGuard.didAdjust;
   const didAdjust = didBudgetAdjust || didHandleNotice;

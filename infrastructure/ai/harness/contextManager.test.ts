@@ -251,6 +251,53 @@ test('prepareStepContext retains handle notice after step budget guard', async (
   assert.match(String(notices[0]?.content), /\[step 2\]/);
 });
 
+test('prepareStepContext keeps post-tool turn messages when step budget prune would empty them', async () => {
+  const messages: ModelMessage[] = [
+    { role: 'user', content: 'Check disk usage on prod-web-01.' },
+    {
+      role: 'assistant',
+      content: [{
+        type: 'tool-call',
+        toolCallId: 'call-disk',
+        toolName: 'terminal_execute',
+        input: { sessionId: 'sess-1', command: 'df -h' },
+      }],
+    },
+    {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call-disk',
+        toolName: 'terminal_execute',
+        output: { type: 'text', value: 'Filesystem Size Used Avail Use% Mounted on\n/dev/sda1 100G 90G 10G 90% /' },
+      }],
+    },
+  ];
+
+  const prepared = await prepareStepContext({
+    messages,
+    stepNumber: 1,
+    sessionId: 'chat-empty-guard',
+    chatSessionId: 'chat-empty-guard',
+    // Tiny window + huge reserve forces applyStepBudgetGuard into prune loop.
+    contextWindow: 2_000,
+    reservedTokens: 50_000,
+    maxOutputTokens: 256,
+    providerId: 'anthropic',
+    runtimeContext: createInitialCattyRuntimeContext({
+      chatSessionId: 'chat-empty-guard',
+      turnId: 'turn-empty-guard',
+      permissionMode: 'confirm',
+      scopeType: 'terminal',
+    }),
+  });
+
+  assert.ok(prepared.messages.length > 0, 'messages must not be empty after step budget prune');
+  const serialized = JSON.stringify(prepared.messages);
+  assert.match(serialized, /call-disk/);
+  assert.match(serialized, /tool-result|df -h|Filesystem/);
+});
+
 test('prepareStepContext never leaves orphan results from a parallel tool batch', async () => {
   const toolCallIds = ['a', 'b', 'c', 'd', 'e', 'f'];
   const messages: ModelMessage[] = [
