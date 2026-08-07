@@ -220,3 +220,19 @@ test('tray panel connect flush latches against StrictMode double invoke', () => 
     /if \(pendingTrayConnectFlushKeyRef\.current === flushKey\) return;/,
   );
 });
+
+test('ssh transport idle TTL notify latches against StrictMode double invoke', () => {
+  const settingsSource = readFileSync(
+    new URL('../state/useSettingsState.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(settingsSource, /lastPushedSshTransportIdleTtlRef/);
+  assert.match(
+    settingsSource,
+    /if \(lastPushedSshTransportIdleTtlRef\.current === sshTransportIdleTtlMs\) return;/,
+  );
+  assert.match(
+    settingsSource,
+    /lastPushedSshTransportIdleTtlRef\.current = sshTransportIdleTtlMs;/,
+  );
+});

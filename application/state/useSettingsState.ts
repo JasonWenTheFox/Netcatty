@@ -756,7 +756,12 @@ export const useSettingsState = (options: { enableSettingsSync?: boolean; enable
 
   // Push idle TTL to the main-process transport registry on load and whenever
   // it changes (including cross-window IPC/storage updates to local state).
+  // Latch the last pushed value so StrictMode double-invoke (and notify fn
+  // identity churn) does not spam the main process with identical IPC.
+  const lastPushedSshTransportIdleTtlRef = useRef<number | null>(null);
   useEffect(() => {
+    if (lastPushedSshTransportIdleTtlRef.current === sshTransportIdleTtlMs) return;
+    lastPushedSshTransportIdleTtlRef.current = sshTransportIdleTtlMs;
     notifySettingsChanged(STORAGE_KEY_SSH_TRANSPORT_IDLE_TTL_MS, sshTransportIdleTtlMs);
   }, [sshTransportIdleTtlMs, notifySettingsChanged]);
 
