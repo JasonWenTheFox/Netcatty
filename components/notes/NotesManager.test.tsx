@@ -257,6 +257,7 @@ test("NotesManager flushes drafts when retained mounts become inactive", () => {
   const source = readFileSync(new URL("./NotesManager.tsx", import.meta.url), "utf8");
   assert.match(source, /isActive\?: boolean/);
   assert.match(source, /if \(isActive\) return;/);
+  assert.match(source, /useLayoutEffect\(\(\) => \{\s*if \(isActive\) return;/);
   assert.match(source, /visibilitychange/);
 });
 

@@ -15,7 +15,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../application/i18n/I18nProvider";
 import { useApplicationBackend } from "../../application/state/useApplicationBackend";
 import { useStoredNumber } from "../../application/state/useStoredNumber";
@@ -473,7 +473,7 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
     flushNoteDraft();
   }, [flushNoteDraft]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (isActive) return;
     flushNoteDraft();
   }, [flushNoteDraft, isActive]);
