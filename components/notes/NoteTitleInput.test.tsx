@@ -17,6 +17,12 @@ test("NoteTitleInput keeps a local draft and only commits when IME composition i
   );
 });
 
+test("NoteTitleInput commits the local draft on blur before parent flush", () => {
+  assert.match(source, /onBlur=\{\(event\) => \{/);
+  assert.match(source, /onCommit\(next\)/);
+  assert.match(source, /onBlur\?\.\(\)/);
+});
+
 test("NoteTitleInput resets IME guards when the active note changes", () => {
   assert.match(source, /noteId/);
   assert.match(

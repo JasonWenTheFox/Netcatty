@@ -70,7 +70,17 @@ export const NoteTitleInput: React.FC<NoteTitleInputProps> = ({
       className={className}
       value={draft}
       placeholder={placeholder}
-      onBlur={onBlur}
+      onBlur={(event) => {
+        // Blur finalizes IME: commit the local draft before parent flushNoteDraft
+        // so composition-only titles are not lost when draftTitleRef was never set.
+        if (!supersededRef.current) {
+          composingRef.current = false;
+          const next = event.currentTarget.value;
+          setDraft(next);
+          onCommit(next);
+        }
+        onBlur?.();
+      }}
       onChange={(event) => {
         const superseded = resolveSupersededImeInputEvent({
           compositionExternallySuperseded: supersededRef.current,
