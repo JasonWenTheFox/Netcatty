@@ -1,28 +1,9 @@
 import type { Host, KnownHost } from "../../types";
-import type { HostKeyInfo } from "./TerminalHostKeyVerification";
+import type { HostKeyInfo, HostKeyVerificationRequest } from "../../domain/hostKey";
 import { createKnownHostFromHostKeyInfo as createKnownHostFromHostKeyInfoDomain } from "../../domain/knownHosts";
 
-export type HostKeyVerificationRequest = {
-  hostname: string;
-  port?: number;
-  keyType: string;
-  fingerprint: string;
-  publicKey?: string;
-  status?: "unknown" | "changed";
-  knownHostId?: string;
-  knownFingerprint?: string;
-};
-
-export const toHostKeyInfo = (request: HostKeyVerificationRequest): HostKeyInfo => ({
-  hostname: request.hostname,
-  port: request.port,
-  keyType: request.keyType,
-  fingerprint: request.fingerprint,
-  publicKey: request.publicKey,
-  status: request.status,
-  knownHostId: request.knownHostId,
-  knownFingerprint: request.knownFingerprint,
-});
+export type { HostKeyInfo, HostKeyVerificationRequest } from "../../domain/hostKey";
+export { toHostKeyInfo } from "../../domain/hostKey";
 
 export const createKnownHostFromHostKeyInfo = (
   hostKeyInfo: HostKeyInfo,
