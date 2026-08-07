@@ -24,6 +24,7 @@ test("virtualized and non-virtual known hosts share container column policy", ()
 
 test("virtualized known-host cards expose a focus target for keyboard nav", () => {
   const source = readFileSync(new URL("./KnownHostsManager.tsx", import.meta.url), "utf8");
-  assert.match(source, /data-vault-focus-target/);
-  assert.match(source, /tabIndex=\{0\}/);
+  // Grid and list HostItem roots both need a focus target for VirtualizedHostCollection.
+  assert.equal([...source.matchAll(/data-vault-focus-target/g)].length, 2);
+  assert.equal([...source.matchAll(/tabIndex=\{0\}/g)].length, 2);
 });
