@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import type { I18nContextValue } from '../i18n/I18nProvider';
 import { sessionCapabilitiesStore } from './sessionCapabilitiesStore';
-import type { SessionCapabilities } from '../domain/systemManager/types';
+import type { SessionCapabilities } from '../../domain/systemManager/types';
 import type { useSystemManagerBackend } from './useSystemManagerBackend';
 import { nextPollData } from '../../components/systemManager/listStable';
 

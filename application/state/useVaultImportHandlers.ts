@@ -24,7 +24,7 @@ import {
 
 /** Exit the import lock so a concurrent host save can finish, then retry. */
 const RETRY_VAULT_IMPORT_AFTER_CONCURRENT_EDIT = Symbol("retry-vault-import-after-concurrent-edit");
-import { sanitizeHost } from "../domain/host";
+import { sanitizeHost } from "../../domain/host";
 import {
   applyVaultImportDestination,
   applyVaultHostImport,
@@ -34,10 +34,10 @@ import {
   mergeVaultImportIssues,
   resolveVaultImportKeyPassphraseConflicts,
   type VaultImportFormat,
-} from "../domain/vaultImport";
-import type { GroupConfig, Host, ManagedSource, SSHKey } from "../types";
-import type { ImportOptions } from "../components/vault/ImportVaultDialog";
-import { toast } from "../components/ui/toast";
+} from "../../domain/vaultImport";
+import type { GroupConfig, Host, ManagedSource, SSHKey } from "../../types";
+import type { ImportOptions } from "../../components/vault/ImportVaultDialog";
+import { toast } from "../../components/ui/toast";
 
 interface UseVaultImportHandlersOptions {
   customGroups: string[];
