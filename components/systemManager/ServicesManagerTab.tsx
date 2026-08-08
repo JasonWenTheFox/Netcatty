@@ -65,6 +65,8 @@ interface ServicesManagerTabProps {
   isVisible: boolean;
   backend: Backend;
   refreshIntervalSec: number;
+  /** Network appliances: list only, no start/stop/restart. */
+  allowMutations?: boolean;
 }
 
 export const ServicesManagerTab = memo(function ServicesManagerTab({
@@ -72,6 +74,7 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
   isVisible,
   backend,
   refreshIntervalSec,
+  allowMutations = true,
 }: ServicesManagerTabProps) {
   const { t } = useI18n();
   const stableT = useStableTranslate();
@@ -217,7 +220,7 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
                     {unit.activeState}
                   </SystemPanelStatusBadge>
                 )}
-                actions={(
+                actions={allowMutations ? (
                   <div className="flex shrink-0 items-center justify-end gap-1">
                     {!isActive ? (
                       <SystemPanelRoundButton
@@ -241,7 +244,7 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
                       <RefreshCw size={12} />
                     </SystemPanelRoundButton>
                   </div>
-                )}
+                ) : null}
               />
             );
           })}
@@ -249,7 +252,7 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
       )}
 
       <SystemPanelConfirmDialog
-        open={pending !== null}
+        open={allowMutations && pending !== null}
         title={pending ? t(actionTitleKey(pending.action)) : ''}
         message={pending
           ? t('systemManager.services.confirmAction', {

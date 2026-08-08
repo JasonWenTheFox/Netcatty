@@ -37,6 +37,8 @@ interface PortsManagerTabProps {
   isVisible: boolean;
   backend: Backend;
   refreshIntervalSec: number;
+  /** Network appliances: list only, no process terminate. */
+  allowMutations?: boolean;
 }
 
 export const PortsManagerTab = memo(function PortsManagerTab({
@@ -44,6 +46,7 @@ export const PortsManagerTab = memo(function PortsManagerTab({
   isVisible,
   backend,
   refreshIntervalSec,
+  allowMutations = true,
 }: PortsManagerTabProps) {
   const { t } = useI18n();
   const stableT = useStableTranslate();
@@ -181,7 +184,7 @@ export const PortsManagerTab = memo(function PortsManagerTab({
                   {port.protocol.toUpperCase()}
                 </SystemPanelStatusBadge>
               )}
-              actions={port.pid != null ? (
+              actions={allowMutations && port.pid != null ? (
                 <SystemPanelRoundButton
                   title={t('systemManager.ports.terminate')}
                   destructive
@@ -196,7 +199,7 @@ export const PortsManagerTab = memo(function PortsManagerTab({
       )}
 
       <SystemPanelConfirmDialog
-        open={pendingKillPid != null}
+        open={allowMutations && pendingKillPid != null}
         title={t('systemManager.ports.terminate')}
         message={t('systemManager.ports.confirmTerminate', { pid: String(pendingKillPid ?? 0) })}
         confirmLabel={t('systemManager.ports.terminate')}

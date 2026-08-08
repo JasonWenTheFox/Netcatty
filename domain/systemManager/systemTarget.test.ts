@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allowSystemManagerMutations,
   buildSystemManagerTabs,
   shouldCollectServerStats,
   shouldShowGpuTab,
@@ -20,6 +21,7 @@ function caps(partial: Partial<SessionCapabilities> = {}): SessionCapabilities {
     hasNpuSmi: false,
     hasSs: false,
     hasNetstat: false,
+    hasLsof: false,
     hasSystemctl: false,
     probedAt: 1,
     ...partial,
@@ -59,8 +61,30 @@ test("ports and services tabs are detect-first like GPU", () => {
   assert.equal(shouldShowPortsTab(undefined), false);
   assert.equal(shouldShowPortsTab(caps({ hasSs: true })), true);
   assert.equal(shouldShowPortsTab(caps({ hasNetstat: true })), true);
+  assert.equal(shouldShowPortsTab(caps({ hasLsof: true })), true);
   assert.equal(shouldShowServicesTab(undefined), false);
   assert.equal(shouldShowServicesTab(caps({ hasSystemctl: true })), true);
+});
+
+test("network appliances keep Ports/Services read-only", () => {
+  const host = {
+    id: "host-1",
+    label: "Router",
+    hostname: "router.local",
+    username: "admin",
+    tags: [],
+    os: "linux" as const,
+    deviceType: "network" as const,
+  };
+  assert.equal(allowSystemManagerMutations(host), false);
+  assert.equal(allowSystemManagerMutations({
+    id: "host-2",
+    label: "Linux",
+    hostname: "linux.local",
+    username: "root",
+    tags: [],
+    os: "linux" as const,
+  }), true);
 });
 
 test("network devices hide processes until OS probe confirms a real target", () => {

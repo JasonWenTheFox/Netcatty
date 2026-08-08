@@ -70,11 +70,22 @@ export function shouldShowGpuTab(
   return capabilities?.hasNvidiaSmi === true || capabilities?.hasNpuSmi === true;
 }
 
-/** Ports tab only appears after ss or netstat is detected (same detect-first model as GPU). */
+/** Ports tab only appears after a collector binary is detected (same detect-first model as GPU). */
 export function shouldShowPortsTab(
   capabilities: SessionCapabilities | undefined,
 ): boolean {
-  return capabilities?.hasSs === true || capabilities?.hasNetstat === true;
+  return (
+    capabilities?.hasSs === true
+    || capabilities?.hasNetstat === true
+    || capabilities?.hasLsof === true
+  );
+}
+
+/** Destructive port/service actions stay off for network appliances. */
+export function allowSystemManagerMutations(
+  host: Host | null | undefined,
+): boolean {
+  return !isNetworkDeviceTarget(host);
 }
 
 /** Services tab only appears after systemctl is detected. */

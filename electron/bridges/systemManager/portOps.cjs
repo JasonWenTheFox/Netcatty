@@ -5,22 +5,25 @@
 /**
  * Listening-port collectors.
  * Parsing approach inspired by Portwatch (ss -tlnp + process field), adapted for
- * remote SSH exec and UDP + IPv6.
+ * remote SSH exec, UDP, IPv6, macOS netstat/lsof, and BusyBox netstat.
  */
 
 const LISTEN_PORTS_INNER = [
   'printf "%s\\n" "__NC_PORTS_BEGIN__"; ',
+  // Run every available collector. macOS often has netstat without useful PID
+  // columns; lsof fills that gap. Prefer merging over elif exclusivity.
   'if command -v ss >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_SS__"; ',
-  // Prefer no-header when available; ignore failure and keep the headered form.
   "ss -H -tulnp 2>/dev/null || ss -tulnp 2>/dev/null || true; ",
-  "elif command -v netstat >/dev/null 2>&1; then ",
+  "fi; ",
+  'if command -v netstat >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_NETSTAT__"; ',
-  "netstat -lntp 2>/dev/null || netstat -anp 2>/dev/null || netstat -an 2>/dev/null || true; ",
-  "elif command -v lsof >/dev/null 2>&1; then ",
+  "netstat -lntp 2>/dev/null || netstat -anv -p tcp 2>/dev/null || netstat -anp 2>/dev/null || netstat -an 2>/dev/null || true; ",
+  "fi; ",
+  'if command -v lsof >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_LSOF__"; ',
   "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true; ",
-  "lsof -nP -iUDP -sUDP:Idle 2>/dev/null || true; ",
+  "lsof -nP -iUDP 2>/dev/null || true; ",
   "fi; ",
   'printf "%s\\n" "__NC_PORTS_END__"',
 ].join("");
@@ -44,9 +47,20 @@ function normalizeProtocol(raw) {
   return "unknown";
 }
 
-function parseSsAddress(addr) {
+function parseListenAddress(addr) {
   const text = String(addr || "").trim();
   if (!text) return null;
+
+  // macOS / BSD netstat: "*.22" or "127.0.0.1.53"
+  const dotted = text.match(/^(.*?)\.(\d+)$/);
+  if (dotted && !text.includes(":")) {
+    const port = Number(dotted[2]);
+    if (!Number.isFinite(port) || port < 0 || port > 65535) return null;
+    let address = dotted[1] || "*";
+    if (address === "*" || address === "0.0.0.0" || address === "::") address = "*";
+    return { address, port };
+  }
+
   const lastColon = text.lastIndexOf(":");
   if (lastColon <= 0) return null;
   const portText = text.slice(lastColon + 1);
@@ -74,26 +88,48 @@ function parseSsProcess(info) {
   };
 }
 
-function makePortId(protocol, address, port, pid) {
-  return `${protocol}|${address}|${port}|${pid == null ? "-" : pid}`;
+function portKey(protocol, address, port) {
+  return `${normalizeProtocol(protocol)}|${address || "*"}|${port}`;
 }
 
-function pushPort(entries, seen, row) {
+function makePortId(protocol, address, port, pid) {
+  return `${normalizeProtocol(protocol)}|${address}|${port}|${pid == null ? "-" : pid}`;
+}
+
+function pushPort(entries, byKey, row) {
   if (!row || !Number.isFinite(row.port)) return;
   const protocol = normalizeProtocol(row.protocol);
   const address = row.address || "*";
   const port = Number(row.port);
   const pid = Number.isFinite(row.pid) && row.pid > 0 ? Number(row.pid) : null;
   const processName = String(row.processName || "");
-  const id = makePortId(protocol, address, port, pid);
-  if (seen.has(id)) return;
-  seen.add(id);
-  entries.push({ id, protocol, address, port, pid, processName });
+  const key = portKey(protocol, address, port);
+  const existing = byKey.get(key);
+  if (existing) {
+    // Prefer the row that carries process identity.
+    const existingScore = (existing.pid != null ? 2 : 0) + (existing.processName ? 1 : 0);
+    const nextScore = (pid != null ? 2 : 0) + (processName ? 1 : 0);
+    if (nextScore <= existingScore) return;
+    existing.pid = pid;
+    existing.processName = processName;
+    existing.id = makePortId(protocol, address, port, pid);
+    return;
+  }
+  const entry = {
+    id: makePortId(protocol, address, port, pid),
+    protocol,
+    address,
+    port,
+    pid,
+    processName,
+  };
+  byKey.set(key, entry);
+  entries.push(entry);
 }
 
 function parseSsOutput(stdout) {
   const entries = [];
-  const seen = new Set();
+  const byKey = new Map();
   for (const line of String(stdout || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -107,7 +143,7 @@ function parseSsOutput(stdout) {
     if (/^(tcp|udp)/i.test(parts[0])) {
       protocol = parts[0];
       // With state column: parts[4] is local; without: parts[3]
-      if (parts.length >= 6 && parts[4].includes(":")) {
+      if (parts.length >= 6 && (parts[4].includes(":") || parts[4].includes("."))) {
         localAddr = parts[4];
         processField = parts.slice(6).join(" ");
       } else {
@@ -115,13 +151,12 @@ function parseSsOutput(stdout) {
         processField = parts.slice(5).join(" ");
       }
     } else {
-      // Headerless oddities — skip
       continue;
     }
-    const parsed = parseSsAddress(localAddr);
+    const parsed = parseListenAddress(localAddr);
     if (!parsed) continue;
     const proc = parseSsProcess(processField);
-    pushPort(entries, seen, {
+    pushPort(entries, byKey, {
       protocol,
       address: parsed.address,
       port: parsed.port,
@@ -134,31 +169,36 @@ function parseSsOutput(stdout) {
 
 function parseNetstatOutput(stdout) {
   const entries = [];
-  const seen = new Set();
+  const byKey = new Map();
   for (const line of String(stdout || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (/^Proto\b/i.test(trimmed) || /^Active\b/i.test(trimmed)) continue;
-    // tcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN 1234/sshd
+    // Linux: tcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN 1234/sshd
+    // BusyBox UDP often omits state/PID: udp 0 0 127.0.0.1:53 0.0.0.0:*
+    // macOS: tcp4 0 0 *.22 *.* LISTEN
     const m = trimmed.match(
-      /^(tcp6?|udp6?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)\s+(?:LISTEN\s+)?(\S+)?/i,
+      /^(tcp[46]?|udp[46]?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?/i,
     );
     if (!m) continue;
     const protocol = m[1];
     const local = m[2];
-    const stateOrPid = m[4] || "";
+    const state = m[4] || "";
+    const pidField = m[5] || "";
     const isUdp = /^udp/i.test(protocol);
-    if (!isUdp && !/LISTEN/i.test(trimmed)) continue;
-    const parsed = parseSsAddress(local);
+    if (!isUdp && state && !/^LISTEN$/i.test(state) && !/^\d+\//.test(state)) continue;
+    if (!isUdp && !state && !/LISTEN/i.test(trimmed)) continue;
+    const parsed = parseListenAddress(local);
     if (!parsed) continue;
     let pid = null;
     let processName = "";
-    const pidMatch = stateOrPid.match(/^(\d+)\/(.+)$/);
+    const pidToken = /^\d+\//.test(state) ? state : pidField;
+    const pidMatch = pidToken.match(/^(\d+)\/(.+)$/);
     if (pidMatch) {
       pid = Number(pidMatch[1]);
       processName = pidMatch[2];
     }
-    pushPort(entries, seen, {
+    pushPort(entries, byKey, {
       protocol,
       address: parsed.address,
       port: parsed.port,
@@ -171,7 +211,7 @@ function parseNetstatOutput(stdout) {
 
 function parseLsofOutput(stdout) {
   const entries = [];
-  const seen = new Set();
+  const byKey = new Map();
   for (const line of String(stdout || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || /^COMMAND\b/i.test(trimmed)) continue;
@@ -182,7 +222,7 @@ function parseLsofOutput(stdout) {
     const pid = Number(parts[1]);
     const nameField = parts.slice(8).join(" ");
     const listenMatch = nameField.match(
-      /^(?:(\d[\d.]*|\[?[0-9a-f:]+\]?|\*):)?(\d+)\s+\((LISTEN|UDP)\)/i,
+      /^(?:(\d[\d.]*|\[?[0-9a-f:]+\]?|\*|\[?\*\])?:)?(\d+)\s+\((LISTEN|UDP)\)/i,
     ) || nameField.match(/^([^\s]+):(\d+)(?:\s+\((LISTEN|UDP)\))?/i);
     if (!listenMatch) continue;
     const addressRaw = listenMatch[1] || "*";
@@ -191,8 +231,8 @@ function parseLsofOutput(stdout) {
     const protocol = kind === "UDP" ? "udp" : "tcp";
     let address = addressRaw;
     if (address.startsWith("[") && address.endsWith("]")) address = address.slice(1, -1);
-    if (address === "0.0.0.0" || address === "::" || address === "*") address = "*";
-    pushPort(entries, seen, {
+    if (address === "0.0.0.0" || address === "::" || address === "*" || address === "") address = "*";
+    pushPort(entries, byKey, {
       protocol,
       address,
       port,
@@ -205,7 +245,7 @@ function parseLsofOutput(stdout) {
 
 function parseWindowsPortsJson(stdout) {
   const entries = [];
-  const seen = new Set();
+  const byKey = new Map();
   const text = String(stdout || "").trim();
   if (!text) return entries;
   let raw;
@@ -221,7 +261,7 @@ function parseWindowsPortsJson(stdout) {
     const pid = Number(row.OwningProcess);
     let address = String(row.LocalAddress || "*");
     if (address === "0.0.0.0" || address === "::" || address === "*") address = "*";
-    pushPort(entries, seen, {
+    pushPort(entries, byKey, {
       protocol: address.includes(":") ? "tcp6" : "tcp",
       address,
       port,
@@ -241,26 +281,35 @@ function extractSection(stdout, beginMarker) {
   return end >= 0 ? after.slice(0, end) : after;
 }
 
+function sortPorts(entries) {
+  return entries.slice().sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
+}
+
 function parseListeningPorts(stdout) {
   const text = String(stdout || "");
-  if (text.includes("__NC_SS__")) {
-    return parseSsOutput(extractSection(text, "__NC_SS__")).sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  }
-  if (text.includes("__NC_NETSTAT__")) {
-    return parseNetstatOutput(extractSection(text, "__NC_NETSTAT__")).sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  }
-  if (text.includes("__NC_LSOF__")) {
-    return parseLsofOutput(extractSection(text, "__NC_LSOF__")).sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  }
-  if (text.includes("__NC_WIN__")) {
-    return parseWindowsPortsJson(extractSection(text, "__NC_WIN__")).sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  }
-  // Bare ss / netstat without markers (fallback probes)
-  const ss = parseSsOutput(text);
-  if (ss.length) return ss.sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  const ns = parseNetstatOutput(text);
-  if (ns.length) return ns.sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
-  return parseLsofOutput(text).sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
+  const entries = [];
+  const byKey = new Map();
+
+  const merge = (rows) => {
+    for (const row of rows) {
+      pushPort(entries, byKey, row);
+    }
+  };
+
+  if (text.includes("__NC_SS__")) merge(parseSsOutput(extractSection(text, "__NC_SS__")));
+  if (text.includes("__NC_NETSTAT__")) merge(parseNetstatOutput(extractSection(text, "__NC_NETSTAT__")));
+  if (text.includes("__NC_LSOF__")) merge(parseLsofOutput(extractSection(text, "__NC_LSOF__")));
+  if (text.includes("__NC_WIN__")) merge(parseWindowsPortsJson(extractSection(text, "__NC_WIN__")));
+
+  if (entries.length) return sortPorts(entries);
+
+  // Bare output without markers (fallback probes)
+  merge(parseSsOutput(text));
+  if (entries.length) return sortPorts(entries);
+  merge(parseNetstatOutput(text));
+  if (entries.length) return sortPorts(entries);
+  merge(parseLsofOutput(text));
+  return sortPorts(entries);
 }
 
 function createPortOpsApi({

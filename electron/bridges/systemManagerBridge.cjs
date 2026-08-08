@@ -17,6 +17,7 @@ const CAPABILITY_SCRIPT_POSIX = [
   'command -v npu-smi >/dev/null 2>&1 && printf "%s\\n" __NC_NPU_SMI__=1; ',
   'command -v ss >/dev/null 2>&1 && printf "%s\\n" __NC_SS__=1; ',
   'command -v netstat >/dev/null 2>&1 && printf "%s\\n" __NC_NETSTAT__=1; ',
+  'command -v lsof >/dev/null 2>&1 && printf "%s\\n" __NC_LSOF__=1; ',
   'command -v systemctl >/dev/null 2>&1 && printf "%s\\n" __NC_SYSTEMCTL__=1',
   "'",
 ].join("");
@@ -49,6 +50,7 @@ function parseCapabilities(stdout, isLocal, localPlatform) {
   const hasNpuSmi = text.includes("__NC_NPU_SMI__=1");
   const hasSs = text.includes("__NC_SS__=1");
   const hasNetstat = text.includes("__NC_NETSTAT__=1");
+  const hasLsof = text.includes("__NC_LSOF__=1");
   const hasSystemctl = text.includes("__NC_SYSTEMCTL__=1");
   return {
     targetOs,
@@ -58,6 +60,7 @@ function parseCapabilities(stdout, isLocal, localPlatform) {
     hasNpuSmi,
     hasSs,
     hasNetstat,
+    hasLsof,
     hasSystemctl,
     probedAt: Date.now(),
   };
@@ -211,6 +214,7 @@ function createSystemManagerBridge(deps) {
             // Local Windows uses Get-NetTCPConnection; treat as netstat-capable for tab visibility.
             "Write-Output '__NC_NETSTAT__=1'; ",
             "if (Get-Command ss -ErrorAction SilentlyContinue) { Write-Output '__NC_SS__=1' }; ",
+            "if (Get-Command lsof -ErrorAction SilentlyContinue) { Write-Output '__NC_LSOF__=1' }; ",
             "if (Get-Command systemctl -ErrorAction SilentlyContinue) { Write-Output '__NC_SYSTEMCTL__=1' }",
           ].join(""),
           8000,
@@ -232,6 +236,7 @@ function createSystemManagerBridge(deps) {
             "command -v npu-smi >/dev/null 2>&1 && echo npu_ok; ",
             "command -v ss >/dev/null 2>&1 && echo ss_ok; ",
             "command -v netstat >/dev/null 2>&1 && echo netstat_ok; ",
+            "command -v lsof >/dev/null 2>&1 && echo lsof_ok; ",
             "command -v systemctl >/dev/null 2>&1 && echo systemctl_ok",
           ].join(""),
           8000,
@@ -248,6 +253,7 @@ function createSystemManagerBridge(deps) {
             hasNpuSmi: text.includes("npu_ok"),
             hasSs: text.includes("ss_ok"),
             hasNetstat: text.includes("netstat_ok"),
+            hasLsof: text.includes("lsof_ok"),
             hasSystemctl: text.includes("systemctl_ok"),
             probedAt: Date.now(),
           },

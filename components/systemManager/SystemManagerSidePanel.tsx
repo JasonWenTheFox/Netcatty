@@ -7,7 +7,11 @@ import type { TerminalSettings } from '../../domain/models';
 import type { Host } from '../../domain/models/connection';
 import type { SystemManagerSubTab } from '../../domain/systemManager/types';
 import { resolveCapabilityPanelState } from '../../domain/systemManagerPanelState';
-import { buildSystemManagerTabs, shouldCollectServerStats } from '../../domain/systemManager/systemTarget';
+import {
+  allowSystemManagerMutations,
+  buildSystemManagerTabs,
+  shouldCollectServerStats,
+} from '../../domain/systemManager/systemTarget';
 import type { Snippet, TerminalSession } from '../../types';
 import { cn } from '../../lib/utils';
 import { DockerManagerTab } from './DockerManagerTab';
@@ -70,6 +74,10 @@ export const SystemManagerSidePanel = memo(function SystemManagerSidePanel({
   const isStatsSupportedOs = useMemo(
     () => shouldCollectServerStats(sessionHost, capabilities, session),
     [capabilities, session, sessionHost],
+  );
+  const allowMutations = useMemo(
+    () => allowSystemManagerMutations(sessionHost),
+    [sessionHost],
   );
 
   const [activeTab, setActiveTab] = useState<SystemManagerSubTab>('overview');
@@ -176,7 +184,11 @@ export const SystemManagerSidePanel = memo(function SystemManagerSidePanel({
   const tmuxReady = capabilities?.hasTmux === true;
   const dockerReady = capabilities?.hasDocker === true;
   const gpuReady = capabilities?.hasNvidiaSmi === true || capabilities?.hasNpuSmi === true;
-  const portsReady = capabilities?.hasSs === true || capabilities?.hasNetstat === true;
+  const portsReady = (
+    capabilities?.hasSs === true
+    || capabilities?.hasNetstat === true
+    || capabilities?.hasLsof === true
+  );
   const servicesReady = capabilities?.hasSystemctl === true;
   const tmuxPanelState = resolveCapabilityPanelState({
     isActive: resolvedTab === 'tmux',
@@ -265,6 +277,7 @@ export const SystemManagerSidePanel = memo(function SystemManagerSidePanel({
               isVisible={isVisible && resolvedTab === 'ports'}
               backend={backend}
               refreshIntervalSec={terminalSettings.systemManagerProcessRefreshInterval}
+              allowMutations={allowMutations}
             />
           </div>
         ) : null}
@@ -283,6 +296,7 @@ export const SystemManagerSidePanel = memo(function SystemManagerSidePanel({
               isVisible={isVisible && resolvedTab === 'services'}
               backend={backend}
               refreshIntervalSec={terminalSettings.systemManagerProcessRefreshInterval}
+              allowMutations={allowMutations}
             />
           </div>
         ) : null}

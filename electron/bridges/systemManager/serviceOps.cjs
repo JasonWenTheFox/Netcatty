@@ -106,9 +106,14 @@ const LIST_UNITS_INNER = [
   'printf "%s\\n" "__NC_SERVICES_BEGIN__"; ',
   'if command -v systemctl >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_SYSTEM__"; ',
-  "systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null || true; ",
+  // --plain needs systemd >= ~230; fall back for RHEL/CentOS 7-era hosts.
+  "systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null ",
+  "|| systemctl list-units --type=service --all --no-pager --no-legend 2>/dev/null ",
+  "|| true; ",
   'printf "%s\\n" "__NC_USER__"; ',
-  "systemctl --user list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null || true; ",
+  "systemctl --user list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null ",
+  "|| systemctl --user list-units --type=service --all --no-pager --no-legend 2>/dev/null ",
+  "|| true; ",
   "fi; ",
   'printf "%s\\n" "__NC_SERVICES_END__"',
 ].join("");

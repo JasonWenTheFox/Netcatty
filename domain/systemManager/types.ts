@@ -7,11 +7,13 @@ export interface SessionCapabilities {
   hasNvidiaSmi: boolean;
   hasNpuSmi: boolean;
   /** `ss` binary present (preferred listening-port collector). */
-  hasSs: boolean;
+  hasSs?: boolean;
   /** `netstat` binary present (ports fallback). */
-  hasNetstat: boolean;
+  hasNetstat?: boolean;
+  /** `lsof` binary present (macOS / process-aware ports fallback). */
+  hasLsof?: boolean;
   /** `systemctl` binary present. */
-  hasSystemctl: boolean;
+  hasSystemctl?: boolean;
   probedAt: number;
 }
 
