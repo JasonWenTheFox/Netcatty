@@ -34,6 +34,7 @@ import {
   resolveAutocompleteAnchorInViewport,
   resolveAutocompleteCursorColumn,
   resolveAutocompleteCwdWithSource,
+  resolveAutocompletePopupSelectedIndex,
 } from "./terminalAutocompleteLayout";
 import { handleTerminalAutocompleteInput } from "./terminalAutocompleteInput";
 import { handleTerminalAutocompleteKeyEvent } from "./terminalAutocompleteKeyEvent";
@@ -777,9 +778,15 @@ export function useTerminalAutocomplete(
         setState((prev) => {
           if (version !== fetchVersionRef.current) return prev;
 
+          const suggestionsUnchanged =
+            prev.popupVisible && areSuggestionsEqual(prev.suggestions, completions);
           const nextState: AutocompleteState = {
             suggestions: completions,
-            selectedIndex: -1,
+            selectedIndex: resolveAutocompletePopupSelectedIndex({
+              suggestionCount: completions.length,
+              previousSelectedIndex: prev.selectedIndex,
+              keepPreviousSelection: suggestionsUnchanged,
+            }),
             popupVisible: true,
             popupAnchorViewport: {
               left: anchor.anchorLeft,
@@ -800,7 +807,7 @@ export function useTerminalAutocomplete(
             prev.popupAnchorViewport.bottom === nextState.popupAnchorViewport.bottom &&
             prev.subDirFocusLevel === -1 &&
             prev.subDirPanels.length === 0 &&
-            areSuggestionsEqual(prev.suggestions, nextState.suggestions)
+            suggestionsUnchanged
           ) {
             return prev;
           }

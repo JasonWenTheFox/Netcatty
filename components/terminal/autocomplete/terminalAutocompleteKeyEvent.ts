@@ -294,12 +294,13 @@ export function handleTerminalAutocompleteKeyEvent(
       return false;
     }
 
-    // Enter on popup. The selected candidate is already rendered into the
-    // line by live-preview, so let Enter reach the shell. Don't record here:
-    // handleInput's Enter path records the *actual* line — it uses
-    // lastAcceptedCommandRef (set on select) but falls back to the live
-    // buffer when the user edited the previewed command (typing nulls that
-    // ref), so recording stays accurate in both cases.
+    // Enter on popup. When live-preview has already rewritten the line,
+    // let Enter reach the shell. When a row is selected but not yet
+    // previewed (default first-row highlight, #2821), insert+execute like
+    // the previewless path. Don't record here: handleInput's Enter path
+    // records the *actual* line — it uses lastAcceptedCommandRef (set on
+    // select) but falls back to the live buffer when the user edited the
+    // previewed command (typing nulls that ref).
     if (isAutocompleteConfirmEnter(e, settingsRef.current)) {
       const selected = s.selectedIndex >= 0 ? s.suggestions[s.selectedIndex] : null;
       if (selected?.source === "snippet" && selected.snippet) {
@@ -312,7 +313,16 @@ export function handleTerminalAutocompleteKeyEvent(
         previewActiveRef.current = false;
         return false; // consume — run the snippet, not the typed text
       }
-      if (!settingsRef.current.livePreview && selected) {
+      if (
+        selected &&
+        settingsRef.current.livePreview &&
+        previewActiveRef.current
+      ) {
+        clearState();
+        previewActiveRef.current = false;
+        return true;
+      }
+      if (selected) {
         if (acceptPreviewlessSelection(s.selectedIndex)) {
           e.preventDefault();
           previewActiveRef.current = false;

@@ -112,6 +112,28 @@ export function areSuggestionsEqual(
   return true;
 }
 
+/**
+ * Initial / refreshed popup selection (#2821).
+ * New suggestion lists default to the first row so Enter can confirm without
+ * an ArrowDown. Unchanged lists keep the user's current index (including the
+ * -1 "typed baseline" slot from ↑/↓ wrapping).
+ */
+export function resolveAutocompletePopupSelectedIndex(options: {
+  suggestionCount: number;
+  previousSelectedIndex: number;
+  keepPreviousSelection: boolean;
+}): number {
+  if (options.suggestionCount <= 0) return -1;
+  if (
+    options.keepPreviousSelection &&
+    options.previousSelectedIndex >= -1 &&
+    options.previousSelectedIndex < options.suggestionCount
+  ) {
+    return options.previousSelectedIndex;
+  }
+  return 0;
+}
+
 export function areSubDirPanelsEqual(left: SubDirPanel[], right: SubDirPanel[]): boolean {
   if (left.length !== right.length) return false;
   for (let i = 0; i < left.length; i++) {

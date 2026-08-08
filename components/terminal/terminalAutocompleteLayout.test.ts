@@ -7,6 +7,7 @@ import {
   resolveAutocompleteAnchorInViewport,
   resolveAutocompleteClampViewport,
   resolveAutocompleteCursorColumn,
+  resolveAutocompletePopupSelectedIndex,
   type PopupPlacementInput,
 } from "./autocomplete/terminalAutocompleteLayout.ts";
 
@@ -500,4 +501,45 @@ test("resolveAutocompleteAnchorInViewport ignores the helper textarea horizontal
   );
   assert.equal(anchor.anchorLeft, 640 + cellWidth * cursorColumn);
   assert.notEqual(anchor.anchorLeft, textarea.getBoundingClientRect().left);
+});
+
+test("resolveAutocompletePopupSelectedIndex defaults to the first suggestion", () => {
+  assert.equal(
+    resolveAutocompletePopupSelectedIndex({
+      suggestionCount: 3,
+      previousSelectedIndex: -1,
+      keepPreviousSelection: false,
+    }),
+    0,
+  );
+});
+
+test("resolveAutocompletePopupSelectedIndex keeps navigation when suggestions are unchanged", () => {
+  assert.equal(
+    resolveAutocompletePopupSelectedIndex({
+      suggestionCount: 3,
+      previousSelectedIndex: 2,
+      keepPreviousSelection: true,
+    }),
+    2,
+  );
+  assert.equal(
+    resolveAutocompletePopupSelectedIndex({
+      suggestionCount: 3,
+      previousSelectedIndex: -1,
+      keepPreviousSelection: true,
+    }),
+    -1,
+  );
+});
+
+test("resolveAutocompletePopupSelectedIndex clamps a stale selection when the list shrinks", () => {
+  assert.equal(
+    resolveAutocompletePopupSelectedIndex({
+      suggestionCount: 1,
+      previousSelectedIndex: 4,
+      keepPreviousSelection: true,
+    }),
+    0,
+  );
 });

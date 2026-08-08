@@ -202,3 +202,55 @@ test("serial-style popup Shift+Enter confirms candidate when terminal shortcut i
   assert.deepEqual(accepted, [0]);
   assert.deepEqual(clears, []);
 });
+
+test("live-preview Enter accepts the default-selected candidate when it is not previewed yet", () => {
+  const { context, accepted, clears } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [suggestion("show version")],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [],
+        subDirFocusLevel: -1,
+      },
+    },
+  });
+  context.settingsRef.current.livePreview = true;
+  context.previewActiveRef.current = false;
+  const event = keyEvent("Enter");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, false);
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(accepted, [0]);
+  assert.deepEqual(clears, []);
+});
+
+test("live-preview Enter still passes through when the candidate is already on the line", () => {
+  const { context, accepted, clears } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [suggestion("show version")],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [],
+        subDirFocusLevel: -1,
+      },
+    },
+  });
+  context.settingsRef.current.livePreview = true;
+  context.previewActiveRef.current = true;
+  const event = keyEvent("Enter");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, true);
+  assert.equal(event.defaultPrevented, false);
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(clears, [1]);
+});
