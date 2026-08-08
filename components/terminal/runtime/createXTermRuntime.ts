@@ -95,6 +95,11 @@ import {
   resolveShiftEnterText,
   shouldSendShiftEnterText,
 } from "./shiftEnterText";
+import {
+  shouldBlockKeyPressForImeTextInput,
+  shouldCommitDeferredImeTextInput,
+  shouldDeferKeyDownForImeTextInput,
+} from "./terminalImeTextInput";
 import { formatSerialLocalEcho } from "./serialLocalEcho";
 import { mapTerminalBackspaceInput } from "./terminalBackspaceInput";
 import { formatTelnetLocalEcho } from "./telnetLocalEcho";
@@ -1142,6 +1147,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
 
   let kittyCompositionPending = false;
   let kittyCompositionClearTimer: number | undefined;
+  let imeTextInputDeferredKey: string | null = null;
   const kittyForwardedKeys = new Map<string, KittyKeyboardForwardedPress>();
   const broadcastForwardedKeys = new Map<string, KittyKeyboardForwardedPress>();
   const broadcastEncodedKeys = new Set<string>();
@@ -1151,6 +1157,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   let suppressNextTerminalDataBroadcast = false;
   let broadcastLegacyDataPending: string | null = null;
   let broadcastLegacyDataClearTimer: number | undefined;
+  const clearImeTextInputDeferral = () => {
+    imeTextInputDeferredKey = null;
+  };
   const clearBroadcastLegacyDataPending = () => {
     broadcastLegacyDataPending = null;
     suppressNextTerminalDataBroadcast = false;
@@ -1176,6 +1185,34 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     isSensitiveInput: () => ctx.passwordPromptActiveRef?.current === true,
     getDispatcher: () => ctx.onBroadcastInputRef.current,
   });
+
+  const commitImeTextInput = (text: string) => {
+    clearImeTextInputDeferral();
+    clearBroadcastLegacyDataPending();
+    // Same encoding path as composition commits under Kitty report-all.
+    const encoded = encodeKittyCompositionText(kittyKeyboardMode, text);
+    if (encoded) {
+      handleTerminalInputData(encoded, { source: "kitty" });
+    } else {
+      if (ctx.isBroadcastEnabledRef.current && ctx.onBroadcastInputRef.current) {
+        suppressNextTerminalDataBroadcast = true;
+      }
+      handleTerminalInputData(text);
+    }
+    broadcastKittyInput({ kind: "text", text });
+  };
+  const flushImeTextInputDeferral = () => {
+    const fallback = imeTextInputDeferredKey;
+    if (!fallback) return;
+    commitImeTextInput(fallback);
+  };
+  const armImeTextInputDeferral = (key: string) => {
+    clearImeTextInputDeferral();
+    clearBroadcastLegacyDataPending();
+    // Wait for insertText (full-width) before keyup; keyup/blur flushes ASCII
+    // when the IME did not remap the key (English punctuation mode).
+    imeTextInputDeferredKey = key;
+  };
 
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     // Preserve mouse selection across keystrokes when enabled. xterm.js
@@ -1221,6 +1258,11 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     }
 
     if (e.type === "keyup") {
+      // insertText for this keystroke has already run when present; flush the
+      // deferred ASCII key only when the IME did not remap it.
+      if (imeTextInputDeferredKey !== null && e.key === imeTextInputDeferredKey) {
+        flushImeTextInputDeferral();
+      }
       const identity = kittyKeyIdentity(e);
       if (broadcastLegacyDataPending === identity) clearBroadcastLegacyDataPending();
       const forwardedPress = broadcastForwardedKeys.get(identity);
@@ -1244,6 +1286,12 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
         return false;
       }
       return true;
+    }
+
+    // Block keypress so xterm cannot re-emit the half-width ASCII char after we
+    // deferred the matching keydown for IME insertText (#2833).
+    if (shouldBlockKeyPressForImeTextInput(imeTextInputDeferredKey, e)) {
+      return false;
     }
 
     if (e.type !== "keydown") {
@@ -1557,6 +1605,15 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
       }
     }
 
+    // Sogou/macOS CJK punctuation: keydown still reports ASCII "," while the
+    // full-width "，" arrives on insertText. Returning false (without
+    // preventDefault) stops xterm/Kitty from sending the half-width key so the
+    // input listener can commit the real glyph (#2833).
+    if (shouldDeferKeyDownForImeTextInput(e)) {
+      armImeTextInputDeferral(e.key);
+      return false;
+    }
+
     if (kittySequenceForKeyDown) {
       e.preventDefault();
       e.stopPropagation();
@@ -1723,6 +1780,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     }, 0);
   };
   const clearKittyConnectionInputState = () => {
+    // Drop deferred IME punctuation on session reset; do not write into the
+    // next connection. Focus loss uses clearKittyTransientInputState instead.
+    clearImeTextInputDeferral();
     kittyCompositionPending = false;
     kittyForwardedKeys.clear();
     clearKittyKeyboardBroadcastPairingState(
@@ -1736,6 +1796,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     }
   };
   const clearKittyTransientInputState = () => {
+    flushImeTextInputDeferral();
     flushKittyKeyboardBroadcastReleases(
       kittyForwardedKeys,
       (input) => {
@@ -1755,6 +1816,17 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   const textarea = term.textarea;
   const startKittyComposition = () => markKittyCompositionPending();
   const markKittyTextInput = (event: InputEvent) => {
+    if (shouldCommitDeferredImeTextInput(imeTextInputDeferredKey, event)) {
+      commitImeTextInput(event.data);
+      // Keep the helper textarea empty so the next composition does not treat
+      // the deferred punctuation as pre-existing suffix text.
+      try {
+        if (textarea) textarea.value = "";
+      } catch {
+        // ignore
+      }
+      return;
+    }
     if (shouldMarkKittyTextInputEvent(event)) markKittyCompositionPending(true);
   };
   textarea?.addEventListener("compositionstart", startKittyComposition);
