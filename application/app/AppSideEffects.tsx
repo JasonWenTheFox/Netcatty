@@ -82,6 +82,10 @@ import { useDiscoveredShells, resolveShellSetting } from '../../lib/useDiscovere
 import { Host, HostProtocol, KnownHost, SerialConfig, Snippet, SSHKey, TerminalSession } from '../../types';
 import { resolveSnippetCommand } from '../../components/SnippetExecutionProvider';
 import { isScriptSnippet } from '../../domain/snippetScript.ts';
+import {
+  collectSnippetDeleteIds,
+  deleteSelectedSnippetsFromVault,
+} from '../../domain/snippetSelection.ts';
 import { useAppStartupEffects } from './useAppStartupEffects';
 import { handleTrayJumpToSessionImpl, handleTrayTogglePortForwardImpl, handleTrayPanelConnectImpl, handleTrayPanelConnectRequestImpl, flushQueuedTrayPanelConnectHostsImpl, handleGlobalHotkeyKeyDownImpl, handleEscapeKeyDownImpl, handleKeyboardInteractiveSubmitImpl, handleKeyboardInteractiveCancelImpl, handlePassphraseSubmitImpl, handlePassphraseCancelImpl, handlePassphraseSkipImpl, createLocalTerminalWithCurrentShellImpl, splitSessionWithCurrentShellImpl, copySessionWithCurrentShellImpl, copyWorkspaceWithCurrentShellImpl, copySessionToNewWindowWithCurrentShellImpl, confirmIfBusyLocalTerminalImpl, closeTabsBatchImpl, executeHotkeyActionImpl, handleCreateLocalTerminalImpl, handleConnectToHostImpl, handleTerminalDataCaptureImpl, hasMultipleProtocolsImpl, handleHostConnectWithProtocolCheckImpl, handleProtocolSelectImpl, handleRootContextMenuImpl } from './AppHandlers';
 
@@ -1603,19 +1607,21 @@ export function AppSideEffects() {
   // Delete-from-sidepanel plumbing: ScriptsSidePanel dispatches
   // `netcatty:snippets:delete` with `id` (single) or `ids` (bulk). Handled
   // here (rather than in QuickAddSnippetDialog) because delete needs no UI.
+  // Must go through deleteSelectedSnippetsFromVault so login/connect script
+  // bindings on hosts are cleared with the snippets (SnippetsManager parity).
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string; ids?: string[] }>).detail;
-      const ids = new Set<string>([
-        ...(detail?.ids ?? []),
-        ...(detail?.id ? [detail.id] : []),
-      ]);
+      const ids = collectSnippetDeleteIds(detail);
       if (ids.size === 0) return;
-      updateSnippets(snippets.filter((s) => !ids.has(s.id)));
+      const result = deleteSelectedSnippetsFromVault(snippets, hosts, ids);
+      if (result.deletedCount === 0) return;
+      updateSnippets(result.snippets);
+      updateHosts(result.hosts);
     };
     window.addEventListener('netcatty:snippets:delete', handler);
     return () => window.removeEventListener('netcatty:snippets:delete', handler);
-  }, [snippets, updateSnippets]);
+  }, [hosts, snippets, updateHosts, updateSnippets]);
 
   const handleEndSessionDrag = useCallback(() => {
     setDraggingSessionId(null);

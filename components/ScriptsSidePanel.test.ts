@@ -79,6 +79,19 @@ test("scripts side panel toolbar exposes expand, collapse, and delete-selected a
   assert.match(source, /isMultiSelectMode/);
 });
 
+test("scripts side panel confirms bulk delete and routes it through the shared delete event", () => {
+  // Mass-delete must confirm first (SnippetsManager parity) and must not bypass
+  // AppSideEffects via onSnippetsChange filtering — that path skips host binding cleanup.
+  assert.match(source, /VaultDeleteConfirmDialog/);
+  assert.match(source, /snippets\.selection\.deleteConfirmTitle/);
+  assert.match(source, /snippets\.selection\.deleteConfirmDesc/);
+  assert.match(source, /detail:\s*\{\s*ids\s*\}/);
+  assert.doesNotMatch(
+    source,
+    /onSnippetsChange\(snippets\.filter\(\(snippet\) => !selectedSnippetIds\.has/,
+  );
+});
+
 test("scripts side panel package dialog traps focus and exposes dialog close contract", () => {
   assert.match(source, /packageDialogRef/);
   assert.match(source, /data-dialog-close="true"/);

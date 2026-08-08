@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Host, Snippet } from './models';
-import { deleteSelectedSnippetsFromVault } from './snippetSelection.ts';
+import {
+  collectSnippetDeleteIds,
+  deleteSelectedSnippetsFromVault,
+} from './snippetSelection.ts';
+
+test('collectSnippetDeleteIds merges id and ids payloads', () => {
+  assert.deepEqual(
+    [...collectSnippetDeleteIds({ id: 'a', ids: ['b', 'a', ''] })].sort(),
+    ['a', 'b'],
+  );
+  assert.equal(collectSnippetDeleteIds(undefined).size, 0);
+  assert.equal(collectSnippetDeleteIds({ ids: [] }).size, 0);
+});
 
 test('deleteSelectedSnippetsFromVault removes host bindings for every selected snippet', () => {
   const snippets: Snippet[] = [

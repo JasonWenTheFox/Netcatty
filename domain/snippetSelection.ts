@@ -1,6 +1,20 @@
 import type { Host, Snippet } from './models';
 import { deleteSnippetFromVault } from './snippetAgentOps.ts';
 
+/** Normalize `netcatty:snippets:delete` detail into a set of snippet ids. */
+export function collectSnippetDeleteIds(
+  detail?: { id?: string; ids?: readonly string[] } | null,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const id of detail?.ids ?? []) {
+    if (typeof id === 'string' && id.length > 0) ids.add(id);
+  }
+  if (typeof detail?.id === 'string' && detail.id.length > 0) {
+    ids.add(detail.id);
+  }
+  return ids;
+}
+
 export function deleteSelectedSnippetsFromVault(
   snippets: Snippet[],
   hosts: Host[],

@@ -26,6 +26,7 @@ import {
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useI18n } from '../application/i18n/I18nProvider';
 import { getScriptRecordingSnapshot, subscribeScriptRecording } from '../application/state/scriptRecordingStore.ts';
+import { VaultDeleteConfirmDialog } from './vault/VaultDeleteConfirmDialog';
 import { reorderVaultItems, reorderVaultStrings, sortByVaultOrder } from '../domain/vaultOrder';
 import { isScriptSnippet } from '../domain/snippetScript.ts';
 import { cn } from '../lib/utils';
@@ -284,6 +285,7 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedSnippetIds, setSelectedSnippetIds] = useState<Set<string>>(new Set());
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(null);
   const [isPackageDialogOpen, setIsPackageDialogOpen] = useState(false);
   const [newPackageName, setNewPackageName] = useState('');
   const [packageError, setPackageError] = useState('');
@@ -397,17 +399,33 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
   }, []);
 
   const deleteSelectedSnippets = useCallback(() => {
-    if (selectedSnippetIds.size === 0) return;
-    const ids = Array.from(selectedSnippetIds);
-    if (onSnippetsChange) {
-      onSnippetsChange(snippets.filter((snippet) => !selectedSnippetIds.has(snippet.id)));
-    } else {
-      window.dispatchEvent(
-        new CustomEvent('netcatty:snippets:delete', { detail: { ids } }),
-      );
+    const ids = snippets
+      .filter((snippet) => selectedSnippetIds.has(snippet.id))
+      .map((snippet) => snippet.id);
+    if (ids.length === 0) return;
+    setPendingDeleteIds(ids);
+  }, [selectedSnippetIds, snippets]);
+
+  const existingPendingDeleteIds = pendingDeleteIds
+    ? pendingDeleteIds.filter((id) => snippets.some((snippet) => snippet.id === id))
+    : [];
+
+  const confirmDeleteSelectedSnippets = useCallback(() => {
+    const ids = (pendingDeleteIds ?? []).filter((id) =>
+      snippets.some((snippet) => snippet.id === id),
+    );
+    setPendingDeleteIds(null);
+    if (ids.length === 0) {
+      clearSnippetSelection();
+      return;
     }
+    // Always route through the shared event so AppSideEffects can clear host
+    // login/connect bindings (onSnippetsChange alone would leave them stale).
+    window.dispatchEvent(
+      new CustomEvent('netcatty:snippets:delete', { detail: { ids } }),
+    );
     clearSnippetSelection();
-  }, [clearSnippetSelection, onSnippetsChange, selectedSnippetIds, snippets]);
+  }, [clearSnippetSelection, pendingDeleteIds, snippets]);
 
   // When search is active, flatten everything (no tree, no packages).
   const searchMatches = useMemo(() => {
@@ -1193,6 +1211,18 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
           </div>
         </div>
       ) : null}
+
+      <VaultDeleteConfirmDialog
+        open={Boolean(pendingDeleteIds)}
+        title={t('snippets.selection.deleteConfirmTitle', {
+          count: existingPendingDeleteIds.length,
+        })}
+        description={t('snippets.selection.deleteConfirmDesc')}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteIds(null);
+        }}
+        onConfirm={confirmDeleteSelectedSnippets}
+      />
     </div>
     </TooltipProvider>
   );
