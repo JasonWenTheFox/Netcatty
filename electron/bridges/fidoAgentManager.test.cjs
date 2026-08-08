@@ -123,10 +123,66 @@ test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", asy
     );
     releaseFidoAskpassLease(a.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
     releaseFidoAskpassLease(b.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
-    releaseFidoAgent();
-    releaseFidoAgent();
+    releaseFidoAgent(a.generation);
+    releaseFidoAgent(b.generation);
   } finally {
     shutdownFidoAgentSubsystem();
     fs.rmSync(sockDir, { recursive: true, force: true });
+  }
+});
+
+test("stale releaseFidoAgent ignores a newer agent generation", async () => {
+  shutdownFidoAgentSubsystem();
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const { releaseFidoAskpassLease } = require("./fidoAskpass.cjs");
+  const managedTemp = fs.mkdtempSync(path.join(__dirname, "netcatty-fido-gen-"));
+  const originalGetTempDir = tempDirBridge.getTempDir;
+  tempDirBridge.getTempDir = () => managedTemp;
+  const firstSock = path.join(managedTemp, "agent1.sock");
+  const secondSock = path.join(managedTemp, "agent2.sock");
+  fs.writeFileSync(firstSock, "");
+  fs.writeFileSync(secondSock, "");
+
+  try {
+    const first = await acquireFidoAgent({
+      platform: "linux",
+      resolveWebContents: () => ({ id: "gen-first" }),
+      env: { PATH: process.env.PATH || "/usr/bin:/bin", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async () => ({
+        stdout: `SSH_AUTH_SOCK=${firstSock}; export SSH_AUTH_SOCK;\n`,
+      }),
+    });
+    assert.equal(getActiveFidoAgentSocket(), firstSock);
+
+    // Simulate the managed agent dying while a connection still holds a release.
+    fs.rmSync(firstSock, { force: true });
+    assert.equal(isAgentLive(), false);
+
+    const second = await acquireFidoAgent({
+      platform: "linux",
+      resolveWebContents: () => ({ id: "gen-second" }),
+      env: { PATH: process.env.PATH || "/usr/bin:/bin", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async () => ({
+        stdout: `SSH_AUTH_SOCK=${secondSock}; export SSH_AUTH_SOCK;\n`,
+      }),
+    });
+    assert.notEqual(first.generation, second.generation);
+    assert.equal(getActiveFidoAgentSocket(), secondSock);
+
+    // Late close of the old connection must not kill the replacement agent.
+    releaseFidoAgent(first.generation);
+    assert.equal(getActiveFidoAgentSocket(), secondSock);
+    assert.equal(isAgentLive(), true);
+
+    releaseFidoAskpassLease(first.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAskpassLease(second.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAgent(second.generation);
+    assert.equal(getActiveFidoAgentSocket(), null);
+  } finally {
+    tempDirBridge.getTempDir = originalGetTempDir;
+    shutdownFidoAgentSubsystem();
+    fs.rmSync(managedTemp, { recursive: true, force: true });
   }
 });

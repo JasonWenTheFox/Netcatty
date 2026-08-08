@@ -204,15 +204,39 @@ main();
         return prepared;
       };
 
-      const preparedTarget = await prepareOne(options, "[ET]");
-      if (!Array.isArray(options.jumpHosts) || options.jumpHosts.length === 0) {
-        return preparedTarget;
+      // Track successfully prepared hops so a later prepareOne failure can release
+      // earlier FIDO agent/askpass leases (caller still has the no-op release).
+      const preparedEntries = [];
+      const releasePreparedEntries = () => {
+        const seen = new Set();
+        for (const entry of preparedEntries) {
+          const releaseFn = entry?._releaseNetcattyFidoAgent;
+          if (typeof releaseFn !== "function" || seen.has(releaseFn)) continue;
+          seen.add(releaseFn);
+          try { releaseFn(); } catch { /* ignore */ }
+        }
+      };
+
+      try {
+        const preparedTarget = await prepareOne(options, "[ET]");
+        preparedEntries.push(preparedTarget);
+        if (!Array.isArray(options.jumpHosts) || options.jumpHosts.length === 0) {
+          return preparedTarget;
+        }
+        const preparedJumpHosts = [];
+        for (let index = 0; index < options.jumpHosts.length; index += 1) {
+          const preparedJump = await prepareOne(
+            options.jumpHosts[index],
+            `[ET Chain] Hop ${index + 1}:`,
+          );
+          preparedEntries.push(preparedJump);
+          preparedJumpHosts.push(preparedJump);
+        }
+        return { ...preparedTarget, jumpHosts: preparedJumpHosts };
+      } catch (error) {
+        releasePreparedEntries();
+        throw error;
       }
-      const preparedJumpHosts = [];
-      for (let index = 0; index < options.jumpHosts.length; index += 1) {
-        preparedJumpHosts.push(await prepareOne(options.jumpHosts[index], `[ET Chain] Hop ${index + 1}:`));
-      }
-      return { ...preparedTarget, jumpHosts: preparedJumpHosts };
     }
 
     function collectEtFidoAgentReleases(options) {

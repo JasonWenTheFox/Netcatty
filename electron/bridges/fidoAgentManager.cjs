@@ -28,7 +28,13 @@ let agentSocket = null;
 /** @type {string|null} */
 let agentDir = null;
 let refCount = 0;
-/** @type {Promise<{ socketPath: string, askpassEnv: Record<string, string>, owned: boolean }>|null} */
+/**
+ * Monotonic id for the currently tracked agent. Cleared/restarted agents bump
+ * this so stale release callbacks from earlier acquisitions cannot kill a newer
+ * agent that reused the singleton slot.
+ */
+let agentGeneration = 0;
+/** @type {Promise<{ socketPath: string, askpassEnv: Record<string, string>, owned: boolean, generation: number }>|null} */
 let startingPromise = null;
 
 function getTempBase() {
@@ -132,6 +138,7 @@ function clearAgentState({ kill = true } = {}) {
     agentDir = null;
   }
   refCount = 0;
+  agentGeneration += 1;
 }
 
 /**
@@ -148,6 +155,7 @@ async function acquireFidoAgent(options = {}) {
         socketPath: shared.socketPath,
         askpassEnv: buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents }),
         owned: shared.owned,
+        generation: shared.generation,
       };
     }
   }
@@ -158,6 +166,7 @@ async function acquireFidoAgent(options = {}) {
       socketPath: agentSocket,
       askpassEnv: buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents }),
       owned: true,
+      generation: agentGeneration,
     };
   }
 
@@ -191,6 +200,7 @@ async function acquireFidoAgent(options = {}) {
           socketPath: systemPipe,
           askpassEnv,
           owned: false,
+          generation: agentGeneration,
         };
       }
 
@@ -260,6 +270,7 @@ async function acquireFidoAgent(options = {}) {
         socketPath: agentSocket,
         askpassEnv,
         owned: true,
+        generation: agentGeneration,
       };
     } catch (error) {
       // Starter allocated a caller-specific askpass lease before launch; drop it
@@ -276,7 +287,12 @@ async function acquireFidoAgent(options = {}) {
   }
 }
 
-function releaseFidoAgent() {
+/**
+ * Release one acquisition. Pass the `generation` returned by acquireFidoAgent so
+ * a late close after the agent was replaced cannot decrement/kill the newer agent.
+ */
+function releaseFidoAgent(generation) {
+  if (generation !== agentGeneration) return;
   refCount = Math.max(0, refCount - 1);
   if (refCount > 0) return;
   clearAgentState({ kill: true });

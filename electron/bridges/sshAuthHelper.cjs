@@ -1096,6 +1096,8 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   let socketPath = null;
   let askpassEnv = null;
   let ownedFidoAgent = false;
+  /** @type {number|undefined} */
+  let ownedFidoAgentGeneration;
 
   if (isFidoFlow) {
     try {
@@ -1109,6 +1111,7 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       socketPath = fidoAgent.socketPath;
       askpassEnv = fidoAgent.askpassEnv || null;
       ownedFidoAgent = fidoAgent.owned === true;
+      ownedFidoAgentGeneration = fidoAgent.generation;
       console.log(`${logPrefix} Using Netcatty FIDO ssh-agent`, { socketPath });
     } catch (error) {
       console.log(`${logPrefix} FIDO agent start failed; falling back to system agent`, {
@@ -1202,7 +1205,7 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   const releaseAcquiredFidoResources = () => {
     try {
       if (ownedFidoAgent) {
-        require("./fidoAgentManager.cjs").releaseFidoAgent();
+        require("./fidoAgentManager.cjs").releaseFidoAgent(ownedFidoAgentGeneration);
       }
     } catch {
       // ignore
