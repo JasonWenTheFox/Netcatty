@@ -356,7 +356,17 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
           <TooltipContent side="bottom">{t('terminal.toolbar.searchTerminal')}</TooltipContent>
         </Tooltip>
 
-        <Popover open={scriptsPopoverOpen} onOpenChange={setScriptsPopoverOpen}>
+        <Popover
+          open={scriptsPopoverOpen}
+          onOpenChange={(open) => {
+            // Bulk-delete confirm is a portalled Dialog; focus moving into it
+            // would otherwise dismiss this popover and clear pendingDeleteIds.
+            if (!open && document.querySelector('[data-vault-delete-confirm="true"]')) {
+              return;
+            }
+            setScriptsPopoverOpen(open);
+          }}
+        >
           <Tooltip>
             <TooltipTrigger asChild>
               <PopoverTrigger asChild>
@@ -374,7 +384,22 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
             </TooltipTrigger>
             <TooltipContent side="bottom">{t('terminal.toolbar.scripts')}</TooltipContent>
           </Tooltip>
-          <PopoverContent className="w-80 p-0 h-80 flex flex-col overflow-hidden" align="end">
+          <PopoverContent
+            className="w-80 p-0 h-80 flex flex-col overflow-hidden"
+            align="end"
+            onFocusOutside={(e) => {
+              if (document.querySelector('[data-vault-delete-confirm="true"]')) {
+                e.preventDefault();
+              }
+            }}
+            onInteractOutside={(e) => {
+              // Same guard as the encoding submenu: portalled confirm UI is
+              // "outside" this popover and must not dismiss it.
+              if (document.querySelector('[data-vault-delete-confirm="true"]')) {
+                e.preventDefault();
+              }
+            }}
+          >
             <ScriptsSidePanel
               snippets={snippets}
               packages={snippetPackages}

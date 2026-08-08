@@ -1,11 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { I18nProvider } from "../../application/i18n/I18nProvider.tsx";
 import type { Host } from "../../types.ts";
 import { TerminalToolbar } from "./TerminalToolbar.tsx";
+
+const toolbarSource = readFileSync(new URL("./TerminalToolbar.tsx", import.meta.url), "utf8");
+const vaultDeleteConfirmSource = readFileSync(
+  new URL("../vault/VaultDeleteConfirmDialog.tsx", import.meta.url),
+  "utf8",
+);
 
 const sshHost: Host = {
   id: "host-1",
@@ -168,4 +175,15 @@ test("uses the terminal active button color for pressed toolbar actions", () => 
     markup,
     /aria-label="Search terminal"[^>]*style="background-color:var\(--terminal-toolbar-btn-active\)"/,
   );
+});
+
+test("compact scripts popover ignores dismiss while vault delete confirm is open", () => {
+  // ScriptsSidePanel's VaultDeleteConfirmDialog is portalled; without these
+  // guards the popover closes, isVisible flips, and pendingDeleteIds clears.
+  assert.match(vaultDeleteConfirmSource, /data-vault-delete-confirm="true"/);
+  assert.ok(
+    toolbarSource.includes('document.querySelector(\'[data-vault-delete-confirm="true"]\')'),
+  );
+  assert.match(toolbarSource, /onFocusOutside=\{\(e\) => \{/);
+  assert.match(toolbarSource, /onInteractOutside=\{\(e\) => \{/);
 });
