@@ -15,6 +15,7 @@ const { Client: SSHClient, utils: sshUtils } = require("ssh2");
 const { NetcattyAgent } = require("./netcattyAgent.cjs");
 const keyboardInteractiveHandler = require("./keyboardInteractiveHandler.cjs");
 const passphraseHandler = require("./passphraseHandler.cjs");
+const fidoPromptHandler = require("./fidoPromptHandler.cjs");
 const hostKeyVerifier = require("./hostKeyVerifier.cjs");
 const { createProxySocket, runWhenProxyConnectionReady } = require("./proxyUtils.cjs");
 const { attachX11Forwarding } = require("./x11Forwarding.cjs");
@@ -43,6 +44,7 @@ const {
   loadFirstIdentityFileForAuth,
   hasUserConfiguredKey,
   isPasswordProvided,
+  looksLikeSkOpenSshMaterial,
   PassphraseCancelledError,
   isPassphraseCancelledError,
 } = require("./sshAuthHelper.cjs");
@@ -614,9 +616,27 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
       const hasCertificate =
         typeof jump.certificate === "string" && jump.certificate.trim().length > 0;
 
+      const isJumpFidoSk = looksLikeSkOpenSshMaterial(jump.privateKey)
+        || (Array.isArray(jump.agentPublicKeys)
+          && jump.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)));
+      const forceJumpFidoAgent = isJumpFidoSk && jump.authMethod !== "password";
+
       const systemAuthAgent = hasCertificate
         ? null
-        : await prepareSystemSshAgentForAuth(jump, `[Chain] Hop ${i + 1}:`);
+        : await prepareSystemSshAgentForAuth({
+          ...jump,
+          useSshAgent: forceJumpFidoAgent ? true : jump.useSshAgent,
+          useFidoAgent: forceJumpFidoAgent || jump.useFidoAgent === true,
+          loadIdentityFilesIntoAgent: forceJumpFidoAgent || jump.loadIdentityFilesIntoAgent,
+          addKeysToAgent: jump.addKeysToAgent || (forceJumpFidoAgent ? "yes" : jump.addKeysToAgent),
+          resolveWebContents: () => {
+            try {
+              return sender && !sender.isDestroyed?.() ? sender : null;
+            } catch {
+              return null;
+            }
+          },
+        }, `[Chain] Hop ${i + 1}:`);
 
       const identityFile = !jump.privateKey && !systemAuthAgent
         ? await loadFirstIdentityFileForAuth({
@@ -645,7 +665,9 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           },
         })
         : null;
-      const inlineKey = jump.privateKey && !systemAuthAgent
+      const inlineKey = jump.privateKey
+        && !systemAuthAgent
+        && !looksLikeSkOpenSshMaterial(jump.privateKey)
         ? await preparePrivateKeyForAuth({
           sender,
           privateKey: jump.privateKey,
@@ -1006,6 +1028,25 @@ async function generateKeyPair(event, options) {
   const { type, bits, comment } = options;
 
   try {
+    // FIDO2 / security-key types require OpenSSH + libfido2 hardware interaction.
+    // Generate via ssh-keygen so the key handle is created on the token.
+    if (type === "ED25519-SK" || type === "ECDSA-SK") {
+      const { generateFidoSshKeyPair } = require("./fidoSshKeygen.cjs");
+      return await generateFidoSshKeyPair({
+        type,
+        comment: comment || "netcatty-fido-key",
+        resident: options?.resident === true,
+        verifyRequired: options?.verifyRequired === true,
+        resolveWebContents: () => {
+          try {
+            return event?.sender && !event.sender.isDestroyed?.() ? event.sender : null;
+          } catch {
+            return null;
+          }
+        },
+      });
+    }
+
     let keyType;
     let keyBits = bits;
 
@@ -1487,6 +1528,12 @@ function registerHandlers(ipcMain, options = {}) {
       "netcatty:host-key:respond",
       hostKeyVerifier,
     );
+    registerOwnedAuthResponseHandler(
+      ipcMain,
+      terminalWorkerManager,
+      "netcatty:fido-prompt:respond",
+      fidoPromptHandler,
+    );
     ipcMain.on("netcatty:zmodem:overwrite-response", (event, payload) => {
       terminalWorkerManager.send("netcatty:zmodem:overwrite-response", payload, {
         webContentsId: event?.sender?.id,
@@ -1510,6 +1557,8 @@ function registerHandlers(ipcMain, options = {}) {
     keyboardInteractiveHandler.registerHandler(ipcMain);
     // Register the passphrase response handler
     passphraseHandler.registerHandler(ipcMain);
+    // FIDO2 PIN / touch presence prompts (ssh-sk-helper / ssh-add / ssh-keygen)
+    fidoPromptHandler.registerHandler(ipcMain);
     // Register the SSH host key verification response handler
     hostKeyVerifier.registerHandler(ipcMain);
   }

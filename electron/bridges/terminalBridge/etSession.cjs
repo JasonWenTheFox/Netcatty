@@ -159,17 +159,28 @@ main();
       return raw.toLowerCase().endsWith(".pub") ? raw : `${raw}.pub`;
     }
 
-    async function prepareEtSshAgentOptions(options) {
+    async function prepareEtSshAgentOptions(options, sender) {
+      const { buildFidoAwareAgentPrepOptions, resolvePreparedAgentSocket, isFidoSkAuthOptions } = require("../sshAuthHelper.cjs");
       const prepareOne = async (connectionOptions, logPrefix) => {
-        if (connectionOptions?.useSshAgent !== true && !connectionOptions?.agentForwarding) return connectionOptions;
+        const forceFido = isFidoSkAuthOptions(connectionOptions)
+          && connectionOptions.authMethod !== "password";
+        if (connectionOptions?.useSshAgent !== true && !connectionOptions?.agentForwarding && !forceFido) {
+          return connectionOptions;
+        }
         let prepared = connectionOptions;
-        if (connectionOptions.useSshAgent === true) {
-          await prepareSystemSshAgentForAuth(connectionOptions, logPrefix);
-          const loginSocketPath = await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
-          if (!loginSocketPath) {
-            throw new Error("System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.");
+        if (connectionOptions.useSshAgent === true || forceFido) {
+          const prepOptions = buildFidoAwareAgentPrepOptions(connectionOptions, sender);
+          const agent = await prepareSystemSshAgentForAuth(prepOptions, logPrefix);
+          const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
+            || await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
+          if (!socketPath) {
+            throw new Error(
+              forceFido
+                ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
+                : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+            );
           }
-          prepared = { ...prepared, _resolvedSshAgentSocket: loginSocketPath };
+          prepared = { ...prepared, useSshAgent: true, _resolvedSshAgentSocket: socketPath };
         }
         if (connectionOptions.agentForwarding) {
           const forwardingSocketPath = await getAvailableForwardingAgentSocket(
@@ -1163,7 +1174,7 @@ main();
 
       let sshEnvironment;
       try {
-        const preparedOptions = await prepareEtSshAgentOptions(options);
+        const preparedOptions = await prepareEtSshAgentOptions(options, event?.sender);
         options = preparedOptions;
         if (options.agentForwarding && options._resolvedForwardingAgentSocket) {
           args.push("-f", "--ssh-socket", options._resolvedForwardingAgentSocket);

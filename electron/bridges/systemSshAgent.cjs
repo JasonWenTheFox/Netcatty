@@ -143,16 +143,92 @@ function shouldLoadFromMacKeychain(options, platform) {
     && options.identityFilePaths.length > 0;
 }
 
-async function defaultRunSshAdd(args, { socketPath, env }) {
-  await execFileAsync("/usr/bin/ssh-add", args, {
-    timeout: 5000,
+function resolveSshAddBinary(platform, env = process.env) {
+  if (typeof env.NETCATTY_SSH_ADD_PATH === "string" && env.NETCATTY_SSH_ADD_PATH.trim()) {
+    return env.NETCATTY_SSH_ADD_PATH.trim();
+  }
+  // Pair with Homebrew OpenSSH when present (same stack as ssh-agent / ssh-keygen).
+  if (platform === "darwin") {
+    for (const candidate of [
+      "/opt/homebrew/bin/ssh-add",
+      "/usr/local/bin/ssh-add",
+      "/usr/bin/ssh-add",
+    ]) {
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        // continue
+      }
+    }
+  }
+  if (platform === "win32") return "ssh-add";
+  return "ssh-add";
+}
+
+async function defaultRunSshAdd(args, { socketPath, env, platform, askpassEnv }) {
+  const sshAdd = resolveSshAddBinary(platform, env);
+  const mergedEnv = {
+    ...env,
+    SSH_AUTH_SOCK: socketPath,
+    // Prefer a GUI askpass when provided (PIN / touch prompts). Without a TTY
+    // OpenSSH falls back to SSH_ASKPASS for ssh-sk-helper.
+    ...(askpassEnv || { SSH_ASKPASS_REQUIRE: "never" }),
+  };
+  // OpenSSH only invokes askpass when stdin is not a TTY; force that here.
+  await execFileAsync(sshAdd, args, {
+    // Align with FIDO prompt TTL (~180s) so the modal is not left open after failure.
+    timeout: 170000,
     windowsHide: true,
-    env: {
-      ...env,
-      SSH_AUTH_SOCK: socketPath,
-      SSH_ASKPASS_REQUIRE: "never",
-    },
+    env: mergedEnv,
+    // Detach from parent's TTY so SSH_ASKPASS_REQUIRE=force is honored.
+    stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+const OPENSSH_PRIVATE_KEY_RE =
+  /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+?)-----END OPENSSH PRIVATE KEY-----/;
+const SK_SSH_ED25519 = "sk-ssh-ed25519@openssh.com";
+const SK_ECDSA_NISTP256 = "sk-ecdsa-sha2-nistp256@openssh.com";
+
+function looksLikeSkPublicKeyText(text) {
+  return typeof text === "string"
+    && /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v0[01])?@openssh\.com/.test(text);
+}
+
+/** True for sk public lines *or* sk private PEMs (type may only exist after base64 decode). */
+function looksLikeSkKeyMaterial(text) {
+  if (typeof text !== "string" || !text.trim()) return false;
+  if (looksLikeSkPublicKeyText(text)) return true;
+  const match = OPENSSH_PRIVATE_KEY_RE.exec(text);
+  if (!match) return false;
+  try {
+    const body = Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
+    return body.includes(SK_SSH_ED25519) || body.includes(SK_ECDSA_NISTP256);
+  } catch {
+    return false;
+  }
+}
+
+async function shouldLoadIdentityFileIntoAgent(identityPath, options, deps) {
+  // Explicit opt-in (used for vault-imported FIDO handles).
+  if (options.loadIdentityFilesIntoAgent === true) return true;
+  // Soft keys continue to use macOS Keychain / user-managed agent flows.
+  // Auto-load only FIDO2 sk-* identity files so ssh2 can request hardware
+  // signatures without changing AddKeysToAgent policy for regular keys.
+  try {
+    const pubPath = identityPath.endsWith(".pub") ? identityPath : `${identityPath}.pub`;
+    const pub = await deps.readFile(pubPath, "utf8");
+    if (looksLikeSkKeyMaterial(pub)) return true;
+  } catch {
+    // fall through to private-key probe
+  }
+  try {
+    const privateKey = await deps.readFile(identityPath, "utf8");
+    if (looksLikeSkKeyMaterial(privateKey)) return true;
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 async function prepareSystemSshAgent(options, injected = {}) {
@@ -164,6 +240,7 @@ async function prepareSystemSshAgent(options, injected = {}) {
     platform: injected.platform ?? process.platform,
     env: injected.env ?? process.env,
     log: injected.log,
+    askpassEnv: injected.askpassEnv,
   };
   const agent = deps.createAgent(options.socketPath);
   const { preferred, providedPreferredCount, resolvedIdentityPaths, unavailablePublicKeyPaths } = await loadPreferredPublicKeyBlobs(
@@ -192,9 +269,61 @@ async function prepareSystemSshAgent(options, injected = {}) {
       try {
         const args = ["--apple-load-keychain", ...resolvedIdentityPaths];
         if (deps.runSshAdd) await deps.runSshAdd(args);
-        else await defaultRunSshAdd(args, { socketPath: options.socketPath, env: deps.env });
+        else {
+          await defaultRunSshAdd(args, {
+            socketPath: options.socketPath,
+            env: deps.env,
+            platform: deps.platform,
+            askpassEnv: deps.askpassEnv,
+          });
+        }
       } catch (error) {
         deps.log?.("macOS Keychain could not load the configured SSH identity", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  // Load FIDO2 / SK identity files (and other identities when addKeysToAgent is
+  // set) into the agent so ssh2 can request hardware signatures.
+  if (resolvedIdentityPaths.length > 0) {
+    let loadedBlobs = new Set();
+    try {
+      loadedBlobs = new Set((await getIdentities(agent)).map(publicKeyBlob).filter(Boolean));
+    } catch (error) {
+      deps.log?.("Could not inspect SSH agent identities before identity load", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    for (const identityPath of resolvedIdentityPaths) {
+      const pubPath = identityPath.endsWith(".pub") ? identityPath : `${identityPath}.pub`;
+      let alreadyLoaded = false;
+      try {
+        const pub = await deps.readFile(pubPath, "utf8");
+        const blob = publicKeyBlob(pub);
+        if (blob && loadedBlobs.has(blob)) alreadyLoaded = true;
+      } catch {
+        // No .pub selector — still attempt ssh-add when requested.
+      }
+      if (alreadyLoaded) continue;
+      if (!(await shouldLoadIdentityFileIntoAgent(identityPath, options, deps))) continue;
+      try {
+        const args = [identityPath];
+        if (deps.runSshAdd) await deps.runSshAdd(args);
+        else {
+          await defaultRunSshAdd(args, {
+            socketPath: options.socketPath,
+            env: deps.env,
+            platform: deps.platform,
+            askpassEnv: deps.askpassEnv,
+          });
+        }
+        deps.log?.("Loaded identity into SSH agent", { identityPath });
+      } catch (error) {
+        deps.log?.("Could not load identity into SSH agent", {
+          identityPath,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -222,5 +351,7 @@ module.exports = {
   prepareSystemSshAgent,
   publicKeyBlob,
   resolveIdentityPath,
+  resolveSshAddBinary,
   shouldLoadFromMacKeychain,
+  shouldLoadIdentityFileIntoAgent,
 };

@@ -879,31 +879,281 @@ async function getNativeOpenSshForwardingAgentSocket(identityAgent, injected = {
   return socketPath;
 }
 
+const OPENSSH_PRIVATE_KEY_RE =
+  /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+?)-----END OPENSSH PRIVATE KEY-----/;
+const SK_SSH_ED25519 = "sk-ssh-ed25519@openssh.com";
+const SK_ECDSA_NISTP256 = "sk-ecdsa-sha2-nistp256@openssh.com";
+
+/**
+ * Detect OpenSSH FIDO sk-* material in public keys *or* private-key PEMs.
+ *
+ * Real sk private PEMs only embed `sk-*-@openssh.com` inside the base64 body
+ * (`@` is not in the base64 alphabet), so a raw-text regex on the PEM fails.
+ * Mirror domain/fidoSsh.ts isSkPrivateKey: decode the PEM body first.
+ */
+function looksLikeSkOpenSshMaterial(text) {
+  if (typeof text !== "string" || !text.trim()) return false;
+  // Public keys / agent blobs / already-decoded comments keep the type in plain text.
+  // Include sk-*-cert-v01@openssh.com certificate algorithms.
+  if (/sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v0[01])?@openssh\.com/.test(text)) return true;
+  const match = OPENSSH_PRIVATE_KEY_RE.exec(text);
+  if (!match) return false;
+  try {
+    const body = Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
+    return body.includes(SK_SSH_ED25519) || body.includes(SK_ECDSA_NISTP256)
+      || /sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v0[01])?@openssh\.com/.test(body);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Peek IdentityFile paths for sk-* public/private material so path-only
+ * reference keys still force the owned FIDO agent + askpass path.
+ * @param {string[]} identityFilePaths
+ * @param {{ readFile?: typeof fs.promises.readFile, expandIdentityFilePath?: Function }} [injected]
+ */
+async function identityFilesLookLikeSk(identityFilePaths, injected = {}) {
+  if (!Array.isArray(identityFilePaths) || identityFilePaths.length === 0) return false;
+  const readFile = injected.readFile || fs.promises.readFile;
+  const expand = injected.expandIdentityFilePath || expandIdentityFilePath;
+  for (const rawPath of identityFilePaths) {
+    const identityPath = expand(rawPath);
+    if (!identityPath) continue;
+    const candidates = identityPath.endsWith(".pub")
+      ? [identityPath]
+      : [`${identityPath}.pub`, identityPath];
+    for (const candidate of candidates) {
+      try {
+        const contents = await readFile(candidate, "utf8");
+        if (looksLikeSkOpenSshMaterial(contents)) return true;
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  return false;
+}
+
+function resolveWebContentsFromSender(sender) {
+  return () => {
+    try {
+      return sender && !sender.isDestroyed?.() ? sender : null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** True when options carry FIDO2 sk-* material that needs agent + askpass. */
+function isFidoSkAuthOptions(options) {
+  if (!options || typeof options !== "object") return false;
+  if (options.useFidoAgent === true) return true;
+  if (looksLikeSkOpenSshMaterial(options.privateKey)) return true;
+  if (Array.isArray(options.agentPublicKeys)
+    && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Normalize auth options for prepareSystemSshAgentForAuth so every surface
+ * (SSH / SFTP / Mosh / ET / port-forward) gets askpass + FIDO agent force.
+ * @param {object} options
+ * @param {Electron.WebContents} [sender]
+ */
+function buildFidoAwareAgentPrepOptions(options = {}, sender) {
+  const isFido = isFidoSkAuthOptions(options) && options.authMethod !== "password";
+  return {
+    ...options,
+    useSshAgent: isFido ? true : options.useSshAgent,
+    useFidoAgent: isFido || options.useFidoAgent === true,
+    loadIdentityFilesIntoAgent: isFido || options.loadIdentityFilesIntoAgent === true,
+    addKeysToAgent: options.addKeysToAgent || (isFido ? "yes" : options.addKeysToAgent),
+    resolveWebContents: options.resolveWebContents || (sender
+      ? resolveWebContentsFromSender(sender)
+      : options.resolveWebContents),
+  };
+}
+
+/**
+ * After prepareSystemSshAgentForAuth, resolve the socket path for native ssh
+ * (Mosh/ET IdentityAgent / SSH_AUTH_SOCK). Prefers the owned FIDO agent.
+ */
+function resolvePreparedAgentSocket(agent, options = {}) {
+  if (agent && typeof agent._netcattyAgentSocket === "string" && agent._netcattyAgentSocket) {
+    return agent._netcattyAgentSocket;
+  }
+  try {
+    const { getActiveFidoAgentSocket } = require("./fidoAgentManager.cjs");
+    const owned = getActiveFidoAgentSocket();
+    if (owned) return owned;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Persist an inline FIDO2 sk-* private key handle so ssh-add can load it.
+ * Returns the temp path (or null). Caller should clean up when done if needed;
+ * agent retains the identity after add.
+ */
+async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
+  if (!looksLikeSkOpenSshMaterial(privateKey)) return null;
+  const fsMod = injected.fs || fs;
+  const pathMod = injected.path || path;
+  const tempDirBridge = injected.tempDirBridge || require("./tempDirBridge.cjs");
+  // Prefer Netcatty's managed temp dir so files are visible/cleaned via Settings.
+  const baseDir = typeof tempDirBridge.getTempDir === "function"
+    ? tempDirBridge.getTempDir()
+    : require("node:os").tmpdir();
+  const dir = await fsMod.promises.mkdtemp(pathMod.join(baseDir, "netcatty-sk-key-"));
+  const keyPath = pathMod.join(dir, "id_sk");
+  await fsMod.promises.writeFile(keyPath, privateKey, { mode: 0o600 });
+  return { keyPath, cleanupDir: dir };
+}
+
 async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   if (options?.useSshAgent !== true) return null;
-  const socketPath = await getAvailableAgentSocket(options.identityAgent, {
-    hostname: options.hostname,
-    port: options.port,
-    username: options.username,
-  });
+
+  let pathBackedSk = false;
+  if (!options.useFidoAgent
+    && !looksLikeSkOpenSshMaterial(options.privateKey)
+    && !(Array.isArray(options.agentPublicKeys)
+      && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+    && Array.isArray(options.identityFilePaths)
+    && options.identityFilePaths.length > 0) {
+    try {
+      pathBackedSk = await identityFilesLookLikeSk(options.identityFilePaths);
+    } catch {
+      pathBackedSk = false;
+    }
+  }
+
+  const isFidoFlow = looksLikeSkOpenSshMaterial(options.privateKey)
+    || (Array.isArray(options.agentPublicKeys)
+      && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+    || options.useFidoAgent === true
+    || options.loadIdentityFilesIntoAgent === true
+    || pathBackedSk;
+
+  let socketPath = null;
+  let askpassEnv = null;
+  let ownedFidoAgent = false;
+
+  if (isFidoFlow) {
+    try {
+      const { acquireFidoAgent } = require("./fidoAgentManager.cjs");
+      const { buildFidoAskpassEnv } = require("./fidoAskpass.cjs");
+      askpassEnv = buildFidoAskpassEnv({
+        resolveWebContents: options.resolveWebContents,
+      });
+      const fidoAgent = await acquireFidoAgent({
+        resolveWebContents: options.resolveWebContents,
+        env: process.env,
+      });
+      socketPath = fidoAgent.socketPath;
+      askpassEnv = { ...askpassEnv, ...fidoAgent.askpassEnv };
+      ownedFidoAgent = fidoAgent.owned === true;
+      console.log(`${logPrefix} Using Netcatty FIDO ssh-agent`, { socketPath });
+    } catch (error) {
+      console.log(`${logPrefix} FIDO agent start failed; falling back to system agent`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   if (!socketPath) {
-    const error = new Error("System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.");
-    error.code = "ERR_SSH_AGENT_UNAVAILABLE";
+    socketPath = await getAvailableAgentSocket(options.identityAgent, {
+      hostname: options.hostname,
+      port: options.port,
+      username: options.username,
+    });
+  }
+  if (!socketPath) {
+    const error = new Error(
+      isFidoFlow
+        ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 (macOS: brew install openssh libfido2) and try again."
+        : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+    );
+    error.code = isFidoFlow ? "ERR_FIDO_AGENT_UNAVAILABLE" : "ERR_SSH_AGENT_UNAVAILABLE";
     throw error;
   }
-  return prepareSystemSshAgent({
-    socketPath,
-    identityFilePaths: options.identityFilePaths,
-    identitiesOnly: options.identitiesOnly,
-    addKeysToAgent: options.addKeysToAgent,
-    useKeychain: options.useKeychain,
-    agentPublicKeys: options.agentPublicKeys,
-    hostname: options.hostname,
-    port: options.port,
-    username: options.username,
-  }, {
-    log: (message, details) => console.log(`${logPrefix} ${message}`, details ?? ""),
-  });
+
+  if (isFidoFlow && !askpassEnv) {
+    try {
+      const { buildFidoAskpassEnv } = require("./fidoAskpass.cjs");
+      askpassEnv = buildFidoAskpassEnv({
+        resolveWebContents: options.resolveWebContents,
+      });
+    } catch {
+      askpassEnv = null;
+    }
+  }
+
+  const identityFilePaths = Array.isArray(options.identityFilePaths)
+    ? [...options.identityFilePaths]
+    : [];
+  let skTempCleanup = null;
+  if (looksLikeSkOpenSshMaterial(options.privateKey)) {
+    try {
+      const materialized = await materializeSkPrivateKeyFile(options.privateKey);
+      if (materialized?.keyPath) {
+        identityFilePaths.push(materialized.keyPath);
+        skTempCleanup = materialized.cleanupDir;
+      }
+    } catch (error) {
+      console.log(`${logPrefix} Could not materialize FIDO2 key handle for agent load`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  try {
+    const agent = await prepareSystemSshAgent({
+      socketPath,
+      identityFilePaths,
+      identitiesOnly: options.identitiesOnly,
+      addKeysToAgent: options.addKeysToAgent,
+      useKeychain: ownedFidoAgent ? false : options.useKeychain,
+      agentPublicKeys: options.agentPublicKeys,
+      loadIdentityFilesIntoAgent: looksLikeSkOpenSshMaterial(options.privateKey)
+        || (Array.isArray(options.agentPublicKeys)
+          && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+        || options.loadIdentityFilesIntoAgent === true
+        || ownedFidoAgent,
+      hostname: options.hostname,
+      port: options.port,
+      username: options.username,
+    }, {
+      log: (message, details) => console.log(`${logPrefix} ${message}`, details ?? ""),
+      askpassEnv,
+    });
+    if (agent) {
+      // Expose the socket so Mosh/ET/native OpenSSH can point IdentityAgent at
+      // the same agent that received ssh-add of SK handles.
+      agent._netcattyAgentSocket = socketPath;
+      if (ownedFidoAgent) {
+        agent._netcattyOwnedFidoAgent = true;
+        // Process-lifetime shared lease; quit/exit hooks hard-kill the agent.
+        agent._releaseNetcattyFidoAgent = () => {
+          try {
+            require("./fidoAgentManager.cjs").releaseFidoAgent();
+          } catch {
+            // ignore
+          }
+        };
+      }
+    }
+    return agent;
+  } finally {
+    if (skTempCleanup) {
+      // Best-effort cleanup after ssh-add; agent keeps the loaded identity.
+      fs.promises.rm(skTempCleanup, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -2061,6 +2311,13 @@ module.exports = {
   SSH_KEY_PATTERN,
   orderSshIdentityNames,
   looksLikePrivateKey,
+  looksLikeSkOpenSshMaterial,
+  identityFilesLookLikeSk,
+  isFidoSkAuthOptions,
+  buildFidoAwareAgentPrepOptions,
+  resolveWebContentsFromSender,
+  resolvePreparedAgentSocket,
+  materializeSkPrivateKeyFile,
   isKeyEncrypted,
   findDefaultPrivateKey,
   findAllDefaultPrivateKeys,

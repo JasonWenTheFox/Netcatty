@@ -132,16 +132,24 @@ function createMoshSessionApi(ctx) {
       }
     }
 
-    async function prepareMoshSshAgentOptions(options) {
-      if (options?.useSshAgent !== true && !options?.agentForwarding) return options;
+    async function prepareMoshSshAgentOptions(options, sender) {
+      const { buildFidoAwareAgentPrepOptions, resolvePreparedAgentSocket, isFidoSkAuthOptions } = require("../sshAuthHelper.cjs");
+      const forceFido = isFidoSkAuthOptions(options) && options.authMethod !== "password";
+      if (options?.useSshAgent !== true && !options?.agentForwarding && !forceFido) return options;
       let prepared = options;
-      if (options.useSshAgent === true) {
-        await prepareSystemSshAgentForAuth(options, "[Mosh]");
-        const loginSocketPath = await getAvailableAgentSocket(options.identityAgent, options);
-        if (!loginSocketPath) {
-          throw new Error("System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.");
+      if (options.useSshAgent === true || forceFido) {
+        const prepOptions = buildFidoAwareAgentPrepOptions(options, sender);
+        const agent = await prepareSystemSshAgentForAuth(prepOptions, "[Mosh]");
+        const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
+          || await getAvailableAgentSocket(options.identityAgent, options);
+        if (!socketPath) {
+          throw new Error(
+            forceFido
+              ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
+              : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+          );
         }
-        prepared = { ...prepared, _resolvedSshAgentSocket: loginSocketPath };
+        prepared = { ...prepared, useSshAgent: true, _resolvedSshAgentSocket: socketPath };
       }
       if (options.agentForwarding) {
         const forwardingSocketPath = await getAvailableForwardingAgentSocket(options.identityAgent, options);
@@ -945,7 +953,7 @@ function createMoshSessionApi(ctx) {
         throw new Error("OpenSSH client not found. Netcatty needs ssh to start the remote mosh-server handshake.");
       }
     
-      const preparedOptions = await prepareMoshSshAgentOptions(options);
+      const preparedOptions = await prepareMoshSshAgentOptions(options, event?.sender);
       return startMoshSessionViaHandshake(event, preparedOptions, { bareClient, sshExe });
     }
 

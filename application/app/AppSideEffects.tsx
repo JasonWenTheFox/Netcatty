@@ -77,13 +77,14 @@ import { toast } from '../../components/ui/toast';
 import { VaultSection } from '../../components/VaultView';
 import { KeyboardInteractiveRequest } from '../../components/KeyboardInteractiveModal';
 import { PassphraseRequest } from '../../components/PassphraseModal';
+import type { FidoPromptRequest } from '../../components/FidoPromptModal';
 import { classifyLocalShellType } from '../../lib/localShell';
 import { useDiscoveredShells, resolveShellSetting } from '../../lib/useDiscoveredShells';
 import { Host, HostProtocol, KnownHost, SerialConfig, Snippet, SSHKey, TerminalSession } from '../../types';
 import { resolveSnippetCommand } from '../../components/SnippetExecutionProvider';
 import { isScriptSnippet } from '../../domain/snippetScript.ts';
 import { useAppStartupEffects } from './useAppStartupEffects';
-import { handleTrayJumpToSessionImpl, handleTrayTogglePortForwardImpl, handleTrayPanelConnectImpl, handleTrayPanelConnectRequestImpl, flushQueuedTrayPanelConnectHostsImpl, handleGlobalHotkeyKeyDownImpl, handleEscapeKeyDownImpl, handleKeyboardInteractiveSubmitImpl, handleKeyboardInteractiveCancelImpl, handlePassphraseSubmitImpl, handlePassphraseCancelImpl, handlePassphraseSkipImpl, createLocalTerminalWithCurrentShellImpl, splitSessionWithCurrentShellImpl, copySessionWithCurrentShellImpl, copyWorkspaceWithCurrentShellImpl, copySessionToNewWindowWithCurrentShellImpl, confirmIfBusyLocalTerminalImpl, closeTabsBatchImpl, executeHotkeyActionImpl, handleCreateLocalTerminalImpl, handleConnectToHostImpl, handleTerminalDataCaptureImpl, hasMultipleProtocolsImpl, handleHostConnectWithProtocolCheckImpl, handleProtocolSelectImpl, handleRootContextMenuImpl } from './AppHandlers';
+import { handleTrayJumpToSessionImpl, handleTrayTogglePortForwardImpl, handleTrayPanelConnectImpl, handleTrayPanelConnectRequestImpl, flushQueuedTrayPanelConnectHostsImpl, handleGlobalHotkeyKeyDownImpl, handleEscapeKeyDownImpl, handleKeyboardInteractiveSubmitImpl, handleKeyboardInteractiveCancelImpl, handlePassphraseSubmitImpl, handlePassphraseCancelImpl, handlePassphraseSkipImpl, handleFidoPromptSubmitImpl, handleFidoPromptCancelImpl, createLocalTerminalWithCurrentShellImpl, splitSessionWithCurrentShellImpl, copySessionWithCurrentShellImpl, copyWorkspaceWithCurrentShellImpl, copySessionToNewWindowWithCurrentShellImpl, confirmIfBusyLocalTerminalImpl, closeTabsBatchImpl, executeHotkeyActionImpl, handleCreateLocalTerminalImpl, handleConnectToHostImpl, handleTerminalDataCaptureImpl, hasMultipleProtocolsImpl, handleHostConnectWithProtocolCheckImpl, handleProtocolSelectImpl, handleRootContextMenuImpl } from './AppHandlers';
 
 type OpenSessionInNewWindowPayload = {
   title?: string;
@@ -122,6 +123,8 @@ export function AppSideEffects() {
   const [keyboardInteractiveQueue, setKeyboardInteractiveQueue] = useState<KeyboardInteractiveRequest[]>([]);
   // Passphrase request queue for encrypted SSH keys
   const [passphraseQueue, setPassphraseQueue] = useState<PassphraseRequest[]>([]);
+  // FIDO2 PIN / touch prompt queue (OpenSSH sk-*)
+  const [fidoPromptQueue, setFidoPromptQueue] = useState<FidoPromptRequest[]>([]);
   const [deleteHostConfirm, setDeleteHostConfirm] = useState<{ hostId: string; name: string } | null>(null);
   const [pendingNewWindowSession, setPendingNewWindowSession] = useState<OpenSessionInNewWindowPayload | null>(null);
   const [pendingTrayPanelConnectHostIds, setPendingTrayPanelConnectHostIds] = useState<string[]>([]);
@@ -792,6 +795,50 @@ export function AppSideEffects() {
 
   // Handle passphrase skip (skip this key, continue with others)
   const handlePassphraseSkip = useCallback((requestId: string) => { return handlePassphraseSkipImpl(() => ({ netcattyBridge, requestId, setPassphraseQueue }), requestId); }, []);
+
+  // FIDO2 PIN / touch prompts from main-process askpass / sk-helper
+  useEffect(() => {
+    const bridge = netcattyBridge.get();
+    if (!bridge?.onFidoPromptRequest) return;
+    const unsubscribe = bridge.onFidoPromptRequest((request) => {
+      console.log('[App] FIDO prompt request:', request);
+      setFidoPromptQueue((prev) => [...prev, {
+        requestId: request.requestId,
+        kind: request.kind === 'touch' || request.kind === 'confirm' ? request.kind : 'pin',
+        message: request.message,
+        title: request.title,
+        keyName: request.keyName,
+      }]);
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
+
+  const handleFidoPromptSubmit = useCallback((requestId: string, response: string) => {
+    return handleFidoPromptSubmitImpl(() => ({ netcattyBridge, requestId, setFidoPromptQueue }), requestId, response);
+  }, []);
+
+  const handleFidoPromptCancel = useCallback((requestId: string) => {
+    return handleFidoPromptCancelImpl(() => ({ netcattyBridge, requestId, setFidoPromptQueue }), requestId);
+  }, []);
+
+  useEffect(() => {
+    const bridge = netcattyBridge.get();
+    if (!bridge?.onFidoPromptTimeout) return;
+    const unsubscribe = bridge.onFidoPromptTimeout((event) => {
+      setFidoPromptQueue((prev) => prev.filter((r) => r.requestId !== event.requestId));
+      toast.error(t('fido.prompt.timeout'));
+    });
+    return () => { unsubscribe?.(); };
+  }, [t]);
+
+  useEffect(() => {
+    const bridge = netcattyBridge.get();
+    if (!bridge?.onFidoPromptCancelled) return;
+    const unsubscribe = bridge.onFidoPromptCancelled((event) => {
+      setFidoPromptQueue((prev) => prev.filter((r) => r.requestId !== event.requestId));
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
 
   // Handle passphrase timeout (request expired on backend)
   useEffect(() => {
@@ -1670,6 +1717,8 @@ export function AppSideEffects() {
       handlePassphraseCancel,
       handlePassphraseSkip,
       handlePassphraseSubmit,
+      handleFidoPromptCancel,
+      handleFidoPromptSubmit,
       handleProtocolSelect,
       handleRequestCloseEditorTabRef,
       resolveEmptyVaultConflict,
@@ -1693,6 +1742,7 @@ export function AppSideEffects() {
       portForwardingRules,
       keyboardInteractiveQueue,
       passphraseQueue,
+      fidoPromptQueue,
       deleteHostConfirm,
       vaultFocusRequest,
       openNoteRequest,
@@ -1739,6 +1789,8 @@ export function AppSideEffects() {
     handlePassphraseCancel,
     handlePassphraseSkip,
     handlePassphraseSubmit,
+    handleFidoPromptCancel,
+    handleFidoPromptSubmit,
     handleProtocolSelect,
     resolveEmptyVaultConflict,
     handleCancelDeleteHost,
@@ -1754,6 +1806,7 @@ export function AppSideEffects() {
     portForwardingRules,
     keyboardInteractiveQueue,
     passphraseQueue,
+    fidoPromptQueue,
     deleteHostConfirm,
     vaultFocusRequest,
     openNoteRequest,

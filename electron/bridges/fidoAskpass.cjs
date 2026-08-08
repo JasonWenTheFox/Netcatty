@@ -1,0 +1,285 @@
+"use strict";
+
+/**
+ * SSH_ASKPASS bridge for FIDO2 (ssh-keygen / ssh-add / ssh-sk-helper).
+ *
+ * OpenSSH invokes SSH_ASKPASS as a subprocess with the prompt text as argv.
+ * The helper connects to a Netcatty-owned IPC socket; main process shows a
+ * native PIN/touch modal and returns the response on stdout of the helper.
+ */
+
+const fs = require("node:fs");
+const net = require("node:net");
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
+const fidoPromptHandler = require("./fidoPromptHandler.cjs");
+
+const FIDO_ASKPASS_SCRIPT = String.raw`#!/usr/bin/env node
+"use strict";
+const net = require("node:net");
+const fs = require("node:fs");
+
+const sockPath = process.env.NETCATTY_FIDO_ASKPASS_SOCK;
+const prompt = process.argv.slice(2).join(" ") || process.env.SSH_ASKPASS_PROMPT || "";
+
+function fail(code) {
+  process.exit(code == null ? 1 : code);
+}
+
+if (!sockPath) fail(1);
+
+const payload = JSON.stringify({ prompt, type: "askpass" }) + "\n";
+const client = net.createConnection(sockPath);
+
+let buf = "";
+let settled = false;
+
+function finish(ok, text) {
+  if (settled) return;
+  settled = true;
+  try { client.end(); } catch { /* ignore */ }
+  if (!ok) fail(1);
+  process.stdout.write(text == null ? "" : String(text));
+  process.stdout.write("\n");
+  process.exit(0);
+}
+
+client.setEncoding("utf8");
+client.on("connect", () => {
+  client.write(payload);
+});
+client.on("data", (chunk) => {
+  buf += chunk;
+  const nl = buf.indexOf("\n");
+  if (nl === -1) return;
+  let msg;
+  try {
+    msg = JSON.parse(buf.slice(0, nl));
+  } catch {
+    finish(false);
+    return;
+  }
+  if (msg && msg.ok === true) finish(true, msg.response || "");
+  else finish(false);
+});
+client.on("error", () => finish(false));
+client.on("end", () => {
+  if (!settled) finish(false);
+});
+setTimeout(() => finish(false), 170000);
+`;
+
+/** @type {net.Server|null} */
+let askpassServer = null;
+/** @type {string|null} */
+let askpassSocketPath = null;
+/** @type {string|null} */
+let askpassScriptPath = null;
+/** @type {string|null} */
+let askpassWrapperPath = null;
+/** @type {(() => import("electron").WebContents|null)|null} */
+let resolveWebContents = null;
+
+function getTempBase() {
+  try {
+    const tempDirBridge = require("./tempDirBridge.cjs");
+    if (typeof tempDirBridge.getTempDir === "function") return tempDirBridge.getTempDir();
+  } catch {
+    // fall through
+  }
+  return require("node:os").tmpdir();
+}
+
+function isWindowsNamedPipePath(socketPath) {
+  return typeof socketPath === "string"
+    && /^\\\\[.,]\\pipe\\/i.test(socketPath);
+}
+
+/**
+ * Askpass IPC address. Windows Node `net.Server` only binds named pipes under
+ * `\\.\pipe\...` — a filesystem `askpass.sock` path fails to listen.
+ * @param {string} baseDir
+ * @param {NodeJS.Platform} [platform]
+ */
+function resolveFidoAskpassSocketPath(baseDir, platform = process.platform) {
+  if (platform === "win32") {
+    return `\\\\.\\pipe\\netcatty-fido-askpass-${randomUUID().slice(0, 8)}`;
+  }
+  return path.join(baseDir, "askpass.sock");
+}
+
+function writeSecureFile(filePath, contents, mode = 0o700) {
+  fs.writeFileSync(filePath, contents, { mode });
+  try {
+    fs.chmodSync(filePath, mode);
+  } catch {
+    // Windows may ignore mode
+  }
+}
+
+function defaultResolveWebContents() {
+  try {
+    const { BrowserWindow } = require("electron");
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && !focused.isDestroyed()) return focused.webContents;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        return win.webContents;
+      }
+    }
+  } catch {
+    // not in electron
+  }
+  return null;
+}
+
+function handleAskpassClient(socket) {
+  let buf = "";
+  socket.setEncoding("utf8");
+  socket.on("data", async (chunk) => {
+    buf += chunk;
+    const nl = buf.indexOf("\n");
+    if (nl === -1) return;
+    let msg;
+    try {
+      msg = JSON.parse(buf.slice(0, nl));
+    } catch {
+      socket.end(`${JSON.stringify({ ok: false, error: "bad_json" })}\n`);
+      return;
+    }
+    const prompt = String(msg?.prompt || "");
+    const kind = fidoPromptHandler.classifyAskpassPrompt(prompt);
+    const sender = (resolveWebContents || defaultResolveWebContents)();
+    if (!sender) {
+      socket.end(`${JSON.stringify({ ok: false, error: "no_window" })}\n`);
+      return;
+    }
+    try {
+      const result = await fidoPromptHandler.requestFidoPrompt(sender, {
+        kind,
+        message: prompt,
+        keyName: "FIDO2",
+      });
+      if (!result || result.cancelled) {
+        socket.end(`${JSON.stringify({ ok: false, error: "cancelled" })}\n`);
+        return;
+      }
+      // Touch/confirm: empty string is fine; PIN: return entered secret.
+      const response = kind === "pin" ? (result.response || "") : "";
+      socket.end(`${JSON.stringify({ ok: true, response })}\n`);
+    } catch (err) {
+      socket.end(`${JSON.stringify({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      })}\n`);
+    }
+  });
+}
+
+/**
+ * Ensure askpass server + helper scripts exist.
+ * @param {{ resolveWebContents?: () => import("electron").WebContents|null }} [options]
+ */
+function ensureFidoAskpass(options = {}) {
+  if (options.resolveWebContents) resolveWebContents = options.resolveWebContents;
+
+  if (askpassServer && askpassSocketPath && askpassWrapperPath) {
+    return {
+      socketPath: askpassSocketPath,
+      scriptPath: askpassScriptPath,
+      wrapperPath: askpassWrapperPath,
+    };
+  }
+
+  const base = path.join(getTempBase(), `netcatty-fido-askpass-${randomUUID().slice(0, 8)}`);
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  askpassSocketPath = resolveFidoAskpassSocketPath(base);
+  askpassScriptPath = path.join(base, "netcatty-fido-askpass.cjs");
+  writeSecureFile(askpassScriptPath, FIDO_ASKPASS_SCRIPT, 0o700);
+
+  if (process.platform === "win32") {
+    askpassWrapperPath = path.join(base, "netcatty-fido-askpass.cmd");
+    writeSecureFile(
+      askpassWrapperPath,
+      `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath.replace(/"/g, '""')}" "${askpassScriptPath.replace(/"/g, '""')}" %*\r\n`,
+      0o700,
+    );
+  } else {
+    askpassWrapperPath = path.join(base, "netcatty-fido-askpass.sh");
+    const electronExec = JSON.stringify(process.execPath);
+    const scriptExec = JSON.stringify(askpassScriptPath);
+    writeSecureFile(
+      askpassWrapperPath,
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${electronExec} ${scriptExec} "$@"\n`,
+      0o700,
+    );
+  }
+
+  if (!isWindowsNamedPipePath(askpassSocketPath) && fs.existsSync(askpassSocketPath)) {
+    try { fs.unlinkSync(askpassSocketPath); } catch { /* ignore */ }
+  }
+
+  askpassServer = net.createServer(handleAskpassClient);
+  askpassServer.on("error", (err) => {
+    console.error("[FidoAskpass] server error:", err instanceof Error ? err.message : err);
+  });
+  askpassServer.listen(askpassSocketPath);
+  if (!isWindowsNamedPipePath(askpassSocketPath)) {
+    try {
+      fs.chmodSync(askpassSocketPath, 0o600);
+    } catch {
+      // ignore
+    }
+  }
+
+  return {
+    socketPath: askpassSocketPath,
+    scriptPath: askpassScriptPath,
+    wrapperPath: askpassWrapperPath,
+  };
+}
+
+/**
+ * Environment for ssh-agent / ssh-add / ssh-keygen so PIN/touch use Netcatty UI.
+ * @param {{ resolveWebContents?: () => import("electron").WebContents|null }} [options]
+ */
+function buildFidoAskpassEnv(options = {}) {
+  const artifacts = ensureFidoAskpass(options);
+  const env = {
+    SSH_ASKPASS: artifacts.wrapperPath,
+    SSH_ASKPASS_REQUIRE: "force",
+    NETCATTY_FIDO_ASKPASS_SOCK: artifacts.socketPath,
+    // OpenSSH only runs askpass when no TTY unless REQUIRE=force; still set DISPLAY on Linux.
+    ...(process.platform === "linux" && !process.env.DISPLAY
+      ? { DISPLAY: process.env.DISPLAY || ":0" }
+      : {}),
+  };
+  return env;
+}
+
+function shutdownFidoAskpass() {
+  try {
+    askpassServer?.close();
+  } catch {
+    // ignore
+  }
+  askpassServer = null;
+  askpassSocketPath = null;
+  askpassScriptPath = null;
+  askpassWrapperPath = null;
+}
+
+module.exports = {
+  ensureFidoAskpass,
+  buildFidoAskpassEnv,
+  shutdownFidoAskpass,
+  classifyAskpassPrompt: fidoPromptHandler.classifyAskpassPrompt,
+  resolveFidoAskpassSocketPath,
+  isWindowsNamedPipePath,
+  // exposed for tests
+  handleAskpassClient,
+  FIDO_ASKPASS_SCRIPT,
+  setResolveWebContentsForTests(resolver) {
+    resolveWebContents = typeof resolver === "function" ? resolver : null;
+  },
+};
