@@ -1,6 +1,6 @@
 /**
  * Whether an automated PTY write (e.g. SFTP "open path in terminal") may run
- * at a clean interactive shell prompt — not mid-line, not in an editor/TUI.
+ * at a clean interactive shell prompt -- not mid-line, not in an editor/TUI.
  */
 export function isIdleShellReadyForCommandInjection(options: {
   sensitiveInputActive?: boolean;

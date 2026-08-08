@@ -1367,7 +1367,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     if (!action) return;
     // Never inject cd into a password/sudo prompt (same guard as snippets/broadcast).
     if (isTerminalSensitiveInputActive(action.sessionId)) return;
-    // Only submit at an idle shell prompt — never append into typed input or a TUI.
+    // Only submit at an idle shell prompt -- never append into typed input or a TUI.
     if (!isTerminalReadyForCommandInjection(action.sessionId)) return;
     terminalBackend.writeToSession(action.sessionId, action.data, { automated: true });
     scheduleDeferredTerminalFocus(onRequestTerminalFocus);
