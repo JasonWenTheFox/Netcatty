@@ -59,8 +59,8 @@ function parseSystemctlListUnits(stdout, scope) {
     if (!cleaned || /^UNIT\b/i.test(cleaned) || /^Legend:/i.test(cleaned)) continue;
     if (/^\d+ loaded units listed/i.test(cleaned)) continue;
     if (/^To show all/i.test(cleaned)) continue;
-    // UNIT LOAD ACTIVE SUB DESCRIPTION — fields are space-separated; description may contain spaces
-    const m = cleaned.match(/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/);
+    // UNIT LOAD ACTIVE SUB [DESCRIPTION] — description may be empty
+    const m = cleaned.match(/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/);
     if (!m) continue;
     const name = m[1];
     if (!name.includes(".")) continue;

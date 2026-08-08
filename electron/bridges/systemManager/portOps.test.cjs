@@ -196,3 +196,23 @@ mdnsd     200 root   12u  IPv4 0x1      0t0  UDP *:5353
   assert.equal(ports[0].protocol, "udp");
   assert.equal(ports[0].port, 5353);
 });
+
+test("parseNetstatOutput accepts macOS tcp46/udp46 dual-stack rows", () => {
+  const sample = `
+tcp46      0      0  *.80                   *.*                    LISTEN
+udp46      0      0  *.5353                 *.*
+`;
+  const ports = parseNetstatOutput(sample);
+  assert.equal(ports.length, 2);
+  assert.equal(ports.find((p) => p.port === 80)?.protocol, "tcp");
+  assert.equal(ports.find((p) => p.port === 5353)?.protocol, "udp");
+});
+
+test("parseSsOutput expands multi-pid users tuples", () => {
+  const sample = `
+tcp   LISTEN 0      128          0.0.0.0:8080         0.0.0.0:*    users:(("app",pid=11,fd=3),("app",pid=12,fd=4))
+`;
+  const ports = parseSsOutput(sample);
+  assert.equal(ports.length, 2);
+  assert.deepEqual(ports.map((p) => p.pid).sort((a, b) => a - b), [11, 12]);
+});

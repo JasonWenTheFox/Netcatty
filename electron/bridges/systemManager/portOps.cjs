@@ -18,9 +18,10 @@ const LISTEN_PORTS_INNER = [
   "fi; ",
   'if command -v netstat >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_NETSTAT__"; ',
-  // Linux `-lntp` covers TCP+UDP. macOS `-anv -p tcp` succeeds alone and would
-  // short-circuit a `||` chain, so collect tcp/udp explicitly on that path.
-  "if netstat -lntp 2>/dev/null; then :; ",
+  // `-lntp` is TCP-only; prefer `-lntup`, else TCP+UDP separately. macOS uses `-anv -p`.
+  "if netstat -lntup 2>/dev/null; then :; ",
+  "elif netstat -lntp 2>/dev/null; then ",
+  "netstat -lnup 2>/dev/null || true; ",
   "elif netstat -anv -p tcp >/dev/null 2>&1; then ",
   "netstat -anv -p tcp 2>/dev/null || true; ",
   "netstat -anv -p udp 2>/dev/null || true; ",
@@ -31,8 +32,9 @@ const LISTEN_PORTS_INNER = [
   'if command -v lsof >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_LSOF__"; ',
   "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true; ",
-  // Idle UDP ≈ unbound listeners; connected UDP still filtered by `->` below.
-  "lsof -nP -iUDP -sUDP:Idle 2>/dev/null || lsof -nP -iUDP 2>/dev/null || true; ",
+  // Idle-only: Linux has no UDP state names, so this no-ops there (ss/netstat cover UDP).
+  // Do not fall back to bare `-iUDP` — that dumps client binds as fake listeners.
+  "lsof -nP -iUDP -sUDP:Idle 2>/dev/null || true; ",
   "fi; ",
   'printf "%s\\n" "__NC_PORTS_END__"',
 ].join("");
@@ -53,9 +55,9 @@ const LISTEN_PORTS_WINDOWS = [
 
 function normalizeProtocol(raw) {
   const text = String(raw || "").trim().toLowerCase();
-  if (text === "tcp" || text === "tcp4") return "tcp";
+  if (text === "tcp" || text === "tcp4" || text === "tcp46") return "tcp";
   if (text === "tcp6") return "tcp6";
-  if (text === "udp" || text === "udp4") return "udp";
+  if (text === "udp" || text === "udp4" || text === "udp46") return "udp";
   if (text === "udp6") return "udp6";
   return "unknown";
 }
@@ -94,15 +96,18 @@ function parseListenAddress(addr) {
   return { address, port };
 }
 
-function parseSsProcess(info) {
+function parseSsProcesses(info) {
   const text = String(info || "");
-  // users:(("nginx",pid=1234,fd=6))
-  const nameMatch = text.match(/"([^"]+)"/);
-  const pidMatch = text.match(/pid=(\d+)/);
-  return {
-    processName: nameMatch?.[1] || "",
-    pid: pidMatch ? Number(pidMatch[1]) : null,
-  };
+  // users:(("app",pid=11,fd=3),("app",pid=12,fd=4))
+  const entries = [];
+  const re = /\("([^"]+)",pid=(\d+)/g;
+  let match = re.exec(text);
+  while (match) {
+    entries.push({ processName: match[1] || "", pid: Number(match[2]) });
+    match = re.exec(text);
+  }
+  if (entries.length) return entries;
+  return [{ processName: "", pid: null }];
 }
 
 function portKey(protocol, address, port, pid) {
@@ -210,14 +215,15 @@ function parseSsOutput(stdout) {
     if (isUdp && peerAddr && !isWildcardPeer(peerAddr)) continue;
     const parsed = parseListenAddress(localAddr);
     if (!parsed) continue;
-    const proc = parseSsProcess(processField);
-    pushPort(entries, byKey, {
-      protocol,
-      address: parsed.address,
-      port: parsed.port,
-      pid: proc.pid,
-      processName: proc.processName,
-    });
+    for (const proc of parseSsProcesses(processField)) {
+      pushPort(entries, byKey, {
+        protocol,
+        address: parsed.address,
+        port: parsed.port,
+        pid: proc.pid,
+        processName: proc.processName,
+      });
+    }
   }
   return entries;
 }
@@ -233,7 +239,7 @@ function parseNetstatOutput(stdout) {
     // BusyBox UDP often omits state/PID: udp 0 0 127.0.0.1:53 0.0.0.0:*
     // macOS: tcp4 0 0 *.22 *.* LISTEN
     const m = trimmed.match(
-      /^(tcp[46]?|udp[46]?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?/i,
+      /^(tcp46|udp46|tcp[46]?|udp[46]?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?/i,
     );
     if (!m) continue;
     const protocol = m[1];

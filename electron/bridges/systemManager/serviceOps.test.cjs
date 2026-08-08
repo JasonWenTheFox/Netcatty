@@ -30,6 +30,17 @@ test("parseSystemctlListUnits reads plain list-units rows", () => {
   assert.equal(units[2].activeState, "inactive");
 });
 
+test("parseSystemctlListUnits keeps units with an empty description", () => {
+  const sample = `
+● broken.service loaded failed failed
+  quiet.service  loaded active  running
+`;
+  const units = parseSystemctlListUnits(sample, "system");
+  assert.equal(units.length, 2);
+  assert.equal(units.find((u) => u.name === "broken.service")?.description, "");
+  assert.equal(units.find((u) => u.name === "quiet.service")?.activeState, "active");
+});
+
 test("parseServiceList merges system and user scopes and sorts failed first", () => {
   const stdout = `
 __NC_SERVICES_BEGIN__
