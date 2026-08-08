@@ -16,3 +16,13 @@ test("snippets delete handler cleans host bindings via deleteSelectedSnippetsFro
     /updateSnippets\(snippets\.filter\(\(s\) => !ids\.has\(s\.id\)\)\)/,
   );
 });
+
+test("snippets delete handler reads vault state from refs to avoid stale closures", () => {
+  // Rapid/double confirms must see the latest snippets/hosts, not the
+  // values closed over when the listener was last registered.
+  assert.match(source, /snippetsRef\.current\s*=\s*snippets/);
+  assert.match(
+    source,
+    /deleteSelectedSnippetsFromVault\(\s*snippetsRef\.current\s*,\s*hostsRef\.current\s*,\s*ids,?\s*\)/,
+  );
+});

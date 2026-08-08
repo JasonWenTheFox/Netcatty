@@ -92,6 +92,15 @@ test("scripts side panel confirms bulk delete and routes it through the shared d
   );
 });
 
+test("scripts side panel clears pending bulk delete when the panel hides", () => {
+  // Returning null while isVisible is false unmounts the confirm dialog; drop
+  // pending deletes so a later re-show does not resurrect a half-dismissed prompt.
+  assert.match(
+    source,
+    /if\s*\(\s*!isVisible\s*\)\s*setPendingDeleteIds\(\s*null\s*\)/,
+  );
+});
+
 test("scripts side panel package dialog traps focus and exposes dialog close contract", () => {
   assert.match(source, /packageDialogRef/);
   assert.match(source, /data-dialog-close="true"/);

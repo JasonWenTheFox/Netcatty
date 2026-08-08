@@ -389,6 +389,10 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
     });
   }, [snippets]);
 
+  useEffect(() => {
+    if (!isVisible) setPendingDeleteIds(null);
+  }, [isVisible]);
+
   const toggleSnippetSelection = useCallback((id: string) => {
     setSelectedSnippetIds((prev) => {
       const next = new Set(prev);

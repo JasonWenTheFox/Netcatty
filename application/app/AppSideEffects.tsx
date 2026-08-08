@@ -202,6 +202,8 @@ export function AppSideEffects() {
 
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
+  const snippetsRef = useRef(snippets);
+  snippetsRef.current = snippets;
   const keysRef = useRef(keys);
   keysRef.current = keys;
   const knownHostsRef = useRef(knownHosts);
@@ -1609,19 +1611,25 @@ export function AppSideEffects() {
   // here (rather than in QuickAddSnippetDialog) because delete needs no UI.
   // Must go through deleteSelectedSnippetsFromVault so login/connect script
   // bindings on hosts are cleared with the snippets (SnippetsManager parity).
+  // Read snippets/hosts from refs so rapid/double confirms do not apply deletes
+  // against a stale closed-over vault snapshot.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string; ids?: string[] }>).detail;
       const ids = collectSnippetDeleteIds(detail);
       if (ids.size === 0) return;
-      const result = deleteSelectedSnippetsFromVault(snippets, hosts, ids);
+      const result = deleteSelectedSnippetsFromVault(
+        snippetsRef.current,
+        hostsRef.current,
+        ids,
+      );
       if (result.deletedCount === 0) return;
       updateSnippets(result.snippets);
       updateHosts(result.hosts);
     };
     window.addEventListener('netcatty:snippets:delete', handler);
     return () => window.removeEventListener('netcatty:snippets:delete', handler);
-  }, [hosts, snippets, updateHosts, updateSnippets]);
+  }, [updateHosts, updateSnippets]);
 
   const handleEndSessionDrag = useCallback(() => {
     setDraggingSessionId(null);
