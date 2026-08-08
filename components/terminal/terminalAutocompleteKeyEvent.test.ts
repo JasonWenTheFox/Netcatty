@@ -82,7 +82,6 @@ function createContext(overrides: Record<string, unknown> = {}) {
       clearState() { clears.push(1); },
       renderSubDirPath() {},
       handleSubDirSelect() {},
-      fetchSubDirForIndex() {},
       renderPreviewSelection(index: number) { previews.push(index); },
       acceptSnippet() { return true; },
       acceptPreviewlessSelection(index: number) { accepted.push(index); return true; },

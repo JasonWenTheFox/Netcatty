@@ -17,7 +17,6 @@ interface TerminalAutocompleteKeyEventContext {
   clearState: () => void;
   renderSubDirPath: (level: number, entry: SubDirEntry) => void;
   handleSubDirSelect: (level: number, entry: SubDirEntry) => void;
-  fetchSubDirForIndex: (index: number) => void;
   renderPreviewSelection: (index: number) => void;
   acceptPreviewlessSelection: (index: number) => boolean;
   acceptSnippet: (snippet: Snippet) => boolean;
@@ -52,7 +51,6 @@ export function handleTerminalAutocompleteKeyEvent(
     clearState,
     renderSubDirPath,
     handleSubDirSelect,
-    fetchSubDirForIndex,
     renderPreviewSelection,
     acceptPreviewlessSelection,
     acceptSnippet,
@@ -290,7 +288,8 @@ export function handleTerminalAutocompleteKeyEvent(
         subDirPanels: [], subDirFocusLevel: -1,
       }));
       if (settingsRef.current.livePreview) renderPreviewSelection(next);
-      if (next >= 0) fetchSubDirForIndex(next);
+      // Sub-dir cascade prefetch runs from useTerminalAutocomplete after
+      // selectedIndex commits (also covers default-select without ArrowDown).
       return false;
     }
 

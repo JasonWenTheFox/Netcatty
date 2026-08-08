@@ -545,19 +545,17 @@ test("resolveAutocompletePopupSelectedIndex clamps a stale selection when the li
   );
 });
 
-test("popup suggestion refresh prefetches sub-dir panels for the resolved selection", () => {
-  // Default-select (#2821) highlights row 0 without an ArrowDown. Arrow
-  // navigation is what historically called fetchSubDirForIndex; the refresh
-  // path must do the same or directory cascade / ArrowRight stay dead until
-  // the user moves the highlight.
+test("selected popup row prefetches sub-dir panels after selectedIndex commits", () => {
+  // Default-select (#2821) and ↑/↓ must prefetch via a post-commit effect.
+  // Prefetching inside the startTransition refresh path races: fetchDirEntries
+  // can resolve before selectedIndex flushes, and the result handler drops the
+  // panels when prev.selectedIndex still mismatches.
   const source = readFileSync(
     new URL("./autocomplete/useTerminalAutocomplete.ts", import.meta.url),
     "utf8",
   );
-  const refreshStart = source.indexOf("// Popup");
-  const refreshEnd = source.indexOf("fetchSuggestionsRef.current = fetchSuggestions");
-  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
-  const refreshBranch = source.slice(refreshStart, refreshEnd);
-  assert.match(refreshBranch, /resolveAutocompletePopupSelectedIndex/);
-  assert.match(refreshBranch, /fetchSubDirForIndex\(/);
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\s*if \(!state\.popupVisible \|\| state\.selectedIndex < 0\) return;[\s\S]*if \(state\.subDirPanels\.length > 0 \|\| state\.subDirFocusLevel >= 0\) return;[\s\S]*fetchSubDirForIndex\(state\.selectedIndex\);/,
+  );
 });
