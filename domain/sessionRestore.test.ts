@@ -686,6 +686,10 @@ test("resolveInteractiveTerminalCdIntent quotes path-only cd without session tra
     cwd: "/srv/app dir",
     command: "cd -- '/srv/app dir'",
   });
+  assert.deepEqual(resolveInteractiveTerminalCdIntent("/srv/project "), {
+    cwd: "/srv/project ",
+    command: "cd -- '/srv/project '",
+  });
   assert.equal(resolveInteractiveTerminalCdIntent("C:\\Users\\alice"), null);
 });
 

@@ -246,13 +246,14 @@ function quoteRestoreCwdArgument(cwd: string): string {
   return quoteRestoreCwdForShell(cwd);
 }
 
-/** Build a user-initiated `cd` for an absolute/home path (SFTP → terminal). */
+/** Build a user-initiated `cd` for an absolute/home path (SFTP -> terminal). */
 export function resolveInteractiveTerminalCdIntent(
   cwd: string | null | undefined,
 ): { cwd: string; command: string } | null {
+  // Eligibility uses a normalized view; keep the exact path for quoting so
+  // trailing whitespace in POSIX names is preserved.
   if (!isRestoreCwdPathEligible(cwd)) return null;
-  const trimmed = cwd.trim();
-  return { cwd: trimmed, command: `cd -- ${quoteRestoreCwdArgument(trimmed)}` };
+  return { cwd, command: `cd -- ${quoteRestoreCwdArgument(cwd)}` };
 }
 
 export function resolveRestoreCwdIntent(options: {
