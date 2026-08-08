@@ -1253,8 +1253,8 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
       return;
     }
 
-    // Actual IME remap — same encoding path as composition commits under
-    // Kitty report-all.
+    // Actual IME remap — Kitty associated-text composition when negotiated;
+    // otherwise send the committed glyph (report-all alone cannot carry it).
     const encoded = encodeKittyCompositionText(kittyKeyboardMode, text);
     if (encoded) {
       handleTerminalInputData(encoded, { source: "kitty" });
