@@ -78,6 +78,7 @@ import {
 } from "../domain/sftpLocatePathInTerminal";
 import { classifyDistroId } from "../domain/host";
 import { useTerminalBackend } from "../application/state/useTerminalBackend";
+import { isTerminalSensitiveInputActive } from "./terminal/runtime/terminalSensitiveInputRegistry";
 import { scheduleDeferredTerminalFocus } from "./systemManager/tmuxActionFocus";
 import {
   connectionKeyMatchesHost,
@@ -1311,6 +1312,8 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       etEnabled: session?.etEnabled,
     });
     if (!action) return;
+    // Never inject cd into a password/sudo prompt (same guard as snippets/broadcast).
+    if (isTerminalSensitiveInputActive(action.sessionId)) return;
     terminalBackend.writeToSession(action.sessionId, action.data, { automated: true });
     scheduleDeferredTerminalFocus(onRequestTerminalFocus);
   }, [

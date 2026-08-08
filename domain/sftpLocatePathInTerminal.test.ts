@@ -25,6 +25,8 @@ test("canLocateSftpPathInTerminal allows connected SSH sessions on the same host
 test("canLocateSftpPathInTerminal allows mosh/et interactive cd (unlike silent restore)", () => {
   assert.equal(canLocateSftpPathInTerminal({ ...base, moshEnabled: true }), true);
   assert.equal(canLocateSftpPathInTerminal({ ...base, etEnabled: true }), true);
+  assert.equal(canLocateSftpPathInTerminal({ ...base, protocol: "mosh" }), true);
+  assert.equal(canLocateSftpPathInTerminal({ ...base, protocol: "et" }), true);
 });
 
 test("canLocateSftpPathInTerminal rejects missing session, disconnected session, or host mismatch", () => {

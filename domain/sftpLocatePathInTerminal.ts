@@ -35,7 +35,12 @@ export function canLocateSftpPathInTerminal(
   if (!options.sftpHostId || !options.sessionHostId) return false;
   if (options.sftpHostId !== options.sessionHostId) return false;
 
-  return protocol === "ssh" || protocol === "local" || protocol === undefined;
+  // Interactive locate allows mosh/et (unlike silent restore). Accept both the
+  // transport protocol strings and ssh+flag forms used by session factories.
+  return protocol === "ssh"
+    || protocol === "mosh"
+    || protocol === "et"
+    || protocol === "local";
 }
 
 /** Session write payload for locating the SFTP path in the linked terminal. */
