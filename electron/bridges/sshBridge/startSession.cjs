@@ -191,16 +191,22 @@ function createStartSessionApi(ctx) {
   with (ctx) {
     const listInteractiveShellPids = async (conn) => {
       if (!conn || typeof conn.exec !== "function") {
-        return Promise.resolve({ available: false, pids: [] });
+        return Promise.resolve({ available: false, pids: [], ages: {} });
       }
 
       const scanCompleteMarker = "__NETCATTY_SHELL_SCAN_COMPLETE__";
+      // Emit "pid etimes" when possible. etimes (elapsed seconds) is a
+      // wrap-safe ordering key: higher means older. Plain "pid" remains valid
+      // for hosts that lack etimes.
       const script = `SELF=$$
-ps_output=$(ps -e -o pid=,ppid=,tty=,comm= 2>/dev/null) || exit 69
+ps_output=$(ps -e -o pid=,ppid=,tty=,comm=,etimes= 2>/dev/null) || ps_output=$(ps -e -o pid=,ppid=,tty=,comm= 2>/dev/null) || exit 69
 {
   printf '%s\n' "$ps_output" | awk -v pp="$PPID" -v self="$SELF" '
     function isshell(c) { sub(/^.*\\//, "", c); sub(/^-/, "", c); return c ~ /^(ba|z|fi|k|da|a|c|tc)?sh$/ }
-    $1 != self && $2 == pp && $3 !~ /^\\?+$/ && isshell($4) { print $1 }
+    $1 != self && $2 == pp && $3 !~ /^\\?+$/ && isshell($4) {
+      if (NF >= 5 && $5 ~ /^[0-9]+$/) print $1, $5+0
+      else print $1
+    }
   '
   if [ -r /proc/$SELF/environ ]; then
     conn=$(tr '\\0' '\\n' < /proc/$SELF/environ 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n1)
@@ -217,11 +223,16 @@ ps_output=$(ps -e -o pid=,ppid=,tty=,comm= 2>/dev/null) || exit 69
         pcomm=$(cat "/proc/$ppid/comm" 2>/dev/null)
         case "$pcomm" in sshd|dropbear|dropbearmulti) ;; *) continue ;; esac
         tty=$(ps -p "$pid" -o tty= 2>/dev/null | tr -d '[:space:]')
-        [ -n "$tty" ] && [ "$tty" != "?" ] && printf '%s\\n' "$pid"
+        [ -n "$tty" ] && [ "$tty" != "?" ] || continue
+        etimes=$(ps -p "$pid" -o etimes= 2>/dev/null | tr -d '[:space:]')
+        case "$etimes" in
+          ''|*[!0-9]*) printf '%s\\n' "$pid" ;;
+          *) printf '%s %s\\n' "$pid" "$etimes" ;;
+        esac
       done
     fi
   fi
-} | awk '/^[0-9]+$/ && !seen[$1]++ { print $1 }'
+} | awk '/^[0-9]+/ && !seen[$1]++ { print }'
 printf '%s\n' '${scanCompleteMarker}'`;
 
       try {
@@ -237,15 +248,24 @@ printf '%s\n' '${scanCompleteMarker}'`;
         const lines = result.stdout.split(/\r?\n/);
         const completed = lines.includes(scanCompleteMarker);
         const available = completed && (result.code === null || result.code === 0);
-        return {
-          available,
-          pids: available ? lines.filter((value) => /^\d+$/.test(value)) : [],
-        };
+        const pids = [];
+        const ages = {};
+        if (available) {
+          for (const line of lines) {
+            const match = /^(\d+)(?:\s+(\d+))?$/.exec(String(line || "").trim());
+            if (!match) continue;
+            const pid = match[1];
+            if (!pids.includes(pid)) pids.push(pid);
+            if (match[2] !== undefined) ages[pid] = Number(match[2]);
+          }
+        }
+        return { available, pids, ages };
       } catch (error) {
         return {
           available: false,
           rateLimited: isSshChannelOpenRateLimitedError(error),
           pids: [],
+          ages: {},
         };
       }
     };
@@ -835,6 +855,13 @@ printf '%s\n' '${scanCompleteMarker}'`;
                     && candidate.shellPid
                   ))
                   .map((candidate) => String(candidate.shellPid));
+                const listUnassignedSiblings = () => [...sessions.values()].filter(
+                  (candidate) => (
+                    candidate?.connRef === connRef
+                    && candidate !== copiedSession
+                    && !candidate.shellPid
+                  ),
+                );
                 // Prefer PIDs already recorded on sibling tabs of this shared
                 // transport. Fall back to the pre-shell snapshot when the source
                 // closed before discovery runs but had a known shellPid.
@@ -842,7 +869,11 @@ printf '%s\n' '${scanCompleteMarker}'`;
                 if (baseline.length === 0) {
                   baseline = shellPidsBeforeOpen;
                 }
-                if (baseline.length === 0) {
+                // Also reconcile when some siblings are already tracked but the
+                // copy source (or another tab) still lacks shellPid — otherwise
+                // waitForNew sees multiple "new" PIDs and returns null.
+                const needsUntrackedReconcile = listUnassignedSiblings().length > 0;
+                if (baseline.length === 0 || needsUntrackedReconcile) {
                   const discovery = await listInteractiveShellPidsResilient(conn, {
                     initialDelayMs: discoveryBackoffMs,
                     attempts: 4,
@@ -854,17 +885,12 @@ printf '%s\n' '${scanCompleteMarker}'`;
                   }
                   if (discovery.available && discovery.pids.length > 0) {
                     const assignedPids = new Set(liveBaseline());
+                    for (const pid of baseline) assignedPids.add(String(pid));
                     const unclaimed = discovery.pids.filter((pid) => !assignedPids.has(pid));
-                    const unassignedSiblings = [...sessions.values()].filter(
-                      (candidate) => (
-                        candidate?.connRef === connRef
-                        && candidate !== copiedSession
-                        && !candidate.shellPid
-                      ),
-                    );
+                    const unassignedSiblings = listUnassignedSiblings();
                     if (unclaimed.length === 1 && unassignedSiblings.length === 1) {
                       unassignedSiblings[0].shellPid = unclaimed[0];
-                      baseline = [String(unclaimed[0])];
+                      baseline = liveBaseline();
                     } else if (unassignedSiblings.length === 0 && unclaimed.length === 1) {
                       // Sole unclaimed PID is ambiguous once the source tab is
                       // gone: the closing source process may still be listed
@@ -891,17 +917,29 @@ printf '%s\n' '${scanCompleteMarker}'`;
                       // the probe), so the first post-open scan already lists
                       // both shared shells. Reintroducing a pre-open exec would
                       // burn bastion channel budget (#2704). Disambiguate by
-                      // PID order: login shells on one transport are created
-                      // sequentially, so the copied shell advances past the
-                      // source. Assign the older PID to the sibling and claim
-                      // the newer one for this tab — otherwise waitForNew sees
-                      // two "new" PIDs against an empty baseline and returns
-                      // null, leaving both tabs untracked/ambiguous for cwd.
-                      const ordered = [...unclaimed]
-                        .map(String)
-                        .sort((left, right) => Number(left) - Number(right));
-                      unassignedSiblings[0].shellPid = ordered[0];
-                      return ordered[1];
+                      // process age (etimes): login shells on one transport are
+                      // created sequentially, so the copied shell is younger.
+                      // Numeric PID order is not a timestamp and fails when the
+                      // PID allocator wraps between source and copy.
+                      const ages = discovery.ages || {};
+                      const left = String(unclaimed[0]);
+                      const right = String(unclaimed[1]);
+                      const leftAge = ages[left];
+                      const rightAge = ages[right];
+                      if (
+                        Number.isFinite(leftAge)
+                        && Number.isFinite(rightAge)
+                        && leftAge !== rightAge
+                      ) {
+                        const older = leftAge > rightAge ? left : right;
+                        const newer = older === left ? right : left;
+                        unassignedSiblings[0].shellPid = older;
+                        return newer;
+                      }
+                      // Without distinct ages, refuse to guess — fall through
+                      // with every known PID so waitForNew can still succeed if
+                      // one of the two later disappears.
+                      baseline = [...assignedPids];
                     } else if (assignedPids.size > 0) {
                       baseline = [...assignedPids];
                     }

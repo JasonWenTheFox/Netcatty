@@ -5,6 +5,7 @@ const Module = require("node:module");
 
 const {
   createConnectionRef,
+  acquireConnectionRef,
   releaseConnectionRef,
   resetSshTransportRegistryForTests,
 } = require("./sshConnectionPool.cjs");
@@ -708,7 +709,8 @@ test("Copy Tab disambiguates a two-PID first scan when the source never recorded
     stream.close = () => {};
     // OSC 7 sources skip the cwd probe, so shellPid is unset. The copied shell
     // is already visible in the first post-open scan — no gradual appearance.
-    const pids = "111\n222\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
+    // Ages (etimes seconds; higher = older) distinguish source from copy.
+    const pids = "111 40\n222 1\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
     setImmediate(() => {
       stream.emit("data", Buffer.from(pids));
       stream.emit("close", 0);
@@ -735,6 +737,96 @@ test("Copy Tab disambiguates a two-PID first scan when the source never recorded
   assert.equal(execCalls, 1, "must not require waitForNew retries once both PIDs are visible");
   assert.equal(sessions.get("source").shellPid, "111");
   assert.equal(sessions.get("copy").shellPid, "222");
+});
+
+test("Copy Tab uses process age when PID wrap makes the copy numerically smaller", async (t) => {
+  const { bridge } = loadBridgeWithMockedSsh2(t);
+  const sessions = new Map();
+  const sourceConn = makeReusableConn();
+  sourceConn.exec = (_command, callback) => {
+    const stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    stream.close = () => {};
+    // After PID wrap the copied shell can receive a lower numeric PID while
+    // still being the younger process (etimes 1 vs 90).
+    const pids = "50 1\n4000 90\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
+    setImmediate(() => {
+      stream.emit("data", Buffer.from(pids));
+      stream.emit("close", 0);
+    });
+    callback(null, stream);
+  };
+  sessions.set("source", makeSourceSession(sourceConn, {
+    hostname: "10.0.0.1",
+    username: "alice",
+  }));
+
+  const start = registerStartHandler(bridge, sessions);
+  await start(
+    { sender: makeSender() },
+    {
+      sessionId: "copy",
+      hostname: "10.0.0.1",
+      username: "alice",
+      sourceSessionId: "source",
+      sshChannelOpenRateLimitBackoffMs: 1,
+    },
+  );
+
+  assert.equal(sessions.get("source").shellPid, "4000");
+  assert.equal(sessions.get("copy").shellPid, "50");
+});
+
+test("Copy Tab reconciles an untracked source even when another sibling PID is known", async (t) => {
+  const { bridge } = loadBridgeWithMockedSsh2(t);
+  const sessions = new Map();
+  const sourceConn = makeReusableConn();
+  sourceConn.exec = (_command, callback) => {
+    const stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    stream.close = () => {};
+    // Tracked sibling 100 plus untracked source 200 and new copy 300.
+    const pids = "100 120\n200 40\n300 1\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
+    setImmediate(() => {
+      stream.emit("data", Buffer.from(pids));
+      stream.emit("close", 0);
+    });
+    callback(null, stream);
+  };
+  const source = makeSourceSession(sourceConn, {
+    hostname: "10.0.0.1",
+    username: "alice",
+  });
+  const tracked = {
+    conn: sourceConn,
+    stream: makeStream(),
+    chainConnections: [],
+    webContentsId: 1,
+    zmodemSentry: { cancel() {} },
+    hostname: "10.0.0.1",
+    username: "alice",
+    _reuseEndpoint: source._reuseEndpoint,
+    shellPid: "100",
+  };
+  acquireConnectionRef(tracked, source.connRef);
+  sessions.set("tracked", tracked);
+  sessions.set("source", source);
+
+  const start = registerStartHandler(bridge, sessions);
+  await start(
+    { sender: makeSender() },
+    {
+      sessionId: "copy",
+      hostname: "10.0.0.1",
+      username: "alice",
+      sourceSessionId: "source",
+      sshChannelOpenRateLimitBackoffMs: 1,
+    },
+  );
+
+  assert.equal(sessions.get("tracked").shellPid, "100");
+  assert.equal(sessions.get("source").shellPid, "200");
+  assert.equal(sessions.get("copy").shellPid, "300");
 });
 
 test("Copy Tab retries bastion channelOpen too offen before falling back", async (t) => {
