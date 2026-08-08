@@ -72,6 +72,9 @@ export const DEFAULT_AUTOCOMPLETE_SETTINGS: AutocompleteSettings = {
   historyScope: "host",
 };
 
+/** Max time to poll for shell echo after a pre-echo debounce cycle (#2813). */
+const ECHO_VALIDATION_MAX_WAIT_MS = 3000;
+
 /**
  * Whether completion work is worth doing — i.e. whether anything would
  * actually be rendered. With both the popup and ghost text disabled, querying
@@ -218,6 +221,14 @@ export function useTerminalAutocomplete(
 
   const ghostAddonRef = useRef<GhostTextAddon | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Pre-echo debounce cycles must poll until the live line validates the
+   * keystroke buffer (or we give up). PTY echo updates xterm only and does
+   * not schedule another fetchSuggestions — without this, whole-word IME /
+   * high-latency SSH commits never show completions until the next key.
+   */
+  const echoValidationTypedRef = useRef<string | null>(null);
+  const echoValidationStartedAtRef = useRef<number | null>(null);
   const lastKeystrokeRef = useRef<number>(0);
   const lastPromptRef = useRef<PromptDetectionResult | null>(null);
   const disposedRef = useRef(false);
@@ -351,6 +362,8 @@ export function useTerminalAutocomplete(
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
+    echoValidationTypedRef.current = null;
+    echoValidationStartedAtRef.current = null;
     ghostAddonRef.current?.hide();
     completionAbortRef.current?.abort();
     completionAbortRef.current = null;
@@ -678,9 +691,6 @@ export function useTerminalAutocomplete(
       return;
     }
 
-    // Capture version at start — if it changes during async work, discard results
-    const version = ++fetchVersionRef.current;
-
     const { prompt, allowExternalProviders = true } = getAlignedPrompt(
       term,
       typedInputBufferRef.current,
@@ -691,10 +701,38 @@ export function useTerminalAutocomplete(
     // Pre-echo keystroke buffer can look identical to an echo-disabled
     // password prompt (`read -s -p '$ '`). Do not render or accept
     // built-in history/snippet suggestions until the shell echoes input.
+    // Incoming PTY echo does not re-schedule fetches, so keep polling this
+    // debounce cycle until the live line validates — or until max wait
+    // (silent prompts never echo). clearState cancels timers and echo-wait
+    // refs; re-arm the wait afterward when still within the window.
     if (allowExternalProviders === false) {
+      const typed = typedInputBufferRef.current;
+      const startedAt =
+        echoValidationTypedRef.current === typed &&
+        echoValidationStartedAtRef.current != null
+          ? echoValidationStartedAtRef.current
+          : Date.now();
       clearState();
+      const withinWait =
+        typed.length > 0 &&
+        !disposedRef.current &&
+        Date.now() - startedAt < ECHO_VALIDATION_MAX_WAIT_MS;
+      if (withinWait) {
+        echoValidationTypedRef.current = typed;
+        echoValidationStartedAtRef.current = startedAt;
+        debounceTimerRef.current = setTimeout(() => {
+          debounceTimerRef.current = null;
+          void fetchSuggestionsRef.current();
+        }, settingsRef.current.debounceMs);
+      }
       return;
     }
+
+    echoValidationTypedRef.current = null;
+    echoValidationStartedAtRef.current = null;
+
+    // Capture version at start — if it changes during async work, discard results
+    const version = ++fetchVersionRef.current;
 
     if (!prompt.isAtPrompt || prompt.userInput.length < settingsRef.current.minChars) {
       clearState();
