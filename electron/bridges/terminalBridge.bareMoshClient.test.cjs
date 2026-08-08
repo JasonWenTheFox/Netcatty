@@ -400,6 +400,44 @@ test("Mosh automatic mode discovers custom local keys in preferred order", async
   ]);
 });
 
+test("startMoshSessionViaHandshake releases FIDO lease when auth setup fails", async () => {
+  let releaseCount = 0;
+  const moshHandshake = require("./moshHandshake.cjs");
+  const api = createMoshSessionApi({
+    os,
+    path,
+    fs,
+    process,
+    randomUUID: () => "fixed",
+    moshHandshake,
+    pty: {
+      spawn() {
+        throw new Error("pty.spawn should not run after auth setup failure");
+      },
+    },
+    tempDirBridge: {
+      getTempFilePath() {
+        throw new Error("temp unavailable");
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => api.startMoshSessionViaHandshake(
+      { sender: { id: 1 } },
+      {
+        hostname: "host.example",
+        username: "alice",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----",
+        _releaseNetcattyFidoAgent: () => { releaseCount += 1; },
+      },
+      { bareClient: "/tmp/mosh-client", sshExe: "/usr/bin/ssh" },
+    ),
+    /temp unavailable/,
+  );
+  assert.equal(releaseCount, 1);
+});
+
 test("removed Mosh client detection APIs are not exposed to the renderer", () => {
   const bridgeSource = fs.readFileSync(path.join(__dirname, "terminalBridge.cjs"), "utf8");
   const preloadSource = fs.readFileSync(path.join(__dirname, "..", "preload.cjs"), "utf8");

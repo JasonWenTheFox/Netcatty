@@ -500,34 +500,35 @@ function createMoshSessionApi(ctx) {
       const rows = options.rows || 24;
       const optionsEnv = options.env || {};
       const lang = optionsEnv.LANG || resolveLangFromCharsetForMosh(options.charset);
-      const moshAuth = await buildMoshSshAuthArgs(options, sessionId);
-    
-      const { args: sshArgs } = moshHandshake.buildSshHandshakeCommand({
-        host: options.hostname,
-        port: options.port,
-        username: options.username,
-        lang,
-        locales: optionsEnv,
-        moshServer: moshHandshake.buildMoshServerCommand(options.moshServerPath),
-        sshArgs: moshAuth.sshArgs,
-      });
-    
-      const { buildTerminalProcessEnv } = require("../httpNetworkProxyBridge.cjs");
-      const sshEnv = { ...buildTerminalProcessEnv(process.env), ...optionsEnv, TERM: "xterm-256color" };
-      // Do not let ssh_config SendEnv force the local locale onto the remote
-      // process. The handshake passes the configured locale variables through
-      // mosh-server's stock `-l` fallback mechanism instead, so a minimal host
-      // can keep its working native C.UTF-8 locale when a requested locale is
-      // not installed.
-      for (const key of Object.keys(sshEnv)) {
-        if (key === "LANG" || key === "LANGUAGE" || key.startsWith("LC_")) {
-          delete sshEnv[key];
-        }
-      }
-      applyMoshSshAgentEnvironment(sshEnv, options);
-    
+      let moshAuth;
       let sshPty;
       try {
+        moshAuth = await buildMoshSshAuthArgs(options, sessionId);
+
+        const { args: sshArgs } = moshHandshake.buildSshHandshakeCommand({
+          host: options.hostname,
+          port: options.port,
+          username: options.username,
+          lang,
+          locales: optionsEnv,
+          moshServer: moshHandshake.buildMoshServerCommand(options.moshServerPath),
+          sshArgs: moshAuth.sshArgs,
+        });
+
+        const { buildTerminalProcessEnv } = require("../httpNetworkProxyBridge.cjs");
+        const sshEnv = { ...buildTerminalProcessEnv(process.env), ...optionsEnv, TERM: "xterm-256color" };
+        // Do not let ssh_config SendEnv force the local locale onto the remote
+        // process. The handshake passes the configured locale variables through
+        // mosh-server's stock `-l` fallback mechanism instead, so a minimal host
+        // can keep its working native C.UTF-8 locale when a requested locale is
+        // not installed.
+        for (const key of Object.keys(sshEnv)) {
+          if (key === "LANG" || key === "LANGUAGE" || key.startsWith("LC_")) {
+            delete sshEnv[key];
+          }
+        }
+        applyMoshSshAgentEnvironment(sshEnv, options);
+
         sshPty = pty.spawn(sshExe, sshArgs, {
           cols,
           rows,
@@ -537,7 +538,7 @@ function createMoshSessionApi(ctx) {
           useConptyDll: process.platform === "win32",
         });
       } catch (err) {
-        cleanupMoshAuthTempFiles(moshAuth.tempFiles);
+        if (moshAuth) cleanupMoshAuthTempFiles(moshAuth.tempFiles);
         releaseFidoAgent();
         throw err;
       }

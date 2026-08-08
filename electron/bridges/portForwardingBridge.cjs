@@ -1261,6 +1261,7 @@ async function startPortForward(event, payload) {
       addKeysToAgent,
       useKeychain,
       privateKey,
+      certificate,
       hostname,
       port,
       username,
