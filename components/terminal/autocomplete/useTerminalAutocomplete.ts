@@ -230,6 +230,12 @@ export function useTerminalAutocomplete(
   const previewBaselineRef = useRef<string>("");
   /** Whether a popup candidate is currently rendered into the command line (#1005). */
   const previewActiveRef = useRef(false);
+  /**
+   * Whether a live preview has rewritten the line for the current popup cycle.
+   * Stays true after the user edits the previewed text (which clears
+   * previewActiveRef) so Enter does not accept the stale selected row.
+   */
+  const previewCommittedRef = useRef(false);
   /** Monotonic counter to invalidate stale async sub-dir fetches */
   const subDirFetchVersionRef = useRef(0);
   /**
@@ -353,6 +359,8 @@ export function useTerminalAutocomplete(
     // Bump version to invalidate any in-flight async completions
     fetchVersionRef.current++;
     subDirFetchVersionRef.current++;
+    previewActiveRef.current = false;
+    previewCommittedRef.current = false;
     setState((prev) =>
       prev.popupVisible || prev.suggestions.length > 0 ? { ...EMPTY_STATE } : prev,
     );
@@ -581,6 +589,7 @@ export function useTerminalAutocomplete(
     typedInputBufferRef.current = newCommand;
     typedBufferReliableRef.current = true;
     previewActiveRef.current = true;
+    previewCommittedRef.current = true;
     lastAcceptedCommandRef.current = newCommand;
   }, [termRef, writeToTerminal]);
 
@@ -767,6 +776,7 @@ export function useTerminalAutocomplete(
       // Live-preview baseline: the typed input these suggestions completed.
       previewBaselineRef.current = input;
       previewActiveRef.current = false;
+      previewCommittedRef.current = false;
       const cursorColumn = resolveAutocompleteCursorColumn(term, currentPrompt);
       const anchor = resolveAutocompleteAnchorInViewport(
         term,
@@ -872,6 +882,7 @@ export function useTerminalAutocomplete(
       typedInputBufferRef,
       typedBufferReliableRef,
       previewActiveRef,
+      previewCommittedRef,
       lastAcceptedCommandRef,
       setState,
       expandSubDir,
@@ -940,6 +951,7 @@ export function useTerminalAutocomplete(
     typedBufferReliableRef.current = true;
     const isPreview = index >= 0 && candidate !== baseline;
     previewActiveRef.current = isPreview;
+    if (isPreview) previewCommittedRef.current = true;
     lastAcceptedCommandRef.current = isPreview ? candidate : null;
     // Live-preview can move/wrap the cursor. Recompute the anchor after xterm
     // has processed the write so the popup doesn't drift or flip into a stale

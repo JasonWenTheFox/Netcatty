@@ -10,6 +10,12 @@ interface TerminalAutocompleteKeyEventContext {
   typedInputBufferRef: MutableRefObject<string>;
   typedBufferReliableRef: MutableRefObject<boolean>;
   previewActiveRef: MutableRefObject<boolean>;
+  /**
+   * True once a live preview has rewritten the line for the current popup
+   * cycle. Survives edits that clear `previewActiveRef` so Enter does not
+   * treat an edited preview as a never-previewed default selection.
+   */
+  previewCommittedRef: MutableRefObject<boolean>;
   lastAcceptedCommandRef: MutableRefObject<string | null>;
   setState: Dispatch<SetStateAction<AutocompleteState>>;
   expandSubDir: (level: number, entry: SubDirEntry, moveFocus?: boolean) => void;
@@ -44,6 +50,7 @@ export function handleTerminalAutocompleteKeyEvent(
     typedInputBufferRef,
     typedBufferReliableRef,
     previewActiveRef,
+    previewCommittedRef,
     lastAcceptedCommandRef,
     setState,
     expandSubDir,
@@ -183,6 +190,7 @@ export function handleTerminalAutocompleteKeyEvent(
       // the line and let Tab reach the shell for native completion.
       clearState();
       previewActiveRef.current = false;
+      previewCommittedRef.current = false;
       return true;
     }
     // Hide stale ghost text before Tab reaches the shell — the shell's
@@ -293,46 +301,53 @@ export function handleTerminalAutocompleteKeyEvent(
       return false;
     }
 
-    // Enter on popup. When live-preview has already rewritten the line,
-    // let Enter reach the shell. When a row is selected but not yet
-    // previewed (default first-row highlight, #2821), insert+execute like
-    // the previewless path. Don't record here: handleInput's Enter path
-    // records the *actual* line — it uses lastAcceptedCommandRef (set on
-    // select) but falls back to the live buffer when the user edited the
-    // previewed command (typing nulls that ref).
+    // Enter on popup. When live-preview has already rewritten the line —
+    // or the user edited that preview (previewActive cleared, committed
+    // still set) — let Enter reach the shell. When a row is selected but
+    // never previewed (default first-row highlight, #2821), insert+execute
+    // like the previewless path. Don't record here: handleInput's Enter
+    // path records the *actual* line — it uses lastAcceptedCommandRef
+    // (set on select) but falls back to the live buffer when the user
+    // edited the previewed command (typing nulls that ref).
     if (isAutocompleteConfirmEnter(e, settingsRef.current)) {
       const selected = s.selectedIndex >= 0 ? s.suggestions[s.selectedIndex] : null;
       if (selected?.source === "snippet" && selected.snippet) {
         if (!acceptSnippet(selected.snippet)) {
           clearState();
           previewActiveRef.current = false;
+          previewCommittedRef.current = false;
           return true;
         }
         e.preventDefault();
         previewActiveRef.current = false;
+        previewCommittedRef.current = false;
         return false; // consume — run the snippet, not the typed text
       }
       if (
         selected &&
         settingsRef.current.livePreview &&
-        previewActiveRef.current
+        (previewActiveRef.current || previewCommittedRef.current)
       ) {
         clearState();
         previewActiveRef.current = false;
+        previewCommittedRef.current = false;
         return true;
       }
       if (selected) {
         if (acceptPreviewlessSelection(s.selectedIndex)) {
           e.preventDefault();
           previewActiveRef.current = false;
+          previewCommittedRef.current = false;
           return false;
         }
         clearState();
         previewActiveRef.current = false;
+        previewCommittedRef.current = false;
         return true;
       }
       clearState();
       previewActiveRef.current = false;
+      previewCommittedRef.current = false;
       return true;
     }
   }
@@ -348,6 +363,7 @@ export function handleTerminalAutocompleteKeyEvent(
     ghost?.hide();
     clearState();
     previewActiveRef.current = false;
+    previewCommittedRef.current = false;
     return false;
   }
 

@@ -72,6 +72,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
       typedInputBufferRef: { current: "sh" },
       typedBufferReliableRef: { current: true },
       previewActiveRef: { current: false },
+      previewCommittedRef: { current: false },
       lastAcceptedCommandRef: { current: null },
       setState(update: typeof state | ((prev: typeof state) => typeof state)) {
         state = typeof update === "function" ? update(state) : update;
@@ -244,6 +245,38 @@ test("live-preview Enter still passes through when the candidate is already on t
   });
   context.settingsRef.current.livePreview = true;
   context.previewActiveRef.current = true;
+  context.previewCommittedRef.current = true;
+  const event = keyEvent("Enter");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, true);
+  assert.equal(event.defaultPrevented, false);
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(clears, [1]);
+});
+
+test("live-preview Enter passes through an edited preview instead of accepting the old row", () => {
+  // Arrow navigation live-previewed a row, then the user typed (clears
+  // previewActive) before debounce refresh. Enter must keep the edited
+  // line — not wipe it via acceptPreviewlessSelection.
+  const { context, accepted, clears } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [suggestion("show version")],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [],
+        subDirFocusLevel: -1,
+      },
+    },
+  });
+  context.settingsRef.current.livePreview = true;
+  context.previewActiveRef.current = false;
+  context.previewCommittedRef.current = true;
+  context.typedInputBufferRef.current = "show version --short";
   const event = keyEvent("Enter");
 
   const result = handleTerminalAutocompleteKeyEvent(event, context);
