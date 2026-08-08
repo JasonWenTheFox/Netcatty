@@ -936,10 +936,16 @@ printf '%s\n' '${scanCompleteMarker}'`;
                         unassignedSiblings[0].shellPid = older;
                         return newer;
                       }
-                      // Without distinct ages, refuse to guess — fall through
-                      // with every known PID so waitForNew can still succeed if
-                      // one of the two later disappears.
-                      baseline = [...assignedPids];
+                      // Ages tied (same etimes second) or unavailable: both
+                      // shells are already visible, so baselining them for
+                      // waitForNew never yields a new PID and leaves cwd
+                      // ambiguous. Fall back to sequential PID order — distinct
+                      // etimes already covers PID wrap; this path only runs
+                      // when age cannot separate the pair.
+                      const ordered = [left, right]
+                        .sort((a, b) => Number(a) - Number(b));
+                      unassignedSiblings[0].shellPid = ordered[0];
+                      return ordered[1];
                     } else if (assignedPids.size > 0) {
                       baseline = [...assignedPids];
                     }

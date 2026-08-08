@@ -777,6 +777,86 @@ test("Copy Tab uses process age when PID wrap makes the copy numerically smaller
   assert.equal(sessions.get("copy").shellPid, "50");
 });
 
+test("Copy Tab falls back to PID order when both shells share the same etimes second", async (t) => {
+  const { bridge } = loadBridgeWithMockedSsh2(t);
+  const sessions = new Map();
+  const sourceConn = makeReusableConn();
+  let execCalls = 0;
+  sourceConn.exec = (_command, callback) => {
+    execCalls += 1;
+    const stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    stream.close = () => {};
+    // Same whole-second etimes tick: age inequality cannot separate them.
+    const pids = "111 1\n222 1\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
+    setImmediate(() => {
+      stream.emit("data", Buffer.from(pids));
+      stream.emit("close", 0);
+    });
+    callback(null, stream);
+  };
+  sessions.set("source", makeSourceSession(sourceConn, {
+    hostname: "10.0.0.1",
+    username: "alice",
+  }));
+
+  const start = registerStartHandler(bridge, sessions);
+  await start(
+    { sender: makeSender() },
+    {
+      sessionId: "copy",
+      hostname: "10.0.0.1",
+      username: "alice",
+      sourceSessionId: "source",
+      sshChannelOpenRateLimitBackoffMs: 1,
+    },
+  );
+
+  assert.equal(execCalls, 1, "must not burn retries when both PIDs are already visible");
+  assert.equal(sessions.get("source").shellPid, "111");
+  assert.equal(sessions.get("copy").shellPid, "222");
+});
+
+test("Copy Tab falls back to PID order when remote ps lacks etimes", async (t) => {
+  const { bridge } = loadBridgeWithMockedSsh2(t);
+  const sessions = new Map();
+  const sourceConn = makeReusableConn();
+  let execCalls = 0;
+  sourceConn.exec = (_command, callback) => {
+    execCalls += 1;
+    const stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    stream.close = () => {};
+    // Age-less "pid" lines only — hosts without etimes.
+    const pids = "111\n222\n__NETCATTY_SHELL_SCAN_COMPLETE__\n";
+    setImmediate(() => {
+      stream.emit("data", Buffer.from(pids));
+      stream.emit("close", 0);
+    });
+    callback(null, stream);
+  };
+  sessions.set("source", makeSourceSession(sourceConn, {
+    hostname: "10.0.0.1",
+    username: "alice",
+  }));
+
+  const start = registerStartHandler(bridge, sessions);
+  await start(
+    { sender: makeSender() },
+    {
+      sessionId: "copy",
+      hostname: "10.0.0.1",
+      username: "alice",
+      sourceSessionId: "source",
+      sshChannelOpenRateLimitBackoffMs: 1,
+    },
+  );
+
+  assert.equal(execCalls, 1, "must not burn retries when both PIDs are already visible");
+  assert.equal(sessions.get("source").shellPid, "111");
+  assert.equal(sessions.get("copy").shellPid, "222");
+});
+
 test("Copy Tab reconciles an untracked source even when another sibling PID is known", async (t) => {
   const { bridge } = loadBridgeWithMockedSsh2(t);
   const sessions = new Map();
