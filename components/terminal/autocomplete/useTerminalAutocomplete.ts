@@ -124,6 +124,11 @@ export interface AutocompleteState {
 type HostCompletionProviderOptions = Parameters<typeof getCompletions>[1] & {
   /** Host-owned prompt identity used to gate third-party Provider access. */
   promptText: string;
+  /**
+   * False when input was synthesized from the pre-echo keystroke buffer.
+   * External Providers must stay disabled until the live line validates input.
+   */
+  allowExternalProviders?: boolean;
   /** Aborted whenever the prompt/session security state invalidates this query. */
   signal?: AbortSignal;
 };
@@ -672,7 +677,11 @@ export function useTerminalAutocomplete(
     // Capture version at start — if it changes during async work, discard results
     const version = ++fetchVersionRef.current;
 
-    const { prompt } = getAlignedPrompt(term, typedInputBufferRef.current, typedBufferReliableRef.current);
+    const { prompt, allowExternalProviders = true } = getAlignedPrompt(
+      term,
+      typedInputBufferRef.current,
+      typedBufferReliableRef.current,
+    );
     lastPromptRef.current = prompt;
 
     if (!prompt.isAtPrompt || prompt.userInput.length < settingsRef.current.minChars) {
@@ -716,6 +725,7 @@ export function useTerminalAutocomplete(
         cwdSource: cwdResolution.source,
         snippets: snippetsRef.current,
         promptText: prompt.promptText,
+        allowExternalProviders,
         signal: completionController.signal,
       });
     } finally {

@@ -66,6 +66,13 @@ export interface AlignedPromptResult {
    * to record it as the executed command.
    */
   alignedTyped: string | null;
+  /**
+   * When false, `prompt.userInput` was filled from the keystroke buffer
+   * before any shell echo. Local autocomplete may use it (#2813), but it
+   * must not authorize history recording (`alignedTyped`) or external
+   * completion providers. Omitted/true means the live line validated input.
+   */
+  allowExternalProviders?: boolean;
 }
 
 function getCursorLinePrefix(term: XTerm): string | null {
@@ -392,15 +399,12 @@ function canUseReliablePromptPrefix(
   raw: PromptDetectionResult,
   typedBuffer: string,
 ): boolean {
-  if (!raw.isAtPrompt || typedBuffer.length === 0) {
+  // Empty echo alone is not validation: echo-disabled prompts can look like
+  // a normal shell PS1 (e.g. `read -s -p '$ '`), and treating the keystroke
+  // buffer as alignedTyped would authorize history recording. Pre-echo
+  // autocomplete uses a separate path that keeps alignedTyped null.
+  if (!raw.isAtPrompt || typedBuffer.length === 0 || raw.userInput.length === 0) {
     return false;
-  }
-  // No echo yet (common after CJK IME commits a whole word before SSH
-  // round-trip): trust the keystroke buffer on standard shell prompts so
-  // autocomplete can query immediately (#2813). Skip ambiguous REPL-style
-  // prompts (e.g. bare Mongo `test>`) that must not record pre-echo input.
-  if (raw.userInput.length === 0) {
-    return allowsShortPromptEcho(raw.promptText);
   }
   if (typedBuffer.length <= raw.userInput.length) return false;
   return isReliableTypedPrefix(raw.userInput, typedBuffer, {
@@ -914,6 +918,21 @@ export function getAlignedPrompt(
       return {
         prompt: withTypedUserInput(raw, typedBuffer),
         alignedTyped: typedBuffer,
+      };
+    }
+    // No echo yet (CJK IME / high-latency SSH): surface the keystroke buffer
+    // for local autocomplete on standard shell prompts (#2813), but do not
+    // set alignedTyped. Empty echo is also what echo-disabled password
+    // prompts look like, so this path must not authorize history recording
+    // or third-party completion providers.
+    if (
+      raw.userInput.length === 0 &&
+      allowsShortPromptEcho(raw.promptText)
+    ) {
+      return {
+        prompt: withTypedUserInput(raw, typedBuffer),
+        alignedTyped: null,
+        allowExternalProviders: false,
       };
     }
   }

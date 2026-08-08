@@ -69,7 +69,25 @@ test("uses reliable typed buffer when prompt echo has not started (IME / high-la
   assert.equal(result.prompt.promptText, "$ ");
   assert.equal(result.prompt.userInput, "部署");
   assert.equal(result.prompt.cursorOffset, 2);
-  assert.equal(result.alignedTyped, "部署");
+  // Pre-echo input may drive local autocomplete, but empty echo alone must
+  // not authorize history recording or external providers (password-shaped
+  // `read -s -p '$ '` prompts look identical until echo arrives).
+  assert.equal(result.alignedTyped, null);
+  assert.equal(result.allowExternalProviders, false);
+});
+
+test("does not treat empty-echo shell-shaped prompts as validated typed input", () => {
+  const term = createFakeTerm("$ ", 2);
+  const secret = "s3cret-token";
+
+  const result = getAlignedPrompt(term as never, secret, true);
+
+  assert.equal(result.prompt.isAtPrompt, true);
+  // Local autocomplete may still see the keystroke buffer, but empty echo
+  // must not set the history/provider authorization signals.
+  assert.equal(result.prompt.userInput, secret);
+  assert.equal(result.alignedTyped, null);
+  assert.equal(result.allowExternalProviders, false);
 });
 test("still trims prompt decorations out of the detected input", () => {
   const term = createFakeTerm("➜  ~ do", 7);
