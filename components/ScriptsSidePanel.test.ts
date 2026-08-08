@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { buildScriptsSidePanelRows } from "./ScriptsSidePanel.tsx";
+import {
+  buildScriptsSidePanelRows,
+  collectScriptsSidePanelPackagePaths,
+} from "./ScriptsSidePanel.tsx";
 import type { Snippet } from "../types";
 
 const snippet = (overrides: Partial<Snippet>): Snippet => ({
@@ -54,6 +57,26 @@ test("scripts side panel add control is a split button with secondary create act
   assert.match(source, /ChevronDown/);
   assert.match(source, /snippets\.action\.newScript/);
   assert.match(source, /snippets\.action\.newSnippet/);
+});
+
+test("collectScriptsSidePanelPackagePaths includes implied ancestors", () => {
+  assert.deepEqual(
+    collectScriptsSidePanelPackagePaths(["ops/linux"], [
+      snippet({ id: "a", package: "ops/linux/disk" }),
+      snippet({ id: "b", package: "" }),
+    ]).sort(),
+    ["ops", "ops/linux", "ops/linux/disk"],
+  );
+});
+
+test("scripts side panel toolbar exposes expand, collapse, and delete-selected actions", () => {
+  assert.match(source, /vault\.tree\.expandAll/);
+  assert.match(source, /vault\.tree\.collapseAll/);
+  assert.match(source, /snippets\.selection\.deleteSelected/);
+  assert.match(source, /expandAllGroups/);
+  assert.match(source, /collapseAllGroups/);
+  assert.match(source, /deleteSelectedSnippets/);
+  assert.match(source, /isMultiSelectMode/);
 });
 
 test("scripts side panel package dialog traps focus and exposes dialog close contract", () => {

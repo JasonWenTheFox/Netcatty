@@ -1600,14 +1600,18 @@ export function AppSideEffects() {
     };
   }, [handleOpenSettings, t]);
 
-  // Delete-from-sidepanel plumbing: ScriptsSidePanel's right-click menu
-  // dispatches `netcatty:snippets:delete` with the snippet id. Handled here
-  // (rather than in QuickAddSnippetDialog) because delete needs no UI.
+  // Delete-from-sidepanel plumbing: ScriptsSidePanel dispatches
+  // `netcatty:snippets:delete` with `id` (single) or `ids` (bulk). Handled
+  // here (rather than in QuickAddSnippetDialog) because delete needs no UI.
   useEffect(() => {
     const handler = (e: Event) => {
-      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
-      if (!id) return;
-      updateSnippets(snippets.filter((s) => s.id !== id));
+      const detail = (e as CustomEvent<{ id?: string; ids?: string[] }>).detail;
+      const ids = new Set<string>([
+        ...(detail?.ids ?? []),
+        ...(detail?.id ? [detail.id] : []),
+      ]);
+      if (ids.size === 0) return;
+      updateSnippets(snippets.filter((s) => !ids.has(s.id)));
     };
     window.addEventListener('netcatty:snippets:delete', handler);
     return () => window.removeEventListener('netcatty:snippets:delete', handler);

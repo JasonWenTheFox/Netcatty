@@ -7,7 +7,22 @@
  * list of matching snippets regardless of package nesting.
  */
 
-import { ChevronDown, ChevronRight, Edit2, FolderPlus, Layers, Package, Play, Plus, Search, Trash2, Zap } from 'lucide-react';
+import {
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Edit2,
+  Expand,
+  FolderPlus,
+  Layers,
+  Minimize2,
+  Package,
+  Play,
+  Plus,
+  Search,
+  Trash2,
+  Zap,
+} from 'lucide-react';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useI18n } from '../application/i18n/I18nProvider';
 import { getScriptRecordingSnapshot, subscribeScriptRecording } from '../application/state/scriptRecordingStore.ts';
@@ -32,6 +47,9 @@ import { Label } from './ui/label';
 import { SnippetCommandTooltipContent } from './snippets/SnippetCommandTooltipContent';
 import { TERMINAL_SIDE_PANEL_INNER_HEADER_CLASS } from './terminalLayer/terminalSidePanelChrome';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+
+const toolbarIconButtonClass =
+  'h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-40 disabled:pointer-events-none';
 
 const SCRIPT_ROW_HEIGHT = 34;
 
@@ -126,15 +144,11 @@ const getVerticalDropIntent = (
 const hasDragType = (dataTransfer: DataTransfer, type: string) =>
   Array.from(dataTransfer.types).includes(type);
 
-export function buildScriptsSidePanelRows({
-  snippets,
-  packages,
-  expandedPaths,
-}: {
-  snippets: Snippet[];
-  packages: string[];
-  expandedPaths: Set<string>;
-}): TreeRow[] {
+/** Collect every package path (including implied ancestors) shown in the tree. */
+export function collectScriptsSidePanelPackagePaths(
+  packages: string[],
+  snippets: Snippet[],
+): string[] {
   const normalizedPackages = new Set<string>();
   const addWithAncestors = (raw: string) => {
     const path = raw.trim();
@@ -152,6 +166,19 @@ export function buildScriptsSidePanelRows({
   snippets.forEach((snippet) => {
     if (snippet.package) addWithAncestors(snippet.package);
   });
+  return Array.from(normalizedPackages);
+}
+
+export function buildScriptsSidePanelRows({
+  snippets,
+  packages,
+  expandedPaths,
+}: {
+  snippets: Snippet[];
+  packages: string[];
+  expandedPaths: Set<string>;
+}): TreeRow[] {
+  const normalizedPackages = new Set(collectScriptsSidePanelPackagePaths(packages, snippets));
 
   const snippetsByPackage = new Map<string, Snippet[]>();
   const descendantCountByPackage = new Map<string, number>();
@@ -255,6 +282,8 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
   const [search, setSearch] = useState('');
   const [subView, setSubView] = useState<'library' | 'running'>('library');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [selectedSnippetIds, setSelectedSnippetIds] = useState<Set<string>>(new Set());
   const [isPackageDialogOpen, setIsPackageDialogOpen] = useState(false);
   const [newPackageName, setNewPackageName] = useState('');
   const [packageError, setPackageError] = useState('');
@@ -290,24 +319,7 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
   // (e.g. package "a/b/c" implies roots "a" and "a/b" even when not listed).
   const normalizedPackages = useMemo(() => {
     if (!isVisible) return new Set<string>();
-    const set = new Set<string>();
-    const addWithAncestors = (raw: string) => {
-      const path = raw.trim();
-      if (!path) return;
-      const isAbs = path.startsWith('/');
-      const body = isAbs ? path.slice(1) : path;
-      const parts = body.split('/').filter(Boolean);
-      for (let i = 1; i <= parts.length; i++) {
-        const sub = parts.slice(0, i).join('/');
-        set.add(isAbs ? `/${sub}` : sub);
-      }
-    };
-    packages.forEach(addWithAncestors);
-    // A snippet may reference a package path that's not in `packages` yet.
-    snippets.forEach((s) => {
-      if (s.package) addWithAncestors(s.package);
-    });
-    return set;
+    return new Set(collectScriptsSidePanelPackagePaths(packages, snippets));
   }, [packages, snippets, isVisible]);
 
   // Track every package we've ever observed so we can tell "new" from
@@ -347,6 +359,55 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
       return next;
     });
   }, []);
+
+  const expandAllGroups = useCallback(() => {
+    setExpandedPaths(new Set(normalizedPackages));
+  }, [normalizedPackages]);
+
+  const collapseAllGroups = useCallback(() => {
+    setExpandedPaths(new Set());
+  }, []);
+
+  const clearSnippetSelection = useCallback(() => {
+    setSelectedSnippetIds(new Set());
+    setIsMultiSelectMode(false);
+  }, []);
+
+  useEffect(() => {
+    setSelectedSnippetIds((prev) => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(snippets.map((snippet) => snippet.id));
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (alive.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [snippets]);
+
+  const toggleSnippetSelection = useCallback((id: string) => {
+    setSelectedSnippetIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const deleteSelectedSnippets = useCallback(() => {
+    if (selectedSnippetIds.size === 0) return;
+    const ids = Array.from(selectedSnippetIds);
+    if (onSnippetsChange) {
+      onSnippetsChange(snippets.filter((snippet) => !selectedSnippetIds.has(snippet.id)));
+    } else {
+      window.dispatchEvent(
+        new CustomEvent('netcatty:snippets:delete', { detail: { ids } }),
+      );
+    }
+    clearSnippetSelection();
+  }, [clearSnippetSelection, onSnippetsChange, selectedSnippetIds, snippets]);
 
   // When search is active, flatten everything (no tree, no packages).
   const searchMatches = useMemo(() => {
@@ -400,6 +461,10 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
 
   const handleSnippetClick = useCallback(
     (snippet: Snippet) => {
+      if (isMultiSelectMode) {
+        toggleSnippetSelection(snippet.id);
+        return;
+      }
       if (isScriptSnippet(snippet)) {
         onRunScript?.(snippet);
         setSubView('running');
@@ -407,8 +472,11 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
       }
       onSnippetClick(snippet);
     },
-    [onRunScript, onSnippetClick],
+    [isMultiSelectMode, onRunScript, onSnippetClick, toggleSnippetSelection],
   );
+
+  const hasSearch = search.trim().length > 0;
+  const canExpandCollapse = normalizedPackages.size > 0 && !hasSearch;
 
   const sessionRuns = useMemo(() => {
     if (!focusedSessionId) return runs;
@@ -757,8 +825,8 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
         </div>
       ) : (
       <>
-      {/* Search + Add */}
-      <div className="shrink-0 px-2 py-1.5 border-b border-border/50 flex items-center gap-1.5">
+      {/* Search + tree actions + Add */}
+      <div className="shrink-0 px-2 py-1.5 border-b border-border/50 flex items-center gap-1">
         <div className="relative flex-1 min-w-0">
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -768,6 +836,76 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
             className="h-7 pl-7 text-xs bg-muted/30 border-none"
           />
         </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={toolbarIconButtonClass}
+              disabled={!canExpandCollapse}
+              aria-label={t('vault.tree.expandAll')}
+              onClick={expandAllGroups}
+            >
+              <Expand size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t('vault.tree.expandAll')}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={toolbarIconButtonClass}
+              disabled={!canExpandCollapse}
+              aria-label={t('vault.tree.collapseAll')}
+              onClick={collapseAllGroups}
+            >
+              <Minimize2 size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t('vault.tree.collapseAll')}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                toolbarIconButtonClass,
+                isMultiSelectMode && 'bg-muted/70 text-foreground',
+              )}
+              aria-label={t('snippets.action.selectSnippets')}
+              aria-pressed={isMultiSelectMode}
+              onClick={() => {
+                if (isMultiSelectMode) {
+                  clearSnippetSelection();
+                } else {
+                  setIsMultiSelectMode(true);
+                }
+              }}
+            >
+              <CheckSquare size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t('snippets.action.selectSnippets')}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                toolbarIconButtonClass,
+                selectedSnippetIds.size > 0 && 'text-destructive hover:text-destructive',
+              )}
+              disabled={selectedSnippetIds.size === 0}
+              aria-label={t('snippets.selection.deleteSelected', { count: selectedSnippetIds.size })}
+              onClick={deleteSelectedSnippets}
+            >
+              <Trash2 size={14} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {t('snippets.selection.deleteSelected', { count: selectedSnippetIds.size })}
+          </TooltipContent>
+        </Tooltip>
         {/* Split add control: primary = new snippet; menu = package / automation script */}
         <div className="shrink-0 flex items-center">
           <Tooltip>
@@ -862,6 +1000,8 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
                     snippet={item.snippet}
                     depth={0}
                     subtitle={item.snippet.package || t('terminal.toolbar.library')}
+                    selected={selectedSnippetIds.has(item.snippet.id)}
+                    multiSelect={isMultiSelectMode}
                     draggable={false}
                     sortableTarget={false}
                     onDragOver={handleRowDragOver}
@@ -904,7 +1044,9 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
                   <SnippetRow
                     snippet={item.row.snippet}
                     depth={item.row.depth}
-                    draggable={Boolean(onSnippetsChange)}
+                    selected={selectedSnippetIds.has(item.row.snippet.id)}
+                    multiSelect={isMultiSelectMode}
+                    draggable={Boolean(onSnippetsChange) && !isMultiSelectMode}
                     sortableTarget={true}
                     onDragOver={handleRowDragOver}
                     onDrop={handleRowDrop}
@@ -1102,6 +1244,8 @@ interface SnippetRowProps {
   snippet: Snippet;
   depth: number;
   subtitle?: string;
+  selected?: boolean;
+  multiSelect?: boolean;
   draggable: boolean;
   sortableTarget: boolean;
   onDragOver: (event: React.DragEvent<HTMLElement>) => void;
@@ -1122,6 +1266,8 @@ const SnippetRow = memo<SnippetRowProps>(({
   snippet,
   depth,
   subtitle,
+  selected = false,
+  multiSelect = false,
   draggable,
   sortableTarget,
   onDragOver,
@@ -1157,13 +1303,25 @@ const SnippetRow = memo<SnippetRowProps>(({
             <button
               type="button"
               onClick={onClick}
-              className="w-full flex items-center gap-1.5 pr-3 py-1.5 text-left hover:bg-accent/50 transition-colors overflow-hidden"
+              aria-pressed={multiSelect ? selected : undefined}
+              className={cn(
+                'w-full flex items-center gap-1.5 pr-3 py-1.5 text-left hover:bg-accent/50 transition-colors overflow-hidden',
+                selected && 'bg-primary/10 hover:bg-primary/15',
+              )}
               style={{ paddingLeft: 8 + depth * 14 }}
             >
               {/* Hidden chevron column mirrors PackageRow's layout so the
                   snippet icon lines up exactly with the package icon above. */}
               <ChevronRight size={12} className="shrink-0 opacity-0" aria-hidden />
-              {isScriptSnippet(snippet) ? (
+              {multiSelect ? (
+                <CheckSquare
+                  size={12}
+                  className={cn(
+                    'shrink-0',
+                    selected ? 'text-primary' : 'text-muted-foreground/70',
+                  )}
+                />
+              ) : isScriptSnippet(snippet) ? (
                 <Play size={12} className="shrink-0 text-primary" />
               ) : (
                 <Zap size={12} className="shrink-0 text-muted-foreground" />
