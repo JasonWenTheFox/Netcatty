@@ -867,6 +867,22 @@ printf '%s\n' '${scanCompleteMarker}'`;
                       baseline = [String(unclaimed[0])];
                     } else if (unassignedSiblings.length === 0 && unclaimed.length === 1) {
                       return unclaimed[0];
+                    } else if (unassignedSiblings.length === 1 && unclaimed.length === 2) {
+                      // Source never recorded shellPid (e.g. OSC 7 cwd skipped
+                      // the probe), so the first post-open scan already lists
+                      // both shared shells. Reintroducing a pre-open exec would
+                      // burn bastion channel budget (#2704). Disambiguate by
+                      // PID order: login shells on one transport are created
+                      // sequentially, so the copied shell advances past the
+                      // source. Assign the older PID to the sibling and claim
+                      // the newer one for this tab — otherwise waitForNew sees
+                      // two "new" PIDs against an empty baseline and returns
+                      // null, leaving both tabs untracked/ambiguous for cwd.
+                      const ordered = [...unclaimed]
+                        .map(String)
+                        .sort((left, right) => Number(left) - Number(right));
+                      unassignedSiblings[0].shellPid = ordered[0];
+                      return ordered[1];
                     } else if (assignedPids.size > 0) {
                       baseline = [...assignedPids];
                     }
