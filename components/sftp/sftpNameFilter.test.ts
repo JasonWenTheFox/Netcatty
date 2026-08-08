@@ -29,6 +29,24 @@ test('SFTP name filter hides non-matching siblings including directories', () =>
 
 test('SFTP tree view applies the shared name filter to visible rows', () => {
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
-  assert.match(treeSource, /filterSftpEntriesByName/);
-  assert.match(treeSource, /pane\.filter/);
+  assert.match(
+    treeSource,
+    /sortSftpEntries\(\s*filterSftpEntriesByName\(\s*filterHiddenFiles\(entries, pane\.showHiddenFiles\),\s*pane\.filter,\s*\),/s,
+  );
+  assert.match(treeSource, /pane\.showHiddenFiles\}:\$\{pane\.filter\}/);
+});
+
+test('SFTP tree child reload invalidates sorted cache so filter reapplies', () => {
+  // After expand/reload, childrenCache is replaced. If sortedChildrenCache still
+  // holds the pre-reload filtered list, newly loaded names that match the search
+  // stay invisible until some unrelated cache clear.
+  const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
+  const loadFn = treeSource.match(
+    /const loadChildrenForPath = useCallback\(async \(entryPath: string\) => \{[\s\S]*?\n  \}, \[\]\);/,
+  );
+  assert.ok(loadFn, 'expected loadChildrenForPath callback');
+  const setIdx = loadFn[0].indexOf('childrenCacheRef.current.set(entryPath, children)');
+  const deleteIdx = loadFn[0].indexOf('sortedChildrenCacheRef.current.delete(entryPath)');
+  assert.ok(setIdx >= 0, 'expected childrenCache write on successful load');
+  assert.ok(deleteIdx > setIdx, 'sorted cache must clear after childrenCache write');
 });

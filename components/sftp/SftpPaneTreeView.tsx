@@ -253,6 +253,9 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
         return false;
       }
       childrenCacheRef.current.set(entryPath, children);
+      // Drop any pre-reload sorted/filtered snapshot so the next row build
+      // re-applies pane.filter against the freshly loaded children.
+      sortedChildrenCacheRef.current.delete(entryPath);
       dispatchTreePaths({ type: 'FINISH_LOADING', path: entryPath });
       return true;
     } catch {
