@@ -1,10 +1,24 @@
 /**
- * Minimal East-Asian-Width-style classifier aligned with xterm's
- * `15-graphemes` unicode version: wide glyphs are 2 cells, combining /
- * format joiners are 0, everything else is 1. Grapheme clusters (ZWJ
- * emoji, base+mark) contribute the max width of their code points so a
- * sequence like 👨‍💻 counts as 2 cells, not 5.
+ * Terminal cell-column width for autocomplete / ghost positioning.
+ *
+ * When an xterm instance is available, prefer its active Unicode provider
+ * (`15-graphemes` via UnicodeGraphemesAddon) so emoji / VS-16 clusters match
+ * the cursor advance. Fall back to a small East-Asian-Width-style classifier
+ * for unit fakes that lack `_core.unicodeService`.
  */
+
+import type { Terminal as XTerm } from "@xterm/xterm";
+
+type UnicodeServiceLike = {
+  getStringCellWidth?: (s: string) => number;
+};
+
+type TermWithUnicodeService = {
+  _core?: {
+    unicodeService?: UnicodeServiceLike;
+  };
+};
+
 const unicodeMarkPattern = /\p{Mark}/u;
 
 function codePointCellWidth(cp: number): number {
@@ -58,9 +72,7 @@ const graphemeSegmenter =
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
     : null;
 
-/** Terminal cell columns occupied by `s` (wide glyphs / grapheme clusters). */
-export function stringCellWidth(s: string): number {
-  if (!s) return 0;
+function fallbackStringCellWidth(s: string): number {
   if (graphemeSegmenter) {
     let w = 0;
     for (const { segment } of graphemeSegmenter.segment(s)) {
@@ -74,4 +86,19 @@ export function stringCellWidth(s: string): number {
     w += codePointCellWidth(ch.codePointAt(0) ?? 0);
   }
   return w;
+}
+
+/** Terminal cell columns occupied by `s` (wide glyphs / grapheme clusters). */
+export function stringCellWidth(
+  s: string,
+  term?: XTerm | TermWithUnicodeService | null,
+): number {
+  if (!s) return 0;
+  const unicodeService = (term as TermWithUnicodeService | null | undefined)
+    ?._core?.unicodeService;
+  const getWidth = unicodeService?.getStringCellWidth;
+  if (typeof getWidth === "function") {
+    return getWidth.call(unicodeService, s);
+  }
+  return fallbackStringCellWidth(s);
 }

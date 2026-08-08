@@ -365,9 +365,11 @@ export function resolveAutocompleteCursorColumn(
     }
   }
 
-  // Use terminal cell width so CJK / fullwidth glyphs in the synthetic
-  // pre-echo userInput advance the popup by two columns each (#2813).
-  const fromPrompt = stringCellWidth(prompt.promptText) + stringCellWidth(prompt.userInput);
+  // Use xterm's active Unicode width so CJK / emoji / fullwidth glyphs in
+  // the synthetic pre-echo userInput advance the popup with the same cell
+  // count as the real cursor (#2813).
+  const fromPrompt =
+    stringCellWidth(prompt.promptText, term) + stringCellWidth(prompt.userInput, term);
   return Math.max(fromLine, fromPrompt);
 }
 

@@ -41,6 +41,53 @@ function hasVisibleGhostPrefix(ghostText: string, afterCursor: string): boolean 
   );
 }
 
+type BufferLineLike = {
+  isWrapped?: boolean;
+  translateToString?: (
+    trimRight?: boolean,
+    startColumn?: number,
+    endColumn?: number,
+  ) => string;
+};
+
+type ActiveBufferLike = {
+  baseY: number;
+  cursorY: number;
+  cursorX: number;
+  getLine?: (y: number) => BufferLineLike | undefined;
+};
+
+/**
+ * Text before the cursor across wrapped physical rows. `getLine` only returns
+ * one row, so a wrapped command's current row cannot end with the full
+ * `currentInput` — callers must reconstruct the logical line or they will
+ * treat already-echoed text as unechoed.
+ */
+function readBeforeCursorAcrossWraps(
+  buf: ActiveBufferLike,
+  cols: number,
+): string | null {
+  if (typeof buf.getLine !== "function") return null;
+  const absY = buf.baseY + buf.cursorY;
+  let line = buf.getLine(absY);
+  if (!line || typeof line.translateToString !== "function") return null;
+
+  let beforeCursor = line.translateToString(false).slice(0, buf.cursorX);
+  let y = absY;
+  while (line.isWrapped && y > 0) {
+    y -= 1;
+    line = buf.getLine(y);
+    if (!line || typeof line.translateToString !== "function") break;
+    // Keep wrap seams aligned with the terminal width (do not trimRight).
+    const rowCols = cols > 0 ? cols : undefined;
+    const rowText = rowCols === undefined
+      ? line.translateToString(false)
+      : line.translateToString(false, 0, rowCols);
+    beforeCursor = rowText + beforeCursor;
+  }
+  return beforeCursor;
+}
+
 export class GhostTextAddon implements IDisposable {
   private term: XTerm | null = null;
   private ghostElement: HTMLSpanElement | null = null;
@@ -188,10 +235,10 @@ export class GhostTextAddon implements IDisposable {
       currentInput.length > 0 &&
       typeof buf.getLine === "function"
     ) {
-      const line = buf.getLine(buf.baseY + buf.cursorY);
-      const beforeCursor = line && typeof line.translateToString === "function"
-        ? line.translateToString(false).slice(0, liveX)
-        : null;
+      const beforeCursor = readBeforeCursorAcrossWraps(
+        buf as ActiveBufferLike,
+        this.term.cols,
+      );
       if (beforeCursor !== null && !beforeCursor.endsWith(currentInput)) {
         // Shell may have echoed only a prefix (e.g. "$ doc" while
         // currentInput is "docker"). Advance by the unechoed suffix only —
@@ -200,7 +247,7 @@ export class GhostTextAddon implements IDisposable {
         const unechoed = currentInput.slice(
           echoedInputPrefixLength(beforeCursor, currentInput),
         );
-        anchorX = liveX + stringCellWidth(unechoed);
+        anchorX = liveX + stringCellWidth(unechoed, this.term);
       }
     }
     this.anchorCursorX = anchorX;
@@ -421,12 +468,13 @@ export class GhostTextAddon implements IDisposable {
     // advance by 2 cells instead of 1. Backspace / Ctrl-W produces a
     // negative delta by shrinking currentInput below anchorInputLength.
     const cellDelta = this.currentInput.length >= this.anchorInputLength
-      ? stringCellWidth(this.currentInput.slice(this.anchorInputLength))
+      ? stringCellWidth(this.currentInput.slice(this.anchorInputLength), this.term)
       : -stringCellWidth(
           // currentSuggestion[0..anchorInputLength] equals what was typed
           // when show() fired (prefix-match invariant), so its slice gives
           // the correct cell widths for the deleted glyphs.
           this.currentSuggestion.slice(this.currentInput.length, this.anchorInputLength),
+          this.term,
         );
     const cols = Math.max(1, this.term.cols);
     const targetCol = this.anchorCursorX + cellDelta;

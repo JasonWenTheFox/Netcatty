@@ -321,6 +321,54 @@ test("anchors ghost using only the unechoed suffix after a partial shell echo", 
   }
 });
 
+test("does not overshoot the ghost when the echoed command already wrapped", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    // cols=10, prompt "$ " + "docker com" wraps; cursor sits on the
+    // continuation row after a fully-echoed "docker compose".
+    // Physical rows: "$ docker c" | "ompose|"
+    term.cols = 10;
+    term.buffer.active.baseY = 0;
+    term.buffer.active.cursorY = 1;
+    term.buffer.active.cursorX = 6;
+    const lines: Record<number, { isWrapped?: boolean; text: string }> = {
+      0: { text: "$ docker c" },
+      1: { isWrapped: true, text: "ompose" },
+    };
+    term.buffer.active.getLine = (y: number) => {
+      const row = lines[y];
+      if (!row) return undefined;
+      return {
+        isWrapped: row.isWrapped,
+        translateToString: (
+          _trimRight?: boolean,
+          startColumn?: number,
+          endColumn?: number,
+        ) => {
+          if (startColumn !== undefined && endColumn !== undefined) {
+            return row.text.padEnd(endColumn).slice(startColumn, endColumn);
+          }
+          return row.text;
+        },
+      };
+    };
+    addon.activate(term as never);
+    addon.show("docker compose up", "docker compose");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    assert.equal(ghost.textContent, " up");
+    // Fully echoed across the wrap → anchor stays at live cursor (col 6),
+    // not liveX + full input width.
+    assert.equal(ghost.style.left, "54px");
+    assert.equal(ghost.style.top, "18px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("wraps the ghost to the previous row when deletion crosses a row boundary", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();
