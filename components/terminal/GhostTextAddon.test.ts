@@ -274,6 +274,29 @@ test("self-heals a stale anchor on render while no adjustToInput has fired", () 
   }
 });
 
+test("anchors ghost after wide pre-echo input when the line has not echoed yet", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    term.buffer.active.baseY = 0;
+    term.buffer.active.getLine = () => ({
+      translateToString: () => "$ ",
+    });
+    addon.activate(term as never);
+    // Live cursor still at the prompt; typed "部署" is only in the keystroke buffer.
+    addon.show("部署脚本", "部署");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    assert.equal(ghost.textContent, "脚本");
+    // cursorX=2 + 4 wide cells → column 6 → left 54px.
+    assert.equal(ghost.style.left, "54px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("wraps the ghost to the previous row when deletion crosses a row boundary", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();

@@ -921,13 +921,14 @@ export function getAlignedPrompt(
       };
     }
     // No echo yet (CJK IME / high-latency SSH): surface the keystroke buffer
-    // for local autocomplete on standard shell prompts (#2813), but do not
-    // set alignedTyped. Empty echo is also what echo-disabled password
-    // prompts look like, so this path must not authorize history recording
-    // or third-party completion providers.
+    // for local autocomplete on prompts detectPrompt already recognizes
+    // (#2813), but do not set alignedTyped. Empty / whitespace-only echo is
+    // also what echo-disabled password prompts and padded themed PS1s look
+    // like, so this path must not authorize history recording or third-party
+    // completion providers.
     if (
-      raw.userInput.length === 0 &&
-      allowsShortPromptEcho(raw.promptText)
+      raw.userInput.trim().length === 0 &&
+      (allowsShortPromptEcho(raw.promptText) || isThemedPromptText(raw.promptText))
     ) {
       return {
         prompt: withTypedUserInput(raw, typedBuffer),

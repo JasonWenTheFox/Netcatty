@@ -76,6 +76,31 @@ test("uses reliable typed buffer when prompt echo has not started (IME / high-la
   assert.equal(result.allowExternalProviders, false);
 });
 
+test("uses typed buffer before echo on padded themed prompts", () => {
+  // robbyrussell-style PS1 pads after the arrow: detectPrompt keeps the
+  // trailing space in userInput, which must still count as visually empty.
+  const term = createFakeTerm("➜  ", 3);
+
+  const result = getAlignedPrompt(term as never, "部署", true);
+
+  assert.equal(result.prompt.isAtPrompt, true);
+  assert.equal(result.prompt.userInput, "部署");
+  assert.equal(result.alignedTyped, null);
+  assert.equal(result.allowExternalProviders, false);
+});
+
+test("uses typed buffer before echo on Nerd Font themed terminators", () => {
+  const term = createFakeTerm(" ", 2);
+
+  const result = getAlignedPrompt(term as never, "部署", true);
+
+  assert.equal(result.prompt.isAtPrompt, true);
+  assert.equal(result.prompt.promptText, " ");
+  assert.equal(result.prompt.userInput, "部署");
+  assert.equal(result.alignedTyped, null);
+  assert.equal(result.allowExternalProviders, false);
+});
+
 test("does not treat empty-echo shell-shaped prompts as validated typed input", () => {
   const term = createFakeTerm("$ ", 2);
   const secret = "s3cret-token";

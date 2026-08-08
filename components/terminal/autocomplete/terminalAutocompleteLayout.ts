@@ -2,6 +2,7 @@ import type { Terminal as XTerm } from "@xterm/xterm";
 import type { CompletionSuggestion } from "./completionEngine";
 import type { PromptDetectionResult } from "./promptDetector";
 import type { SubDirPanel } from "./useTerminalAutocomplete";
+import { stringCellWidth } from "./terminalStringCellWidth";
 import { getXTermCellDimensions } from "./xtermUtils";
 
 export function resolveAutocompleteCwd(
@@ -364,7 +365,9 @@ export function resolveAutocompleteCursorColumn(
     }
   }
 
-  const fromPrompt = prompt.promptText.length + prompt.userInput.length;
+  // Use terminal cell width so CJK / fullwidth glyphs in the synthetic
+  // pre-echo userInput advance the popup by two columns each (#2813).
+  const fromPrompt = stringCellWidth(prompt.promptText) + stringCellWidth(prompt.userInput);
   return Math.max(fromLine, fromPrompt);
 }
 

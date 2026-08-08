@@ -274,6 +274,29 @@ test("resolveAutocompleteCursorColumn prefers prompt-aligned column when xterm l
   assert.equal(column, "root@host:~# ".length + 1);
 });
 
+test("resolveAutocompleteCursorColumn counts wide glyphs as two cells for pre-echo input", () => {
+  const term = {
+    buffer: {
+      active: {
+        cursorX: 2,
+        cursorY: 0,
+        baseY: 0,
+        getLine: () => ({
+          isWrapped: false,
+          translateToString: () => "$ ",
+        }),
+      },
+    },
+  };
+
+  const column = resolveAutocompleteCursorColumn(term as never, {
+    promptText: "$ ",
+    userInput: "部署",
+  });
+  // "$ " = 2 cells, each CJK ideograph = 2 cells → column 6 (not char-length 4).
+  assert.equal(column, 6);
+});
+
 test("short popup flips upward when the cursor is at the bottom of the screen", () => {
   // Regression for issue #1710: a *short* suggestion list must flip up when
   // the anchor line is the last visible row, even if there is a tiny positive

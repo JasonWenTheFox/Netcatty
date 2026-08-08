@@ -10,42 +10,7 @@
 import type { Terminal as XTerm, IDisposable } from "@xterm/xterm";
 import { getXTermCellDimensions, invalidateCellDimensionCache } from "./xtermUtils";
 import { lineHasUntrackedTrailingInput } from "./ghostTextConsistency";
-
-/**
- * Minimal East-Asian-Width-style classifier: returns 2 for wide glyphs
- * (CJK ideographs, fullwidth forms, most emoji, hangul syllables) and
- * 1 otherwise. Not full wcwidth — just enough to keep the predicted
- * ghost column from drifting by one cell per CJK char typed.
- */
-function codePointCellWidth(cp: number): number {
-  if (
-    (cp >= 0x1100 && cp <= 0x115f) ||   // Hangul Jamo
-    (cp >= 0x2e80 && cp <= 0x303e) ||   // CJK Radicals, Kangxi
-    (cp >= 0x3041 && cp <= 0x33ff) ||   // Hiragana, Katakana, CJK Compat
-    (cp >= 0x3400 && cp <= 0x4dbf) ||   // CJK Extension A
-    (cp >= 0x4e00 && cp <= 0x9fff) ||   // CJK Unified Ideographs
-    (cp >= 0xa000 && cp <= 0xa4cf) ||   // Yi
-    (cp >= 0xac00 && cp <= 0xd7a3) ||   // Hangul Syllables
-    (cp >= 0xf900 && cp <= 0xfaff) ||   // CJK Compat Ideographs
-    (cp >= 0xfe30 && cp <= 0xfe4f) ||   // CJK Compat Forms
-    (cp >= 0xff00 && cp <= 0xff60) ||   // Fullwidth forms
-    (cp >= 0xffe0 && cp <= 0xffe6) ||   // Fullwidth signs
-    (cp >= 0x1f300 && cp <= 0x1faff) || // Emoji blocks
-    (cp >= 0x20000 && cp <= 0x3fffd)    // CJK Extension B-F, G
-  ) {
-    return 2;
-  }
-  return 1;
-}
-
-function stringCellWidth(s: string): number {
-  let w = 0;
-  for (const ch of s) {
-    const cp = ch.codePointAt(0) ?? 0;
-    w += codePointCellWidth(cp);
-  }
-  return w;
-}
+import { stringCellWidth } from "./terminalStringCellWidth";
 
 function commonPrefixLength(a: string, b: string): number {
   const max = Math.min(a.length, b.length);
@@ -201,8 +166,29 @@ export class GhostTextAddon implements IDisposable {
 
     this.currentSuggestion = fullSuggestion;
     this.currentInput = currentInput;
-    this.anchorCursorX = this.term.buffer.active.cursorX;
-    this.anchorCursorY = this.term.buffer.active.cursorY;
+    const buf = this.term.buffer.active;
+    const liveX = buf.cursorX;
+    // When show() runs before the shell echoes `currentInput` (CJK IME /
+    // high-latency SSH), live cursorX is still at the prompt. Advance the
+    // anchor by the pending input's cell width so the ghost sits after it
+    // instead of painting over it. Skip the probe when getLine is unavailable
+    // (unit fakes) so those tests keep the legacy "cursor already at end"
+    // contract.
+    let anchorX = liveX;
+    if (
+      currentInput.length > 0 &&
+      typeof buf.getLine === "function"
+    ) {
+      const line = buf.getLine(buf.baseY + buf.cursorY);
+      const beforeCursor = line && typeof line.translateToString === "function"
+        ? line.translateToString(false).slice(0, liveX)
+        : null;
+      if (beforeCursor !== null && !beforeCursor.endsWith(currentInput)) {
+        anchorX = liveX + stringCellWidth(currentInput);
+      }
+    }
+    this.anchorCursorX = anchorX;
+    this.anchorCursorY = buf.cursorY;
     this.anchorInputLength = currentInput.length;
     // Force position recalc since the text also changed.
     this.lastLeft = -1;
@@ -399,13 +385,15 @@ export class GhostTextAddon implements IDisposable {
   private updatePosition(): void {
     if (!this.term || !this.ghostElement) return;
 
-    // Self-heal a stale anchor: when show() fires during the SSH
-    // keystroke→echo gap, cursorX captured there is still the
+    // Self-heal a stale anchor: when show() fired during the SSH
+    // keystroke→echo gap without a line probe, cursorX may still be the
     // pre-echo column. While no adjustToInput has moved us from the
-    // show-time baseline, re-read live cursor on each render tick so
-    // the anchor snaps to the echoed position once it arrives.
+    // show-time baseline, adopt a live cursor that has advanced (echo
+    // caught up). Use max so a cell-width-predicted pre-echo anchor is
+    // not collapsed back onto the prompt before echo arrives.
     if (this.currentInput.length === this.anchorInputLength) {
-      this.anchorCursorX = this.term.buffer.active.cursorX;
+      const liveX = this.term.buffer.active.cursorX;
+      this.anchorCursorX = Math.max(this.anchorCursorX, liveX);
       this.anchorCursorY = this.term.buffer.active.cursorY;
     }
 
