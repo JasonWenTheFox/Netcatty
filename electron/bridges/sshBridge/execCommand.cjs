@@ -149,6 +149,7 @@ function createExecCommandApi(ctx) {
         const effectivePassphrase = inlineKey?.passphrase || identityFilePassphrase;
         if (systemAuthAgent) {
           connectOpts.agent = systemAuthAgent;
+          require("../attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
         } else if (hasCertificate && !isFido) {
           authAgent = new NetcattyAgent({
             mode: "certificate",

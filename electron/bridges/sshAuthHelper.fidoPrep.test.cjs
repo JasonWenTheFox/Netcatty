@@ -118,6 +118,23 @@ test("looksLikeSkOpenSshMaterial recognizes sk certificate public keys", () => {
   );
 });
 
+test("prepareSystemSshAgentForAuth does not probe IdentityFiles for password auth", async () => {
+  const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-sk-pw-"));
+  const keyPath = path.join(dir, "id_ed25519_sk");
+  fs.writeFileSync(`${keyPath}.pub`, skPub);
+  try {
+    const agent = await prepareSystemSshAgentForAuth({
+      authMethod: "password",
+      useSshAgent: false,
+      identityFilePaths: [keyPath],
+    }, "[test]");
+    assert.equal(agent, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("enhanceAuthOptionsForFido forces agent for path-only IdentityFile SK keys", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-sk-enhance-"));
   const keyPath = path.join(dir, "id_ed25519_sk");

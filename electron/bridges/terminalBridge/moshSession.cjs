@@ -152,7 +152,14 @@ function createMoshSessionApi(ctx) {
               : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
           );
         }
-        prepared = { ...prepared, useSshAgent: true, _resolvedSshAgentSocket: socketPath };
+        prepared = {
+          ...prepared,
+          useSshAgent: true,
+          _resolvedSshAgentSocket: socketPath,
+          ...(typeof agent?._releaseNetcattyFidoAgent === "function"
+            ? { _releaseNetcattyFidoAgent: agent._releaseNetcattyFidoAgent }
+            : {}),
+        };
       }
       if (options.agentForwarding) {
         const forwardingSocketPath = await getAvailableForwardingAgentSocket(options.identityAgent, options);
@@ -161,6 +168,16 @@ function createMoshSessionApi(ctx) {
         }
       }
       return prepared;
+    }
+
+    function createOneShotFidoAgentRelease(releaseFn) {
+      if (typeof releaseFn !== "function") return () => {};
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try { releaseFn(); } catch { /* ignore */ }
+      };
     }
 
     function applyMoshSshAgentEnvironment(env, options) {
@@ -478,6 +495,7 @@ function createMoshSessionApi(ctx) {
      */
     async function startMoshSessionViaHandshake(event, options, { bareClient, sshExe }) {
       const sessionId = options.sessionId || randomUUID();
+      const releaseFidoAgent = createOneShotFidoAgentRelease(options._releaseNetcattyFidoAgent);
       const cols = options.cols || 80;
       const rows = options.rows || 24;
       const optionsEnv = options.env || {};
@@ -520,6 +538,7 @@ function createMoshSessionApi(ctx) {
         });
       } catch (err) {
         cleanupMoshAuthTempFiles(moshAuth.tempFiles);
+        releaseFidoAgent();
         throw err;
       }
     
@@ -562,6 +581,7 @@ function createMoshSessionApi(ctx) {
         if (!claim.ok) {
           try { sshPty.kill(); } catch { /* ignore */ }
           cleanupMoshAuthTempFiles(moshAuth.tempFiles);
+          releaseFidoAgent();
           const supersededError = new Error("Connection superseded by a newer reconnect");
           supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
           throw supersededError;
@@ -636,6 +656,7 @@ function createMoshSessionApi(ctx) {
       });
     
       sshPty.onExit(({ exitCode, signal }) => {
+        releaseFidoAgent();
         if (sessions.get(sessionId) !== session || session.closed) {
           cleanupMoshAuthTempFiles(moshAuth.tempFiles);
           return;

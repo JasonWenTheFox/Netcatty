@@ -1060,7 +1060,11 @@ async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
 
 async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   let pathBackedSk = false;
-  if (!options.useFidoAgent
+  // Password-only auth must never probe IdentityFiles for SK material — that
+  // would spawn an owned agent and advertise publickey against the user's
+  // explicit password choice.
+  if (options.authMethod !== "password"
+    && !options.useFidoAgent
     && !looksLikeSkOpenSshMaterial(options.privateKey)
     && !(Array.isArray(options.agentPublicKeys)
       && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
@@ -1216,12 +1220,22 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       // Expose the socket so Mosh/ET/native OpenSSH can point IdentityAgent at
       // the same agent that received ssh-add of SK handles.
       agent._netcattyAgentSocket = socketPath;
-      if (ownedFidoAgent) {
-        agent._netcattyOwnedFidoAgent = true;
-        // Process-lifetime shared lease; quit/exit hooks hard-kill the agent.
+      const askpassLeaseId = askpassEnv?.NETCATTY_FIDO_ASKPASS_LEASE;
+      if (ownedFidoAgent || askpassLeaseId) {
+        agent._netcattyOwnedFidoAgent = ownedFidoAgent === true;
+        // Shared lease; quit/exit hooks hard-kill the owned agent as a backstop.
         agent._releaseNetcattyFidoAgent = () => {
           try {
-            require("./fidoAgentManager.cjs").releaseFidoAgent();
+            if (ownedFidoAgent) {
+              require("./fidoAgentManager.cjs").releaseFidoAgent();
+            }
+          } catch {
+            // ignore
+          }
+          try {
+            if (askpassLeaseId) {
+              require("./fidoAskpass.cjs").releaseFidoAskpassLease(askpassLeaseId);
+            }
           } catch {
             // ignore
           }

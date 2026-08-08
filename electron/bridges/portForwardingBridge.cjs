@@ -1308,6 +1308,7 @@ async function startPortForward(event, payload) {
 
     if (systemAuthAgent) {
       connectOpts.agent = systemAuthAgent;
+      require("./attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
     }
     if (hasCertificate && !isFido) {
       connectOpts.agent = new NetcattyAgent({

@@ -183,7 +183,14 @@ main();
                 : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
             );
           }
-          prepared = { ...prepared, useSshAgent: true, _resolvedSshAgentSocket: socketPath };
+          prepared = {
+            ...prepared,
+            useSshAgent: true,
+            _resolvedSshAgentSocket: socketPath,
+            ...(typeof agent?._releaseNetcattyFidoAgent === "function"
+              ? { _releaseNetcattyFidoAgent: agent._releaseNetcattyFidoAgent }
+              : {}),
+          };
         }
         if (connectionOptions.agentForwarding) {
           const forwardingSocketPath = await getAvailableForwardingAgentSocket(
@@ -206,6 +213,32 @@ main();
         preparedJumpHosts.push(await prepareOne(options.jumpHosts[index], `[ET Chain] Hop ${index + 1}:`));
       }
       return { ...preparedTarget, jumpHosts: preparedJumpHosts };
+    }
+
+    function collectEtFidoAgentReleases(options) {
+      const releases = [];
+      if (typeof options?._releaseNetcattyFidoAgent === "function") {
+        releases.push(options._releaseNetcattyFidoAgent);
+      }
+      for (const jump of options?.jumpHosts || []) {
+        if (typeof jump?._releaseNetcattyFidoAgent === "function") {
+          releases.push(jump._releaseNetcattyFidoAgent);
+        }
+      }
+      return releases;
+    }
+
+    function createOneShotEtFidoAgentReleases(options) {
+      const pending = collectEtFidoAgentReleases(options);
+      if (pending.length === 0) return () => {};
+      const seen = new Set();
+      return () => {
+        for (const releaseFn of pending) {
+          if (seen.has(releaseFn)) continue;
+          seen.add(releaseFn);
+          try { releaseFn(); } catch { /* ignore */ }
+        }
+      };
     }
 
     function applyEtSshAgentEnvironment(env, options) {
@@ -1176,14 +1209,17 @@ main();
       }
 
       let sshEnvironment;
+      let releaseFidoAgents = () => {};
       try {
         const preparedOptions = await prepareEtSshAgentOptions(options, event?.sender);
+        releaseFidoAgents = createOneShotEtFidoAgentReleases(preparedOptions);
         options = preparedOptions;
         if (options.agentForwarding && options._resolvedForwardingAgentSocket) {
           args.push("-f", "--ssh-socket", options._resolvedForwardingAgentSocket);
         }
         sshEnvironment = prepareEtSshEnvironment(sessionId, preparedOptions);
       } catch (err) {
+        releaseFidoAgents();
         throw new Error(err instanceof Error ? err.message : String(err));
       }
 
@@ -1303,6 +1339,7 @@ main();
           if (!claim.ok) {
             try { proc.kill(); } catch { /* ignore */ }
             cleanupSessionExternalAuthArtifacts(session);
+            releaseFidoAgents();
             const supersededError = new Error("Connection superseded by a newer reconnect");
             supersededError.code = "NETCATTY_BOOT_SUPERSEDED";
             throw supersededError;
@@ -1390,6 +1427,7 @@ main();
             if (etExitFinalized) return;
             if (sessions.get(sessionId) !== session) return;
             etExitFinalized = true;
+            releaseFidoAgents();
             try { session.etStatsConn?.end(); } catch { /* ignore */ }
             cleanupSessionExternalAuthArtifacts(session);
             sessionLogStreamManager.stopStream(sessionId, session.logStreamToken);
@@ -1408,6 +1446,7 @@ main();
 
         return { sessionId };
       } catch (err) {
+        releaseFidoAgents();
         if (sshEnvironment?.artifacts) {
           cleanupSessionExternalAuthArtifacts({
             externalAuthArtifacts: sshEnvironment.artifacts,

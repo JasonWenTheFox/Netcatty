@@ -705,6 +705,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
       let authAgent = null;
       if (systemAuthAgent) {
         connOpts.agent = systemAuthAgent;
+        require("./attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
       }
       if (hasCertificate && !forceJumpFidoAgent) {
         authAgent = new NetcattyAgent({

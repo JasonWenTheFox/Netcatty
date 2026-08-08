@@ -1288,17 +1288,7 @@ printf '%s\n' '${scanCompleteMarker}'`;
 
         if (systemAuthAgent) {
           connectOpts.agent = systemAuthAgent;
-          // Release owned FIDO agent when this SSH session ends (refcount).
-          if (typeof systemAuthAgent._releaseNetcattyFidoAgent === "function") {
-            let released = false;
-            const releaseOwned = () => {
-              if (released) return;
-              released = true;
-              try { systemAuthAgent._releaseNetcattyFidoAgent(); } catch { /* ignore */ }
-            };
-            conn.once("close", releaseOwned);
-            conn.once("end", releaseOwned);
-          }
+          require("../attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
         }
 
         // Soft-key certificates use NetcattyAgent local signing. FIDO SK + cert

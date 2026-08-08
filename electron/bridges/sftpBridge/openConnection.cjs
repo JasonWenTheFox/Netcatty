@@ -269,6 +269,7 @@ function createOpenConnectionApi(ctx) {
           let authAgent = null;
           if (systemAuthAgent) {
             connOpts.agent = systemAuthAgent;
+            require("../attachFidoAgentRelease.cjs").attachFidoAgentRelease(conn, systemAuthAgent);
           }
           if (hasCertificate && !isFido) {
             authAgent = new NetcattyAgent({
@@ -1131,7 +1132,10 @@ function createOpenConnectionApi(ctx) {
         // By connecting directly, we can filter these non-fatal errors and allow
         // the auth flow to continue to keyboard-interactive/password/etc.
         const sshClient = client.client;
-    
+        if (systemAuthAgent) {
+          require("../attachFidoAgentRelease.cjs").attachFidoAgentRelease(sshClient, systemAuthAgent);
+        }
+
         await new Promise((resolve, reject) => {
           let settled = false;
           let authReadyTimer = null;
