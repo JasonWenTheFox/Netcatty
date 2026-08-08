@@ -94,6 +94,24 @@ declare global {
       nvidiaDriverVersion?: string | null;
       probedAt?: number;
     }>;
+    listListeningPorts?(sessionId: string): Promise<{
+      success: boolean;
+      pending?: boolean;
+      error?: string;
+      ports?: import("../../domain/systemManager/types").ListeningPortInfo[];
+    }>;
+    listSystemServices?(sessionId: string): Promise<{
+      success: boolean;
+      pending?: boolean;
+      error?: string;
+      units?: import("../../domain/systemManager/types").SystemdUnitInfo[];
+    }>;
+    systemServiceAction?(options: {
+      sessionId: string;
+      unitName: string;
+      action: import("../../domain/systemManager/types").SystemdUnitAction;
+      scope?: import("../../domain/systemManager/types").SystemdUnitInfo['scope'];
+    }): Promise<{ success: boolean; pending?: boolean; error?: string }>;
     dockerInspect?(options: { sessionId: string; containerId: string }): Promise<{
       success: boolean;
       error?: string;
