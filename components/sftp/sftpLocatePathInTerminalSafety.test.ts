@@ -19,6 +19,25 @@ test("locate-path write skips sessions waiting on sensitive/password prompts", (
   );
 });
 
+test("locate-path write requires an idle shell prompt before PTY injection", () => {
+  assert.match(
+    sidePanelSource,
+    /isTerminalReadyForCommandInjection\(action\.sessionId\)[\s\S]*?writeToSession\(action\.sessionId, action\.data/,
+  );
+  assert.match(
+    sidePanelSource,
+    /if \(!isTerminalReadyForCommandInjection\(action\.sessionId\)\) return;/,
+  );
+});
+
+test("locate-path uses the confirmed toolbar path rather than an optimistic navigate target", () => {
+  assert.match(sidePanelSource, /getNextSftpToolbarDisplayPath\(/);
+  assert.match(
+    sidePanelSource,
+    /path: confirmedLocatePathRef\.current \|\| connection\?\.currentPath/,
+  );
+});
+
 test("locate-path uses focused session fallback when SFTP cannot reuse the terminal", () => {
   assert.match(sidePanelSource, /resolveLocateSftpPathSessionId\(\{\s*activeSessionId,\s*focusedSessionId,/);
   assert.match(

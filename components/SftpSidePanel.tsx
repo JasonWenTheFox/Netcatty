@@ -80,6 +80,8 @@ import {
 import { classifyDistroId } from "../domain/host";
 import { useTerminalBackend } from "../application/state/useTerminalBackend";
 import { isTerminalSensitiveInputActive } from "./terminal/runtime/terminalSensitiveInputRegistry";
+import { isTerminalReadyForCommandInjection } from "./terminal/runtime/terminalCommandInjectionReadyRegistry";
+import { getNextSftpToolbarDisplayPath } from "./sftp/SftpPaneToolbar";
 import { scheduleDeferredTerminalFocus } from "./systemManager/tmuxActionFocus";
 import {
   connectionKeyMatchesHost,
@@ -1256,6 +1258,27 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     }
   }, [connectionId, connectionPath, sftp.leftPane.loading]);
 
+  // Match toolbar path semantics: keep the last confirmed path while navigateTo
+  // has optimistically replaced connection.currentPath during an uncached load.
+  const confirmedLocatePathRef = useRef(connectionPath ?? "");
+  const prevLocateConnectionIdRef = useRef(connectionId ?? undefined);
+  const [confirmedLocatePath, setConfirmedLocatePath] = useState(connectionPath ?? "");
+  useEffect(() => {
+    const previousConnectionId = prevLocateConnectionIdRef.current;
+    prevLocateConnectionIdRef.current = connectionId ?? undefined;
+    setConfirmedLocatePath((previousDisplayPath) => {
+      const next = getNextSftpToolbarDisplayPath({
+        previousDisplayPath,
+        previousConnectionId,
+        connectionId: connectionId ?? undefined,
+        currentPath: connectionPath ?? undefined,
+        loading: sftp.leftPane.loading,
+      });
+      confirmedLocatePathRef.current = next;
+      return next;
+    });
+  }, [connectionId, connectionPath, sftp.leftPane.loading]);
+
   const handleGoToTerminalCwd = useCallback(async () => {
     if (!onGetTerminalCwd) return;
     const cwd = await onGetTerminalCwd({ preferFreshBackend: true });
@@ -1281,7 +1304,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     const isNetworkDevice = host?.deviceType === "network"
       || classifyDistroId(host?.distro) === "network-device";
     return {
-      path: connection?.currentPath,
+      path: confirmedLocatePath || connection?.currentPath,
       sessionId: locateSessionId,
       sessionStatus: session?.status,
       sessionHostId: session?.hostId,
@@ -1302,6 +1325,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   }, [
     activeHost,
     activeSessionId,
+    confirmedLocatePath,
     displayHost,
     focusedSessionId,
     sessions,
@@ -1321,7 +1345,8 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     const isNetworkDevice = host?.deviceType === "network"
       || classifyDistroId(host?.distro) === "network-device";
     const action = resolveLocateSftpPathInTerminalAction({
-      path: connection?.currentPath,
+      // Prefer the path shown in the toolbar, not an in-flight optimistic cwd.
+      path: confirmedLocatePathRef.current || connection?.currentPath,
       sessionId: locateSessionId,
       sessionStatus: session?.status,
       sessionHostId: session?.hostId,
@@ -1342,6 +1367,8 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     if (!action) return;
     // Never inject cd into a password/sudo prompt (same guard as snippets/broadcast).
     if (isTerminalSensitiveInputActive(action.sessionId)) return;
+    // Only submit at an idle shell prompt — never append into typed input or a TUI.
+    if (!isTerminalReadyForCommandInjection(action.sessionId)) return;
     terminalBackend.writeToSession(action.sessionId, action.data, { automated: true });
     scheduleDeferredTerminalFocus(onRequestTerminalFocus);
   }, [
