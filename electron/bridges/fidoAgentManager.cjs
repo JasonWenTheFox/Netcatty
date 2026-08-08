@@ -161,6 +161,24 @@ async function acquireFidoAgent(options = {}) {
     const run = options.execFile || execFileAsync;
     const env = options.env || process.env;
     const askpassEnv = buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents });
+    const platform = options.platform || process.platform;
+
+    // Win32-OpenSSH's ssh-agent is a Windows service bound to a fixed named
+    // pipe (`\\.\pipe\openssh-ssh-agent`) and does not support `ssh-agent -a`.
+    // Reuse the system pipe and keep Netcatty askpass on ssh-add / ssh-sk-helper.
+    if (platform === "win32") {
+      const systemPipe = "\\\\.\\pipe\\openssh-ssh-agent";
+      agentSocket = systemPipe;
+      agentChild = null;
+      agentDir = null;
+      refCount = 1;
+      return {
+        socketPath: systemPipe,
+        askpassEnv,
+        owned: false,
+      };
+    }
+
     const sshAgent = resolveSshAgentBinary(env);
 
     agentDir = path.join(getTempBase(), `netcatty-fido-agent-${randomUUID().slice(0, 8)}`);

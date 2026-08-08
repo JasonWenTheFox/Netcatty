@@ -160,16 +160,19 @@ main();
     }
 
     async function prepareEtSshAgentOptions(options, sender) {
-      const { buildFidoAwareAgentPrepOptions, resolvePreparedAgentSocket, isFidoSkAuthOptions } = require("../sshAuthHelper.cjs");
+      const {
+        enhanceAuthOptionsForFido,
+        resolvePreparedAgentSocket,
+      } = require("../sshAuthHelper.cjs");
       const prepareOne = async (connectionOptions, logPrefix) => {
-        const forceFido = isFidoSkAuthOptions(connectionOptions)
+        const prepOptions = await enhanceAuthOptionsForFido(connectionOptions, sender);
+        const forceFido = prepOptions.useFidoAgent === true
           && connectionOptions.authMethod !== "password";
         if (connectionOptions?.useSshAgent !== true && !connectionOptions?.agentForwarding && !forceFido) {
           return connectionOptions;
         }
         let prepared = connectionOptions;
         if (connectionOptions.useSshAgent === true || forceFido) {
-          const prepOptions = buildFidoAwareAgentPrepOptions(connectionOptions, sender);
           const agent = await prepareSystemSshAgentForAuth(prepOptions, logPrefix);
           const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
             || await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);

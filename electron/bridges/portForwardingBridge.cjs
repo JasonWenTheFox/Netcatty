@@ -1249,23 +1249,25 @@ async function startPortForward(event, payload) {
         ? undefined
         : await getAvailableAgentSocket(identityAgent, { hostname, port, username });
     const {
-      buildFidoAwareAgentPrepOptions,
+      enhanceAuthOptionsForFido,
       looksLikeSkOpenSshMaterial,
     } = require("./sshAuthHelper.cjs");
-    const systemAuthAgent = hasCertificate ? null : await prepareSystemSshAgentForAuth(
-      buildFidoAwareAgentPrepOptions({
-        useSshAgent,
-        agentPublicKeys,
-        identityAgent,
-        identityFilePaths,
-        identitiesOnly,
-        addKeysToAgent,
-        useKeychain,
-        privateKey,
-        hostname,
-        port,
-        username,
-      }, sender),
+    const prep = await enhanceAuthOptionsForFido({
+      useSshAgent,
+      agentPublicKeys,
+      identityAgent,
+      identityFilePaths,
+      identitiesOnly,
+      addKeysToAgent,
+      useKeychain,
+      privateKey,
+      hostname,
+      port,
+      username,
+    }, sender);
+    const isFido = prep.useFidoAgent === true;
+    const systemAuthAgent = (hasCertificate && !isFido) ? null : await prepareSystemSshAgentForAuth(
+      prep,
       "[PortForward]",
     );
     const identityFile = !privateKey && !systemAuthAgent
@@ -1307,7 +1309,7 @@ async function startPortForward(event, payload) {
     if (systemAuthAgent) {
       connectOpts.agent = systemAuthAgent;
     }
-    if (hasCertificate) {
+    if (hasCertificate && !isFido) {
       connectOpts.agent = new NetcattyAgent({
         mode: "certificate",
         webContents: sender,
@@ -1318,7 +1320,7 @@ async function startPortForward(event, payload) {
           passphrase: effectivePassphrase,
         },
       });
-    } else if (effectivePrivateKey) {
+    } else if (effectivePrivateKey && !isFido) {
       connectOpts.privateKey = effectivePrivateKey;
       if (effectivePassphrase) {
         connectOpts.passphrase = effectivePassphrase;

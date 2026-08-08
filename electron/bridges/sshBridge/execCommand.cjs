@@ -18,9 +18,12 @@ function createExecCommandApi(ctx) {
         : payload.useSshAgent === true
           ? undefined
           : await getAvailableAgentSocket();
-      const systemAuthAgent = hasCertificate
+      const { enhanceAuthOptionsForFido } = require("../sshAuthHelper.cjs");
+      const prep = await enhanceAuthOptionsForFido(payload, sender);
+      const isFido = prep.useFidoAgent === true;
+      const systemAuthAgent = (hasCertificate && !isFido)
         ? null
-        : await prepareSystemSshAgentForAuth(payload, "[SSH Exec]");
+        : await prepareSystemSshAgentForAuth(prep, "[SSH Exec]");
       const defaultKeys = enableKeyboardInteractive && !(systemAuthAgent && payload.identitiesOnly)
         ? await findAllDefaultPrivateKeysFromHelper()
         : [];
@@ -146,7 +149,7 @@ function createExecCommandApi(ctx) {
         const effectivePassphrase = inlineKey?.passphrase || identityFilePassphrase;
         if (systemAuthAgent) {
           connectOpts.agent = systemAuthAgent;
-        } else if (hasCertificate) {
+        } else if (hasCertificate && !isFido) {
           authAgent = new NetcattyAgent({
             mode: "certificate",
             webContents: event.sender,
@@ -158,7 +161,7 @@ function createExecCommandApi(ctx) {
             },
           });
           connectOpts.agent = authAgent;
-        } else if (effectivePrivateKey) {
+        } else if (effectivePrivateKey && !isFido) {
           connectOpts.privateKey = effectivePrivateKey;
           if (effectivePassphrase) {
             connectOpts.passphrase = effectivePassphrase;

@@ -45,6 +45,7 @@ const {
   hasUserConfiguredKey,
   isPasswordProvided,
   looksLikeSkOpenSshMaterial,
+  identityFilesLookLikeSk,
   PassphraseCancelledError,
   isPassphraseCancelledError,
 } = require("./sshAuthHelper.cjs");
@@ -616,12 +617,23 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
       const hasCertificate =
         typeof jump.certificate === "string" && jump.certificate.trim().length > 0;
 
-      const isJumpFidoSk = looksLikeSkOpenSshMaterial(jump.privateKey)
+      let isJumpFidoSk = looksLikeSkOpenSshMaterial(jump.privateKey)
         || (Array.isArray(jump.agentPublicKeys)
-          && jump.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)));
+          && jump.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
+        || jump.useFidoAgent === true;
+      if (!isJumpFidoSk && jump.authMethod !== "password"
+        && Array.isArray(jump.identityFilePaths)
+        && jump.identityFilePaths.length > 0) {
+        try {
+          isJumpFidoSk = await identityFilesLookLikeSk(jump.identityFilePaths);
+        } catch {
+          // ignore
+        }
+      }
       const forceJumpFidoAgent = isJumpFidoSk && jump.authMethod !== "password";
 
-      const systemAuthAgent = hasCertificate
+      // FIDO SK + certificate still needs the agent for hardware signing.
+      const systemAuthAgent = (hasCertificate && !forceJumpFidoAgent)
         ? null
         : await prepareSystemSshAgentForAuth({
           ...jump,
@@ -694,7 +706,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
       if (systemAuthAgent) {
         connOpts.agent = systemAuthAgent;
       }
-      if (hasCertificate) {
+      if (hasCertificate && !forceJumpFidoAgent) {
         authAgent = new NetcattyAgent({
           mode: "certificate",
           webContents: event.sender,
@@ -706,7 +718,7 @@ async function connectThroughChain(event, options, jumpHosts, targetHost, target
           },
         });
         connOpts.agent = authAgent;
-      } else if (effectivePrivateKey) {
+      } else if (effectivePrivateKey && !forceJumpFidoAgent) {
         connOpts.privateKey = effectivePrivateKey;
         if (effectivePassphrase) {
           connOpts.passphrase = effectivePassphrase;

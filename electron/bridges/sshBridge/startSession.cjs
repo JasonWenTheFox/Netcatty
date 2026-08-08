@@ -1288,9 +1288,22 @@ printf '%s\n' '${scanCompleteMarker}'`;
 
         if (systemAuthAgent) {
           connectOpts.agent = systemAuthAgent;
+          // Release owned FIDO agent when this SSH session ends (refcount).
+          if (typeof systemAuthAgent._releaseNetcattyFidoAgent === "function") {
+            let released = false;
+            const releaseOwned = () => {
+              if (released) return;
+              released = true;
+              try { systemAuthAgent._releaseNetcattyFidoAgent(); } catch { /* ignore */ }
+            };
+            conn.once("close", releaseOwned);
+            conn.once("end", releaseOwned);
+          }
         }
 
-        if (hasCertificate) {
+        // Soft-key certificates use NetcattyAgent local signing. FIDO SK + cert
+        // must keep the system/owned agent (hardware signs via ssh-sk-helper).
+        if (hasCertificate && !forceSystemAgentForFido) {
           authAgent = new NetcattyAgent({
             mode: "certificate",
             webContents: event.sender,
@@ -1302,7 +1315,7 @@ printf '%s\n' '${scanCompleteMarker}'`;
             },
           });
           connectOpts.agent = authAgent;
-        } else if (effectivePrivateKey) {
+        } else if (effectivePrivateKey && !forceSystemAgentForFido) {
           connectOpts.privateKey = effectivePrivateKey;
           if (effectiveIdentityPassphrase) {
             connectOpts.passphrase = effectiveIdentityPassphrase;

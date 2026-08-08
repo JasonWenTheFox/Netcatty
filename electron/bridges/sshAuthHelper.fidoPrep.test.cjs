@@ -8,6 +8,8 @@ const path = require("node:path");
 const {
   isFidoSkAuthOptions,
   buildFidoAwareAgentPrepOptions,
+  enhanceAuthOptionsForFido,
+  shouldUseSoftwareCertificateAgent,
   resolvePreparedAgentSocket,
   looksLikeSkOpenSshMaterial,
   identityFilesLookLikeSk,
@@ -114,4 +116,46 @@ test("looksLikeSkOpenSshMaterial recognizes sk certificate public keys", () => {
     ),
     true,
   );
+});
+
+test("enhanceAuthOptionsForFido forces agent for path-only IdentityFile SK keys", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-sk-enhance-"));
+  const keyPath = path.join(dir, "id_ed25519_sk");
+  fs.writeFileSync(`${keyPath}.pub`, skPub);
+  try {
+    const prep = await enhanceAuthOptionsForFido({
+      useSshAgent: false,
+      identityFilePaths: [keyPath],
+    });
+    assert.equal(prep.useSshAgent, true);
+    assert.equal(prep.useFidoAgent, true);
+    assert.equal(prep.loadIdentityFilesIntoAgent, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("shouldUseSoftwareCertificateAgent is false for FIDO SK certificates", () => {
+  assert.equal(
+    shouldUseSoftwareCertificateAgent({ certificate: "sk-ssh-ed25519-cert-v01@openssh.com AAAA" }, true),
+    false,
+  );
+  assert.equal(
+    shouldUseSoftwareCertificateAgent({ certificate: "ssh-ed25519-cert-v01@openssh.com AAAA" }, false),
+    true,
+  );
+});
+
+test("materializeSkPrivateKeyFile stages companion certificate for ssh-add", async () => {
+  const pem = makeSkPrivatePem(SK_SSH_ED25519);
+  const cert = "sk-ssh-ed25519-cert-v01@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAA user";
+  const result = await materializeSkPrivateKeyFile(pem, {
+    fs,
+    path,
+    tempDirBridge: { getTempDir: () => os.tmpdir() },
+    certificate: cert,
+  });
+  assert.ok(result?.keyPath);
+  assert.equal(fs.readFileSync(`${result.keyPath}-cert.pub`, "utf8").trim(), cert);
+  fs.rmSync(result.cleanupDir, { recursive: true, force: true });
 });

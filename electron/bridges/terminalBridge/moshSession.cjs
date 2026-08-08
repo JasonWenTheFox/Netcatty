@@ -133,12 +133,15 @@ function createMoshSessionApi(ctx) {
     }
 
     async function prepareMoshSshAgentOptions(options, sender) {
-      const { buildFidoAwareAgentPrepOptions, resolvePreparedAgentSocket, isFidoSkAuthOptions } = require("../sshAuthHelper.cjs");
-      const forceFido = isFidoSkAuthOptions(options) && options.authMethod !== "password";
+      const {
+        enhanceAuthOptionsForFido,
+        resolvePreparedAgentSocket,
+      } = require("../sshAuthHelper.cjs");
+      const prepOptions = await enhanceAuthOptionsForFido(options, sender);
+      const forceFido = prepOptions.useFidoAgent === true && options.authMethod !== "password";
       if (options?.useSshAgent !== true && !options?.agentForwarding && !forceFido) return options;
       let prepared = options;
       if (options.useSshAgent === true || forceFido) {
-        const prepOptions = buildFidoAwareAgentPrepOptions(options, sender);
         const agent = await prepareSystemSshAgentForAuth(prepOptions, "[Mosh]");
         const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
           || await getAvailableAgentSocket(options.identityAgent, options);

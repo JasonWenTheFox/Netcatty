@@ -20,6 +20,7 @@ const net = require("node:net");
 const fs = require("node:fs");
 
 const sockPath = process.env.NETCATTY_FIDO_ASKPASS_SOCK;
+const leaseId = process.env.NETCATTY_FIDO_ASKPASS_LEASE || "";
 const prompt = process.argv.slice(2).join(" ") || process.env.SSH_ASKPASS_PROMPT || "";
 
 function fail(code) {
@@ -28,7 +29,7 @@ function fail(code) {
 
 if (!sockPath) fail(1);
 
-const payload = JSON.stringify({ prompt, type: "askpass" }) + "\n";
+const payload = JSON.stringify({ prompt, type: "askpass", leaseId }) + "\n";
 const client = net.createConnection(sockPath);
 
 let buf = "";
@@ -79,6 +80,8 @@ let askpassScriptPath = null;
 let askpassWrapperPath = null;
 /** @type {(() => import("electron").WebContents|null)|null} */
 let resolveWebContents = null;
+/** @type {Map<string, () => import("electron").WebContents|null>} */
+const askpassLeases = new Map();
 
 function getTempBase() {
   try {
@@ -149,7 +152,9 @@ function handleAskpassClient(socket) {
     }
     const prompt = String(msg?.prompt || "");
     const kind = fidoPromptHandler.classifyAskpassPrompt(prompt);
-    const sender = (resolveWebContents || defaultResolveWebContents)();
+    const leaseId = typeof msg?.leaseId === "string" ? msg.leaseId : "";
+    const leaseResolver = leaseId ? askpassLeases.get(leaseId) : null;
+    const sender = (leaseResolver || resolveWebContents || defaultResolveWebContents)();
     if (!sender) {
       socket.end(`${JSON.stringify({ ok: false, error: "no_window" })}\n`);
       return;
@@ -245,16 +250,25 @@ function ensureFidoAskpass(options = {}) {
  */
 function buildFidoAskpassEnv(options = {}) {
   const artifacts = ensureFidoAskpass(options);
+  const leaseId = randomUUID().slice(0, 12);
+  if (typeof options.resolveWebContents === "function") {
+    askpassLeases.set(leaseId, options.resolveWebContents);
+  }
   const env = {
     SSH_ASKPASS: artifacts.wrapperPath,
     SSH_ASKPASS_REQUIRE: "force",
     NETCATTY_FIDO_ASKPASS_SOCK: artifacts.socketPath,
+    NETCATTY_FIDO_ASKPASS_LEASE: leaseId,
     // OpenSSH only runs askpass when no TTY unless REQUIRE=force; still set DISPLAY on Linux.
     ...(process.platform === "linux" && !process.env.DISPLAY
       ? { DISPLAY: process.env.DISPLAY || ":0" }
       : {}),
   };
   return env;
+}
+
+function releaseFidoAskpassLease(leaseId) {
+  if (typeof leaseId === "string" && leaseId) askpassLeases.delete(leaseId);
 }
 
 function shutdownFidoAskpass() {
@@ -267,11 +281,13 @@ function shutdownFidoAskpass() {
   askpassSocketPath = null;
   askpassScriptPath = null;
   askpassWrapperPath = null;
+  askpassLeases.clear();
 }
 
 module.exports = {
   ensureFidoAskpass,
   buildFidoAskpassEnv,
+  releaseFidoAskpassLease,
   shutdownFidoAskpass,
   classifyAskpassPrompt: fidoPromptHandler.classifyAskpassPrompt,
   resolveFidoAskpassSocketPath,
@@ -281,5 +297,8 @@ module.exports = {
   FIDO_ASKPASS_SCRIPT,
   setResolveWebContentsForTests(resolver) {
     resolveWebContents = typeof resolver === "function" ? resolver : null;
+  },
+  getAskpassLeaseCountForTests() {
+    return askpassLeases.size;
   },
 };

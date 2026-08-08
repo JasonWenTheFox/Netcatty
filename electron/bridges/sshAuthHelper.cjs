@@ -960,6 +960,8 @@ function isFidoSkAuthOptions(options) {
 /**
  * Normalize auth options for prepareSystemSshAgentForAuth so every surface
  * (SSH / SFTP / Mosh / ET / port-forward) gets askpass + FIDO agent force.
+ * Sync: only inspects inline material. Prefer enhanceAuthOptionsForFido when
+ * IdentityFile paths may hold sk-* handles without vault type markers.
  * @param {object} options
  * @param {Electron.WebContents} [sender]
  */
@@ -975,6 +977,42 @@ function buildFidoAwareAgentPrepOptions(options = {}, sender) {
       ? resolveWebContentsFromSender(sender)
       : options.resolveWebContents),
   };
+}
+
+/**
+ * Async FIDO prep: also peeks IdentityFile paths so path-only SK keys force
+ * the owned agent on every surface (not only startSession).
+ */
+async function enhanceAuthOptionsForFido(options = {}, sender) {
+  const base = buildFidoAwareAgentPrepOptions(options, sender);
+  if (base.useFidoAgent === true || base.authMethod === "password") return base;
+  if (!Array.isArray(options.identityFilePaths) || options.identityFilePaths.length === 0) {
+    return base;
+  }
+  try {
+    if (await identityFilesLookLikeSk(options.identityFilePaths)) {
+      return {
+        ...base,
+        useSshAgent: true,
+        useFidoAgent: true,
+        loadIdentityFilesIntoAgent: true,
+        addKeysToAgent: options.addKeysToAgent || "yes",
+      };
+    }
+  } catch {
+    // ignore probe failures
+  }
+  return base;
+}
+
+/**
+ * True when certificate auth must stay on the software NetcattyAgent path.
+ * FIDO SK + certificate must keep the system/owned agent (hardware signs).
+ */
+function shouldUseSoftwareCertificateAgent(options = {}, isFidoSk = false) {
+  const hasCertificate = typeof options.certificate === "string"
+    && options.certificate.trim().length > 0;
+  return hasCertificate && !isFidoSk;
 }
 
 /**
@@ -1012,12 +1050,15 @@ async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
   const dir = await fsMod.promises.mkdtemp(pathMod.join(baseDir, "netcatty-sk-key-"));
   const keyPath = pathMod.join(dir, "id_sk");
   await fsMod.promises.writeFile(keyPath, privateKey, { mode: 0o600 });
+  const certificate = typeof injected.certificate === "string" ? injected.certificate.trim() : "";
+  if (certificate) {
+    // OpenSSH ssh-add auto-loads `<key>-cert.pub` next to the private handle.
+    await fsMod.promises.writeFile(`${keyPath}-cert.pub`, `${certificate}\n`, { mode: 0o600 });
+  }
   return { keyPath, cleanupDir: dir };
 }
 
 async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
-  if (options?.useSshAgent !== true) return null;
-
   let pathBackedSk = false;
   if (!options.useFidoAgent
     && !looksLikeSkOpenSshMaterial(options.privateKey)
@@ -1038,6 +1079,10 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     || options.useFidoAgent === true
     || options.loadIdentityFilesIntoAgent === true
     || pathBackedSk;
+
+  // Path-backed / flagged FIDO keys imply agent auth even when the caller did
+  // not already set useSshAgent (vault default for soft keys is often false).
+  if (options?.useSshAgent !== true && !isFidoFlow) return null;
 
   let socketPath = null;
   let askpassEnv = null;
@@ -1099,13 +1144,49 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   let skTempCleanup = null;
   if (looksLikeSkOpenSshMaterial(options.privateKey)) {
     try {
-      const materialized = await materializeSkPrivateKeyFile(options.privateKey);
+      const materialized = await materializeSkPrivateKeyFile(options.privateKey, {
+        certificate: options.certificate,
+      });
       if (materialized?.keyPath) {
         identityFilePaths.push(materialized.keyPath);
         skTempCleanup = materialized.cleanupDir;
       }
     } catch (error) {
       console.log(`${logPrefix} Could not materialize FIDO2 key handle for agent load`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else if (
+    isFidoFlow
+    && typeof options.certificate === "string"
+    && options.certificate.trim()
+    && Array.isArray(options.identityFilePaths)
+  ) {
+    // Path-backed SK + vault certificate: copy handle into temp and stage
+    // `<key>-cert.pub` so ssh-add advertises the certified identity. Never
+    // mutate the user's IdentityFile tree.
+    try {
+      for (const rawPath of options.identityFilePaths) {
+        const identityPath = expandIdentityFilePath(rawPath);
+        if (!identityPath || identityPath.endsWith(".pub")) continue;
+        let privateKeyText = "";
+        try {
+          privateKeyText = await fs.promises.readFile(identityPath, "utf8");
+        } catch {
+          continue;
+        }
+        if (!looksLikeSkOpenSshMaterial(privateKeyText)) continue;
+        const materialized = await materializeSkPrivateKeyFile(privateKeyText, {
+          certificate: options.certificate,
+        });
+        if (materialized?.keyPath) {
+          identityFilePaths.push(materialized.keyPath);
+          skTempCleanup = materialized.cleanupDir;
+        }
+        break;
+      }
+    } catch (error) {
+      console.log(`${logPrefix} Could not stage FIDO certificate for agent load`, {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -2315,6 +2396,8 @@ module.exports = {
   identityFilesLookLikeSk,
   isFidoSkAuthOptions,
   buildFidoAwareAgentPrepOptions,
+  enhanceAuthOptionsForFido,
+  shouldUseSoftwareCertificateAgent,
   resolveWebContentsFromSender,
   resolvePreparedAgentSocket,
   materializeSkPrivateKeyFile,
