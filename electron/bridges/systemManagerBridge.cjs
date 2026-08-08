@@ -44,14 +44,17 @@ function parseCapabilities(stdout, isLocal, localPlatform) {
     else if (uname.includes("darwin")) targetOs = "darwin";
     else if (uname.includes("windows") || uname.includes("mingw")) targetOs = "win32";
   }
-  const hasTmux = text.includes("__NC_TMUX__=1");
-  const hasDocker = text.includes("__NC_DOCKER__=1");
-  const hasNvidiaSmi = text.includes("__NC_NVIDIA_SMI__=1");
-  const hasNpuSmi = text.includes("__NC_NPU_SMI__=1");
-  const hasSs = text.includes("__NC_SS__=1");
-  const hasNetstat = text.includes("__NC_NETSTAT__=1");
-  const hasLsof = text.includes("__NC_LSOF__=1");
-  const hasSystemctl = text.includes("__NC_SYSTEMCTL__=1");
+  // Line-anchored markers only — avoid matching probe-script source echoed by
+  // noisy shells / vendor CLIs that reprint the command text.
+  const hasFlag = (name) => new RegExp(`(?:^|\\r?\\n)${name}=1(?:\\r?\\n|$)`).test(text);
+  const hasTmux = hasFlag("__NC_TMUX__");
+  const hasDocker = hasFlag("__NC_DOCKER__");
+  const hasNvidiaSmi = hasFlag("__NC_NVIDIA_SMI__");
+  const hasNpuSmi = hasFlag("__NC_NPU_SMI__");
+  const hasSs = hasFlag("__NC_SS__");
+  const hasNetstat = hasFlag("__NC_NETSTAT__");
+  const hasLsof = hasFlag("__NC_LSOF__");
+  const hasSystemctl = hasFlag("__NC_SYSTEMCTL__");
   return {
     targetOs,
     hasTmux,

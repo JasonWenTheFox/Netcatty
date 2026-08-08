@@ -121,15 +121,17 @@ export const PortsManagerTab = memo(function PortsManagerTab({
   );
 
   const executeTerminate = useCallback(async (pid: number) => {
+    const requestedSessionId = sessionId;
     setKillBusy(true);
     setActionError(null);
     try {
       const result = await backend.signalSystemProcess({
-        sessionId,
+        sessionId: requestedSessionId,
         pid,
         signal: 'TERM',
       });
-      if ('pending' in result && result.pending) {
+      if (sessionIdRef.current !== requestedSessionId) return;
+      if (result.pending) {
         setActionError(t('systemManager.errors.sshChannelUnavailable'));
         return;
       }
@@ -139,7 +141,7 @@ export const PortsManagerTab = memo(function PortsManagerTab({
       }
       void refresh();
     } finally {
-      setKillBusy(false);
+      if (sessionIdRef.current === requestedSessionId) setKillBusy(false);
     }
   }, [backend, refresh, sessionId, t]);
 

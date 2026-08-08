@@ -153,15 +153,17 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
   );
 
   const executeAction = useCallback(async (unit: SystemdUnitInfo, action: SystemdUnitAction) => {
+    const requestedSessionId = sessionId;
     setActionBusy(true);
     setActionError(null);
     try {
       const result = await backend.systemServiceAction({
-        sessionId,
+        sessionId: requestedSessionId,
         unitName: unit.name,
         action,
         scope: unit.scope,
       });
+      if (sessionIdRef.current !== requestedSessionId) return;
       if (result.pending) {
         setActionError(t('systemManager.errors.sshChannelUnavailable'));
         return;
@@ -172,7 +174,7 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
       }
       void refresh();
     } finally {
-      setActionBusy(false);
+      if (sessionIdRef.current === requestedSessionId) setActionBusy(false);
     }
   }, [backend, refresh, sessionId, t]);
 

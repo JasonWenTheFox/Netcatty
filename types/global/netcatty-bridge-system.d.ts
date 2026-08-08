@@ -18,7 +18,7 @@ declare global {
       pid: number;
       signal?: string;
       nice?: number;
-    }): Promise<{ success: boolean; error?: string; code?: number }>;
+    }): Promise<{ success: boolean; pending?: boolean; error?: string; code?: number }>;
     setupOsc7Tracking?(sessionId: string, command: string): Promise<{
       success: boolean;
       pending?: boolean;

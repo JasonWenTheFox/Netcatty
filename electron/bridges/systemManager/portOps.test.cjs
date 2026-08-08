@@ -162,3 +162,37 @@ __NC_PORTS_END__
   assert.equal(ports[0].protocol, "tcp6");
   assert.equal(ports[0].pid, 99);
 });
+
+test("parseListeningPorts keeps SO_REUSEPORT listeners as separate pid rows", () => {
+  const sample = `
+tcp   LISTEN 0      128          0.0.0.0:8080         0.0.0.0:*    users:(("app",pid=11,fd=3))
+tcp   LISTEN 0      128          0.0.0.0:8080         0.0.0.0:*    users:(("app",pid=12,fd=3))
+`;
+  const ports = parseSsOutput(sample);
+  assert.equal(ports.length, 2);
+  assert.deepEqual(ports.map((p) => p.pid).sort((a, b) => a - b), [11, 12]);
+});
+
+test("parseListeningPorts reads Windows UDP endpoints from Protocol field", () => {
+  const stdout = `
+__NC_PORTS_BEGIN__
+__NC_WIN__
+[{"LocalAddress":"0.0.0.0","LocalPort":53,"OwningProcess":500,"Protocol":"udp"},{"LocalAddress":"::","LocalPort":22,"OwningProcess":1234,"Protocol":"tcp"}]
+__NC_PORTS_END__
+`;
+  const ports = parseListeningPorts(stdout);
+  assert.equal(ports.length, 2);
+  assert.equal(ports.find((p) => p.port === 53)?.protocol, "udp");
+  assert.equal(ports.find((p) => p.port === 22)?.protocol, "tcp6");
+});
+
+test("parseLsofOutput keeps Idle UDP listeners", () => {
+  const sample = `
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+mdnsd     200 root   12u  IPv4 0x1      0t0  UDP *:5353
+`;
+  const ports = parseLsofOutput(sample);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].protocol, "udp");
+  assert.equal(ports[0].port, 5353);
+});

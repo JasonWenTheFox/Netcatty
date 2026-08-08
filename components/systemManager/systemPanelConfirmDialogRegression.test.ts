@@ -80,3 +80,11 @@ test("ports and services surface pending channel results instead of treating the
   assert.match(servicesSource, /result\.pending/);
   assert.match(servicesSource, /systemManager\.errors\.sshChannelUnavailable/);
 });
+
+test("ports and services ignore late action results after session switches", () => {
+  const portsSource = readProjectFile("components/systemManager/PortsManagerTab.tsx");
+  const servicesSource = readProjectFile("components/systemManager/ServicesManagerTab.tsx");
+
+  assert.match(portsSource, /sessionIdRef\.current !== requestedSessionId/);
+  assert.match(servicesSource, /sessionIdRef\.current !== requestedSessionId/);
+});

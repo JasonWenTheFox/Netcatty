@@ -18,12 +18,21 @@ const LISTEN_PORTS_INNER = [
   "fi; ",
   'if command -v netstat >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_NETSTAT__"; ',
-  "netstat -lntp 2>/dev/null || netstat -anv -p tcp 2>/dev/null || netstat -anp 2>/dev/null || netstat -an 2>/dev/null || true; ",
+  // Linux `-lntp` covers TCP+UDP. macOS `-anv -p tcp` succeeds alone and would
+  // short-circuit a `||` chain, so collect tcp/udp explicitly on that path.
+  "if netstat -lntp 2>/dev/null; then :; ",
+  "elif netstat -anv -p tcp >/dev/null 2>&1; then ",
+  "netstat -anv -p tcp 2>/dev/null || true; ",
+  "netstat -anv -p udp 2>/dev/null || true; ",
+  "else ",
+  "netstat -anp 2>/dev/null || netstat -an 2>/dev/null || true; ",
+  "fi; ",
   "fi; ",
   'if command -v lsof >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_LSOF__"; ',
-  // TCP listen only. Full UDP dumps include connected sockets and mislead the UI.
   "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true; ",
+  // Idle UDP ≈ unbound listeners; connected UDP still filtered by `->` below.
+  "lsof -nP -iUDP -sUDP:Idle 2>/dev/null || lsof -nP -iUDP 2>/dev/null || true; ",
   "fi; ",
   'printf "%s\\n" "__NC_PORTS_END__"',
 ].join("");
@@ -33,8 +42,12 @@ const LISTEN_PORTS_SCRIPT = `exec sh -c ${JSON.stringify(LISTEN_PORTS_INNER)}`;
 const LISTEN_PORTS_WINDOWS = [
   'Write-Output "__NC_PORTS_BEGIN__"; ',
   'Write-Output "__NC_WIN__"; ',
-  "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ",
-  "Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress; ",
+  "$rows = @(); ",
+  "$rows += @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ",
+  "Select-Object LocalAddress,LocalPort,OwningProcess,@{Name='Protocol';Expression={'tcp'}}); ",
+  "$rows += @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ",
+  "Select-Object LocalAddress,LocalPort,OwningProcess,@{Name='Protocol';Expression={'udp'}}); ",
+  "if ($rows.Count -gt 0) { $rows | ConvertTo-Json -Compress } else { Write-Output '[]' }; ",
   'Write-Output "__NC_PORTS_END__"',
 ].join("");
 
@@ -92,12 +105,17 @@ function parseSsProcess(info) {
   };
 }
 
-function portKey(protocol, address, port) {
-  return `${normalizeProtocol(protocol)}|${address || "*"}|${port}`;
+function portKey(protocol, address, port, pid) {
+  // Include pid so SO_REUSEPORT / multi-process listeners stay distinct.
+  return `${normalizeProtocol(protocol)}|${address || "*"}|${port}|${pid == null ? "-" : pid}`;
 }
 
 function makePortId(protocol, address, port, pid) {
   return `${normalizeProtocol(protocol)}|${address}|${port}|${pid == null ? "-" : pid}`;
+}
+
+function sameSocket(a, protocol, address, port) {
+  return a.protocol === protocol && a.address === address && a.port === port;
 }
 
 function pushPort(entries, byKey, row) {
@@ -107,16 +125,28 @@ function pushPort(entries, byKey, row) {
   const port = Number(row.port);
   const pid = Number.isFinite(row.pid) && row.pid > 0 ? Number(row.pid) : null;
   const processName = String(row.processName || "");
-  const key = portKey(protocol, address, port);
+
+  if (pid != null) {
+    // Drop anonymous placeholder once a PID-bearing collector reports the socket.
+    const anonKey = portKey(protocol, address, port, null);
+    const anon = byKey.get(anonKey);
+    if (anon) {
+      byKey.delete(anonKey);
+      const idx = entries.indexOf(anon);
+      if (idx >= 0) entries.splice(idx, 1);
+    }
+  } else {
+    for (const existing of byKey.values()) {
+      if (sameSocket(existing, protocol, address, port) && existing.pid != null) {
+        return;
+      }
+    }
+  }
+
+  const key = portKey(protocol, address, port, pid);
   const existing = byKey.get(key);
   if (existing) {
-    // Prefer the row that carries process identity.
-    const existingScore = (existing.pid != null ? 2 : 0) + (existing.processName ? 1 : 0);
-    const nextScore = (pid != null ? 2 : 0) + (processName ? 1 : 0);
-    if (nextScore <= existingScore) return;
-    existing.pid = pid;
-    existing.processName = processName;
-    existing.id = makePortId(protocol, address, port, pid);
+    if (!existing.processName && processName) existing.processName = processName;
     return;
   }
   const entry = {
@@ -299,9 +329,12 @@ function parseWindowsPortsJson(stdout) {
     const port = Number(row.LocalPort);
     const pid = Number(row.OwningProcess);
     let address = String(row.LocalAddress || "*");
+    const isV6 = address.includes(":");
     if (address === "0.0.0.0" || address === "::" || address === "*") address = "*";
+    const protoRaw = String(row.Protocol || "tcp").toLowerCase();
+    const isUdp = protoRaw.startsWith("udp");
     pushPort(entries, byKey, {
-      protocol: address.includes(":") ? "tcp6" : "tcp",
+      protocol: isUdp ? (isV6 ? "udp6" : "udp") : (isV6 ? "tcp6" : "tcp"),
       address,
       port,
       pid: Number.isFinite(pid) && pid > 0 ? pid : null,
