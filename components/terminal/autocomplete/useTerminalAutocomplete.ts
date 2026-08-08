@@ -774,19 +774,61 @@ export function useTerminalAutocomplete(
         completions.length,
         cursorColumn,
       );
+      const prevSnapshot = stateRef.current;
+      const suggestionsUnchanged =
+        prevSnapshot.popupVisible && areSuggestionsEqual(prevSnapshot.suggestions, completions);
+      const selectedIndex = resolveAutocompletePopupSelectedIndex({
+        suggestionCount: completions.length,
+        previousSelectedIndex: prevSnapshot.selectedIndex,
+        keepPreviousSelection: suggestionsUnchanged,
+      });
+      const keepSubDirPanels =
+        suggestionsUnchanged && selectedIndex === prevSnapshot.selectedIndex;
+      const nextState: AutocompleteState = {
+        suggestions: completions,
+        selectedIndex,
+        popupVisible: true,
+        popupAnchorViewport: {
+          left: anchor.anchorLeft,
+          top: anchor.anchorTop,
+          bottom: anchor.anchorBottom,
+        },
+        expandUpward: anchor.expandUpward,
+        // Fresh lists (or a selection change) drop cascade panels. Unchanged
+        // selection keeps them so a spurious refetch does not collapse an
+        // open directory tree.
+        subDirPanels: keepSubDirPanels ? prevSnapshot.subDirPanels : [],
+        subDirFocusLevel: keepSubDirPanels ? prevSnapshot.subDirFocusLevel : -1,
+      };
+      const popupStateUnchanged =
+        prevSnapshot.popupVisible &&
+        prevSnapshot.selectedIndex === nextState.selectedIndex &&
+        prevSnapshot.expandUpward === nextState.expandUpward &&
+        prevSnapshot.popupAnchorViewport.left === nextState.popupAnchorViewport.left &&
+        prevSnapshot.popupAnchorViewport.top === nextState.popupAnchorViewport.top &&
+        prevSnapshot.popupAnchorViewport.bottom === nextState.popupAnchorViewport.bottom &&
+        prevSnapshot.subDirFocusLevel === nextState.subDirFocusLevel &&
+        areSubDirPanelsEqual(prevSnapshot.subDirPanels, nextState.subDirPanels) &&
+        suggestionsUnchanged;
+
       startTransition(() => {
         setState((prev) => {
           if (version !== fetchVersionRef.current) return prev;
 
-          const suggestionsUnchanged =
+          // Recompute against the latest React state in case another update
+          // landed between the async completion and this transition.
+          const latestUnchanged =
             prev.popupVisible && areSuggestionsEqual(prev.suggestions, completions);
-          const nextState: AutocompleteState = {
+          const latestSelectedIndex = resolveAutocompletePopupSelectedIndex({
+            suggestionCount: completions.length,
+            previousSelectedIndex: prev.selectedIndex,
+            keepPreviousSelection: latestUnchanged,
+          });
+          const latestKeepSubDirPanels =
+            latestUnchanged && latestSelectedIndex === prev.selectedIndex;
+          const latestNext: AutocompleteState = {
             suggestions: completions,
-            selectedIndex: resolveAutocompletePopupSelectedIndex({
-              suggestionCount: completions.length,
-              previousSelectedIndex: prev.selectedIndex,
-              keepPreviousSelection: suggestionsUnchanged,
-            }),
+            selectedIndex: latestSelectedIndex,
             popupVisible: true,
             popupAnchorViewport: {
               left: anchor.anchorLeft,
@@ -794,27 +836,39 @@ export function useTerminalAutocomplete(
               bottom: anchor.anchorBottom,
             },
             expandUpward: anchor.expandUpward,
-            subDirPanels: [],
-            subDirFocusLevel: -1,
+            subDirPanels: latestKeepSubDirPanels ? prev.subDirPanels : [],
+            subDirFocusLevel: latestKeepSubDirPanels ? prev.subDirFocusLevel : -1,
           };
 
           if (
             prev.popupVisible &&
-            prev.selectedIndex === nextState.selectedIndex &&
-            prev.expandUpward === nextState.expandUpward &&
-            prev.popupAnchorViewport.left === nextState.popupAnchorViewport.left &&
-            prev.popupAnchorViewport.top === nextState.popupAnchorViewport.top &&
-            prev.popupAnchorViewport.bottom === nextState.popupAnchorViewport.bottom &&
-            prev.subDirFocusLevel === -1 &&
-            prev.subDirPanels.length === 0 &&
-            suggestionsUnchanged
+            prev.selectedIndex === latestNext.selectedIndex &&
+            prev.expandUpward === latestNext.expandUpward &&
+            prev.popupAnchorViewport.left === latestNext.popupAnchorViewport.left &&
+            prev.popupAnchorViewport.top === latestNext.popupAnchorViewport.top &&
+            prev.popupAnchorViewport.bottom === latestNext.popupAnchorViewport.bottom &&
+            prev.subDirFocusLevel === latestNext.subDirFocusLevel &&
+            areSubDirPanelsEqual(prev.subDirPanels, latestNext.subDirPanels) &&
+            latestUnchanged
           ) {
             return prev;
           }
 
-          return nextState;
+          return latestNext;
         });
       });
+
+      // Default-select (#2821) highlights a row without ArrowDown. Arrow nav
+      // is what used to call fetchSubDirForIndex; refresh must too, or
+      // directory cascade panels / ArrowRight stay inert on the default row.
+      // Sync stateRef before the call: setState has not re-rendered yet, and
+      // fetchSubDirForIndex reads suggestions from stateRef.
+      if (!popupStateUnchanged) {
+        stateRef.current = nextState;
+        if (selectedIndex >= 0) {
+          fetchSubDirForIndex(selectedIndex);
+        }
+      }
     } else {
       startTransition(() => {
         setState((prev) =>
@@ -824,7 +878,7 @@ export function useTerminalAutocomplete(
         );
       });
     }
-  }, [termRef, clearState, containerRef]);
+  }, [termRef, clearState, containerRef, fetchSubDirForIndex]);
 
   // Keep ref in sync so handleSubDirSelect can call it
   fetchSuggestionsRef.current = fetchSuggestions;

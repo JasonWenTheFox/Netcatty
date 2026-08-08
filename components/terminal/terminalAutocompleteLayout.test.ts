@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   clampAutocompletePopupGeometry,
@@ -542,4 +543,21 @@ test("resolveAutocompletePopupSelectedIndex clamps a stale selection when the li
     }),
     0,
   );
+});
+
+test("popup suggestion refresh prefetches sub-dir panels for the resolved selection", () => {
+  // Default-select (#2821) highlights row 0 without an ArrowDown. Arrow
+  // navigation is what historically called fetchSubDirForIndex; the refresh
+  // path must do the same or directory cascade / ArrowRight stay dead until
+  // the user moves the highlight.
+  const source = readFileSync(
+    new URL("./autocomplete/useTerminalAutocomplete.ts", import.meta.url),
+    "utf8",
+  );
+  const refreshStart = source.indexOf("// Popup");
+  const refreshEnd = source.indexOf("fetchSuggestionsRef.current = fetchSuggestions");
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  const refreshBranch = source.slice(refreshStart, refreshEnd);
+  assert.match(refreshBranch, /resolveAutocompletePopupSelectedIndex/);
+  assert.match(refreshBranch, /fetchSubDirForIndex\(/);
 });
