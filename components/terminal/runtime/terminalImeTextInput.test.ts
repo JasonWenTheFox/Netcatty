@@ -108,6 +108,23 @@ test("createXTermRuntime defers ASCII punctuation keydowns to insertText", () =>
   assert.match(runtimeSource, /commitImeTextInput\(event\.data\)/);
   assert.match(runtimeSource, /isUnchangedDeferredImeTextInput\(deferredKey, text\)/);
   assert.match(runtimeSource, /imeTextInputDeferredKittyEvent/);
+  // Manual commit bypasses xterm onUserInput; clear selection unless preserved.
+  assert.match(
+    runtimeSource,
+    /!ctx\.terminalSettingsRef\.current\?\.preserveSelectionOnInput/,
+  );
+  assert.match(runtimeSource, /term\.clearSelection\(\)/);
+  const clearSelIdx = runtimeSource.indexOf("term.clearSelection()");
+  const commitIdx = runtimeSource.indexOf("const commitImeTextInput = (text: string)");
+  const firstHandleIdx = runtimeSource.indexOf(
+    "handleTerminalInputData",
+    commitIdx,
+  );
+  assert.ok(
+    commitIdx >= 0 &&
+      clearSelIdx > commitIdx &&
+      firstHandleIdx > clearSelIdx,
+  );
   // Must run before Kitty/xterm send the half-width key from keydown.
   const deferIdx = runtimeSource.indexOf("shouldDeferKeyDownForImeTextInput(e)");
   const kittySendIdx = runtimeSource.indexOf("if (kittySequenceForKeyDown)");

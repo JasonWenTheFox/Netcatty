@@ -1195,6 +1195,16 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     clearImeTextInputDeferral();
     clearBroadcastLegacyDataPending();
 
+    // Deferred punctuation reaches the PTY via this manual commit instead of
+    // xterm's keydown → onUserInput pipeline, so SelectionService never clears.
+    // Match ordinary typed characters unless preserveSelectionOnInput is on.
+    if (
+      !ctx.terminalSettingsRef.current?.preserveSelectionOnInput &&
+      term.hasSelection()
+    ) {
+      term.clearSelection();
+    }
+
     // Unchanged ASCII must keep the Kitty press/release path. Composition
     // encoding under report-all emits unidentified CSI 0 u (or associated
     // text without a physical key), so ordinary punctuation breaks in TUIs.
