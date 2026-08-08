@@ -314,6 +314,29 @@ function createSystemManagerBridge(deps) {
   async function signalProcess(event, payload) {
     const { sessionId, pid, signal = "TERM", nice } = payload || {};
     if (!sessionId || !pid) return { success: false, error: "Missing sessionId or pid" };
+    const numericPid = Number(pid);
+    if (!Number.isFinite(numericPid) || numericPid <= 0) {
+      return { success: false, error: "Invalid pid" };
+    }
+
+    // Local Windows has no POSIX kill; map only TERM/KILL onto Stop-Process.
+    if (isLocalSession(sessionId) && process.platform === "win32") {
+      if (nice !== undefined && nice !== null) {
+        return { success: false, error: "renice is not supported on Windows" };
+      }
+      const sig = String(signal || "TERM").toUpperCase();
+      if (!(sig === "TERM" || sig === "15" || sig === "KILL" || sig === "9")) {
+        return { success: false, error: `signal ${sig} is not supported on Windows` };
+      }
+      const force = sig === "KILL" || sig === "9";
+      const ps = force
+        ? `Stop-Process -Id ${Math.trunc(numericPid)} -Force -ErrorAction Stop`
+        : `Stop-Process -Id ${Math.trunc(numericPid)} -ErrorAction Stop`;
+      const result = await execOnLocalMachine(ps, 5000);
+      if (!result.success) return { success: false, error: result.error || "Stop-Process failed" };
+      return { success: true, code: result.code };
+    }
+
     const built = buildProcessSignalCommand(pid, signal, nice);
     if (built.error) return { success: false, error: built.error };
     const result = await execOnSession(event, sessionId, `exec sh -c ${JSON.stringify(built.command)}`, 5000);

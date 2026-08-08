@@ -51,14 +51,17 @@ function parseListenAddress(addr) {
   const text = String(addr || "").trim();
   if (!text) return null;
 
-  // macOS / BSD netstat: "*.22" or "127.0.0.1.53"
-  const dotted = text.match(/^(.*?)\.(\d+)$/);
-  if (dotted && !text.includes(":")) {
+  // macOS / BSD netstat: "*.22", "127.0.0.1.53", "::1.631", "fe80::1%lo0.22"
+  // Prefer dotted port even when the address contains ':' (IPv6).
+  const dotted = text.match(/^(.*)\.(\d+)$/);
+  if (dotted) {
     const port = Number(dotted[2]);
-    if (!Number.isFinite(port) || port < 0 || port > 65535) return null;
-    let address = dotted[1] || "*";
-    if (address === "*" || address === "0.0.0.0" || address === "::") address = "*";
-    return { address, port };
+    if (Number.isFinite(port) && port >= 0 && port <= 65535) {
+      let address = dotted[1] || "*";
+      if (address.includes("%")) address = address.split("%")[0];
+      if (address === "*" || address === "0.0.0.0" || address === "::") address = "*";
+      return { address, port };
+    }
   }
 
   const lastColon = text.lastIndexOf(":");
@@ -71,6 +74,7 @@ function parseListenAddress(addr) {
   if (address.startsWith("[") && address.endsWith("]")) {
     address = address.slice(1, -1);
   }
+  if (address.includes("%")) address = address.split("%")[0];
   if (address === "*" || address === "0.0.0.0" || address === "::") {
     address = "*";
   }
@@ -152,16 +156,19 @@ function parseSsOutput(stdout) {
     let protocol;
     let state = "";
     let localAddr;
+    let peerAddr = "";
     let processField = "";
     if (/^(tcp|udp)/i.test(parts[0])) {
       protocol = parts[0];
-      // With state column: parts[1]=state, parts[4]=local
+      // With state column: parts[1]=state, parts[4]=local, parts[5]=peer
       if (parts.length >= 6 && (parts[4].includes(":") || parts[4].includes("."))) {
         state = parts[1] || "";
         localAddr = parts[4];
+        peerAddr = parts[5] || "";
         processField = parts.slice(6).join(" ");
       } else {
         localAddr = parts[3];
+        peerAddr = parts[4] || "";
         processField = parts.slice(5).join(" ");
       }
     } else {
@@ -170,6 +177,7 @@ function parseSsOutput(stdout) {
     const isUdp = /^udp/i.test(protocol);
     if (!isUdp && state && !/^LISTEN$/i.test(state)) continue;
     if (isUdp && state && !/^(UNCONN|IDLE|LISTEN)$/i.test(state)) continue;
+    if (isUdp && peerAddr && !isWildcardPeer(peerAddr)) continue;
     const parsed = parseListenAddress(localAddr);
     if (!parsed) continue;
     const proc = parseSsProcess(processField);
@@ -251,25 +259,22 @@ function parseLsofOutput(stdout) {
     if (!isUdpNode && !isTcpNode) continue;
     if (isTcpNode && !/\(LISTEN\)/i.test(nameField)) continue;
 
-    const listenMatch = nameField.match(
-      /^(?:TCP|UDP)\s+(?:(\*|\[?\*?\]?|[^:\s]+):)?(\d+)(?:\s+\((LISTEN)\))?$/i,
-    ) || nameField.match(
-      /^(?:(\*|\[?\*?\]?|[^:\s]+):)?(\d+)\s+\((LISTEN)\)/i,
-    );
-    if (!listenMatch) continue;
-    const addressRaw = listenMatch[1] || "*";
-    const port = Number(listenMatch[2]);
+    // NAME forms: "TCP *:80 (LISTEN)", "TCP [::1]:80 (LISTEN)", "*:22 (LISTEN)"
+    const cleaned = nameField
+      .replace(/^(?:TCP|UDP)\s+/i, "")
+      .replace(/\s+\((LISTEN|UDP)\)\s*$/i, "")
+      .trim();
+    const parsed = parseListenAddress(cleaned);
+    if (!parsed) continue;
     let protocol = isUdpNode ? "udp" : "tcp";
-    if (typeField.includes("IPv6") || String(addressRaw).includes(":")) {
+    // typeField is uppercased; match IPV6 / IPv6 before uppercasing would also work.
+    if (typeField.includes("IPV6") || parsed.address.includes(":")) {
       protocol = isUdpNode ? "udp6" : "tcp6";
     }
-    let address = addressRaw;
-    if (address.startsWith("[") && address.endsWith("]")) address = address.slice(1, -1);
-    if (address === "0.0.0.0" || address === "::" || address === "*" || address === "") address = "*";
     pushPort(entries, byKey, {
       protocol,
-      address,
-      port,
+      address: parsed.address,
+      port: parsed.port,
       pid: Number.isFinite(pid) ? pid : null,
       processName,
     });

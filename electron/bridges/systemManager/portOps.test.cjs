@@ -114,3 +114,51 @@ sshd     1234 root    3u  IPv4 0x2      0t0  TCP *:22 (LISTEN)
   assert.equal(ports.length, 1);
   assert.equal(ports[0].port, 22);
 });
+
+test("parseLsofOutput keeps bracketed IPv6 listeners as tcp6", () => {
+  const sample = `
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+nginx      99 root    7u  IPv6 0xabc      0t0  TCP [::1]:80 (LISTEN)
+`;
+  const ports = parseLsofOutput(sample);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].protocol, "tcp6");
+  assert.equal(ports[0].address, "::1");
+  assert.equal(ports[0].port, 80);
+});
+
+test("parseNetstatOutput keeps macOS IPv6 dotted ports", () => {
+  const sample = `
+tcp6       0      0  ::1.631                *.*                    LISTEN
+tcp6       0      0  fe80::1%lo0.22         *.*                    LISTEN
+`;
+  const ports = parseNetstatOutput(sample);
+  assert.equal(ports.length, 2);
+  assert.equal(ports.find((p) => p.port === 631)?.address, "::1");
+  assert.equal(ports.find((p) => p.port === 22)?.address, "fe80::1");
+});
+
+test("parseSsOutput rejects UDP with non-wildcard peers", () => {
+  const sample = `
+udp   UNCONN 0      0            10.0.0.5:68         10.0.0.1:67    users:(("dhclient",pid=7,fd=1))
+udp   UNCONN 0      0            0.0.0.0:5353            0.0.0.0:*    users:(("avahi",pid=8,fd=1))
+`;
+  const ports = parseSsOutput(sample);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].port, 5353);
+});
+
+test("parseListeningPorts merges ss tcp6 with lsof IPv6 without duplicating", () => {
+  const stdout = `
+__NC_PORTS_BEGIN__
+__NC_SS__
+tcp6  LISTEN 0      128             [::]:80             [::]:*    users:(("nginx",pid=99,fd=7))
+__NC_LSOF__
+nginx      99 root    7u  IPv6 0xabc      0t0  TCP *:80 (LISTEN)
+__NC_PORTS_END__
+`;
+  const ports = parseListeningPorts(stdout);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].protocol, "tcp6");
+  assert.equal(ports[0].pid, 99);
+});

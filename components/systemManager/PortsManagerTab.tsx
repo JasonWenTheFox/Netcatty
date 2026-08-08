@@ -62,21 +62,29 @@ export const PortsManagerTab = memo(function PortsManagerTab({
 
   useEffect(() => {
     setListPending(false);
+    setPendingKillPid(null);
+    setKillBusy(false);
+    setActionError(null);
   }, [sessionId]);
 
   const fetcher = useCallback(async (): Promise<ListeningPortInfo[] | null> => {
     const requestedSessionId = sessionId;
-    const result = await backend.listListeningPorts(requestedSessionId);
-    if (sessionIdRef.current !== requestedSessionId) return null;
-    if (result.pending) {
-      setListPending(true);
-      return null;
+    try {
+      const result = await backend.listListeningPorts(requestedSessionId);
+      if (sessionIdRef.current !== requestedSessionId) return null;
+      if (result.pending) {
+        setListPending(true);
+        return null;
+      }
+      setListPending(false);
+      if (!result.success) {
+        throw new Error(result.error || stableT('systemManager.errors.loadPorts'));
+      }
+      return result.ports || [];
+    } catch (error) {
+      if (sessionIdRef.current === requestedSessionId) setListPending(false);
+      throw error;
     }
-    setListPending(false);
-    if (!result.success) {
-      throw new Error(result.error || stableT('systemManager.errors.loadPorts'));
-    }
-    return result.ports || [];
   }, [backend, sessionId, stableT]);
 
   const { data, error, loading, refresh } = usePolling(

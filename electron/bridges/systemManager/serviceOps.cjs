@@ -55,11 +55,8 @@ function parseSystemctlListUnits(stdout, scope) {
   for (const line of String(stdout || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (/^UNIT\b/i.test(trimmed) || /^Legend:/i.test(trimmed) || trimmed.startsWith("●")) {
-      // Keep lines that start with ● (failed marker) by stripping it
-    }
     const cleaned = trimmed.replace(/^●\s*/, "");
-    if (!cleaned || /^UNIT\b/i.test(cleaned)) continue;
+    if (!cleaned || /^UNIT\b/i.test(cleaned) || /^Legend:/i.test(cleaned)) continue;
     if (/^\d+ loaded units listed/i.test(cleaned)) continue;
     if (/^To show all/i.test(cleaned)) continue;
     // UNIT LOAD ACTIVE SUB DESCRIPTION — fields are space-separated; description may contain spaces
@@ -193,6 +190,7 @@ function createServiceOpsApi({
     const sudoPassword = getSessionSudoPassword(getSession?.(sessionId));
     const passwordless = `exec sh -c ${JSON.stringify(`sudo systemctl ${action} ${shQuote(unitName)}`)}`;
     const passwordlessResult = await execOnSession(event, sessionId, passwordless, 30000);
+    if (passwordlessResult.pending) return { success: false, pending: true };
     if (isSuccessfulCommandResult(passwordlessResult)) return { success: true };
 
     if (sudoPassword) {
@@ -200,6 +198,7 @@ function createServiceOpsApi({
       const sudoResult = await execOnSession(event, sessionId, withPassword, 30000, {
         stdin: `${sudoPassword}\n`,
       });
+      if (sudoResult.pending) return { success: false, pending: true };
       if (isSuccessfulCommandResult(sudoResult)) return { success: true };
       return { success: false, error: commandError(sudoResult, `sudo systemctl ${action} failed`) };
     }
