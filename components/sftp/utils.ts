@@ -362,3 +362,46 @@ export const filterSftpEntriesByName = <T extends { name: string }>(
         (f) => f.name === ".." || f.name.toLowerCase().includes(term),
     );
 };
+
+export type SftpTreeNameFilterOptions<T extends { name: string }> = {
+    parentPath: string;
+    joinPath: (parentPath: string, name: string) => string;
+    isDirectory: (entry: T) => boolean;
+    /** Loaded children for a directory path; undefined means not loaded yet. */
+    getChildren: (entryPath: string) => T[] | undefined;
+};
+
+/**
+ * Tree-aware name filter: keeps list-view match rules, and also keeps directory
+ * ancestors when a loaded descendant matches. Collapsed/unloaded directories only
+ * appear when their own name matches (no server-side recursive search).
+ */
+export const filterSftpTreeEntriesByName = <T extends { name: string }>(
+    files: T[],
+    filter: string,
+    options: SftpTreeNameFilterOptions<T>,
+): T[] => {
+    const term = filter.trim().toLowerCase();
+    if (!term) return files;
+
+    const subtreeHasMatch = (entries: T[], parentPath: string): boolean => {
+        for (const entry of entries) {
+            if (entry.name === "..") continue;
+            if (entry.name.toLowerCase().includes(term)) return true;
+            if (!options.isDirectory(entry)) continue;
+            const entryPath = options.joinPath(parentPath, entry.name);
+            const children = options.getChildren(entryPath);
+            if (children && subtreeHasMatch(children, entryPath)) return true;
+        }
+        return false;
+    };
+
+    return files.filter((entry) => {
+        if (entry.name === "..") return true;
+        if (entry.name.toLowerCase().includes(term)) return true;
+        if (!options.isDirectory(entry)) return false;
+        const entryPath = options.joinPath(options.parentPath, entry.name);
+        const children = options.getChildren(entryPath);
+        return Boolean(children && subtreeHasMatch(children, entryPath));
+    });
+};

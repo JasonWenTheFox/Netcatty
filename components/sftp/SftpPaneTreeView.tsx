@@ -9,7 +9,7 @@ import { useSftpPaneTreeRows } from './useSftpPaneTreeRows';
 import { SftpMoveToDialog } from './SftpMoveToDialog';
 import type { SftpFileEntry } from '../../types';
 import { getParentPath, isWindowsRoot, joinPath, resolveSftpWindowsPathOptions } from '../../application/state/sftp/utils';
-import { buildSftpColumnTemplate, filterHiddenFiles, filterSftpEntriesByName, isNavigableDirectory, isSftpColumnMenuKey, sortSftpEntries } from './utils';
+import { buildSftpColumnTemplate, filterHiddenFiles, filterSftpTreeEntriesByName, isNavigableDirectory, isSftpColumnMenuKey, sortSftpEntries } from './utils';
 import type { SftpTransferSource } from './SftpContext';
 import type { SftpPaneTreeViewProps } from './SftpPaneTreeView.types';
 import { sftpTreeSelectionStore, useSftpTreeSelectionState } from '../../application/state/sftp/sftpTreeSelectionStore';
@@ -253,9 +253,9 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
         return false;
       }
       childrenCacheRef.current.set(entryPath, children);
-      // Drop any pre-reload sorted/filtered snapshot so the next row build
-      // re-applies pane.filter against the freshly loaded children.
-      sortedChildrenCacheRef.current.delete(entryPath);
+      // Ancestor visibility depends on loaded descendants, so drop every
+      // sorted/filtered snapshot (not only this path) before the next row build.
+      sortedChildrenCacheRef.current.clear();
       dispatchTreePaths({ type: 'FINISH_LOADING', path: entryPath });
       return true;
     } catch {
@@ -484,9 +484,15 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
       const cached = sortedChildrenCacheRef.current.get(parentPath);
       if (cached) return cached;
       const sorted = sortSftpEntries(
-        filterSftpEntriesByName(
+        filterSftpTreeEntriesByName(
           filterHiddenFiles(entries, pane.showHiddenFiles),
           pane.filter,
+          {
+            parentPath,
+            joinPath,
+            isDirectory: isNavigableDirectory,
+            getChildren: (entryPath) => childrenCacheRef.current.get(entryPath),
+          },
         ),
         sortField,
         sortOrder,

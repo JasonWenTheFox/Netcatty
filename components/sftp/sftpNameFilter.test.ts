@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { filterSftpEntriesByName } from './utils.ts';
+import { filterSftpEntriesByName, filterSftpTreeEntriesByName } from './utils.ts';
 
-const entry = (name: string) => ({ name });
+const entry = (name: string, type: 'file' | 'directory' = 'file') => ({ name, type });
+const isDirectory = (e: { type: string }) => e.type === 'directory';
 
 test('SFTP name filter returns all entries when term is empty', () => {
   const files = [entry('..'), entry('README.md'), entry('src')];
@@ -27,26 +28,69 @@ test('SFTP name filter hides non-matching siblings including directories', () =>
   );
 });
 
-test('SFTP tree view applies the shared name filter to visible rows', () => {
+test('SFTP tree filter keeps loaded ancestors of matching children', () => {
+  const childrenByPath = new Map<string, ReturnType<typeof entry>[]>([
+    ['/project/src', [entry('README.md'), entry('utils.ts'), entry('components', 'directory')]],
+    ['/project/src/components', [entry('Button.tsx'), entry('readme-local.txt')]],
+  ]);
+  const root = [
+    entry('src', 'directory'),
+    entry('logs', 'directory'),
+    entry('app.js'),
+  ];
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: (path) => childrenByPath.get(path),
+    }).map(({ name }) => name),
+    ['src'],
+  );
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(childrenByPath.get('/project/src')!, 'readme', {
+      parentPath: '/project/src',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: (path) => childrenByPath.get(path),
+    }).map(({ name }) => name),
+    ['README.md', 'components'],
+  );
+});
+
+test('SFTP tree filter hides unloaded non-matching directories', () => {
+  const root = [entry('src', 'directory'), entry('README.md')];
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: () => undefined,
+    }).map(({ name }) => name),
+    ['README.md'],
+  );
+});
+
+test('SFTP tree view applies the tree name filter to visible rows', () => {
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   assert.match(
     treeSource,
-    /sortSftpEntries\(\s*filterSftpEntriesByName\(\s*filterHiddenFiles\(entries, pane\.showHiddenFiles\),\s*pane\.filter,\s*\),/s,
+    /sortSftpEntries\(\s*filterSftpTreeEntriesByName\(\s*filterHiddenFiles\(entries, pane\.showHiddenFiles\),\s*pane\.filter,/s,
   );
   assert.match(treeSource, /pane\.showHiddenFiles\}:\$\{pane\.filter\}/);
 });
 
 test('SFTP tree child reload invalidates sorted cache so filter reapplies', () => {
-  // After expand/reload, childrenCache is replaced. If sortedChildrenCache still
-  // holds the pre-reload filtered list, newly loaded names that match the search
-  // stay invisible until some unrelated cache clear.
+  // After expand/reload, childrenCache is replaced. Ancestor visibility also
+  // depends on those descendants, so the sorted cache must be cleared broadly
+  // (not only for the loaded path) or parents stay hidden.
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   const loadFn = treeSource.match(
     /const loadChildrenForPath = useCallback\(async \(entryPath: string\) => \{[\s\S]*?\n  \}, \[\]\);/,
   );
   assert.ok(loadFn, 'expected loadChildrenForPath callback');
   const setIdx = loadFn[0].indexOf('childrenCacheRef.current.set(entryPath, children)');
-  const deleteIdx = loadFn[0].indexOf('sortedChildrenCacheRef.current.delete(entryPath)');
+  const clearIdx = loadFn[0].indexOf('sortedChildrenCacheRef.current.clear()');
   assert.ok(setIdx >= 0, 'expected childrenCache write on successful load');
-  assert.ok(deleteIdx > setIdx, 'sorted cache must clear after childrenCache write');
+  assert.ok(clearIdx > setIdx, 'sorted cache must clear after childrenCache write');
 });
