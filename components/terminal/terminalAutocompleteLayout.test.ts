@@ -10,6 +10,7 @@ import {
   resolveAutocompleteClampViewport,
   resolveAutocompleteCursorColumn,
   resolveAutocompletePopupSelectedIndex,
+  shouldPreserveAutocompletePopupSelection,
   type PopupPlacementInput,
 } from "./autocomplete/terminalAutocompleteLayout.ts";
 
@@ -516,6 +517,35 @@ test("resolveAutocompletePopupSelectedIndex defaults to the first suggestion", (
   );
 });
 
+test("shouldPreserveAutocompletePopupSelection requires an unchanged input baseline", () => {
+  assert.equal(
+    shouldPreserveAutocompletePopupSelection({
+      suggestionsUnchanged: true,
+      previousInputBaseline: "cd do",
+      nextInputBaseline: "cd do",
+    }),
+    true,
+  );
+  // Typing clears selection to -1; equal rows after a narrower prefix must
+  // restore the first-row default instead of preserving that programmatic -1.
+  assert.equal(
+    shouldPreserveAutocompletePopupSelection({
+      suggestionsUnchanged: true,
+      previousInputBaseline: "cd do",
+      nextInputBaseline: "cd doc",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPreserveAutocompletePopupSelection({
+      suggestionsUnchanged: false,
+      previousInputBaseline: "cd do",
+      nextInputBaseline: "cd do",
+    }),
+    false,
+  );
+});
+
 test("resolveAutocompletePopupSelectedIndex keeps navigation when suggestions are unchanged", () => {
   assert.equal(
     resolveAutocompletePopupSelectedIndex({
@@ -608,4 +638,19 @@ test("selected popup row prefetches sub-dir panels after selectedIndex commits",
   assert.match(deps, /fetchSubDirForIndex/);
   assert.doesNotMatch(deps, /state\.subDirPanels/);
   assert.doesNotMatch(deps, /state\.subDirFocusLevel/);
+});
+
+test("typing clear invalidates in-flight sub-dir fetches and restores default on baseline change", () => {
+  const source = readFileSync(
+    new URL("./autocomplete/useTerminalAutocomplete.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const clearPopupSelection = useCallback\(\(\) => \{[\s\S]*?subDirFetchVersionRef\.current\+\+;[\s\S]*?selectedIndex: -1,/,
+  );
+  assert.match(
+    source,
+    /shouldPreserveAutocompletePopupSelection\(\{\s*suggestionsUnchanged,\s*previousInputBaseline,\s*nextInputBaseline: input,/,
+  );
 });

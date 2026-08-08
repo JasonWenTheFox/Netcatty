@@ -113,10 +113,30 @@ export function areSuggestionsEqual(
 }
 
 /**
+ * Whether a suggestion refresh should preserve the current popup highlight.
+ *
+ * Equal suggestion rows alone are not enough: typing clears the highlight to
+ * -1 for the debounce window, and a narrowed prefix often yields the same
+ * rows. Preserve only when the input baseline is unchanged (spurious refetch /
+ * ↑↓ baseline slot); otherwise restore the first-row default.
+ */
+export function shouldPreserveAutocompletePopupSelection(options: {
+  suggestionsUnchanged: boolean;
+  previousInputBaseline: string;
+  nextInputBaseline: string;
+}): boolean {
+  return (
+    options.suggestionsUnchanged &&
+    options.previousInputBaseline === options.nextInputBaseline
+  );
+}
+
+/**
  * Initial / refreshed popup selection (#2821).
  * New suggestion lists default to the first row so Enter can confirm without
  * an ArrowDown. Unchanged lists keep the user's current index (including the
- * -1 "typed baseline" slot from ↑/↓ wrapping).
+ * -1 "typed baseline" slot from ↑/↓ wrapping) when
+ * `shouldPreserveAutocompletePopupSelection` is true.
  */
 export function resolveAutocompletePopupSelectedIndex(options: {
   suggestionCount: number;

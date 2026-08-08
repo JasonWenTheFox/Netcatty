@@ -35,6 +35,7 @@ import {
   resolveAutocompleteCursorColumn,
   resolveAutocompleteCwdWithSource,
   resolveAutocompletePopupSelectedIndex,
+  shouldPreserveAutocompletePopupSelection,
 } from "./terminalAutocompleteLayout";
 import { handleTerminalAutocompleteInput } from "./terminalAutocompleteInput";
 import { handleTerminalAutocompleteKeyEvent } from "./terminalAutocompleteKeyEvent";
@@ -378,6 +379,9 @@ export function useTerminalAutocomplete(
     ) {
       return;
     }
+    // Drop in-flight level-0 fetches so a stale directory cannot install after
+    // the next refresh defaults back to index 0 for a different first row.
+    subDirFetchVersionRef.current++;
     const next = {
       ...prev,
       selectedIndex: -1,
@@ -796,6 +800,9 @@ export function useTerminalAutocomplete(
     // Popup
     if (settingsRef.current.showPopupMenu && completions.length > 0) {
       // Live-preview baseline: the typed input these suggestions completed.
+      // Capture the prior baseline first — equal suggestion rows after typing
+      // must not preserve the debounce clear's programmatic -1.
+      const previousInputBaseline = previewBaselineRef.current;
       previewBaselineRef.current = input;
       previewActiveRef.current = false;
       previewCommittedRef.current = false;
@@ -812,10 +819,15 @@ export function useTerminalAutocomplete(
 
           const suggestionsUnchanged =
             prev.popupVisible && areSuggestionsEqual(prev.suggestions, completions);
+          const keepPreviousSelection = shouldPreserveAutocompletePopupSelection({
+            suggestionsUnchanged,
+            previousInputBaseline,
+            nextInputBaseline: input,
+          });
           const selectedIndex = resolveAutocompletePopupSelectedIndex({
             suggestionCount: completions.length,
             previousSelectedIndex: prev.selectedIndex,
-            keepPreviousSelection: suggestionsUnchanged,
+            keepPreviousSelection,
           });
           const keepSubDirPanels =
             suggestionsUnchanged && selectedIndex === prev.selectedIndex;
