@@ -165,6 +165,36 @@ test("resolveBridgeSshAgentAuth keeps agent path for FIDO SK certificates", () =
   );
 });
 
+test("resolveBridgeSshAgentAuth selects staged SK certificate under IdentitiesOnly", () => {
+  const barePub =
+    "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABHNzaDo= yubi";
+  const cert =
+    "sk-ssh-ed25519-cert-v01@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAA yubi";
+  const skCertKey: SSHKey = {
+    id: "sk-cert-bare-1",
+    label: "YubiKey cert staged",
+    type: "ED25519-SK",
+    privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nsk-ssh-ed25519@openssh.com\n-----END OPENSSH PRIVATE KEY-----",
+    publicKey: barePub,
+    certificate: cert,
+    source: "imported",
+    category: "certificate",
+    created: 1,
+  };
+
+  assert.deepEqual(
+    resolveBridgeSshAgentAuth({ ...autofillBaseHost, useSshAgent: false }, skCertKey, "certificate"),
+    {
+      useSshAgent: true,
+      identityAgent: undefined,
+      identitiesOnly: true,
+      addKeysToAgent: "yes",
+      useKeychain: undefined,
+      agentPublicKeys: [barePub, cert],
+    },
+  );
+});
+
 test("resolveBridgeSshAgentAuth forces agent for path-only SK vault type", () => {
   const skRef: SSHKey = {
     id: "sk-ref-1",

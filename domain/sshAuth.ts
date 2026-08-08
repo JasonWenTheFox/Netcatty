@@ -272,6 +272,20 @@ export const resolveBridgeKeyAuth = (args: {
   };
 };
 
+/** Preferred agent identity blobs for IdentitiesOnly selection. */
+const resolveAgentPublicKeys = (
+  key?: Pick<SSHKey, "publicKey" | "certificate">,
+): string[] | undefined => {
+  const keys: string[] = [];
+  const publicKey = key?.publicKey?.trim();
+  const certificate = key?.certificate?.trim();
+  if (publicKey) keys.push(publicKey);
+  // ssh-add -L lists the bare key and certificate as distinct identities; when
+  // the vault stores them separately, both must be selectable under IdentitiesOnly.
+  if (certificate && certificate !== publicKey) keys.push(certificate);
+  return keys.length > 0 ? keys : undefined;
+};
+
 export const resolveBridgeSshAgentAuth = (
   host: Pick<Host, "authMethod" | "useSshAgent" | "identityAgent" | "identityFilePaths" | "identitiesOnly" | "addKeysToAgent" | "useKeychain" | "agentForwarding">,
   key?: Pick<SSHKey, "certificate" | "publicKey" | "source" | "filePath" | "type" | "privateKey">,
@@ -312,13 +326,14 @@ export const resolveBridgeSshAgentAuth = (
     if (!hasAgentSelector && !key?.privateKey?.trim()) {
       return { useSshAgent: false };
     }
+    const agentPublicKeys = resolveAgentPublicKeys(key);
     return {
       useSshAgent: true,
       identityAgent: host.identityAgent,
       identitiesOnly: Boolean(key?.publicKey?.trim() || (key?.source === "reference" && key.filePath)),
       addKeysToAgent: host.addKeysToAgent ?? "yes",
       useKeychain: host.useKeychain,
-      ...(key?.publicKey?.trim() ? { agentPublicKeys: [key.publicKey] } : {}),
+      ...(agentPublicKeys ? { agentPublicKeys } : {}),
     };
   };
 
@@ -344,13 +359,14 @@ export const resolveBridgeSshAgentAuth = (
     if (host.useSshAgent !== true || !hasAgentSelector) {
       return { useSshAgent: false, ...forwardingAgent };
     }
+    const agentPublicKeys = resolveAgentPublicKeys(key);
     return {
       useSshAgent: true,
       identityAgent: host.identityAgent,
       identitiesOnly: true,
       addKeysToAgent: host.addKeysToAgent,
       useKeychain: host.useKeychain,
-      ...(key?.publicKey?.trim() ? { agentPublicKeys: [key.publicKey] } : {}),
+      ...(agentPublicKeys ? { agentPublicKeys } : {}),
     };
   }
   if (host.useSshAgent !== true) {
@@ -358,13 +374,14 @@ export const resolveBridgeSshAgentAuth = (
       ? forwardingAgent
       : { useSshAgent: false, ...forwardingAgent };
   }
+  const agentPublicKeys = resolveAgentPublicKeys(key);
   return {
     useSshAgent: true,
     identityAgent: host.identityAgent,
     identitiesOnly: host.identitiesOnly,
     addKeysToAgent: host.addKeysToAgent,
     useKeychain: host.useKeychain,
-    ...(key?.publicKey?.trim() ? { agentPublicKeys: [key.publicKey] } : {}),
+    ...(agentPublicKeys ? { agentPublicKeys } : {}),
   };
 };
 

@@ -1043,10 +1043,15 @@ async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
   const fsMod = injected.fs || fs;
   const pathMod = injected.path || path;
   const tempDirBridge = injected.tempDirBridge || require("./tempDirBridge.cjs");
-  // Prefer Netcatty's managed temp dir so files are visible/cleaned via Settings.
-  const baseDir = typeof tempDirBridge.getTempDir === "function"
-    ? tempDirBridge.getTempDir()
-    : require("node:os").tmpdir();
+  // Fail closed: never stage SK credential handles under the OS temp directory.
+  if (typeof tempDirBridge.getTempDir !== "function") {
+    const err = new Error(
+      "FIDO2 key staging requires Netcatty temp directory (tempDirBridge unavailable).",
+    );
+    err.code = "ERR_FIDO_TEMP_DIR_UNAVAILABLE";
+    throw err;
+  }
+  const baseDir = tempDirBridge.getTempDir();
   const dir = await fsMod.promises.mkdtemp(pathMod.join(baseDir, "netcatty-sk-key-"));
   const keyPath = pathMod.join(dir, "id_sk");
   await fsMod.promises.writeFile(keyPath, privateKey, { mode: 0o600 });
@@ -1194,6 +1199,24 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     }
   }
 
+  const releaseAcquiredFidoResources = () => {
+    try {
+      if (ownedFidoAgent) {
+        require("./fidoAgentManager.cjs").releaseFidoAgent();
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const askpassLeaseId = askpassEnv?.NETCATTY_FIDO_ASKPASS_LEASE;
+      if (askpassLeaseId) {
+        require("./fidoAskpass.cjs").releaseFidoAskpassLease(askpassLeaseId);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   try {
     const agent = await prepareSystemSshAgent({
       socketPath,
@@ -1222,25 +1245,18 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       if (ownedFidoAgent || askpassLeaseId) {
         agent._netcattyOwnedFidoAgent = ownedFidoAgent === true;
         // Shared lease; quit/exit hooks hard-kill the owned agent as a backstop.
-        agent._releaseNetcattyFidoAgent = () => {
-          try {
-            if (ownedFidoAgent) {
-              require("./fidoAgentManager.cjs").releaseFidoAgent();
-            }
-          } catch {
-            // ignore
-          }
-          try {
-            if (askpassLeaseId) {
-              require("./fidoAskpass.cjs").releaseFidoAskpassLease(askpassLeaseId);
-            }
-          } catch {
-            // ignore
-          }
-        };
+        agent._releaseNetcattyFidoAgent = releaseAcquiredFidoResources;
       }
+    } else {
+      // Acquisition succeeded but preparation produced no agent — drop leases.
+      releaseAcquiredFidoResources();
     }
     return agent;
+  } catch (error) {
+    // prepareSystemSshAgent can throw after acquire (e.g. IdentitiesOnly without
+    // a readable .pub selector); release owned agent + askpass before rethrowing.
+    releaseAcquiredFidoResources();
+    throw error;
   } finally {
     if (skTempCleanup) {
       // Best-effort cleanup after ssh-add; agent keeps the loaded identity.

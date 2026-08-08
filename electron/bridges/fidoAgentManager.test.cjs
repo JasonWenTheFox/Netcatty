@@ -49,6 +49,36 @@ test("acquireFidoAgent on win32 reuses the system OpenSSH named pipe", async () 
   shutdownFidoAgentSubsystem();
 });
 
+test("acquireFidoAgent releases askpass lease when agent start fails", async () => {
+  shutdownFidoAgentSubsystem();
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const { getAskpassLeaseCountForTests } = require("./fidoAskpass.cjs");
+  const managedTemp = fs.mkdtempSync(path.join(__dirname, "netcatty-fido-lease-"));
+  const originalGetTempDir = tempDirBridge.getTempDir;
+  tempDirBridge.getTempDir = () => managedTemp;
+  const before = getAskpassLeaseCountForTests();
+  try {
+    await assert.rejects(
+      () => acquireFidoAgent({
+        platform: "linux",
+        resolveWebContents: () => ({ id: "fail-start" }),
+        env: { PATH: process.env.PATH || "/usr/bin:/bin", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+        execFile: async () => {
+          throw new Error("ssh-agent missing");
+        },
+      }),
+      (error) => error?.code === "ERR_FIDO_AGENT_START",
+    );
+    assert.equal(getAskpassLeaseCountForTests(), before);
+  } finally {
+    tempDirBridge.getTempDir = originalGetTempDir;
+    shutdownFidoAgentSubsystem();
+    fs.rmSync(managedTemp, { recursive: true, force: true });
+  }
+});
+
 test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", async () => {
   shutdownFidoAgentSubsystem();
   const fs = require("node:fs");

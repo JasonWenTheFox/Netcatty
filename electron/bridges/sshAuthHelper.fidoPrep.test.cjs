@@ -176,3 +176,58 @@ test("materializeSkPrivateKeyFile stages companion certificate for ssh-add", asy
   assert.equal(fs.readFileSync(`${result.keyPath}-cert.pub`, "utf8").trim(), cert);
   fs.rmSync(result.cleanupDir, { recursive: true, force: true });
 });
+
+test("materializeSkPrivateKeyFile fails closed without managed temp dir", async () => {
+  const pem = makeSkPrivatePem(SK_SSH_ED25519);
+  await assert.rejects(
+    () => materializeSkPrivateKeyFile(pem, {
+      fs,
+      path,
+      tempDirBridge: {},
+    }),
+    (error) => error?.code === "ERR_FIDO_TEMP_DIR_UNAVAILABLE",
+  );
+});
+
+test("prepareSystemSshAgentForAuth releases FIDO resources when preparation throws", async () => {
+  const fidoAgentManager = require("./fidoAgentManager.cjs");
+  const fidoAskpass = require("./fidoAskpass.cjs");
+  const originalAcquire = fidoAgentManager.acquireFidoAgent;
+  const originalRelease = fidoAgentManager.releaseFidoAgent;
+  const originalReleaseLease = fidoAskpass.releaseFidoAskpassLease;
+  const leaseId = "test-lease-prep-fail";
+  let releasedAgent = 0;
+  let releasedLease = 0;
+
+  fidoAgentManager.acquireFidoAgent = async () => ({
+    socketPath: "/tmp/netcatty-fake-fido.sock",
+    askpassEnv: {
+      SSH_ASKPASS: "/bin/true",
+      NETCATTY_FIDO_ASKPASS_LEASE: leaseId,
+    },
+    owned: true,
+  });
+  fidoAgentManager.releaseFidoAgent = () => { releasedAgent += 1; };
+  fidoAskpass.releaseFidoAskpassLease = (id) => {
+    if (id === leaseId) releasedLease += 1;
+  };
+
+  try {
+    const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
+    await assert.rejects(
+      () => prepareSystemSshAgentForAuth({
+        useSshAgent: true,
+        useFidoAgent: true,
+        identitiesOnly: true,
+        identityFilePaths: [],
+      }, "[test]"),
+      (error) => error?.code === "ERR_SSH_AGENT_IDENTITY_SELECTOR_UNAVAILABLE",
+    );
+    assert.equal(releasedAgent, 1);
+    assert.equal(releasedLease, 1);
+  } finally {
+    fidoAgentManager.acquireFidoAgent = originalAcquire;
+    fidoAgentManager.releaseFidoAgent = originalRelease;
+    fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
+  }
+});
