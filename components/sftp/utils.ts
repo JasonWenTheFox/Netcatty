@@ -347,3 +347,18 @@ export const filterHiddenFiles = <T extends { name: string; hidden?: boolean }>(
     if (showHiddenFiles) return files;
     return files.filter((f) => !isHiddenFile(f));
 };
+
+/**
+ * Filter files by search term (case-insensitive substring match on name).
+ * Always preserves ".." parent directory entry. Empty/whitespace terms are no-ops.
+ */
+export const filterSftpEntriesByName = <T extends { name: string }>(
+    files: T[],
+    filter: string,
+): T[] => {
+    const term = filter.trim().toLowerCase();
+    if (!term) return files;
+    return files.filter(
+        (f) => f.name === ".." || f.name.toLowerCase().includes(term),
+    );
+};

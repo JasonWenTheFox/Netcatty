@@ -9,7 +9,7 @@ import { useSftpPaneTreeRows } from './useSftpPaneTreeRows';
 import { SftpMoveToDialog } from './SftpMoveToDialog';
 import type { SftpFileEntry } from '../../types';
 import { getParentPath, isWindowsRoot, joinPath, resolveSftpWindowsPathOptions } from '../../application/state/sftp/utils';
-import { buildSftpColumnTemplate, filterHiddenFiles, isNavigableDirectory, isSftpColumnMenuKey, sortSftpEntries } from './utils';
+import { buildSftpColumnTemplate, filterHiddenFiles, filterSftpEntriesByName, isNavigableDirectory, isSftpColumnMenuKey, sortSftpEntries } from './utils';
 import type { SftpTransferSource } from './SftpContext';
 import type { SftpPaneTreeViewProps } from './SftpPaneTreeView.types';
 import { sftpTreeSelectionStore, useSftpTreeSelectionState } from '../../application/state/sftp/sftpTreeSelectionStore';
@@ -225,8 +225,8 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
     childrenCacheRef.current.delete(targetPath);
     sortedChildrenCacheRef.current.delete(targetPath);
   }, []);
-  const prevSortKeyRef = useRef(`${sortField}:${sortOrder}:${directoriesFirst}:${pane.showHiddenFiles}`);
-  const sortKey = `${sortField}:${sortOrder}:${directoriesFirst}:${pane.showHiddenFiles}`;
+  const prevSortKeyRef = useRef(`${sortField}:${sortOrder}:${directoriesFirst}:${pane.showHiddenFiles}:${pane.filter}`);
+  const sortKey = `${sortField}:${sortOrder}:${directoriesFirst}:${pane.showHiddenFiles}:${pane.filter}`;
   if (prevSortKeyRef.current !== sortKey) {
     prevSortKeyRef.current = sortKey;
     sortedChildrenCacheRef.current.clear();
@@ -481,7 +481,10 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
       const cached = sortedChildrenCacheRef.current.get(parentPath);
       if (cached) return cached;
       const sorted = sortSftpEntries(
-        filterHiddenFiles(entries, pane.showHiddenFiles),
+        filterSftpEntriesByName(
+          filterHiddenFiles(entries, pane.showHiddenFiles),
+          pane.filter,
+        ),
         sortField,
         sortOrder,
         directoriesFirst,
@@ -521,6 +524,7 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
     resolvedRootPath,
     pane.connection?.homeDir,
     pane.showHiddenFiles,
+    pane.filter,
     sortField,
     sortOrder,
     directoriesFirst,
