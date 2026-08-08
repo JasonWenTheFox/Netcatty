@@ -96,6 +96,7 @@ import {
   shouldSendShiftEnterText,
 } from "./shiftEnterText";
 import {
+  isUnchangedDeferredImeTextInput,
   shouldBlockKeyPressForImeTextInput,
   shouldCommitDeferredImeTextInput,
   shouldDeferKeyDownForImeTextInput,
@@ -1148,6 +1149,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   let kittyCompositionPending = false;
   let kittyCompositionClearTimer: number | undefined;
   let imeTextInputDeferredKey: string | null = null;
+  let imeTextInputDeferredKittyEvent: KittyKeyboardEvent | null = null;
   const kittyForwardedKeys = new Map<string, KittyKeyboardForwardedPress>();
   const broadcastForwardedKeys = new Map<string, KittyKeyboardForwardedPress>();
   const broadcastEncodedKeys = new Set<string>();
@@ -1159,6 +1161,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   let broadcastLegacyDataClearTimer: number | undefined;
   const clearImeTextInputDeferral = () => {
     imeTextInputDeferredKey = null;
+    imeTextInputDeferredKittyEvent = null;
   };
   const clearBroadcastLegacyDataPending = () => {
     broadcastLegacyDataPending = null;
@@ -1187,9 +1190,61 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   });
 
   const commitImeTextInput = (text: string) => {
+    const deferredKey = imeTextInputDeferredKey;
+    const deferredKittyEvent = imeTextInputDeferredKittyEvent;
     clearImeTextInputDeferral();
     clearBroadcastLegacyDataPending();
-    // Same encoding path as composition commits under Kitty report-all.
+
+    // Unchanged ASCII must keep the Kitty press/release path. Composition
+    // encoding under report-all emits unidentified CSI 0 u (or associated
+    // text without a physical key), so ordinary punctuation breaks in TUIs.
+    if (
+      isUnchangedDeferredImeTextInput(deferredKey, text) &&
+      deferredKittyEvent &&
+      kittyKeyboardProtocolEnabled
+    ) {
+      const pressEvent: KittyKeyboardEvent = {
+        ...deferredKittyEvent,
+        type: "keydown",
+      };
+      const sequence = encodeKittyKeyEvent(kittyKeyboardMode, pressEvent);
+      if (sequence) {
+        const identity = pressEvent.code || pressEvent.key;
+        upsertKittyKeyboardForwardedPress(
+          kittyForwardedKeys,
+          identity,
+          pressEvent,
+          [],
+        );
+        handleTerminalInputData(sequence, { source: "kitty" });
+        const forwarded = broadcastKittyInput({
+          kind: "key",
+          event: pressEvent,
+          fallbackToLegacy: true,
+        });
+        if (forwarded) {
+          upsertKittyKeyboardForwardedPress(
+            broadcastForwardedKeys,
+            identity,
+            pressEvent,
+            forwarded.targetSessionIds,
+          );
+        }
+        return;
+      }
+    }
+
+    if (isUnchangedDeferredImeTextInput(deferredKey, text)) {
+      if (ctx.isBroadcastEnabledRef.current && ctx.onBroadcastInputRef.current) {
+        suppressNextTerminalDataBroadcast = true;
+      }
+      handleTerminalInputData(text);
+      broadcastKittyInput({ kind: "text", text });
+      return;
+    }
+
+    // Actual IME remap — same encoding path as composition commits under
+    // Kitty report-all.
     const encoded = encodeKittyCompositionText(kittyKeyboardMode, text);
     if (encoded) {
       handleTerminalInputData(encoded, { source: "kitty" });
@@ -1206,12 +1261,15 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     if (!fallback) return;
     commitImeTextInput(fallback);
   };
-  const armImeTextInputDeferral = (key: string) => {
+  const armImeTextInputDeferral = (event: KeyboardEvent) => {
     clearImeTextInputDeferral();
     clearBroadcastLegacyDataPending();
     // Wait for insertText (full-width) before keyup; keyup/blur flushes ASCII
     // when the IME did not remap the key (English punctuation mode).
-    imeTextInputDeferredKey = key;
+    imeTextInputDeferredKey = event.key;
+    imeTextInputDeferredKittyEvent = kittyKeyboardProtocolEnabled
+      ? toKittyKeyboardEvent(event)
+      : null;
   };
 
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -1610,7 +1668,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     // preventDefault) stops xterm/Kitty from sending the half-width key so the
     // input listener can commit the real glyph (#2833).
     if (shouldDeferKeyDownForImeTextInput(e)) {
-      armImeTextInputDeferral(e.key);
+      armImeTextInputDeferral(e);
       return false;
     }
 

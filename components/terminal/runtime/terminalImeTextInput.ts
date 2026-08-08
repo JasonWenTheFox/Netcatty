@@ -56,3 +56,15 @@ export function shouldCommitDeferredImeTextInput(
     event.data.length > 0
   );
 }
+
+/**
+ * True when insertText/flush kept the deferred ASCII key (no CJK remap).
+ * Those commits must not use Kitty composition encoding — under report-all
+ * that emits unidentified CSI 0 u and drops press/release.
+ */
+export function isUnchangedDeferredImeTextInput(
+  deferredKey: string | null | undefined,
+  text: string,
+): boolean {
+  return deferredKey != null && text === deferredKey;
+}

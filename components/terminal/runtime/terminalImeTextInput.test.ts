@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   isAsciiPunctuationKey,
+  isUnchangedDeferredImeTextInput,
   shouldBlockKeyPressForImeTextInput,
   shouldCommitDeferredImeTextInput,
   shouldDeferKeyDownForImeTextInput,
@@ -90,17 +91,31 @@ test("shouldCommitDeferredImeTextInput accepts insertText payloads while deferre
   );
 });
 
+test("isUnchangedDeferredImeTextInput detects English punctuation flush", () => {
+  assert.equal(isUnchangedDeferredImeTextInput(",", ","), true);
+  assert.equal(isUnchangedDeferredImeTextInput(",", "，"), false);
+  assert.equal(isUnchangedDeferredImeTextInput(null, ","), false);
+});
+
 test("createXTermRuntime defers ASCII punctuation keydowns to insertText", () => {
   assert.match(runtimeSource, /shouldDeferKeyDownForImeTextInput\(e\)/);
-  assert.match(runtimeSource, /armImeTextInputDeferral\(e\.key\)/);
+  assert.match(runtimeSource, /armImeTextInputDeferral\(e\)/);
   assert.match(runtimeSource, /shouldBlockKeyPressForImeTextInput\(imeTextInputDeferredKey, e\)/);
   assert.match(
     runtimeSource,
     /shouldCommitDeferredImeTextInput\(imeTextInputDeferredKey, event\)/,
   );
   assert.match(runtimeSource, /commitImeTextInput\(event\.data\)/);
+  assert.match(runtimeSource, /isUnchangedDeferredImeTextInput\(deferredKey, text\)/);
+  assert.match(runtimeSource, /imeTextInputDeferredKittyEvent/);
   // Must run before Kitty/xterm send the half-width key from keydown.
   const deferIdx = runtimeSource.indexOf("shouldDeferKeyDownForImeTextInput(e)");
   const kittySendIdx = runtimeSource.indexOf("if (kittySequenceForKeyDown)");
   assert.ok(deferIdx >= 0 && kittySendIdx > deferIdx);
+  // Unchanged ASCII must encode via Kitty key events, not composition text.
+  const unchangedIdx = runtimeSource.indexOf("isUnchangedDeferredImeTextInput(deferredKey, text)");
+  const compositionIdx = runtimeSource.indexOf(
+    "encodeKittyCompositionText(kittyKeyboardMode, text)",
+  );
+  assert.ok(unchangedIdx >= 0 && compositionIdx > unchangedIdx);
 });
