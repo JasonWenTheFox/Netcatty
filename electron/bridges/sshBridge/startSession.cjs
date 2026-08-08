@@ -866,7 +866,26 @@ printf '%s\n' '${scanCompleteMarker}'`;
                       unassignedSiblings[0].shellPid = unclaimed[0];
                       baseline = [String(unclaimed[0])];
                     } else if (unassignedSiblings.length === 0 && unclaimed.length === 1) {
-                      return unclaimed[0];
+                      // Sole unclaimed PID is ambiguous once the source tab is
+                      // gone: the closing source process may still be listed
+                      // while the copied shell has not appeared yet. Wait for a
+                      // PID beyond that candidate; if none appears and the
+                      // candidate remains the only unclaimed shell, it is the
+                      // copy (source process already exited).
+                      const candidatePid = String(unclaimed[0]);
+                      const waited = await waitForNewInteractiveShellPid(conn, [candidatePid], {
+                        initialDelayMs: discoveryBackoffMs,
+                        backoffMs: discoveryBackoffMs,
+                      });
+                      if (waited) return waited;
+                      const recheck = await listInteractiveShellPids(conn);
+                      if (!recheck.available) return null;
+                      const assigned = new Set(liveBaseline());
+                      const remaining = recheck.pids
+                        .map(String)
+                        .filter((pid) => !assigned.has(pid));
+                      if (remaining.length === 1) return remaining[0];
+                      return null;
                     } else if (unassignedSiblings.length === 1 && unclaimed.length === 2) {
                       // Source never recorded shellPid (e.g. OSC 7 cwd skipped
                       // the probe), so the first post-open scan already lists

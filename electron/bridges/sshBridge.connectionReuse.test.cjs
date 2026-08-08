@@ -648,6 +648,54 @@ test("Copy Tab claims an unambiguous leftover PID when the source never recorded
   assert.equal(sessions.get("copy").shellPid, "222");
 });
 
+test("Copy Tab waits before claiming a sole PID after the source closes", async (t) => {
+  const { bridge } = loadBridgeWithMockedSsh2(t);
+  const terminalBridge = require("./terminalBridge.cjs");
+  const sessions = new Map();
+  const sourceConn = makeDeferredShellConn();
+  let execCalls = 0;
+  sourceConn.exec = (_command, callback) => {
+    execCalls += 1;
+    const stream = new EventEmitter();
+    stream.stderr = new EventEmitter();
+    stream.close = () => {};
+    // Source tab already closed: early scans can still list the dying source
+    // shell before the copied shell is visible.
+    const snapshot = execCalls < 3 ? ["111"] : ["222"];
+    const pids = `${snapshot.join("\n")}\n__NETCATTY_SHELL_SCAN_COMPLETE__\n`;
+    setImmediate(() => {
+      stream.emit("data", Buffer.from(pids));
+      stream.emit("close", 0);
+    });
+    callback(null, stream);
+  };
+  const source = makeSourceSession(sourceConn, {
+    hostname: "10.0.0.1",
+    username: "alice",
+  });
+  sessions.set("source", source);
+
+  terminalBridge.init({ sessions, electronModule: {} });
+  const start = registerStartHandler(bridge, sessions);
+  const startPromise = start(
+    { sender: makeSender() },
+    {
+      sessionId: "copy",
+      hostname: "10.0.0.1",
+      username: "alice",
+      sourceSessionId: "source",
+      sshChannelOpenRateLimitBackoffMs: 1,
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  terminalBridge.closeSession({ sender: {} }, { sessionId: "source" });
+  sourceConn.flushShell();
+  await startPromise;
+
+  assert.ok(execCalls >= 3, "must wait through the dying-source-only scans");
+  assert.equal(sessions.get("copy").shellPid, "222");
+});
+
 test("Copy Tab disambiguates a two-PID first scan when the source never recorded shellPid", async (t) => {
   const { bridge } = loadBridgeWithMockedSsh2(t);
   const sessions = new Map();
