@@ -22,8 +22,8 @@ const LISTEN_PORTS_INNER = [
   "fi; ",
   'if command -v lsof >/dev/null 2>&1; then ',
   'printf "%s\\n" "__NC_LSOF__"; ',
+  // TCP listen only. Full UDP dumps include connected sockets and mislead the UI.
   "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true; ",
-  "lsof -nP -iUDP 2>/dev/null || true; ",
   "fi; ",
   'printf "%s\\n" "__NC_PORTS_END__"',
 ].join("");
@@ -127,6 +127,18 @@ function pushPort(entries, byKey, row) {
   entries.push(entry);
 }
 
+function isWildcardPeer(peer) {
+  const text = String(peer || "").trim();
+  return (
+    text === "*.*"
+    || text === "*:*"
+    || text === "0.0.0.0:*"
+    || text === ":::*"
+    || text === "[::]:*"
+    || text === "*."
+  );
+}
+
 function parseSsOutput(stdout) {
   const entries = [];
   const byKey = new Map();
@@ -138,12 +150,14 @@ function parseSsOutput(stdout) {
     // Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
     if (parts.length < 5) continue;
     let protocol;
+    let state = "";
     let localAddr;
     let processField = "";
     if (/^(tcp|udp)/i.test(parts[0])) {
       protocol = parts[0];
-      // With state column: parts[4] is local; without: parts[3]
+      // With state column: parts[1]=state, parts[4]=local
       if (parts.length >= 6 && (parts[4].includes(":") || parts[4].includes("."))) {
+        state = parts[1] || "";
         localAddr = parts[4];
         processField = parts.slice(6).join(" ");
       } else {
@@ -153,6 +167,9 @@ function parseSsOutput(stdout) {
     } else {
       continue;
     }
+    const isUdp = /^udp/i.test(protocol);
+    if (!isUdp && state && !/^LISTEN$/i.test(state)) continue;
+    if (isUdp && state && !/^(UNCONN|IDLE|LISTEN)$/i.test(state)) continue;
     const parsed = parseListenAddress(localAddr);
     if (!parsed) continue;
     const proc = parseSsProcess(processField);
@@ -183,17 +200,21 @@ function parseNetstatOutput(stdout) {
     if (!m) continue;
     const protocol = m[1];
     const local = m[2];
+    const peer = m[3];
     const state = m[4] || "";
     const pidField = m[5] || "";
     const isUdp = /^udp/i.test(protocol);
-    if (!isUdp && state && !/^LISTEN$/i.test(state) && !/^\d+\//.test(state)) continue;
-    if (!isUdp && !state && !/LISTEN/i.test(trimmed)) continue;
+    if (!isUdp) {
+      // Require an explicit LISTEN state token; never treat ESTABLISHED pid tokens as listeners.
+      if (!/^LISTEN$/i.test(state)) continue;
+    } else if (!isWildcardPeer(peer)) {
+      continue;
+    }
     const parsed = parseListenAddress(local);
     if (!parsed) continue;
     let pid = null;
     let processName = "";
-    const pidToken = /^\d+\//.test(state) ? state : pidField;
-    const pidMatch = pidToken.match(/^(\d+)\/(.+)$/);
+    const pidMatch = String(pidField).match(/^(\d+)\/(.+)$/);
     if (pidMatch) {
       pid = Number(pidMatch[1]);
       processName = pidMatch[2];
@@ -220,15 +241,28 @@ function parseLsofOutput(stdout) {
     if (parts.length < 9) continue;
     const processName = parts[0];
     const pid = Number(parts[1]);
+    const typeField = String(parts[4] || "").toUpperCase();
+    const nodeField = String(parts[7] || "").toUpperCase();
     const nameField = parts.slice(8).join(" ");
+    if (nameField.includes("->")) continue;
+
+    const isUdpNode = nodeField === "UDP" || /\bUDP\b/.test(nameField);
+    const isTcpNode = nodeField === "TCP" || /\bTCP\b/.test(nameField) || /\(LISTEN\)/i.test(nameField);
+    if (!isUdpNode && !isTcpNode) continue;
+    if (isTcpNode && !/\(LISTEN\)/i.test(nameField)) continue;
+
     const listenMatch = nameField.match(
-      /^(?:(\d[\d.]*|\[?[0-9a-f:]+\]?|\*|\[?\*\])?:)?(\d+)\s+\((LISTEN|UDP)\)/i,
-    ) || nameField.match(/^([^\s]+):(\d+)(?:\s+\((LISTEN|UDP)\))?/i);
+      /^(?:TCP|UDP)\s+(?:(\*|\[?\*?\]?|[^:\s]+):)?(\d+)(?:\s+\((LISTEN)\))?$/i,
+    ) || nameField.match(
+      /^(?:(\*|\[?\*?\]?|[^:\s]+):)?(\d+)\s+\((LISTEN)\)/i,
+    );
     if (!listenMatch) continue;
     const addressRaw = listenMatch[1] || "*";
     const port = Number(listenMatch[2]);
-    const kind = (listenMatch[3] || "LISTEN").toUpperCase();
-    const protocol = kind === "UDP" ? "udp" : "tcp";
+    let protocol = isUdpNode ? "udp" : "tcp";
+    if (typeField.includes("IPv6") || String(addressRaw).includes(":")) {
+      protocol = isUdpNode ? "udp6" : "tcp6";
+    }
     let address = addressRaw;
     if (address.startsWith("[") && address.endsWith("]")) address = address.slice(1, -1);
     if (address === "0.0.0.0" || address === "::" || address === "*" || address === "") address = "*";

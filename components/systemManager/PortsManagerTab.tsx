@@ -1,5 +1,5 @@
 import { Network, Skull } from 'lucide-react';
-import React, { memo, useCallback, useMemo, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { useSystemManagerBackend } from '../../application/state/useSystemManagerBackend';
 import { usePolling, useStableTranslate } from '../../application/state/useSystemManager';
@@ -57,9 +57,17 @@ export const PortsManagerTab = memo(function PortsManagerTab({
   const [killBusy, setKillBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [listPending, setListPending] = useState(false);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+
+  useEffect(() => {
+    setListPending(false);
+  }, [sessionId]);
 
   const fetcher = useCallback(async (): Promise<ListeningPortInfo[] | null> => {
-    const result = await backend.listListeningPorts(sessionId);
+    const requestedSessionId = sessionId;
+    const result = await backend.listListeningPorts(requestedSessionId);
+    if (sessionIdRef.current !== requestedSessionId) return null;
     if (result.pending) {
       setListPending(true);
       return null;

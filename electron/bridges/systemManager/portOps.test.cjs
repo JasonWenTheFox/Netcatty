@@ -89,3 +89,28 @@ nginx      99 root    6u  IPv4 0xabc      0t0  TCP *:80 (LISTEN)
   assert.equal(ports[0].port, 80);
   assert.equal(ports[0].processName, "nginx");
 });
+
+test("parseNetstatOutput rejects established TCP and connected UDP", () => {
+  const sample = `
+tcp        0      0 10.0.0.1:22            10.0.0.2:40000         ESTABLISHED 1234/sshd
+tcp        0      0 10.0.0.1:22            10.0.0.2:40000         1234/sshd
+udp        0      0 10.0.0.5:68            10.0.0.1:67
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      9/sshd
+`;
+  const ports = parseNetstatOutput(sample);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].port, 22);
+  assert.equal(ports[0].processName, "sshd");
+});
+
+test("parseLsofOutput ignores connected UDP and non-listen TCP", () => {
+  const sample = `
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+chrome   1000 user   10u  IPv4 0x1      0t0  UDP 10.0.0.1:53122->8.8.8.8:53
+nginx      99 root    6u  IPv4 0xabc      0t0  TCP 10.0.0.1:80->10.0.0.2:12345 (ESTABLISHED)
+sshd     1234 root    3u  IPv4 0x2      0t0  TCP *:22 (LISTEN)
+`;
+  const ports = parseLsofOutput(sample);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].port, 22);
+});
