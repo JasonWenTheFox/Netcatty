@@ -238,26 +238,33 @@ function parseNetstatOutput(stdout) {
     if (!trimmed) continue;
     if (/^Proto\b/i.test(trimmed) || /^Active\b/i.test(trimmed)) continue;
     // Linux: tcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN 1234/sshd
-    // BusyBox UDP often omits state/PID: udp 0 0 127.0.0.1:53 0.0.0.0:*
+    // BusyBox UDP often omits state: udp 0 0 127.0.0.1:53 0.0.0.0:* 456/dnsmasq
     // macOS: tcp4 0 0 *.22 *.* LISTEN
     const m = trimmed.match(
-      /^(tcp46|udp46|tcp[46]?|udp[46]?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?/i,
+      /^(tcp46|udp46|tcp[46]?|udp[46]?)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(.*))?$/i,
     );
     if (!m) continue;
     const protocol = m[1];
     const local = m[2];
     const peer = m[3];
-    let state = m[4] || "";
-    let pidField = m[5] || "";
+    const rest = String(m[4] || "").trim();
     const isUdp = /^udp/i.test(protocol);
-    // BusyBox/Linux UDP often omits State: `udp ... 0.0.0.0:* 456/dnsmasq`
-    // so the pid/program token lands in the state capture group.
-    if (isUdp && !pidField && /^\d+\//.test(state)) {
-      pidField = state;
-      state = "";
+    let state = "";
+    let pidField = "";
+    if (rest) {
+      const restParts = rest.split(/\s+/);
+      if (/^LISTEN$/i.test(restParts[0])) {
+        state = "LISTEN";
+        pidField = restParts.slice(1).join(" ");
+      } else if (isUdp && /^\d+\//.test(restParts[0])) {
+        // No State column — remainder is pid/program (may contain spaces).
+        pidField = rest;
+      } else if (!isUdp) {
+        // TCP without LISTEN (ESTABLISHED, or a bare pid token) is not a listener.
+        continue;
+      }
     }
     if (!isUdp) {
-      // Require an explicit LISTEN state token; never treat ESTABLISHED pid tokens as listeners.
       if (!/^LISTEN$/i.test(state)) continue;
     } else if (!isWildcardPeer(peer)) {
       continue;

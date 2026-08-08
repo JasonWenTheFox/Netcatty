@@ -53,6 +53,18 @@ udp        0      0 0.0.0.0:5353            0.0.0.0:*               456/dnsmasq
   assert.equal(ports.find((p) => p.port === 5353)?.processName, "dnsmasq");
 });
 
+test("parseNetstatOutput keeps spaced UDP program names without State", () => {
+  const sample = `
+udp        0      0 0.0.0.0:5353            0.0.0.0:*               882/avahi-daemon: r
+udp        0      0 0.0.0.0:53              0.0.0.0:*               100/named -u bind
+`;
+  const ports = parseNetstatOutput(sample);
+  assert.equal(ports.find((p) => p.port === 5353)?.pid, 882);
+  assert.equal(ports.find((p) => p.port === 5353)?.processName, "avahi-daemon: r");
+  assert.equal(ports.find((p) => p.port === 53)?.pid, 100);
+  assert.equal(ports.find((p) => p.port === 53)?.processName, "named -u bind");
+});
+
 test("parseNetstatOutput understands macOS dotted addresses", () => {
   const sample = `
 Active Internet connections
