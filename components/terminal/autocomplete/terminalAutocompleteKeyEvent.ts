@@ -2,6 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { GhostTextAddon } from "./GhostTextAddon";
 import type { AutocompleteSettings, AutocompleteState, SubDirEntry } from "./useTerminalAutocomplete";
 import type { Snippet } from "../../../domain/models";
+import { isPreviewlessSelectionCurrentForLine } from "./terminalAutocompleteLayout";
 
 interface TerminalAutocompleteKeyEventContext {
   settingsRef: MutableRefObject<AutocompleteSettings>;
@@ -16,6 +17,8 @@ interface TerminalAutocompleteKeyEventContext {
    * treat an edited preview as a never-previewed default selection.
    */
   previewCommittedRef: MutableRefObject<boolean>;
+  /** Typed input that produced the current popup suggestions. */
+  previewBaselineRef: MutableRefObject<string>;
   lastAcceptedCommandRef: MutableRefObject<string | null>;
   setState: Dispatch<SetStateAction<AutocompleteState>>;
   expandSubDir: (level: number, entry: SubDirEntry, moveFocus?: boolean) => void;
@@ -51,6 +54,7 @@ export function handleTerminalAutocompleteKeyEvent(
     typedBufferReliableRef,
     previewActiveRef,
     previewCommittedRef,
+    previewBaselineRef,
     lastAcceptedCommandRef,
     setState,
     expandSubDir,
@@ -311,6 +315,27 @@ export function handleTerminalAutocompleteKeyEvent(
     // edited the previewed command (typing nulls that ref).
     if (isAutocompleteConfirmEnter(e, settingsRef.current)) {
       const selected = s.selectedIndex >= 0 ? s.suggestions[s.selectedIndex] : null;
+      // Never-previewed default/nav selection: typing during the debounce
+      // window leaves selectedIndex on a stale row while both preview refs
+      // stay false. Refuse accept unless the row still matches the fetch
+      // baseline or prefix-completes the edited line.
+      if (
+        selected &&
+        !previewActiveRef.current &&
+        !previewCommittedRef.current &&
+        typedBufferReliableRef.current &&
+        !isPreviewlessSelectionCurrentForLine({
+          currentLine: typedInputBufferRef.current,
+          suggestionBaseline: previewBaselineRef.current,
+          suggestionText: selected.text,
+          suggestionSource: selected.source,
+        })
+      ) {
+        clearState();
+        previewActiveRef.current = false;
+        previewCommittedRef.current = false;
+        return true;
+      }
       if (selected?.source === "snippet" && selected.snippet) {
         if (!acceptSnippet(selected.snippet)) {
           clearState();

@@ -366,6 +366,28 @@ export function useTerminalAutocomplete(
     );
   }, []);
 
+  /**
+   * Clear the popup highlight (and cascade) while keeping suggestions visible.
+   * Syncs stateRef immediately so a same-tick Enter cannot accept a stale row.
+   */
+  const clearPopupSelection = useCallback(() => {
+    const prev = stateRef.current;
+    if (
+      !prev.popupVisible ||
+      (prev.selectedIndex < 0 && prev.subDirPanels.length === 0 && prev.subDirFocusLevel < 0)
+    ) {
+      return;
+    }
+    const next = {
+      ...prev,
+      selectedIndex: -1,
+      subDirPanels: [] as typeof prev.subDirPanels,
+      subDirFocusLevel: -1,
+    };
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
   const repositionPopup = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
@@ -858,6 +880,7 @@ export function useTerminalAutocomplete(
         typedInputBufferRef,
         typedBufferReliableRef,
         previewActiveRef,
+        clearPopupSelection,
         termRef,
         hostIdRef,
         hostOsRef,
@@ -867,7 +890,7 @@ export function useTerminalAutocomplete(
         fetchSuggestions,
       });
     },
-    [fetchSuggestions, termRef, clearState],
+    [fetchSuggestions, termRef, clearState, clearPopupSelection],
   );
 
   /**
@@ -883,6 +906,7 @@ export function useTerminalAutocomplete(
       typedBufferReliableRef,
       previewActiveRef,
       previewCommittedRef,
+      previewBaselineRef,
       lastAcceptedCommandRef,
       setState,
       expandSubDir,

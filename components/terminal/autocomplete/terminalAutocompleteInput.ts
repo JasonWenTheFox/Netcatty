@@ -14,6 +14,12 @@ interface TerminalAutocompleteInputContext {
   typedInputBufferRef: MutableRefObject<string>;
   typedBufferReliableRef: MutableRefObject<boolean>;
   previewActiveRef: MutableRefObject<boolean>;
+  /**
+   * Drop the popup highlight (and cascade panels) without hiding suggestions.
+   * Used when the user keeps typing so Enter cannot accept a stale default
+   * selection during the debounce window.
+   */
+  clearPopupSelection: () => void;
   termRef: RefObject<XTerm | null>;
   hostIdRef: MutableRefObject<string>;
   hostOsRef: MutableRefObject<"linux" | "windows" | "macos">;
@@ -35,6 +41,7 @@ export function handleTerminalAutocompleteInput(
     typedInputBufferRef,
     typedBufferReliableRef,
     previewActiveRef,
+    clearPopupSelection,
     termRef,
     hostIdRef,
     hostOsRef,
@@ -205,6 +212,9 @@ export function handleTerminalAutocompleteInput(
   // text. Drop preview-active so Escape dismisses the popup without
   // reverting these edits back to the stale baseline (#1005).
   previewActiveRef.current = false;
+  // Clear the default/nav highlight immediately so Enter during the
+  // suggestion debounce cannot accept a stale never-previewed row.
+  clearPopupSelection();
 
   // Re-align any visible ghost text to the freshly-updated buffer
   // immediately. Without this the ghost keeps the tail it captured at

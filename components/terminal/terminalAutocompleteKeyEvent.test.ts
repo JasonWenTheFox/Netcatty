@@ -73,6 +73,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
       typedBufferReliableRef: { current: true },
       previewActiveRef: { current: false },
       previewCommittedRef: { current: false },
+      previewBaselineRef: { current: "sh" },
       lastAcceptedCommandRef: { current: null },
       setState(update: typeof state | ((prev: typeof state) => typeof state)) {
         state = typeof update === "function" ? update(state) : update;
@@ -219,6 +220,68 @@ test("live-preview Enter accepts the default-selected candidate when it is not p
   });
   context.settingsRef.current.livePreview = true;
   context.previewActiveRef.current = false;
+  const event = keyEvent("Enter");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, false);
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(accepted, [0]);
+  assert.deepEqual(clears, []);
+});
+
+test("live-preview Enter passes through a stale default selection after further typing", () => {
+  // Default first-row highlight is never previewed. Typing during the
+  // debounce window leaves selectedIndex on the old row while both preview
+  // refs stay false — Enter must not wipe the edited line via line replacement.
+  const { context, accepted, clears } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [suggestion("git status")],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [],
+        subDirFocusLevel: -1,
+      },
+    },
+  });
+  context.settingsRef.current.livePreview = true;
+  context.settingsRef.current.allowLineReplacement = true;
+  context.previewActiveRef.current = false;
+  context.previewCommittedRef.current = false;
+  context.previewBaselineRef.current = "gst";
+  context.typedInputBufferRef.current = "gstx";
+  const event = keyEvent("Enter");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, true);
+  assert.equal(event.defaultPrevented, false);
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(clears, [1]);
+});
+
+test("live-preview Enter still accepts default selection that completes edited prefix", () => {
+  const { context, accepted, clears } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [suggestion("show version")],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [],
+        subDirFocusLevel: -1,
+      },
+    },
+  });
+  context.settingsRef.current.livePreview = true;
+  context.previewActiveRef.current = false;
+  context.previewCommittedRef.current = false;
+  context.previewBaselineRef.current = "sh";
+  context.typedInputBufferRef.current = "sho";
   const event = keyEvent("Enter");
 
   const result = handleTerminalAutocompleteKeyEvent(event, context);

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import {
   clampAutocompletePopupGeometry,
   computeAutocompletePopupPlacement,
+  isPreviewlessSelectionCurrentForLine,
   resolveAutocompleteAnchorInViewport,
   resolveAutocompleteClampViewport,
   resolveAutocompleteCursorColumn,
@@ -542,6 +543,42 @@ test("resolveAutocompletePopupSelectedIndex clamps a stale selection when the li
       keepPreviousSelection: true,
     }),
     0,
+  );
+});
+
+test("isPreviewlessSelectionCurrentForLine keeps fetch-baseline fuzzy rows", () => {
+  assert.equal(
+    isPreviewlessSelectionCurrentForLine({
+      currentLine: "gst",
+      suggestionBaseline: "gst",
+      suggestionText: "git status",
+      suggestionSource: "history",
+    }),
+    true,
+  );
+});
+
+test("isPreviewlessSelectionCurrentForLine rejects edits that no longer complete", () => {
+  assert.equal(
+    isPreviewlessSelectionCurrentForLine({
+      currentLine: "gstx",
+      suggestionBaseline: "gst",
+      suggestionText: "git status",
+      suggestionSource: "history",
+    }),
+    false,
+  );
+});
+
+test("isPreviewlessSelectionCurrentForLine keeps prefix progress during debounce", () => {
+  assert.equal(
+    isPreviewlessSelectionCurrentForLine({
+      currentLine: "sho",
+      suggestionBaseline: "sh",
+      suggestionText: "show version",
+      suggestionSource: "history",
+    }),
+    true,
   );
 });
 

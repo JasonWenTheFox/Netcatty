@@ -134,6 +134,26 @@ export function resolveAutocompletePopupSelectedIndex(options: {
   return 0;
 }
 
+/**
+ * Whether a never-previewed popup selection is still safe to accept on Enter.
+ *
+ * Default first-row highlight (#2821) stays selected during the suggestion
+ * debounce window. If the user typed further, accepting would replace the
+ * edited line with a stale row when allowLineReplacement is on. Keep accept
+ * when the line still matches the fetch baseline (incl. fuzzy), or when the
+ * candidate still prefix-completes the edited line.
+ */
+export function isPreviewlessSelectionCurrentForLine(options: {
+  currentLine: string;
+  suggestionBaseline: string;
+  suggestionText: string;
+  suggestionSource: string;
+}): boolean {
+  if (options.currentLine === options.suggestionBaseline) return true;
+  if (options.suggestionSource === "snippet") return false;
+  return options.suggestionText.startsWith(options.currentLine);
+}
+
 export function areSubDirPanelsEqual(left: SubDirPanel[], right: SubDirPanel[]): boolean {
   if (left.length !== right.length) return false;
   for (let i = 0; i < left.length; i++) {
