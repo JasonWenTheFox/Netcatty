@@ -68,9 +68,10 @@ export interface AlignedPromptResult {
   alignedTyped: string | null;
   /**
    * When false, `prompt.userInput` was filled from the keystroke buffer
-   * before any shell echo. Local autocomplete may use it (#2813), but it
-   * must not authorize history recording (`alignedTyped`) or external
-   * completion providers. Omitted/true means the live line validated input.
+   * before any shell echo. Empty echo is also what echo-disabled password
+   * prompts look like, so callers must not surface or accept completions
+   * (built-in or external) and must not authorize history recording
+   * (`alignedTyped`). Omitted/true means the live line validated input.
    */
   allowExternalProviders?: boolean;
 }
@@ -921,11 +922,11 @@ export function getAlignedPrompt(
       };
     }
     // No echo yet (CJK IME / high-latency SSH): surface the keystroke buffer
-    // for local autocomplete on prompts detectPrompt already recognizes
-    // (#2813), but do not set alignedTyped. Empty / whitespace-only echo is
-    // also what echo-disabled password prompts and padded themed PS1s look
-    // like, so this path must not authorize history recording or third-party
-    // completion providers.
+    // on prompts detectPrompt already recognizes (#2813), but do not set
+    // alignedTyped. Empty / whitespace-only echo is also what echo-disabled
+    // password prompts and padded themed PS1s look like, so this path must
+    // not authorize history recording, built-in suggestion acceptance, or
+    // third-party completion providers until echo validates the line.
     if (
       raw.userInput.trim().length === 0 &&
       (allowsShortPromptEcho(raw.promptText) || isThemedPromptText(raw.promptText))

@@ -452,12 +452,20 @@ export class GhostTextAddon implements IDisposable {
     // keystroke→echo gap without a line probe, cursorX may still be the
     // pre-echo column. While no adjustToInput has moved us from the
     // show-time baseline, adopt a live cursor that has advanced (echo
-    // caught up). Use max so a cell-width-predicted pre-echo anchor is
-    // not collapsed back onto the prompt before echo arrives.
+    // caught up). Use max on the same row so a cell-width-predicted
+    // pre-echo anchor is not collapsed back onto the prompt before echo
+    // arrives. When the live row advances, the predicted X may already
+    // encode a wrap (column >= cols); adopting the live X/Y pair avoids
+    // counting that wrap again in the modulo math below.
     if (this.currentInput.length === this.anchorInputLength) {
       const liveX = this.term.buffer.active.cursorX;
-      this.anchorCursorX = Math.max(this.anchorCursorX, liveX);
-      this.anchorCursorY = this.term.buffer.active.cursorY;
+      const liveY = this.term.buffer.active.cursorY;
+      if (liveY !== this.anchorCursorY) {
+        this.anchorCursorX = liveX;
+        this.anchorCursorY = liveY;
+      } else {
+        this.anchorCursorX = Math.max(this.anchorCursorX, liveX);
+      }
     }
 
     const dims = getXTermCellDimensions(this.term);

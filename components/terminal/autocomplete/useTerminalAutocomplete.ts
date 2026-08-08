@@ -32,7 +32,7 @@ import {
   areSubDirPanelsEqual,
   areSuggestionsEqual,
   resolveAutocompleteAnchorInViewport,
-  resolveAutocompleteCursorColumn,
+  resolveAutocompleteCursorCell,
   resolveAutocompleteCwdWithSource,
 } from "./terminalAutocompleteLayout";
 import { handleTerminalAutocompleteInput } from "./terminalAutocompleteInput";
@@ -369,14 +369,18 @@ export function useTerminalAutocomplete(
     setState((prev) => {
       if (!prev.popupVisible || prev.suggestions.length === 0) return prev;
       const { prompt } = getAlignedPrompt(term, typedInputBufferRef.current, typedBufferReliableRef.current);
-      const cursorColumn = prompt.isAtPrompt
-        ? resolveAutocompleteCursorColumn(term, prompt)
-        : term.buffer.active.cursorX;
+      const cursorCell = prompt.isAtPrompt
+        ? resolveAutocompleteCursorCell(term, prompt)
+        : {
+            column: term.buffer.active.cursorX,
+            row: term.buffer.active.cursorY,
+          };
       const anchor = resolveAutocompleteAnchorInViewport(
         term,
         containerRef.current,
         prev.suggestions.length,
-        cursorColumn,
+        cursorCell.column,
+        cursorCell.row,
       );
 
       // Force a re-render even when the relative cursor cell hasn't changed.
@@ -684,6 +688,14 @@ export function useTerminalAutocomplete(
     );
     lastPromptRef.current = prompt;
 
+    // Pre-echo keystroke buffer can look identical to an echo-disabled
+    // password prompt (`read -s -p '$ '`). Do not render or accept
+    // built-in history/snippet suggestions until the shell echoes input.
+    if (allowExternalProviders === false) {
+      clearState();
+      return;
+    }
+
     if (!prompt.isAtPrompt || prompt.userInput.length < settingsRef.current.minChars) {
       clearState();
       return;
@@ -776,12 +788,13 @@ export function useTerminalAutocomplete(
       // Live-preview baseline: the typed input these suggestions completed.
       previewBaselineRef.current = input;
       previewActiveRef.current = false;
-      const cursorColumn = resolveAutocompleteCursorColumn(term, currentPrompt);
+      const cursorCell = resolveAutocompleteCursorCell(term, currentPrompt);
       const anchor = resolveAutocompleteAnchorInViewport(
         term,
         containerRef.current,
         completions.length,
-        cursorColumn,
+        cursorCell.column,
+        cursorCell.row,
       );
       startTransition(() => {
         setState((prev) => {

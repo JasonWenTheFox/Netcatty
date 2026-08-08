@@ -274,6 +274,45 @@ test("self-heals a stale anchor on render while no adjustToInput has fired", () 
   }
 });
 
+test("self-heal adopts live X/Y when echo wraps instead of double-counting", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement, fireRender } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    // Prompt ends at col 8; four pending cells predict X=12 on a 10-col
+    // terminal (wraps to col 2 / row 1). When echo lands there, Math.max
+    // on X alone would keep 12 and paint the ghost on row 2.
+    term.cols = 10;
+    term.buffer.active.cursorX = 8;
+    term.buffer.active.cursorY = 0;
+    term.buffer.active.baseY = 0;
+    term.buffer.active.getLine = () => ({
+      translateToString: () => "$       ",
+    });
+    addon.activate(term as never);
+    addon.show("abcdefghij", "abcd");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    // Predicted wrap: col 2 on row 1 → left 18px, top 18px.
+    assert.equal(ghost.style.left, "18px");
+    assert.equal(ghost.style.top, "18px");
+
+    term.buffer.active.cursorX = 2;
+    term.buffer.active.cursorY = 1;
+    term.buffer.active.getLine = () => ({
+      isWrapped: true,
+      translateToString: () => "abcd",
+    });
+    fireRender();
+
+    assert.equal(ghost.style.left, "18px");
+    assert.equal(ghost.style.top, "18px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("anchors ghost after wide pre-echo input when the line has not echoed yet", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();

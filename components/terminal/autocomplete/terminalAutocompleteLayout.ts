@@ -339,21 +339,27 @@ function shouldExpandAutocompleteUpward(
   return cursorY > 2 && spaceAbovePx >= spaceBelowPx;
 }
 
+/** Predicted cursor cell for popup anchoring (column within the row + row). */
+export type AutocompleteCursorCell = {
+  column: number;
+  row: number;
+};
+
 /**
- * Best-effort cursor column for popup anchoring. xterm's helper textarea and
+ * Best-effort cursor cell for popup anchoring. xterm's helper textarea and
  * buffer.cursorX can lag behind the keystroke that triggered completion, so
- * derive the column from the aligned prompt when the command still fits on one
- * row.
+ * derive the column from the aligned prompt and wrap onto following rows when
+ * unechoed wide input crosses `term.cols`.
  */
-export function resolveAutocompleteCursorColumn(
+export function resolveAutocompleteCursorCell(
   term: XTerm,
   prompt: Pick<PromptDetectionResult, "promptText" | "userInput">,
-): number {
+): AutocompleteCursorCell {
   const buffer = term.buffer.active;
   const absY = buffer.cursorY + buffer.baseY;
   const line = buffer.getLine(absY);
   if (line?.isWrapped) {
-    return buffer.cursorX;
+    return { column: buffer.cursorX, row: buffer.cursorY };
   }
 
   let fromLine = buffer.cursorX;
@@ -370,7 +376,23 @@ export function resolveAutocompleteCursorColumn(
   // count as the real cursor (#2813).
   const fromPrompt =
     stringCellWidth(prompt.promptText, term) + stringCellWidth(prompt.userInput, term);
-  return Math.max(fromLine, fromPrompt);
+  const rawColumn = Math.max(fromLine, fromPrompt);
+  const cols = Math.max(1, Number(term.cols) || 80);
+  if (rawColumn < cols) {
+    return { column: rawColumn, row: buffer.cursorY };
+  }
+  return {
+    column: rawColumn % cols,
+    row: buffer.cursorY + Math.floor(rawColumn / cols),
+  };
+}
+
+/** Column-only helper for callers that do not need the predicted wrap row. */
+export function resolveAutocompleteCursorColumn(
+  term: XTerm,
+  prompt: Pick<PromptDetectionResult, "promptText" | "userInput">,
+): number {
+  return resolveAutocompleteCursorCell(term, prompt).column;
 }
 
 /** Clamp autocomplete popups to the active terminal screen in split workspaces.
@@ -418,6 +440,7 @@ export function resolveAutocompleteAnchorInViewport(
   container: HTMLElement | null,
   itemCount: number,
   cursorColumn = term.buffer.active.cursorX,
+  cursorRow = term.buffer.active.cursorY,
 ): AutocompleteViewportAnchor {
   const empty: AutocompleteViewportAnchor = {
     anchorLeft: 0,
@@ -427,8 +450,6 @@ export function resolveAutocompleteAnchorInViewport(
   };
   if (!container || !term.element) return empty;
 
-  const buffer = term.buffer.active;
-  const cursorY = buffer.cursorY;
   const rows = Math.max(1, term.rows);
   const estimatedPopupHeight = estimatePopupHeight(itemCount);
   const dims = getXTermCellDimensions(term);
@@ -439,15 +460,15 @@ export function resolveAutocompleteAnchorInViewport(
     ?? container;
   const screenRect = screen.getBoundingClientRect();
   const anchorLeft = screenRect.left + cursorColumn * dims.width;
-  const anchorTop = screenRect.top + cursorY * dims.height;
-  const anchorBottom = screenRect.top + (cursorY + 1) * dims.height;
-  const spaceBelow = Math.max(0, (rows - cursorY - 1) * dims.height);
-  const spaceAbove = Math.max(0, cursorY * dims.height);
+  const anchorTop = screenRect.top + cursorRow * dims.height;
+  const anchorBottom = screenRect.top + (cursorRow + 1) * dims.height;
+  const spaceBelow = Math.max(0, (rows - cursorRow - 1) * dims.height);
+  const spaceAbove = Math.max(0, cursorRow * dims.height);
 
   return {
     anchorLeft,
     anchorTop,
     anchorBottom,
-    expandUpward: shouldExpandAutocompleteUpward(cursorY, spaceBelow, spaceAbove, estimatedPopupHeight),
+    expandUpward: shouldExpandAutocompleteUpward(cursorRow, spaceBelow, spaceAbove, estimatedPopupHeight),
   };
 }

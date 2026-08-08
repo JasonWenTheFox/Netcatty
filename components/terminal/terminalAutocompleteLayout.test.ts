@@ -6,6 +6,7 @@ import {
   computeAutocompletePopupPlacement,
   resolveAutocompleteAnchorInViewport,
   resolveAutocompleteClampViewport,
+  resolveAutocompleteCursorCell,
   resolveAutocompleteCursorColumn,
   type PopupPlacementInput,
 } from "./autocomplete/terminalAutocompleteLayout.ts";
@@ -276,6 +277,7 @@ test("resolveAutocompleteCursorColumn prefers prompt-aligned column when xterm l
 
 test("resolveAutocompleteCursorColumn counts wide glyphs as two cells for pre-echo input", () => {
   const term = {
+    cols: 80,
     buffer: {
       active: {
         cursorX: 2,
@@ -295,6 +297,31 @@ test("resolveAutocompleteCursorColumn counts wide glyphs as two cells for pre-ec
   });
   // "$ " = 2 cells, each CJK ideograph = 2 cells → column 6 (not char-length 4).
   assert.equal(column, 6);
+});
+
+test("resolveAutocompleteCursorCell wraps synthetic pre-echo columns onto the next row", () => {
+  const term = {
+    cols: 10,
+    buffer: {
+      active: {
+        cursorX: 8,
+        cursorY: 0,
+        baseY: 0,
+        getLine: () => ({
+          isWrapped: false,
+          translateToString: () => "$       ",
+        }),
+      },
+    },
+  };
+
+  const cell = resolveAutocompleteCursorCell(term as never, {
+    promptText: "$       ",
+    // Four wide cells after a prompt ending at column 8 → raw column 12.
+    userInput: "部署",
+  });
+  assert.equal(cell.column, 2);
+  assert.equal(cell.row, 1);
 });
 
 test("resolveAutocompleteCursorColumn counts ZWJ emoji graphemes as one wide cluster", () => {
