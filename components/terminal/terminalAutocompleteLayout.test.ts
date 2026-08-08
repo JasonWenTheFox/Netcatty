@@ -297,6 +297,30 @@ test("resolveAutocompleteCursorColumn counts wide glyphs as two cells for pre-ec
   assert.equal(column, 6);
 });
 
+test("resolveAutocompleteCursorColumn counts ZWJ emoji graphemes as one wide cluster", () => {
+  const term = {
+    buffer: {
+      active: {
+        cursorX: 2,
+        cursorY: 0,
+        baseY: 0,
+        getLine: () => ({
+          isWrapped: false,
+          translateToString: () => "$ ",
+        }),
+      },
+    },
+  };
+
+  const column = resolveAutocompleteCursorColumn(term as never, {
+    promptText: "$ ",
+    // Technologist emoji is one grapheme (👨 + ZWJ + 💻); xterm paints it
+    // as two cells, not five code-point widths.
+    userInput: "👨‍💻",
+  });
+  assert.equal(column, 4);
+});
+
 test("short popup flips upward when the cursor is at the bottom of the screen", () => {
   // Regression for issue #1710: a *short* suggestion list must flip up when
   // the anchor line is the last visible row, even if there is a tiny positive

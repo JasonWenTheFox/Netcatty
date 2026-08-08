@@ -1,10 +1,29 @@
 /**
- * Minimal East-Asian-Width-style classifier: returns 2 for wide glyphs
- * (CJK ideographs, fullwidth forms, most emoji, hangul syllables) and
- * 1 otherwise. Not full wcwidth — just enough to keep predicted cursor
- * columns from drifting by one cell per CJK char typed.
+ * Minimal East-Asian-Width-style classifier aligned with xterm's
+ * `15-graphemes` unicode version: wide glyphs are 2 cells, combining /
+ * format joiners are 0, everything else is 1. Grapheme clusters (ZWJ
+ * emoji, base+mark) contribute the max width of their code points so a
+ * sequence like 👨‍💻 counts as 2 cells, not 5.
  */
+const unicodeMarkPattern = /\p{Mark}/u;
+
 function codePointCellWidth(cp: number): number {
+  // Zero-width joiners / format / variation selectors / marks — xterm
+  // folds these into the surrounding grapheme (wcwidth 0 or shouldJoin).
+  if (
+    cp === 0x00ad ||
+    cp === 0x200d ||                       // ZWJ
+    (cp >= 0x200b && cp <= 0x200f) ||     // ZWSP..RLM
+    (cp >= 0x202a && cp <= 0x202e) ||     // bidi overrides
+    (cp >= 0x2060 && cp <= 0x206f) ||     // word joiner, invisible ops
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||     // Variation Selectors
+    cp === 0xfeff ||
+    (cp >= 0x1f3fb && cp <= 0x1f3ff) ||   // Emoji skin-tone modifiers
+    (cp >= 0xe0100 && cp <= 0xe01ef) ||   // Variation Selectors Supplement
+    unicodeMarkPattern.test(String.fromCodePoint(cp))
+  ) {
+    return 0;
+  }
   if (
     (cp >= 0x1100 && cp <= 0x115f) ||   // Hangul Jamo
     (cp >= 0x2e80 && cp <= 0x303e) ||   // CJK Radicals, Kangxi
@@ -25,12 +44,34 @@ function codePointCellWidth(cp: number): number {
   return 1;
 }
 
-/** Terminal cell columns occupied by `s` (wide glyphs count as 2). */
+function graphemeCellWidth(grapheme: string): number {
+  let max = 0;
+  for (const ch of grapheme) {
+    const w = codePointCellWidth(ch.codePointAt(0) ?? 0);
+    if (w > max) max = w;
+  }
+  return max;
+}
+
+const graphemeSegmenter =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+
+/** Terminal cell columns occupied by `s` (wide glyphs / grapheme clusters). */
 export function stringCellWidth(s: string): number {
+  if (!s) return 0;
+  if (graphemeSegmenter) {
+    let w = 0;
+    for (const { segment } of graphemeSegmenter.segment(s)) {
+      w += graphemeCellWidth(segment);
+    }
+    return w;
+  }
+  // Fallback without Segmenter: sum code-point widths (ZWJ/marks already 0).
   let w = 0;
   for (const ch of s) {
-    const cp = ch.codePointAt(0) ?? 0;
-    w += codePointCellWidth(cp);
+    w += codePointCellWidth(ch.codePointAt(0) ?? 0);
   }
   return w;
 }

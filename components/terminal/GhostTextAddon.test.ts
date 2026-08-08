@@ -297,6 +297,30 @@ test("anchors ghost after wide pre-echo input when the line has not echoed yet",
   }
 });
 
+test("anchors ghost using only the unechoed suffix after a partial shell echo", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    // Shell has echoed "$ doc"; buffered input is still the full "docker".
+    term.buffer.active.cursorX = 5;
+    term.buffer.active.baseY = 0;
+    term.buffer.active.getLine = () => ({
+      translateToString: () => "$ doc",
+    });
+    addon.activate(term as never);
+    addon.show("docker compose", "docker");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    assert.equal(ghost.textContent, " compose");
+    // Unechoed "ker" is 3 cells → column 8 → left 72px (not 5+6=11).
+    assert.equal(ghost.style.left, "72px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("wraps the ghost to the previous row when deletion crosses a row boundary", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();

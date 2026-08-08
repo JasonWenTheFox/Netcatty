@@ -19,6 +19,15 @@ function commonPrefixLength(a: string, b: string): number {
   return i;
 }
 
+/** Longest prefix of `input` that is already a suffix of `beforeCursor`. */
+function echoedInputPrefixLength(beforeCursor: string, input: string): number {
+  let n = Math.min(beforeCursor.length, input.length);
+  while (n > 0 && !beforeCursor.endsWith(input.slice(0, n))) {
+    n -= 1;
+  }
+  return n;
+}
+
 function hasVisibleGhostPrefix(ghostText: string, afterCursor: string): boolean {
   if (!ghostText || !afterCursor) return false;
   const visibleAfterCursor = afterCursor.trimEnd();
@@ -184,7 +193,14 @@ export class GhostTextAddon implements IDisposable {
         ? line.translateToString(false).slice(0, liveX)
         : null;
       if (beforeCursor !== null && !beforeCursor.endsWith(currentInput)) {
-        anchorX = liveX + stringCellWidth(currentInput);
+        // Shell may have echoed only a prefix (e.g. "$ doc" while
+        // currentInput is "docker"). Advance by the unechoed suffix only —
+        // adding the full input width on top of a partially-advanced liveX
+        // overshoots and Math.max self-heal cannot move the ghost left.
+        const unechoed = currentInput.slice(
+          echoedInputPrefixLength(beforeCursor, currentInput),
+        );
+        anchorX = liveX + stringCellWidth(unechoed);
       }
     }
     this.anchorCursorX = anchorX;
