@@ -25,4 +25,10 @@ test("snippets delete handler reads vault state from refs to avoid stale closure
     source,
     /deleteSelectedSnippetsFromVault\(\s*snippetsRef\.current\s*,\s*hostsRef\.current\s*,\s*ids,?\s*\)/,
   );
+  // Same-tick follow-up deletes must observe the just-applied vault, which
+  // only happens if we write refs before the next listener invocation.
+  assert.match(
+    source,
+    /snippetsRef\.current\s*=\s*result\.snippets[\s\S]*hostsRef\.current\s*=\s*result\.hosts[\s\S]*updateSnippets\(result\.snippets\)/,
+  );
 });

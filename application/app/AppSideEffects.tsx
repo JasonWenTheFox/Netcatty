@@ -1624,6 +1624,11 @@ export function AppSideEffects() {
         ids,
       );
       if (result.deletedCount === 0) return;
+      // Keep refs ahead of React render so a same-tick second delete (e.g.
+      // double-confirm) cannot re-apply against the pre-delete snapshot and
+      // resurrect already-removed snippets/host bindings.
+      snippetsRef.current = result.snippets;
+      hostsRef.current = result.hosts;
       updateSnippets(result.snippets);
       updateHosts(result.hosts);
     };
