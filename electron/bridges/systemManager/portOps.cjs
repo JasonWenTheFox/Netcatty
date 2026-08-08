@@ -247,9 +247,15 @@ function parseNetstatOutput(stdout) {
     const protocol = m[1];
     const local = m[2];
     const peer = m[3];
-    const state = m[4] || "";
-    const pidField = m[5] || "";
+    let state = m[4] || "";
+    let pidField = m[5] || "";
     const isUdp = /^udp/i.test(protocol);
+    // BusyBox/Linux UDP often omits State: `udp ... 0.0.0.0:* 456/dnsmasq`
+    // so the pid/program token lands in the state capture group.
+    if (isUdp && !pidField && /^\d+\//.test(state)) {
+      pidField = state;
+      state = "";
+    }
     if (!isUdp) {
       // Require an explicit LISTEN state token; never treat ESTABLISHED pid tokens as listeners.
       if (!/^LISTEN$/i.test(state)) continue;

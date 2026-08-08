@@ -41,13 +41,16 @@ Proto Recv-Q Send-Q Local Address           Foreign Address         State       
 tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      1234/sshd
 tcp6       0      0 :::80                   :::*                    LISTEN      99/nginx
 udp        0      0 127.0.0.1:53            0.0.0.0:*
+udp        0      0 0.0.0.0:5353            0.0.0.0:*               456/dnsmasq
 `;
   const ports = parseNetstatOutput(sample);
-  assert.equal(ports.length, 3);
+  assert.equal(ports.length, 4);
   assert.equal(ports.find((p) => p.port === 22)?.processName, "sshd");
   assert.equal(ports.find((p) => p.port === 80)?.address, "*");
   assert.equal(ports.find((p) => p.port === 53)?.protocol, "udp");
   assert.equal(ports.find((p) => p.port === 53)?.pid, null);
+  assert.equal(ports.find((p) => p.port === 5353)?.pid, 456);
+  assert.equal(ports.find((p) => p.port === 5353)?.processName, "dnsmasq");
 });
 
 test("parseNetstatOutput understands macOS dotted addresses", () => {
