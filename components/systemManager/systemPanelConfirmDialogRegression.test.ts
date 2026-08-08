@@ -70,3 +70,13 @@ test("ports and services confirm dialogs reset when sessionId changes", () => {
   assert.match(servicesSource, /setActionError\(null\)/);
   assert.match(servicesSource, /}, \[sessionId\]\);/);
 });
+
+test("ports and services surface pending channel results instead of treating them as success", () => {
+  const portsSource = readProjectFile("components/systemManager/PortsManagerTab.tsx");
+  const servicesSource = readProjectFile("components/systemManager/ServicesManagerTab.tsx");
+
+  assert.match(portsSource, /result\.pending/);
+  assert.match(portsSource, /systemManager\.errors\.sshChannelUnavailable/);
+  assert.match(servicesSource, /result\.pending/);
+  assert.match(servicesSource, /systemManager\.errors\.sshChannelUnavailable/);
+});

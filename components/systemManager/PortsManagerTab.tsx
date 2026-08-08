@@ -129,6 +129,10 @@ export const PortsManagerTab = memo(function PortsManagerTab({
         pid,
         signal: 'TERM',
       });
+      if ('pending' in result && result.pending) {
+        setActionError(t('systemManager.errors.sshChannelUnavailable'));
+        return;
+      }
       if (!result.success) {
         setActionError(result.error || t('systemManager.errors.actionFailed'));
         return;

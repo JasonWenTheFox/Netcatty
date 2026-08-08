@@ -334,13 +334,28 @@ function createSystemManagerBridge(deps) {
         : `Stop-Process -Id ${Math.trunc(numericPid)} -ErrorAction Stop`;
       const result = await execOnLocalMachine(ps, 5000);
       if (!result.success) return { success: false, error: result.error || "Stop-Process failed" };
+      if (typeof result.code === "number" && result.code !== 0) {
+        return {
+          success: false,
+          error: (result.stderr || result.error || `Stop-Process exited with code ${result.code}`).trim(),
+          code: result.code,
+        };
+      }
       return { success: true, code: result.code };
     }
 
     const built = buildProcessSignalCommand(pid, signal, nice);
     if (built.error) return { success: false, error: built.error };
     const result = await execOnSession(event, sessionId, `exec sh -c ${JSON.stringify(built.command)}`, 5000);
+    if (result.pending) return { success: false, pending: true, error: result.error };
     if (!result.success) return { success: false, error: result.error };
+    if (typeof result.code === "number" && result.code !== 0) {
+      return {
+        success: false,
+        error: (result.stderr || result.error || `kill exited with code ${result.code}`).trim(),
+        code: result.code,
+      };
+    }
     return { success: true, code: result.code };
   }
 
@@ -524,7 +539,7 @@ function createSystemManagerBridge(deps) {
     ipcMain.handle("netcatty:system:systemServiceAction", systemServiceAction);
   }
 
-  return { registerHandlers, probeCapabilities, listProcesses, setupOsc7Tracking };
+  return { registerHandlers, probeCapabilities, listProcesses, signalProcess, setupOsc7Tracking };
 }
 
 module.exports = { createSystemManagerBridge };

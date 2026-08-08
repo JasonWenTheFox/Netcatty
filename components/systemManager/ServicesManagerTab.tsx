@@ -162,6 +162,10 @@ export const ServicesManagerTab = memo(function ServicesManagerTab({
         action,
         scope: unit.scope,
       });
+      if (result.pending) {
+        setActionError(t('systemManager.errors.sshChannelUnavailable'));
+        return;
+      }
       if (!result.success) {
         setActionError(result.error || t('systemManager.errors.actionFailed'));
         return;
