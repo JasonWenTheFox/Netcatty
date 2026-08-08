@@ -246,6 +246,15 @@ function quoteRestoreCwdArgument(cwd: string): string {
   return quoteRestoreCwdForShell(cwd);
 }
 
+/** Build a user-initiated `cd` for an absolute/home path (SFTP → terminal). */
+export function resolveInteractiveTerminalCdIntent(
+  cwd: string | null | undefined,
+): { cwd: string; command: string } | null {
+  if (!isRestoreCwdPathEligible(cwd)) return null;
+  const trimmed = cwd.trim();
+  return { cwd: trimmed, command: `cd -- ${quoteRestoreCwdArgument(trimmed)}` };
+}
+
 export function resolveRestoreCwdIntent(options: {
   enabled: boolean;
   session: RestoreCwdSession;

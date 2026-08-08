@@ -7,6 +7,7 @@ import {
   quoteRestoreCwdForShell,
   resolveRestoredActiveTabId,
   resolveInheritedCwdIntent,
+  resolveInteractiveTerminalCdIntent,
   resolveRestoreCwdIntent,
   sanitizeSessionRestorePayload,
   shouldAttemptRestoreCwd,
@@ -678,6 +679,14 @@ test("quoteRestoreCwdForShell treats cwd as shell data", () => {
   assert.equal(quoteRestoreCwdForShell("/srv/app"), "'/srv/app'");
   assert.equal(quoteRestoreCwdForShell("/srv/app dir"), "'/srv/app dir'");
   assert.equal(quoteRestoreCwdForShell("/tmp/it's ok; $(rm -rf ~)"), "'/tmp/it'\\''s ok; $(rm -rf ~)'");
+});
+
+test("resolveInteractiveTerminalCdIntent quotes path-only cd without session transport checks", () => {
+  assert.deepEqual(resolveInteractiveTerminalCdIntent("/srv/app dir"), {
+    cwd: "/srv/app dir",
+    command: "cd -- '/srv/app dir'",
+  });
+  assert.equal(resolveInteractiveTerminalCdIntent("C:\\Users\\alice"), null);
 });
 
 test("resolveRestoreCwdIntent captures a one-shot restore command", () => {
