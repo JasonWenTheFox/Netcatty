@@ -1086,10 +1086,40 @@ index a276c1a..84d92ad 100644
          default:
            return new Error(`Unsupported OpenSSH private key type: ${type}`);
        }
-@@ -1186,12 +1415,48 @@ function OpenSSH_Public(type, comment, pubPEM, pubSSH, algo) {
-   this[SYM_DECRYPTED] = false;
- }
- OpenSSH_Public.prototype = BaseKey;
+@@ -1186,30 +1415,78 @@ function OpenSSH_Public(type, comment, pubPEM, pubSSH, algo) {
+-  this[SYM_DECRYPTED] = false;
+-}
+-OpenSSH_Public.prototype = BaseKey;
+-{
+-  let regexp;
+-  if (eddsaSupported)
+-    regexp = /^(((?:ssh-(?:rsa|dss|ed25519))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
+-  else
+-    regexp = /^(((?:ssh-(?:rsa|dss))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
+-  OpenSSH_Public.parse = (str) => {
+-    const m = regexp.exec(str);
+-    if (m === null)
+-      return null;
+-    // m[1] = full type
+-    // m[2] = base type
+-    // m[3] = base64-encoded public key
+-    // m[4] = comment
+-
+-    const fullType = m[1];
+-    const baseType = m[2];
+-    const data = Buffer.from(m[3], 'base64');
+-    const comment = (m[4] || '');
+-
+-    const type = readString(data, data._pos, true);
+-    if (type === undefined || type.indexOf(baseType) !== 0)
+-      return new Error('Malformed OpenSSH public key');
+-
+-    return parseDER(data, baseType, comment, fullType);
+-  };
+-}
++  this[SYM_DECRYPTED] = false;
++}
++OpenSSH_Public.prototype = BaseKey;
 +
 +// FIDO/U2F security key public key wrapper. See SKBaseKey.
 +function OpenSSH_SK_Public(type, comment, pubPEM, pubSSH, algo, application) {
@@ -1120,30 +1150,42 @@ index a276c1a..84d92ad 100644
 +    case 'rsa-sha2-256':
 +    case 'rsa-sha2-512':
 +      return 'ssh-rsa';
++    // OpenSSH places `-cert-v01` before `@openssh.com` for SK certs
++    // (sk-ssh-ed25519-cert-v01@openssh.com), so strip leaves the bare algorithm.
++    case 'sk-ssh-ed25519':
++      return 'sk-ssh-ed25519@openssh.com';
++    case 'sk-ecdsa-sha2-nistp256':
++      return 'sk-ecdsa-sha2-nistp256@openssh.com';
 +    default:
 +      return baseType;
 +  }
 +}
 +
- {
-   let regexp;
--  if (eddsaSupported)
--    regexp = /^(((?:ssh-(?:rsa|dss|ed25519))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
--  else
--    regexp = /^(((?:ssh-(?:rsa|dss))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
++{
++  let regexp;
 +  if (eddsaSupported) {
-+    regexp = /^(((?:ssh-(?:rsa|dss|ed25519))|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)(?:-cert-v0[01]@openssh\.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
++    // SK cert names use `-cert-v01` before `@openssh.com`, unlike classic keys.
++    regexp = /^((((?:ssh-(?:rsa|dss|ed25519))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh\.com)?)|(sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)(?:-cert-v0[01])?@openssh\.com)) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
 +  } else {
-+    regexp = /^(((?:ssh-(?:rsa|dss))|ecdsa-sha2-nistp(?:256|384|521)|sk-ecdsa-sha2-nistp256@openssh\.com)(?:-cert-v0[01]@openssh\.com)?) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
++    regexp = /^((((?:ssh-(?:rsa|dss))|ecdsa-sha2-nistp(?:256|384|521))(?:-cert-v0[01]@openssh\.com)?)|(sk-ecdsa-sha2-nistp256(?:-cert-v0[01])?@openssh\.com)) ([A-Z0-9a-z/+=]+)(?:$|\s+([\S].*)?)$/;
 +  }
-   OpenSSH_Public.parse = (str) => {
-     const m = regexp.exec(str);
-     if (m === null)
-@@ -1210,7 +1475,13 @@ OpenSSH_Public.prototype = BaseKey;
-     if (type === undefined || type.indexOf(baseType) !== 0)
-       return new Error('Malformed OpenSSH public key');
- 
--    return parseDER(data, baseType, comment, fullType);
++  OpenSSH_Public.parse = (str) => {
++    const m = regexp.exec(str);
++    if (m === null)
++      return null;
++    // m[1] = full type
++    // m[5] = base64-encoded public key
++    // m[6] = comment
++
++    const fullType = m[1];
++    const baseType = getOpenSSHCertBaseType(fullType);
++    const data = Buffer.from(m[5], 'base64');
++    const comment = (m[6] || '');
++
++    const type = readString(data, data._pos, true);
++    if (type === undefined || getOpenSSHCertBaseType(type) !== baseType)
++      return new Error('Malformed OpenSSH public key');
++
 +    return parseDER(
 +      data,
 +      baseType,
@@ -1151,10 +1193,9 @@ index a276c1a..84d92ad 100644
 +      fullType,
 +      isOpenSSHCertType(fullType) ? data : undefined
 +    );
-   };
- }
- 
-@@ -1309,7 +1580,7 @@ RFC4716_Public.prototype = BaseKey;
++  };
++}
+@@ -1309,7 +1586,7 @@ RFC4716_Public.prototype = BaseKey;
  }
  
  
@@ -1163,7 +1204,7 @@ index a276c1a..84d92ad 100644
    if (!isSupportedKeyType(baseType))
      return new Error(`Unsupported OpenSSH public key type: ${baseType}`);
  
-@@ -1317,6 +1588,10 @@ function parseDER(data, baseType, comment, fullType) {
+@@ -1317,6 +1594,10 @@ function parseDER(data, baseType, comment, fullType) {
    let oid;
    let pubPEM = null;
    let pubSSH = null;
@@ -1174,7 +1215,7 @@ index a276c1a..84d92ad 100644
  
    switch (baseType) {
      case 'ssh-rsa': {
-@@ -1383,11 +1658,56 @@ function parseDER(data, baseType, comment, fullType) {
+@@ -1383,11 +1664,56 @@ function parseDER(data, baseType, comment, fullType) {
        pubSSH = genOpenSSHECDSAPub(oid, ecpub);
        break;
      }
@@ -1232,7 +1273,7 @@ index a276c1a..84d92ad 100644
  }
  
  function isSupportedKeyType(type) {
-@@ -1397,8 +1717,10 @@ function isSupportedKeyType(type) {
+@@ -1397,8 +1723,10 @@ function isSupportedKeyType(type) {
      case 'ecdsa-sha2-nistp256':
      case 'ecdsa-sha2-nistp384':
      case 'ecdsa-sha2-nistp521':
@@ -1243,7 +1284,7 @@ index a276c1a..84d92ad 100644
        if (eddsaSupported)
          return true;
      // FALLTHROUGH
-@@ -1460,7 +1782,13 @@ function parseKey(data, passphrase) {
+@@ -1460,7 +1788,13 @@ function parseKey(data, passphrase) {
      if (type !== undefined) {
        data = binaryKeyParser.readRaw();
        if (data !== undefined) {

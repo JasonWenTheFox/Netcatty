@@ -40,3 +40,55 @@ test("acquireFidoAgent on win32 reuses the system OpenSSH named pipe", async () 
   assert.ok(agent.askpassEnv?.SSH_ASKPASS);
   shutdownFidoAgentSubsystem();
 });
+
+test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", async () => {
+  shutdownFidoAgentSubsystem();
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { releaseFidoAskpassLease } = require("./fidoAskpass.cjs");
+  const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-fido-sock-"));
+  const sockPath = path.join(sockDir, "agent.sock");
+  fs.writeFileSync(sockPath, "");
+  let releaseStart;
+  const startGate = new Promise((resolve) => { releaseStart = resolve; });
+
+  try {
+    const first = acquireFidoAgent({
+      platform: "linux",
+      resolveWebContents: () => ({ id: "first" }),
+      env: { PATH: process.env.PATH || "/usr/bin:/bin", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async () => {
+        releaseStart();
+        await new Promise((r) => setTimeout(r, 80));
+        return {
+          stdout: `SSH_AUTH_SOCK=${sockPath}; export SSH_AUTH_SOCK;\n`,
+        };
+      },
+    });
+
+    await startGate;
+    const second = acquireFidoAgent({
+      platform: "linux",
+      resolveWebContents: () => ({ id: "second" }),
+      execFile: async () => {
+        throw new Error("second caller must await startingPromise");
+      },
+    });
+
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.socketPath, sockPath);
+    assert.equal(b.socketPath, sockPath);
+    assert.notEqual(
+      a.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE,
+      b.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE,
+    );
+    releaseFidoAskpassLease(a.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAskpassLease(b.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAgent();
+    releaseFidoAgent();
+  } finally {
+    shutdownFidoAgentSubsystem();
+    fs.rmSync(sockDir, { recursive: true, force: true });
+  }
+});

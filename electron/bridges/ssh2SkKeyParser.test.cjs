@@ -61,3 +61,31 @@ test("ssh2 parseKey accepts sk-ecdsa-sha2-nistp256 public keys", () => {
   assert.equal(key.type, "sk-ecdsa-sha2-nistp256@openssh.com");
   assert.equal(key.getApplication?.(), "ssh:");
 });
+
+function buildSkEd25519CertPublicLine() {
+  // Minimal OpenSSH SK cert wire shape: type, nonce, then SK public fields.
+  const type = Buffer.from("sk-ssh-ed25519-cert-v01@openssh.com");
+  const nonce = Buffer.alloc(16, 7);
+  const pub = Buffer.alloc(32, 9);
+  const app = Buffer.from("ssh:");
+  const parts = [type, nonce, pub, app];
+  let len = 0;
+  for (const part of parts) len += 4 + part.length;
+  const buf = Buffer.alloc(len);
+  let offset = 0;
+  for (const part of parts) {
+    buf.writeUInt32BE(part.length, offset);
+    offset += 4;
+    part.copy(buf, offset);
+    offset += part.length;
+  }
+  return `sk-ssh-ed25519-cert-v01@openssh.com ${buf.toString("base64")} netcatty@sk-cert`;
+}
+
+test("ssh2 parseKey accepts OpenSSH-order SK certificate public keys", () => {
+  const line = buildSkEd25519CertPublicLine();
+  const key = parseKey(line);
+  assert.equal(key instanceof Error, false, key instanceof Error ? key.message : "");
+  assert.equal(key.type, "sk-ssh-ed25519-cert-v01@openssh.com");
+  assert.equal(key.getApplication?.(), "ssh:");
+});

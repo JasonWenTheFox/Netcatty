@@ -8,7 +8,6 @@
  */
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
@@ -55,18 +54,27 @@ async function generateFidoSshKeyPair(options = {}) {
   const run = options.execFile || execFileAsync;
   const sshKeygen = options.sshKeygenPath || resolveSshKeygenBinary(env);
 
-  let baseDir = os.tmpdir();
+  let baseDir;
   try {
     const tempDirBridge = require("./tempDirBridge.cjs");
-    if (typeof tempDirBridge.getTempDir === "function") {
-      baseDir = tempDirBridge.getTempDir();
+    if (typeof tempDirBridge.getTempDir !== "function") {
+      return {
+        success: false,
+        error: "FIDO2 key generation requires Netcatty temp directory (tempDirBridge unavailable).",
+      };
     }
-  } catch {
-    // unit tests / early boot may not have temp dir configured
+    baseDir = tempDirBridge.getTempDir();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      error: `FIDO2 key generation requires Netcatty temp directory: ${message}`,
+    };
   }
   const tempDir = await fs.promises.mkdtemp(path.join(baseDir, "netcatty-fido-keygen-"));
   const keyPath = path.join(tempDir, `id_${type.replace(/-sk$/, "_sk")}_${randomUUID().slice(0, 8)}`);
 
+  let askpassLeaseId = null;
   try {
     const args = [
       "-t", type,
@@ -83,6 +91,7 @@ async function generateFidoSshKeyPair(options = {}) {
       askpassEnv = buildFidoAskpassEnv({
         resolveWebContents: options.resolveWebContents,
       });
+      askpassLeaseId = askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE || null;
     } catch {
       // GUI askpass unavailable in pure unit tests
     }
@@ -124,6 +133,13 @@ async function generateFidoSshKeyPair(options = {}) {
       keyType: options.type === "ECDSA-SK" ? "ECDSA-SK" : "ED25519-SK",
     };
   } finally {
+    if (askpassLeaseId) {
+      try {
+        require("./fidoAskpass.cjs").releaseFidoAskpassLease(askpassLeaseId);
+      } catch {
+        // ignore
+      }
+    }
     await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }

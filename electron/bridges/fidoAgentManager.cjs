@@ -141,7 +141,12 @@ async function acquireFidoAgent(options = {}) {
     const shared = await startingPromise;
     if (isAgentLive()) {
       refCount += 1;
-      return shared;
+      // Caller-specific askpass lease — never reuse the starter's resolver.
+      return {
+        socketPath: shared.socketPath,
+        askpassEnv: buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents }),
+        owned: shared.owned,
+      };
     }
   }
 

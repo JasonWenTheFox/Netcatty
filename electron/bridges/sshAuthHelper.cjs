@@ -1095,16 +1095,14 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   if (isFidoFlow) {
     try {
       const { acquireFidoAgent } = require("./fidoAgentManager.cjs");
-      const { buildFidoAskpassEnv } = require("./fidoAskpass.cjs");
-      askpassEnv = buildFidoAskpassEnv({
-        resolveWebContents: options.resolveWebContents,
-      });
+      // acquireFidoAgent allocates the askpass lease for this caller — do not
+      // build a separate lease here or it would leak when overwritten.
       const fidoAgent = await acquireFidoAgent({
         resolveWebContents: options.resolveWebContents,
         env: process.env,
       });
       socketPath = fidoAgent.socketPath;
-      askpassEnv = { ...askpassEnv, ...fidoAgent.askpassEnv };
+      askpassEnv = fidoAgent.askpassEnv || null;
       ownedFidoAgent = fidoAgent.owned === true;
       console.log(`${logPrefix} Using Netcatty FIDO ssh-agent`, { socketPath });
     } catch (error) {
