@@ -23,10 +23,11 @@ const LISTEN_PORTS_INNER = [
   "elif netstat -lntp 2>/dev/null; then ",
   "netstat -lnup 2>/dev/null || true; ",
   "elif netstat -anv -p tcp >/dev/null 2>&1; then ",
-  "netstat -anv -p tcp 2>/dev/null || true; ",
+  // Prefer LISTEN-only TCP to keep stdout under maxBuffer on busy hosts.
+  "netstat -anv -p tcp 2>/dev/null | grep -i LISTEN || true; ",
   "netstat -anv -p udp 2>/dev/null || true; ",
   "else ",
-  "netstat -anp 2>/dev/null || netstat -an 2>/dev/null || true; ",
+  "netstat -anp 2>/dev/null | grep -Ei 'LISTEN|^udp' || netstat -an 2>/dev/null | grep -Ei 'LISTEN|^udp' || true; ",
   "fi; ",
   "fi; ",
   'if command -v lsof >/dev/null 2>&1; then ',
@@ -47,11 +48,19 @@ const LISTEN_PORTS_WINDOWS = [
   "$rows = @(); ",
   "$rows += @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ",
   "Select-Object LocalAddress,LocalPort,OwningProcess,@{Name='Protocol';Expression={'tcp'}}); ",
-  "$rows += @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ",
-  "Select-Object LocalAddress,LocalPort,OwningProcess,@{Name='Protocol';Expression={'udp'}}); ",
+  // UDP has no listen state; drop high ephemeral ports on non-wildcard/non-loopback
+  // addresses so client binds do not flood the Ports tab.
+  "$rows += @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object { ",
+  "$a = [string]$_.LocalAddress; ",
+  "$wildcard = ($a -eq '0.0.0.0' -or $a -eq '::' -or $a -eq '*'); ",
+  "$loopback = ($a -eq '127.0.0.1' -or $a -eq '::1'); ",
+  "if ($wildcard -or $loopback) { $true } else { $_.LocalPort -lt 49152 } ",
+  "} | Select-Object LocalAddress,LocalPort,OwningProcess,@{Name='Protocol';Expression={'udp'}}); ",
   "if ($rows.Count -gt 0) { $rows | ConvertTo-Json -Compress } else { Write-Output '[]' }; ",
   'Write-Output "__NC_PORTS_END__"',
 ].join("");
+
+const LISTEN_PORTS_MAX_BUFFER = 16 * 1024 * 1024;
 
 function normalizeProtocol(raw) {
   const text = String(raw || "").trim().toLowerCase();
@@ -415,12 +424,16 @@ function createPortOpsApi({
     if (!sessionId) return { success: false, error: "Missing sessionId" };
 
     if (isLocalSession(sessionId) && process.platform === "win32") {
-      const result = await execOnLocalMachine(LISTEN_PORTS_WINDOWS, 12000);
+      const result = await execOnLocalMachine(LISTEN_PORTS_WINDOWS, 12000, {
+        maxBuffer: LISTEN_PORTS_MAX_BUFFER,
+      });
       if (!result.success) return { success: false, error: result.error || "Failed to list ports" };
       return { success: true, ports: parseListeningPorts(result.stdout) };
     }
 
-    const result = await execOnSession(event, sessionId, LISTEN_PORTS_SCRIPT, 12000);
+    const result = await execOnSession(event, sessionId, LISTEN_PORTS_SCRIPT, 12000, {
+      maxBuffer: LISTEN_PORTS_MAX_BUFFER,
+    });
     if (result.pending) return { success: false, pending: true };
     if (!result.success) return { success: false, error: result.error || "Failed to list ports" };
     return { success: true, ports: parseListeningPorts(result.stdout) };
