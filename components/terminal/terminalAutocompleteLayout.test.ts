@@ -558,4 +558,17 @@ test("selected popup row prefetches sub-dir panels after selectedIndex commits",
     source,
     /useEffect\(\(\) => \{\s*if \(!state\.popupVisible \|\| state\.selectedIndex < 0\) return;[\s\S]*if \(state\.subDirPanels\.length > 0 \|\| state\.subDirFocusLevel >= 0\) return;[\s\S]*fetchSubDirForIndex\(state\.selectedIndex\);/,
   );
+  // Escape clears subDirPanels without changing selection; if cascade emptiness
+  // is a dependency, the effect re-prefetches and the dismissal never sticks.
+  const effectMatch = source.match(
+    /useEffect\(\(\) => \{\s*if \(!state\.popupVisible \|\| state\.selectedIndex < 0\) return;[\s\S]*?\},\s*\[([\s\S]*?)\]\);/,
+  );
+  assert.ok(effectMatch, "expected sub-dir prefetch useEffect deps");
+  const deps = effectMatch[1] ?? "";
+  assert.match(deps, /state\.popupVisible/);
+  assert.match(deps, /state\.selectedIndex/);
+  assert.match(deps, /state\.suggestions/);
+  assert.match(deps, /fetchSubDirForIndex/);
+  assert.doesNotMatch(deps, /state\.subDirPanels/);
+  assert.doesNotMatch(deps, /state\.subDirFocusLevel/);
 });

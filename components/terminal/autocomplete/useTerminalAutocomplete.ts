@@ -891,6 +891,8 @@ export function useTerminalAutocomplete(
   // default-select (#2821) and ↑/↓ navigation. Must run post-commit: calling
   // from the startTransition refresh path races when fetchDirEntries resolves
   // before selectedIndex has flushed, and the result handler drops the panels.
+  // Depend only on selection/list identity — not cascade emptiness — so Escape
+  // dismissing level-0 panels does not immediately re-prefetch and reopen them.
   useEffect(() => {
     if (!state.popupVisible || state.selectedIndex < 0) return;
     if (state.selectedIndex >= state.suggestions.length) return;
@@ -898,12 +900,12 @@ export function useTerminalAutocomplete(
     // refresh (new array identity, same rows) does not wipe nested panels.
     if (state.subDirPanels.length > 0 || state.subDirFocusLevel >= 0) return;
     fetchSubDirForIndex(state.selectedIndex);
+  // Cascade emptiness is a skip guard only — omit from deps so Escape dismissal sticks.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- selection/list only
   }, [
     state.popupVisible,
     state.selectedIndex,
     state.suggestions,
-    state.subDirPanels.length,
-    state.subDirFocusLevel,
     fetchSubDirForIndex,
   ]);
 
