@@ -55,10 +55,12 @@ const LISTEN_PORTS_WINDOWS = [
 
 function normalizeProtocol(raw) {
   const text = String(raw || "").trim().toLowerCase();
-  if (text === "tcp" || text === "tcp4" || text === "tcp46") return "tcp";
-  if (text === "tcp6") return "tcp6";
-  if (text === "udp" || text === "udp4" || text === "udp46") return "udp";
-  if (text === "udp6") return "udp6";
+  if (text === "tcp" || text === "tcp4") return "tcp";
+  // macOS dual-stack (tcp46/udp46) is an IPv6 socket with v6only off; map to
+  // tcp6/udp6 so netstat rows merge with lsof IPv6 listeners.
+  if (text === "tcp6" || text === "tcp46") return "tcp6";
+  if (text === "udp" || text === "udp4") return "udp";
+  if (text === "udp6" || text === "udp46") return "udp6";
   return "unknown";
 }
 

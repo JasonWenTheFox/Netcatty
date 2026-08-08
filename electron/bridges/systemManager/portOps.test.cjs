@@ -204,8 +204,23 @@ udp46      0      0  *.5353                 *.*
 `;
   const ports = parseNetstatOutput(sample);
   assert.equal(ports.length, 2);
-  assert.equal(ports.find((p) => p.port === 80)?.protocol, "tcp");
-  assert.equal(ports.find((p) => p.port === 5353)?.protocol, "udp");
+  assert.equal(ports.find((p) => p.port === 80)?.protocol, "tcp6");
+  assert.equal(ports.find((p) => p.port === 5353)?.protocol, "udp6");
+});
+
+test("parseListeningPorts merges macOS tcp46 netstat with lsof IPv6", () => {
+  const stdout = `
+__NC_PORTS_BEGIN__
+__NC_NETSTAT__
+tcp46      0      0  *.80                   *.*                    LISTEN
+__NC_LSOF__
+nginx      99 root    7u  IPv6 0xabc      0t0  TCP *:80 (LISTEN)
+__NC_PORTS_END__
+`;
+  const ports = parseListeningPorts(stdout);
+  assert.equal(ports.length, 1);
+  assert.equal(ports[0].protocol, "tcp6");
+  assert.equal(ports[0].pid, 99);
 });
 
 test("parseSsOutput expands multi-pid users tuples", () => {
