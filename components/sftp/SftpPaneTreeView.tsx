@@ -491,7 +491,13 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
             parentPath,
             joinPath,
             isDirectory: isNavigableDirectory,
-            getChildren: (entryPath) => childrenCacheRef.current.get(entryPath),
+            getChildren: (entryPath) => {
+              const children = childrenCacheRef.current.get(entryPath);
+              if (!children) return undefined;
+              // Match visible-row hidden policy so ancestor keep decisions
+              // cannot latch onto descendants the user cannot see.
+              return filterHiddenFiles(children, pane.showHiddenFiles);
+            },
           },
         ),
         sortField,

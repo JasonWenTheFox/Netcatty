@@ -71,6 +71,28 @@ test('SFTP tree filter hides unloaded non-matching directories', () => {
   );
 });
 
+test('SFTP tree filter does not keep ancestors for hidden-only descendant matches', () => {
+  // getChildren must apply the same hidden-file policy as visible rows; otherwise a
+  // dotfile match can keep a parent folder while the matching child stays invisible.
+  const childrenByPath = new Map<string, ReturnType<typeof entry>[]>([
+    ['/project/src', [entry('.readme'), entry('utils.ts')]],
+  ]);
+  const root = [entry('src', 'directory')];
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: (path) => {
+        const children = childrenByPath.get(path);
+        if (!children) return undefined;
+        return children.filter((child) => !child.name.startsWith('.'));
+      },
+    }).map(({ name }) => name),
+    [],
+  );
+});
+
 test('SFTP tree view applies the tree name filter to visible rows', () => {
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   assert.match(
@@ -78,6 +100,10 @@ test('SFTP tree view applies the tree name filter to visible rows', () => {
     /sortSftpEntries\(\s*filterSftpTreeEntriesByName\(\s*filterHiddenFiles\(entries, pane\.showHiddenFiles\),\s*pane\.filter,/s,
   );
   assert.match(treeSource, /pane\.showHiddenFiles\}:\$\{pane\.filter\}/);
+  assert.match(
+    treeSource,
+    /getChildren:\s*\(entryPath\)\s*=>\s*\{[\s\S]*?filterHiddenFiles\([\s\S]*?pane\.showHiddenFiles/,
+  );
 });
 
 test('SFTP tree child reload invalidates sorted cache so filter reapplies', () => {
@@ -86,7 +112,7 @@ test('SFTP tree child reload invalidates sorted cache so filter reapplies', () =
   // (not only for the loaded path) or parents stay hidden.
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   const loadFn = treeSource.match(
-    /const loadChildrenForPath = useCallback\(async \(entryPath: string\) => \{[\s\S]*?\n  \}, \[\]\);/,
+    /const loadChildrenForPath = useCallback\(async \(entryPath: string\) => \{[\s\S]*?\n {2}\}, \[\]\);/,
   );
   assert.ok(loadFn, 'expected loadChildrenForPath callback');
   const setIdx = loadFn[0].indexOf('childrenCacheRef.current.set(entryPath, children)');
