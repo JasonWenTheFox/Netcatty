@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const sidePanelSource = readFileSync(new URL("../SftpSidePanel.tsx", import.meta.url), "utf8");
+const slotSource = readFileSync(
+  new URL("../terminalLayer/terminalLayerSidePanelSlots.tsx", import.meta.url),
+  "utf8",
+);
 
 test("locate-path write skips sessions waiting on sensitive/password prompts", () => {
   assert.match(
@@ -12,5 +16,13 @@ test("locate-path write skips sessions waiting on sensitive/password prompts", (
   assert.match(
     sidePanelSource,
     /if \(isTerminalSensitiveInputActive\(action\.sessionId\)\) return;/,
+  );
+});
+
+test("locate-path uses focused session fallback when SFTP cannot reuse the terminal", () => {
+  assert.match(sidePanelSource, /resolveLocateSftpPathSessionId\(\{\s*activeSessionId,\s*focusedSessionId,/);
+  assert.match(
+    slotSource,
+    /focusedSessionId=\{isVisible \? live\.focusedSessionId : null\}/,
   );
 });

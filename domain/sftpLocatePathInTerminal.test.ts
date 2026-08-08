@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   canLocateSftpPathInTerminal,
   resolveLocateSftpPathInTerminalAction,
+  resolveLocateSftpPathSessionId,
 } from "./sftpLocatePathInTerminal.ts";
 
 const base = {
@@ -33,6 +34,36 @@ test("canLocateSftpPathInTerminal rejects missing session, disconnected session,
   assert.equal(canLocateSftpPathInTerminal({ ...base, sessionId: null }), false);
   assert.equal(canLocateSftpPathInTerminal({ ...base, sessionStatus: "disconnected" }), false);
   assert.equal(canLocateSftpPathInTerminal({ ...base, sftpHostId: "other-host" }), false);
+});
+
+test("canLocateSftpPathInTerminal rejects same hostId with different live endpoints", () => {
+  assert.equal(
+    canLocateSftpPathInTerminal({
+      ...base,
+      sessionHostname: "a.example.test",
+      sessionUsername: "root",
+      sessionPort: 22,
+      sftpHostname: "b.example.test",
+      sftpUsername: "root",
+      sftpPort: 22,
+    }),
+    false,
+  );
+});
+
+test("resolveLocateSftpPathSessionId prefers reusable active session then focused fallback", () => {
+  assert.equal(
+    resolveLocateSftpPathSessionId({ activeSessionId: "ssh-reuse", focusedSessionId: "focused" }),
+    "ssh-reuse",
+  );
+  assert.equal(
+    resolveLocateSftpPathSessionId({ activeSessionId: null, focusedSessionId: "mosh-1" }),
+    "mosh-1",
+  );
+  assert.equal(
+    resolveLocateSftpPathSessionId({ activeSessionId: null, focusedSessionId: null }),
+    null,
+  );
 });
 
 test("canLocateSftpPathInTerminal rejects network devices, telnet/serial, and Windows local shells", () => {

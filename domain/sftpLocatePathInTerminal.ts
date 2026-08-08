@@ -12,7 +12,31 @@ export type LocateSftpPathInTerminalContext = {
   isNetworkDevice?: boolean;
   moshEnabled?: boolean;
   etEnabled?: boolean;
+  sessionHostname?: string | null;
+  sessionUsername?: string | null;
+  sessionPort?: number | null;
+  sftpHostname?: string | null;
+  sftpUsername?: string | null;
+  sftpPort?: number | null;
 };
+
+/**
+ * Prefer the SFTP-reusable SSH session id when present; otherwise use the
+ * focused terminal (mosh/et/local) so locate is not stuck behind connection reuse.
+ */
+export function resolveLocateSftpPathSessionId(options: {
+  activeSessionId?: string | null;
+  focusedSessionId?: string | null;
+}): string | null {
+  return options.activeSessionId ?? options.focusedSessionId ?? null;
+}
+
+function remoteEndpointsMatch(options: LocateSftpPathInTerminalContext): boolean {
+  if (!options.sessionHostname || !options.sftpHostname) return true;
+  return options.sessionHostname === options.sftpHostname
+    && (options.sessionPort ?? 22) === (options.sftpPort ?? 22)
+    && (options.sessionUsername || "root") === (options.sftpUsername || "root");
+}
 
 /** Whether the SFTP current path can be sent as `cd` to the linked terminal. */
 export function canLocateSftpPathInTerminal(
@@ -34,6 +58,7 @@ export function canLocateSftpPathInTerminal(
 
   if (!options.sftpHostId || !options.sessionHostId) return false;
   if (options.sftpHostId !== options.sessionHostId) return false;
+  if (!remoteEndpointsMatch(options)) return false;
 
   // Interactive locate allows mosh/et (unlike silent restore). Accept both the
   // transport protocol strings and ssh+flag forms used by session factories.

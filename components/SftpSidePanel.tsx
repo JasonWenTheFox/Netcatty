@@ -75,6 +75,7 @@ import {
 import {
   canLocateSftpPathInTerminal,
   resolveLocateSftpPathInTerminalAction,
+  resolveLocateSftpPathSessionId,
 } from "../domain/sftpLocatePathInTerminal";
 import { classifyDistroId } from "../domain/host";
 import { useTerminalBackend } from "../application/state/useTerminalBackend";
@@ -115,6 +116,8 @@ interface SftpSidePanelProps {
   activeHost: Host | null;
   /** The terminal session id whose SSH connection can be reused for SFTP */
   activeSessionId?: string | null;
+  /** Focused terminal session (includes mosh/et/local) for locate-path writes */
+  focusedSessionId?: string | null;
   initialLocation?: { hostId: string; path: string } | null;
   onInitialLocationApplied?: (location: { hostId: string; path: string }) => void;
   onCurrentPathChange?: (location: { hostId: string; connectionKey: string; path: string }) => void;
@@ -164,6 +167,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
   sftpDefaultViewMode,
   activeHost,
   activeSessionId,
+  focusedSessionId = null,
   initialLocation,
   onInitialLocationApplied,
   onCurrentPathChange,
@@ -896,6 +900,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
         sftpDefaultViewMode={sftpDefaultViewMode}
         activeHost={activeHost}
         activeSessionId={activeSessionId}
+        focusedSessionId={focusedSessionId}
         showWorkspaceHostHeader={showWorkspaceHostHeader}
         renderOverlays={renderOverlays}
         sftpDoubleClickBehavior={sftpDoubleClickBehavior}
@@ -940,6 +945,7 @@ type SftpSidePanelInteractiveBodyProps = {
   sftpDefaultViewMode: "list" | "tree";
   activeHost: Host | null;
   activeSessionId?: string | null;
+  focusedSessionId?: string | null;
   showWorkspaceHostHeader: boolean;
   renderOverlays: boolean;
   sftpDoubleClickBehavior: "open" | "transfer";
@@ -984,6 +990,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   sftpDefaultViewMode,
   activeHost,
   activeSessionId = null,
+  focusedSessionId = null,
   showWorkspaceHostHeader,
   renderOverlays,
   hotkeyScheme,
@@ -1265,13 +1272,17 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
 
   const locatePathInTerminalContext = useMemo(() => {
     const connection = sftp.leftPane.connection;
-    const session = sessions.find((candidate) => candidate.id === activeSessionId) ?? null;
+    const locateSessionId = resolveLocateSftpPathSessionId({
+      activeSessionId,
+      focusedSessionId,
+    });
+    const session = sessions.find((candidate) => candidate.id === locateSessionId) ?? null;
     const host = displayHost ?? activeHost;
     const isNetworkDevice = host?.deviceType === "network"
       || classifyDistroId(host?.distro) === "network-device";
     return {
       path: connection?.currentPath,
-      sessionId: activeSessionId,
+      sessionId: locateSessionId,
       sessionStatus: session?.status,
       sessionHostId: session?.hostId,
       sftpHostId: connection?.hostId,
@@ -1281,11 +1292,18 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       isNetworkDevice,
       moshEnabled: session?.moshEnabled,
       etEnabled: session?.etEnabled,
+      sessionHostname: session?.hostname,
+      sessionUsername: session?.username,
+      sessionPort: session?.port,
+      sftpHostname: host?.hostname,
+      sftpUsername: host?.username,
+      sftpPort: host?.port,
     };
   }, [
     activeHost,
     activeSessionId,
     displayHost,
+    focusedSessionId,
     sessions,
     sftp.leftPane.connection,
   ]);
@@ -1294,13 +1312,17 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
 
   const handleLocatePathInTerminal = useCallback(() => {
     const connection = sftpRef.current.leftPane.connection;
-    const session = sessions.find((candidate) => candidate.id === activeSessionId) ?? null;
+    const locateSessionId = resolveLocateSftpPathSessionId({
+      activeSessionId,
+      focusedSessionId,
+    });
+    const session = sessions.find((candidate) => candidate.id === locateSessionId) ?? null;
     const host = displayHost ?? activeHost;
     const isNetworkDevice = host?.deviceType === "network"
       || classifyDistroId(host?.distro) === "network-device";
     const action = resolveLocateSftpPathInTerminalAction({
       path: connection?.currentPath,
-      sessionId: activeSessionId,
+      sessionId: locateSessionId,
       sessionStatus: session?.status,
       sessionHostId: session?.hostId,
       sftpHostId: connection?.hostId,
@@ -1310,6 +1332,12 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       isNetworkDevice,
       moshEnabled: session?.moshEnabled,
       etEnabled: session?.etEnabled,
+      sessionHostname: session?.hostname,
+      sessionUsername: session?.username,
+      sessionPort: session?.port,
+      sftpHostname: host?.hostname,
+      sftpUsername: host?.username,
+      sftpPort: host?.port,
     });
     if (!action) return;
     // Never inject cd into a password/sudo prompt (same guard as snippets/broadcast).
@@ -1320,6 +1348,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     activeHost,
     activeSessionId,
     displayHost,
+    focusedSessionId,
     onRequestTerminalFocus,
     sessions,
     sftpRef,
@@ -1802,6 +1831,7 @@ const sidePanelAreEqual = (prev: SftpSidePanelProps, next: SftpSidePanelProps): 
   prev.sftpDefaultViewMode === next.sftpDefaultViewMode &&
   prev.activeHost === next.activeHost &&
   prev.activeSessionId === next.activeSessionId &&
+  prev.focusedSessionId === next.focusedSessionId &&
   prev.showWorkspaceHostHeader === next.showWorkspaceHostHeader &&
   prev.isVisible === next.isVisible &&
   prev.renderOverlays === next.renderOverlays &&
