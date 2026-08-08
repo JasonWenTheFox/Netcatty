@@ -28,13 +28,11 @@ let refCount = 0;
 let startingPromise = null;
 
 function getTempBase() {
-  try {
-    const tempDirBridge = require("./tempDirBridge.cjs");
-    if (typeof tempDirBridge.getTempDir === "function") return tempDirBridge.getTempDir();
-  } catch {
-    // fall through
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  if (typeof tempDirBridge.getTempDir !== "function") {
+    throw new Error("FIDO agent requires Netcatty temp directory (tempDirBridge unavailable).");
   }
-  return require("node:os").tmpdir();
+  return tempDirBridge.getTempDir();
 }
 
 function resolveSshAgentBinary(env = process.env) {
@@ -311,4 +309,6 @@ module.exports = {
   shutdownFidoAgentSubsystem,
   installFidoAgentQuitHook,
   isAgentLive,
+  // exposed for tests
+  getTempBase,
 };

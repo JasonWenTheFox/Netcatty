@@ -84,13 +84,11 @@ let resolveWebContents = null;
 const askpassLeases = new Map();
 
 function getTempBase() {
-  try {
-    const tempDirBridge = require("./tempDirBridge.cjs");
-    if (typeof tempDirBridge.getTempDir === "function") return tempDirBridge.getTempDir();
-  } catch {
-    // fall through
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  if (typeof tempDirBridge.getTempDir !== "function") {
+    throw new Error("FIDO askpass requires Netcatty temp directory (tempDirBridge unavailable).");
   }
-  return require("node:os").tmpdir();
+  return tempDirBridge.getTempDir();
 }
 
 function isWindowsNamedPipePath(socketPath) {
@@ -293,6 +291,7 @@ module.exports = {
   resolveFidoAskpassSocketPath,
   isWindowsNamedPipePath,
   // exposed for tests
+  getTempBase,
   handleAskpassClient,
   FIDO_ASKPASS_SCRIPT,
   setResolveWebContentsForTests(resolver) {

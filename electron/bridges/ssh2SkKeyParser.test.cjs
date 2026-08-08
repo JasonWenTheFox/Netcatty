@@ -2,7 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseKey } = require("ssh2/lib/protocol/keyParser.js");
+const {
+  parseKey,
+  getOpenSSHCertSignatureAlgorithm,
+} = require("ssh2/lib/protocol/keyParser.js");
 
 function buildSkEd25519PublicLine() {
   const type = Buffer.from("sk-ssh-ed25519@openssh.com");
@@ -84,8 +87,33 @@ function buildSkEd25519CertPublicLine() {
 
 test("ssh2 parseKey accepts OpenSSH-order SK certificate public keys", () => {
   const line = buildSkEd25519CertPublicLine();
+  const certBlob = Buffer.from(line.split(/\s+/)[1], "base64");
   const key = parseKey(line);
   assert.equal(key instanceof Error, false, key instanceof Error ? key.message : "");
   assert.equal(key.type, "sk-ssh-ed25519-cert-v01@openssh.com");
   assert.equal(key.getApplication?.(), "ssh:");
+  assert.deepEqual(key.getPublicSSH(), certBlob);
+});
+
+test("ssh2 maps SK certificate identities to full wire signature algorithms", () => {
+  assert.equal(
+    getOpenSSHCertSignatureAlgorithm("sk-ssh-ed25519-cert-v01@openssh.com"),
+    "sk-ssh-ed25519@openssh.com",
+  );
+  assert.equal(
+    getOpenSSHCertSignatureAlgorithm("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+  );
+  assert.equal(
+    getOpenSSHCertSignatureAlgorithm("rsa-sha2-256-cert-v01@openssh.com"),
+    "rsa-sha2-256",
+  );
+  assert.equal(
+    getOpenSSHCertSignatureAlgorithm("ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+    "ecdsa-sha2-nistp256",
+  );
+  assert.equal(
+    getOpenSSHCertSignatureAlgorithm("sk-ssh-ed25519@openssh.com"),
+    "sk-ssh-ed25519@openssh.com",
+  );
 });

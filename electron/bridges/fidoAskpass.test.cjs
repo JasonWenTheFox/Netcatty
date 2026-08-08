@@ -7,6 +7,7 @@ const {
   buildFidoAskpassEnv,
   ensureFidoAskpass,
   shutdownFidoAskpass,
+  getTempBase,
 } = require("./fidoAskpass.cjs");
 const fs = require("node:fs");
 
@@ -19,6 +20,13 @@ test("buildFidoAskpassEnv creates helper artifacts", () => {
   const artifacts = ensureFidoAskpass();
   assert.equal(artifacts.wrapperPath, env.SSH_ASKPASS);
   shutdownFidoAskpass();
+});
+
+test("getTempBase uses Netcatty managed temp dir (no os.tmpdir fallback)", () => {
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const managed = tempDirBridge.getTempDir();
+  assert.equal(getTempBase(), managed);
+  assert.match(managed, /Netcatty/i);
 });
 
 test("classifyAskpassPrompt re-export works", () => {

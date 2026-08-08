@@ -9,6 +9,7 @@ const {
   getActiveFidoAgentSocket,
   shutdownFidoAgentSubsystem,
   acquireFidoAgent,
+  getTempBase,
 } = require("./fidoAgentManager.cjs");
 
 test("parseAgentStdout extracts sock and pid", () => {
@@ -17,6 +18,13 @@ test("parseAgentStdout extracts sock and pid", () => {
   );
   assert.equal(parsed.socketPath, "/tmp/agent.123");
   assert.equal(parsed.agentPid, 9999);
+});
+
+test("getTempBase uses Netcatty managed temp dir (no os.tmpdir fallback)", () => {
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const managed = tempDirBridge.getTempDir();
+  assert.equal(getTempBase(), managed);
+  assert.match(managed, /Netcatty/i);
 });
 
 test("release without acquire is safe", () => {
