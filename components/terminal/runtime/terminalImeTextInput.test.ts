@@ -135,6 +135,28 @@ test("createXTermRuntime defers ASCII punctuation keydowns to insertText", () =>
     "encodeKittyCompositionText(kittyKeyboardMode, text)",
   );
   assert.ok(unchangedIdx >= 0 && compositionIdx > unchangedIdx);
+  // Even when the source writes the literal glyph, broadcast peers still get
+  // the deferred physical key (with legacy fallback), not composition text.
+  const armIdx = runtimeSource.indexOf("const armImeTextInputDeferral");
+  assert.ok(armIdx >= 0);
+  const armSlice = runtimeSource.slice(armIdx, armIdx + 700);
+  assert.match(
+    armSlice,
+    /imeTextInputDeferredKittyEvent = toKittyKeyboardEvent\(event\)/,
+  );
+  assert.doesNotMatch(
+    armSlice,
+    /imeTextInputDeferredKittyEvent = kittyKeyboardProtocolEnabled/,
+  );
+  const unchangedFallbackIdx = runtimeSource.indexOf(
+    "isUnchangedDeferredImeTextInput(deferredKey, text))",
+    unchangedIdx + 1,
+  );
+  assert.ok(unchangedFallbackIdx > unchangedIdx);
+  assert.match(
+    runtimeSource.slice(unchangedFallbackIdx, unchangedFallbackIdx + 900),
+    /handleTerminalInputData\(text\);[\s\S]*broadcastKittyInput\(\{[\s\S]*kind: "key",[\s\S]*fallbackToLegacy: true,/,
+  );
   // Remap path must fall back to literal text when composition encoding is null
   // (report-all without associated text).
   assert.match(

@@ -1245,11 +1245,35 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     }
 
     if (isUnchangedDeferredImeTextInput(deferredKey, text)) {
+      // Source may write the literal glyph (Kitty off / no sequence), but
+      // broadcast peers still need the physical key + paired release so
+      // report-all/event-type targets do not receive composition text.
       if (ctx.isBroadcastEnabledRef.current && ctx.onBroadcastInputRef.current) {
         suppressNextTerminalDataBroadcast = true;
       }
       handleTerminalInputData(text);
-      broadcastKittyInput({ kind: "text", text });
+      if (deferredKittyEvent) {
+        const pressEvent: KittyKeyboardEvent = {
+          ...deferredKittyEvent,
+          type: "keydown",
+        };
+        const identity = pressEvent.code || pressEvent.key;
+        const forwarded = broadcastKittyInput({
+          kind: "key",
+          event: pressEvent,
+          fallbackToLegacy: true,
+        });
+        if (forwarded) {
+          upsertKittyKeyboardForwardedPress(
+            broadcastForwardedKeys,
+            identity,
+            pressEvent,
+            forwarded.targetSessionIds,
+          );
+        }
+      } else {
+        broadcastKittyInput({ kind: "text", text });
+      }
       return;
     }
 
@@ -1277,9 +1301,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     // Wait for insertText (full-width) before keyup; keyup/blur flushes ASCII
     // when the IME did not remap the key (English punctuation mode).
     imeTextInputDeferredKey = event.key;
-    imeTextInputDeferredKittyEvent = kittyKeyboardProtocolEnabled
-      ? toKittyKeyboardEvent(event)
-      : null;
+    // Keep the physical key even when the source is not in Kitty mode so
+    // broadcast targets can still receive paired key events.
+    imeTextInputDeferredKittyEvent = toKittyKeyboardEvent(event);
   };
 
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
