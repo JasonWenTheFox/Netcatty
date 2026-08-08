@@ -93,6 +93,42 @@ test('SFTP tree filter does not keep ancestors for hidden-only descendant matche
   );
 });
 
+test('SFTP tree filter does not keep ancestors for collapsed descendant matches', () => {
+  // Collapsed directories keep children in cache, but buildTree does not render
+  // them. getChildren must treat collapsed paths as unavailable or the parent
+  // stays visible with no matching row.
+  const childrenByPath = new Map<string, ReturnType<typeof entry>[]>([
+    ['/project/src', [entry('README.md'), entry('utils.ts')]],
+  ]);
+  const expandedPaths = new Set<string>();
+  const root = [entry('src', 'directory'), entry('app.js')];
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: (path) => {
+        if (!expandedPaths.has(path)) return undefined;
+        return childrenByPath.get(path);
+      },
+    }).map(({ name }) => name),
+    [],
+  );
+  expandedPaths.add('/project/src');
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren: (path) => {
+        if (!expandedPaths.has(path)) return undefined;
+        return childrenByPath.get(path);
+      },
+    }).map(({ name }) => name),
+    ['src'],
+  );
+});
+
 test('SFTP tree view applies the tree name filter to visible rows', () => {
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   assert.match(
@@ -102,7 +138,11 @@ test('SFTP tree view applies the tree name filter to visible rows', () => {
   assert.match(treeSource, /pane\.showHiddenFiles\}:\$\{pane\.filter\}/);
   assert.match(
     treeSource,
-    /getChildren:\s*\(entryPath\)\s*=>\s*\{[\s\S]*?filterHiddenFiles\([\s\S]*?pane\.showHiddenFiles/,
+    /getChildren:\s*\(entryPath\)\s*=>\s*\{[\s\S]*?expandedPaths\.has\(entryPath\)[\s\S]*?filterHiddenFiles\([\s\S]*?pane\.showHiddenFiles/,
+  );
+  assert.match(
+    treeSource,
+    /prevExpandedPathsRef[\s\S]*?sortedChildrenCacheRef\.current\.clear\(\)/,
   );
 });
 

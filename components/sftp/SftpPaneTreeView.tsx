@@ -231,6 +231,13 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
     prevSortKeyRef.current = sortKey;
     sortedChildrenCacheRef.current.clear();
   }
+  // Ancestor keep decisions follow expandedPaths; invalidate sorted snapshots
+  // when expand/collapse changes which descendants are visible to the filter.
+  const prevExpandedPathsRef = useRef(expandedPaths);
+  if (prevExpandedPathsRef.current !== expandedPaths) {
+    prevExpandedPathsRef.current = expandedPaths;
+    sortedChildrenCacheRef.current.clear();
+  }
   useEffect(() => {
     const currentPath = pane.connection?.currentPath ?? '';
     if (!currentPath) {
@@ -492,6 +499,9 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
             joinPath,
             isDirectory: isNavigableDirectory,
             getChildren: (entryPath) => {
+              // Match buildTree visibility: collapsed directories do not render
+              // children, so cached descendants must not keep ancestors either.
+              if (!expandedPaths.has(entryPath)) return undefined;
               const children = childrenCacheRef.current.get(entryPath);
               if (!children) return undefined;
               // Match visible-row hidden policy so ancestor keep decisions
