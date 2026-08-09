@@ -652,8 +652,12 @@ export const useVaultState = () => {
 
         ++hostsWriteVersion.current;
         ++snippetsWriteVersion.current;
-        localStorageAdapter.write(STORAGE_KEY_HOSTS, encryptedHosts);
-        localStorageAdapter.write(STORAGE_KEY_SNIPPETS, result.snippets);
+        // Journaled pair write: a partial hosts/snippets persist would drop
+        // login/connect bindings on restart while leaving the snippets behind.
+        commitPluginImporterTransaction(localStorageAdapter, [
+          [STORAGE_KEY_HOSTS, encryptedHosts],
+          [STORAGE_KEY_SNIPPETS, result.snippets],
+        ]);
         hostsRef.current = result.hosts;
         snippetsRef.current = result.snippets;
         setHosts(result.hosts);

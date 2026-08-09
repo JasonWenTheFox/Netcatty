@@ -16,11 +16,16 @@ test("deleteSelectedSnippets merges into persisted vault under the shared lock",
   );
   assert.match(
     source,
-    /localStorageAdapter\.write\(STORAGE_KEY_HOSTS, encryptedHosts\)[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, result\.snippets\)/,
+    /deleteSelectedSnippets[\s\S]*commitPluginImporterTransaction\(localStorageAdapter, \[[\s\S]*STORAGE_KEY_HOSTS[\s\S]*STORAGE_KEY_SNIPPETS/,
   );
   // Must not rebuild hosts from a per-window in-memory snapshot (popup race).
   assert.doesNotMatch(
     source,
     /deleteSelectedSnippetsFromVault\(\s*snippetsRef\.current\s*,\s*hostsRef\.current/,
+  );
+  // Paired writes must not publish in-memory state if only one key lands.
+  assert.doesNotMatch(
+    source,
+    /deleteSelectedSnippets[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_HOSTS, encryptedHosts\)[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS/,
   );
 });
