@@ -21,6 +21,67 @@ function publicKeyBlob(key) {
   }
 }
 
+/**
+ * Shared (e.g. Windows system-pipe) agent identity holds. Concurrent sessions
+ * that materialize the same SK key get unique temp paths, so cleanup must be
+ * keyed by public identity blob and only `ssh-add -d` when the last user leaves.
+ * @type {Map<string, { refCount: number, identityPath: string, cleanupDir: string|null }>}
+ */
+const sharedAgentIdentityRefs = new Map();
+
+/**
+ * @param {string} key Public identity blob (or path fallback)
+ * @param {string} identityPath Path suitable for `ssh-add -d`
+ * @param {string|null} [cleanupDir] Temp dir to remove with the last release
+ */
+function retainSharedAgentIdentity(key, identityPath, cleanupDir = null) {
+  if (typeof key !== "string" || !key || typeof identityPath !== "string" || !identityPath) {
+    return null;
+  }
+  const existing = sharedAgentIdentityRefs.get(key);
+  if (existing) {
+    existing.refCount += 1;
+    return existing;
+  }
+  const entry = {
+    refCount: 1,
+    identityPath,
+    cleanupDir: typeof cleanupDir === "string" && cleanupDir ? cleanupDir : null,
+  };
+  sharedAgentIdentityRefs.set(key, entry);
+  return entry;
+}
+
+/**
+ * @param {string} key
+ * @returns {{ shouldRemove: boolean, identityPath: string|null, cleanupDir: string|null }}
+ */
+function releaseSharedAgentIdentity(key) {
+  if (typeof key !== "string" || !key) {
+    return { shouldRemove: false, identityPath: null, cleanupDir: null };
+  }
+  const existing = sharedAgentIdentityRefs.get(key);
+  if (!existing) return { shouldRemove: false, identityPath: null, cleanupDir: null };
+  existing.refCount -= 1;
+  if (existing.refCount > 0) {
+    return {
+      shouldRemove: false,
+      identityPath: existing.identityPath,
+      cleanupDir: existing.cleanupDir,
+    };
+  }
+  sharedAgentIdentityRefs.delete(key);
+  return {
+    shouldRemove: true,
+    identityPath: existing.identityPath,
+    cleanupDir: existing.cleanupDir,
+  };
+}
+
+function resetSharedAgentIdentityRefsForTests() {
+  sharedAgentIdentityRefs.clear();
+}
+
 function resolveIdentityPath(rawPath, context = {}) {
   if (typeof rawPath !== "string") return "";
   const env = context.env ?? process.env;
@@ -307,6 +368,8 @@ async function prepareSystemSshAgent(options, injected = {}) {
   // set) into the agent so ssh2 can request hardware signatures.
   /** @type {string[]} Paths newly ssh-add'd this preparation (for shared-agent cleanup). */
   const newlyLoadedIdentityPaths = [];
+  /** @type {Array<{ key: string, identityPath: string }>} Identities this prep depends on. */
+  const sharedAgentIdentities = [];
   if (resolvedIdentityPaths.length > 0) {
     let loadedBlobs = new Set();
     try {
@@ -319,15 +382,21 @@ async function prepareSystemSshAgent(options, injected = {}) {
 
     for (const identityPath of resolvedIdentityPaths) {
       const pubPath = identityPath.endsWith(".pub") ? identityPath : `${identityPath}.pub`;
+      /** @type {string|null} */
+      let blob = null;
       let alreadyLoaded = false;
       try {
         const pub = await deps.readFile(pubPath, "utf8");
-        const blob = publicKeyBlob(pub);
+        blob = publicKeyBlob(pub);
         if (blob && loadedBlobs.has(blob)) alreadyLoaded = true;
       } catch {
         // No .pub selector — still attempt ssh-add when requested.
       }
-      if (alreadyLoaded) continue;
+      if (alreadyLoaded) {
+        // Still retain for shared-agent refcounting even though we skip ssh-add.
+        sharedAgentIdentities.push({ key: blob || identityPath, identityPath });
+        continue;
+      }
       if (!(await shouldLoadIdentityFileIntoAgent(identityPath, options, deps))) continue;
       try {
         const args = [identityPath];
@@ -341,6 +410,16 @@ async function prepareSystemSshAgent(options, injected = {}) {
           });
         }
         newlyLoadedIdentityPaths.push(identityPath);
+        if (!blob) {
+          try {
+            const pub = await deps.readFile(pubPath, "utf8");
+            blob = publicKeyBlob(pub);
+          } catch {
+            // path-keyed fallback below
+          }
+        }
+        if (blob) loadedBlobs.add(blob);
+        sharedAgentIdentities.push({ key: blob || identityPath, identityPath });
         deps.log?.("Loaded identity into SSH agent", { identityPath });
       } catch (error) {
         deps.log?.("Could not load identity into SSH agent", {
@@ -386,6 +465,9 @@ async function prepareSystemSshAgent(options, injected = {}) {
   if (newlyLoadedIdentityPaths.length > 0) {
     wrapped._netcattyNewlyLoadedIdentityPaths = newlyLoadedIdentityPaths;
   }
+  if (sharedAgentIdentities.length > 0) {
+    wrapped._netcattySharedAgentIdentities = sharedAgentIdentities;
+  }
   return wrapped;
 }
 
@@ -397,4 +479,7 @@ module.exports = {
   resolveSshAddBinary,
   shouldLoadFromMacKeychain,
   shouldLoadIdentityFileIntoAgent,
+  retainSharedAgentIdentity,
+  releaseSharedAgentIdentity,
+  resetSharedAgentIdentityRefsForTests,
 };

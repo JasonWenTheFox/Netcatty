@@ -123,6 +123,9 @@ test("prepareSystemSshAgent tracks newly loaded identities for shared-agent clea
 
   assert.deepEqual(sshAddCalls, [[identityPath]]);
   assert.deepEqual(prepared._netcattyNewlyLoadedIdentityPaths, [identityPath]);
+  assert.deepEqual(prepared._netcattySharedAgentIdentities, [
+    { key: publicKeyBlob(pubLine), identityPath },
+  ]);
 });
 
 test("prepareSystemSshAgent does not mark already-loaded identities as newly loaded", async () => {
@@ -170,4 +173,32 @@ test("prepareSystemSshAgent does not mark already-loaded identities as newly loa
 
   assert.deepEqual(sshAddCalls, []);
   assert.equal(prepared._netcattyNewlyLoadedIdentityPaths, undefined);
+  assert.deepEqual(prepared._netcattySharedAgentIdentities, [
+    { key: blob, identityPath },
+  ]);
+});
+
+test("retainSharedAgentIdentity reference-counts identical public identities", () => {
+  const {
+    retainSharedAgentIdentity,
+    releaseSharedAgentIdentity,
+    resetSharedAgentIdentityRefsForTests,
+  } = require("./systemSshAgent.cjs");
+  resetSharedAgentIdentityRefsForTests();
+  try {
+    retainSharedAgentIdentity("blob-1", "/tmp/a");
+    retainSharedAgentIdentity("blob-1", "/tmp/b");
+    assert.deepEqual(releaseSharedAgentIdentity("blob-1"), {
+      shouldRemove: false,
+      identityPath: "/tmp/a",
+      cleanupDir: null,
+    });
+    assert.deepEqual(releaseSharedAgentIdentity("blob-1"), {
+      shouldRemove: true,
+      identityPath: "/tmp/a",
+      cleanupDir: null,
+    });
+  } finally {
+    resetSharedAgentIdentityRefsForTests();
+  }
 });

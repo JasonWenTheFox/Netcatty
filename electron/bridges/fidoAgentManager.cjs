@@ -207,8 +207,8 @@ function clearAgentState({ kill = true } = {}) {
  * NETCATTY_FIDO_ASKPASS_LEASE: ssh-sk-helper for later verify-required signing
  * is a descendant of the agent and would inherit that lease, routing a second
  * window's PIN/touch prompt to the starter forever. Callers still receive a
- * per-acquire lease via askpassEnv for ssh-add. Agent-spawned prompts fall
- * through to the shared/focused WebContents resolver in fidoAskpass.
+ * per-acquire lease via askpassEnv for ssh-add. Agent-spawned prompts route to
+ * the last leased signing window in fidoAskpass (not the sticky last acquire).
  * @param {Record<string, string>|null|undefined} askpassEnv
  * @returns {Record<string, string>}
  */

@@ -279,6 +279,7 @@ test("prepareSystemSshAgentForAuth removes newly loaded identities from a shared
   };
 
   try {
+    systemSshAgent.resetSharedAgentIdentityRefsForTests?.();
     const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
     const agent = await prepareSystemSshAgentForAuth({
       useSshAgent: true,
@@ -298,5 +299,104 @@ test("prepareSystemSshAgentForAuth removes newly loaded identities from a shared
     fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
     systemSshAgent.prepareSystemSshAgent = originalPrepare;
     childProcess.execFile = originalExecFile;
+    systemSshAgent.resetSharedAgentIdentityRefsForTests?.();
   }
+});
+
+test("shared Windows agent defers ssh-add -d until the last identity user releases", async () => {
+  const fidoAgentManager = require("./fidoAgentManager.cjs");
+  const fidoAskpass = require("./fidoAskpass.cjs");
+  const systemSshAgent = require("./systemSshAgent.cjs");
+  const childProcess = require("node:child_process");
+  const { publicKeyBlob } = systemSshAgent;
+  const originalAcquire = fidoAgentManager.acquireFidoAgent;
+  const originalRelease = fidoAgentManager.releaseFidoAgent;
+  const originalReleaseLease = fidoAskpass.releaseFidoAskpassLease;
+  const originalPrepare = systemSshAgent.prepareSystemSshAgent;
+  const originalExecFile = childProcess.execFile;
+  const skPub =
+    "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABHNzaDo= test";
+  const blob = publicKeyBlob(skPub);
+  const pathA = "/tmp/netcatty-shared-sk-a";
+  const pathB = "/tmp/netcatty-shared-sk-b";
+  const deleted = [];
+  let generation = 0;
+
+  fidoAgentManager.acquireFidoAgent = async () => {
+    generation += 1;
+    return {
+      socketPath: "\\\\.\\pipe\\openssh-ssh-agent",
+      askpassEnv: {
+        SSH_ASKPASS: "/bin/true",
+        NETCATTY_FIDO_ASKPASS_LEASE: `lease-${generation}`,
+      },
+      owned: false,
+      generation,
+    };
+  };
+  fidoAgentManager.releaseFidoAgent = () => {};
+  fidoAskpass.releaseFidoAskpassLease = () => {};
+  let prepCount = 0;
+  systemSshAgent.prepareSystemSshAgent = async () => {
+    prepCount += 1;
+    const identityPath = prepCount === 1 ? pathA : pathB;
+    return {
+      getIdentities: (cb) => cb(null, []),
+      sign: (_k, _d, _o, cb) => cb(new Error("unused")),
+      _netcattyNewlyLoadedIdentityPaths: [identityPath],
+      _netcattySharedAgentIdentities: [{ key: blob, identityPath }],
+    };
+  };
+  childProcess.execFile = (file, args, opts, cb) => {
+    if (Array.isArray(args) && args[0] === "-d") {
+      deleted.push(args[1]);
+      if (typeof cb === "function") cb(null, "", "");
+      return { kill() {} };
+    }
+    return originalExecFile(file, args, opts, cb);
+  };
+
+  try {
+    systemSshAgent.resetSharedAgentIdentityRefsForTests();
+    const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
+    const agentA = await prepareSystemSshAgentForAuth({
+      useSshAgent: true,
+      useFidoAgent: true,
+      agentPublicKeys: [skPub],
+      loadIdentityFilesIntoAgent: true,
+      identityFilePaths: [pathA],
+    }, "[test-a]");
+    const agentB = await prepareSystemSshAgentForAuth({
+      useSshAgent: true,
+      useFidoAgent: true,
+      agentPublicKeys: [skPub],
+      loadIdentityFilesIntoAgent: true,
+      identityFilePaths: [pathB],
+    }, "[test-b]");
+
+    agentA._releaseNetcattyFidoAgent();
+    assert.deepEqual(deleted, [], "first release must keep the shared identity loaded");
+    agentB._releaseNetcattyFidoAgent();
+    assert.deepEqual(deleted, [pathA], "last release removes the identity via the retained path");
+  } finally {
+    fidoAgentManager.acquireFidoAgent = originalAcquire;
+    fidoAgentManager.releaseFidoAgent = originalRelease;
+    fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
+    systemSshAgent.prepareSystemSshAgent = originalPrepare;
+    childProcess.execFile = originalExecFile;
+    systemSshAgent.resetSharedAgentIdentityRefsForTests();
+  }
+});
+
+test("materializeSkPrivateKeyFile writes companion .pub from publicKey hint", async () => {
+  const pem = makeSkPrivatePem(SK_SSH_ED25519);
+  const result = await materializeSkPrivateKeyFile(pem, {
+    fs,
+    path,
+    tempDirBridge: { getTempDir: () => os.tmpdir() },
+    publicKey: skPub,
+  });
+  assert.ok(result?.keyPath);
+  assert.equal(fs.readFileSync(`${result.keyPath}.pub`, "utf8").trim(), skPub.trim());
+  fs.rmSync(result.cleanupDir, { recursive: true, force: true });
 });

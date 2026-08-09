@@ -1039,6 +1039,19 @@ function resolvePreparedAgentSocket(agent, options = {}) {
  * Returns the temp path (or null). Caller should clean up when done if needed;
  * agent retains the identity after add.
  */
+function deriveSkPublicKeyLine(privateKey) {
+  try {
+    const parsed = sshUtils.parseKey(privateKey);
+    if (parsed instanceof Error || typeof parsed?.getPublicSSH !== "function") return null;
+    const type = typeof parsed.type === "string" ? parsed.type : "";
+    const blob = parsed.getPublicSSH();
+    if (!type || !blob) return null;
+    return `${type} ${Buffer.from(blob).toString("base64")} netcatty-sk`;
+  } catch {
+    return null;
+  }
+}
+
 async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
   if (!looksLikeSkOpenSshMaterial(privateKey)) return null;
   const fsMod = injected.fs || fs;
@@ -1056,6 +1069,13 @@ async function materializeSkPrivateKeyFile(privateKey, injected = {}) {
   const dir = await fsMod.promises.mkdtemp(pathMod.join(baseDir, "netcatty-sk-key-"));
   const keyPath = pathMod.join(dir, "id_sk");
   await fsMod.promises.writeFile(keyPath, privateKey, { mode: 0o600 });
+  // Companion .pub lets shared-agent prep recognize an already-loaded identity
+  // across unique per-session temp paths (refcount cleanup keys on the blob).
+  const publicKeyHint = typeof injected.publicKey === "string" ? injected.publicKey.trim() : "";
+  const publicKeyLine = publicKeyHint || deriveSkPublicKeyLine(privateKey);
+  if (publicKeyLine) {
+    await fsMod.promises.writeFile(`${keyPath}.pub`, `${publicKeyLine}\n`, { mode: 0o600 });
+  }
   const certificate = typeof injected.certificate === "string" ? injected.certificate.trim() : "";
   if (certificate) {
     // OpenSSH ssh-add auto-loads `<key>-cert.pub` next to the private handle.
@@ -1161,11 +1181,15 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   const identityFilePaths = Array.isArray(options.identityFilePaths)
     ? [...options.identityFilePaths]
     : [];
+  const publicKeyHint = Array.isArray(options.agentPublicKeys)
+    ? options.agentPublicKeys.find((key) => looksLikeSkOpenSshMaterial(key))
+    : null;
   let skTempCleanup = null;
   if (looksLikeSkOpenSshMaterial(options.privateKey)) {
     try {
       const materialized = await materializeSkPrivateKeyFile(options.privateKey, {
         certificate: options.certificate,
+        publicKey: publicKeyHint,
       });
       if (materialized?.keyPath) {
         identityFilePaths.push(materialized.keyPath);
@@ -1198,6 +1222,7 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
         if (!looksLikeSkOpenSshMaterial(privateKeyText)) continue;
         const materialized = await materializeSkPrivateKeyFile(privateKeyText, {
           certificate: options.certificate,
+          publicKey: publicKeyHint,
         });
         if (materialized?.keyPath) {
           identityFilePaths.push(materialized.keyPath);
@@ -1214,35 +1239,45 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
 
   /** @type {string[]} */
   let newlyLoadedIdentityPaths = [];
-  /** @type {string|null} */
-  let deferredSkTempCleanup = null;
+  /** @type {Array<{ key: string, identityPath: string }>} */
+  let sharedAgentIdentities = [];
   let fidoResourcesReleased = false;
   const releaseAcquiredFidoResources = () => {
     if (fidoResourcesReleased) return;
     fidoResourcesReleased = true;
-    // Shared Windows system agent: remove identities we added so vault keys do
-    // not remain available to unrelated agent clients after disconnect.
-    if (!ownedFidoAgent && newlyLoadedIdentityPaths.length > 0 && socketPath) {
-      const { resolveSshAddBinary } = require("./systemSshAgent.cjs");
+    // Shared Windows system agent: drop our hold and only ssh-add -d when this
+    // was the last session still using that public identity.
+    if (!ownedFidoAgent && sharedAgentIdentities.length > 0 && socketPath) {
+      const {
+        resolveSshAddBinary,
+        releaseSharedAgentIdentity,
+      } = require("./systemSshAgent.cjs");
       const sshAdd = fidoSshAddPath || resolveSshAddBinary(process.platform, process.env);
-      for (const identityPath of newlyLoadedIdentityPaths) {
-        try {
-          childProcess.execFile(
-            sshAdd,
-            ["-d", identityPath],
-            {
-              timeout: 5000,
-              windowsHide: true,
-              env: {
-                ...process.env,
-                SSH_AUTH_SOCK: socketPath,
-                SSH_ASKPASS_REQUIRE: "never",
+      for (const entry of sharedAgentIdentities) {
+        const { shouldRemove, identityPath, cleanupDir } = releaseSharedAgentIdentity(entry.key);
+        if (!shouldRemove) continue;
+        if (identityPath) {
+          try {
+            childProcess.execFile(
+              sshAdd,
+              ["-d", identityPath],
+              {
+                timeout: 5000,
+                windowsHide: true,
+                env: {
+                  ...process.env,
+                  SSH_AUTH_SOCK: socketPath,
+                  SSH_ASKPASS_REQUIRE: "never",
+                },
               },
-            },
-            () => {},
-          );
-        } catch {
-          // ignore
+              () => {},
+            );
+          } catch {
+            // ignore
+          }
+        }
+        if (cleanupDir) {
+          fs.promises.rm(cleanupDir, { recursive: true, force: true }).catch(() => {});
         }
       }
     }
@@ -1261,10 +1296,6 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       }
     } catch {
       // ignore
-    }
-    if (deferredSkTempCleanup) {
-      fs.promises.rm(deferredSkTempCleanup, { recursive: true, force: true }).catch(() => {});
-      deferredSkTempCleanup = null;
     }
   };
 
@@ -1301,8 +1332,27 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       newlyLoadedIdentityPaths = Array.isArray(agent._netcattyNewlyLoadedIdentityPaths)
         ? agent._netcattyNewlyLoadedIdentityPaths
         : [];
+      sharedAgentIdentities = Array.isArray(agent._netcattySharedAgentIdentities)
+        ? agent._netcattySharedAgentIdentities
+        : newlyLoadedIdentityPaths.map((identityPath) => ({
+          key: identityPath,
+          identityPath,
+        }));
+      if (!ownedFidoAgent && sharedAgentIdentities.length > 0) {
+        const { retainSharedAgentIdentity } = require("./systemSshAgent.cjs");
+        for (const entry of sharedAgentIdentities) {
+          const cleanupDir = skTempCleanup
+            && typeof entry.identityPath === "string"
+            && entry.identityPath.startsWith(skTempCleanup)
+            ? skTempCleanup
+            : null;
+          retainSharedAgentIdentity(entry.key, entry.identityPath, cleanupDir);
+        }
+        // Temp lifetime is owned by the shared-identity refcount now.
+        skTempCleanup = null;
+      }
       const askpassLeaseId = askpassEnv?.NETCATTY_FIDO_ASKPASS_LEASE;
-      if (ownedFidoAgent || askpassLeaseId || newlyLoadedIdentityPaths.length > 0 || acquiredFidoAgent) {
+      if (ownedFidoAgent || askpassLeaseId || sharedAgentIdentities.length > 0 || acquiredFidoAgent) {
         agent._netcattyOwnedFidoAgent = ownedFidoAgent === true;
         // Shared lease; quit/exit hooks hard-kill the owned agent as a backstop.
         agent._releaseNetcattyFidoAgent = releaseAcquiredFidoResources;
@@ -1319,13 +1369,9 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     throw error;
   } finally {
     if (skTempCleanup) {
-      // Owned agents die with their identities. Shared agents need the key path
-      // to remain for ssh-add -d on release, so defer temp cleanup in that case.
-      if (!ownedFidoAgent && newlyLoadedIdentityPaths.length > 0) {
-        deferredSkTempCleanup = skTempCleanup;
-      } else {
-        fs.promises.rm(skTempCleanup, { recursive: true, force: true }).catch(() => {});
-      }
+      // Owned agents die with their identities. Shared agents transfer temp
+      // cleanup into the identity refcount above; anything left here is unused.
+      fs.promises.rm(skTempCleanup, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

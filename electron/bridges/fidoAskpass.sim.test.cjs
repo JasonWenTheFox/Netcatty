@@ -9,7 +9,14 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { spawn } = require("node:child_process");
+const tempDirBridge = require("./tempDirBridge.cjs");
+// Keep the managed temp path short: Unix domain sockets reject long sun_path.
+const managedTemp = fs.mkdtempSync(path.join(path.resolve(__dirname, "../.."), "nc-fido-"));
+const originalGetTempDir = tempDirBridge.getTempDir;
+tempDirBridge.getTempDir = () => managedTemp;
 const {
   buildFidoAskpassEnv,
   ensureFidoAskpass,
@@ -17,6 +24,11 @@ const {
   setResolveWebContentsForTests,
 } = require("./fidoAskpass.cjs");
 const fidoPromptHandler = require("./fidoPromptHandler.cjs");
+
+test.after(() => {
+  tempDirBridge.getTempDir = originalGetTempDir;
+  try { fs.rmSync(managedTemp, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 function runAskpassHelper({ wrapperPath, socketPath, prompt, timeoutMs = 5000, envExtra = {} }) {
   return new Promise((resolve, reject) => {
@@ -180,6 +192,69 @@ test("simulated FIDO askpass touch prompt returns empty confirmation", async () 
 
     assert.equal(result.code, 0, `stderr=${result.stderr}`);
     assert.equal(result.stdout.trim(), "");
+  } finally {
+    setResolveWebContentsForTests(null);
+    shutdownFidoAskpass();
+  }
+});
+
+test("leaseless agent prompts route to the last leased signing window", async () => {
+  const seen = [];
+  const senderA = {
+    id: 501,
+    isDestroyed: () => false,
+    send(_channel, payload) {
+      seen.push(501);
+      queueMicrotask(() => {
+        fidoPromptHandler.handleResponse(
+          { sender: { id: 501 } },
+          { requestId: payload.requestId, response: "pin-a", cancelled: false },
+        );
+      });
+    },
+  };
+  const senderB = {
+    id: 502,
+    isDestroyed: () => false,
+    send(_channel, payload) {
+      seen.push(502);
+      queueMicrotask(() => {
+        fidoPromptHandler.handleResponse(
+          { sender: { id: 502 } },
+          { requestId: payload.requestId, response: "pin-b", cancelled: false },
+        );
+      });
+    },
+  };
+
+  // Global / last-acquire resolver is B (terminal-worker has no BrowserWindow).
+  setResolveWebContentsForTests(() => senderB);
+  try {
+    const envA = buildFidoAskpassEnv({ resolveWebContents: () => senderA });
+    buildFidoAskpassEnv({ resolveWebContents: () => senderB });
+    const artifacts = ensureFidoAskpass();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // First: leased ssh-add prompt binds the active signing window to A.
+    const leased = await runAskpassHelper({
+      wrapperPath: artifacts.wrapperPath,
+      socketPath: artifacts.socketPath,
+      prompt: "Enter PIN for authenticator:",
+      envExtra: { NETCATTY_FIDO_ASKPASS_LEASE: envA.NETCATTY_FIDO_ASKPASS_LEASE },
+    });
+    assert.equal(leased.code, 0, `stderr=${leased.stderr}`);
+    assert.equal(leased.stdout.trim(), "pin-a");
+
+    // Then: agent-spawned ssh-sk-helper has no lease; must still reach A, not B.
+    const leaseless = await runAskpassHelper({
+      wrapperPath: artifacts.wrapperPath,
+      socketPath: artifacts.socketPath,
+      prompt: "Enter PIN for authenticator:",
+      envExtra: { NETCATTY_FIDO_ASKPASS_LEASE: "" },
+    });
+    assert.equal(leaseless.code, 0, `stderr=${leaseless.stderr}`);
+    assert.equal(leaseless.stdout.trim(), "pin-a");
+    assert.deepEqual(seen, [501, 501]);
   } finally {
     setResolveWebContentsForTests(null);
     shutdownFidoAskpass();

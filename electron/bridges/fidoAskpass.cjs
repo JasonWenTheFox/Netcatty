@@ -82,6 +82,15 @@ let askpassWrapperPath = null;
 let resolveWebContents = null;
 /** @type {Map<string, () => import("electron").WebContents|null>} */
 const askpassLeases = new Map();
+/**
+ * Last resolver that successfully handled a caller-bound (leased) askpass
+ * prompt. Agent-spawned ssh-sk-helper has no lease after we strip the starter
+ * lease from the shared agent env; route those prompts to this signing window
+ * instead of the sticky last-acquire global resolver (wrong under multi-window
+ * / terminal-worker where BrowserWindow focus is unavailable).
+ * @type {(() => import("electron").WebContents|null)|null}
+ */
+let lastLeasedSigningResolver = null;
 
 function getTempBase() {
   const tempDirBridge = require("./tempDirBridge.cjs");
@@ -134,6 +143,35 @@ function defaultResolveWebContents() {
   return null;
 }
 
+function liveSenderFromResolver(resolver) {
+  if (typeof resolver !== "function") return null;
+  try {
+    const sender = resolver();
+    if (sender && !sender.isDestroyed?.()) return sender;
+  } catch {
+    // ignore dead resolvers
+  }
+  return null;
+}
+
+/**
+ * Resolve the WebContents for agent-spawned (leaseless) askpass prompts.
+ * Prefer the window that most recently completed a leased signing prompt, then
+ * focus / any open window, then the sticky global fallback.
+ */
+function resolveSharedAgentPromptSender() {
+  const fromLastLease = liveSenderFromResolver(lastLeasedSigningResolver);
+  if (fromLastLease) return fromLastLease;
+
+  for (const resolver of askpassLeases.values()) {
+    const sender = liveSenderFromResolver(resolver);
+    if (sender) return sender;
+  }
+
+  return defaultResolveWebContents()
+    || liveSenderFromResolver(resolveWebContents);
+}
+
 function handleAskpassClient(socket) {
   let buf = "";
   socket.setEncoding("utf8");
@@ -152,14 +190,16 @@ function handleAskpassClient(socket) {
     const kind = fidoPromptHandler.classifyAskpassPrompt(prompt);
     const leaseId = typeof msg?.leaseId === "string" ? msg.leaseId : "";
     const leaseResolver = leaseId ? askpassLeases.get(leaseId) : null;
-    // Caller-bound leases (ssh-add) win. Agent-spawned ssh-sk-helper has no
-    // lease (shared agent must not inherit a starter lease) — prefer the
-    // focused window as the active signing caller, then the last registered
-    // resolver / any open window.
-    const sender = leaseResolver
-      ? leaseResolver()
-      : (defaultResolveWebContents()
-        || (typeof resolveWebContents === "function" ? resolveWebContents() : null));
+    // Caller-bound leases (ssh-add) win and mark the active signing window.
+    // Agent-spawned ssh-sk-helper has no lease (shared agent must not inherit a
+    // starter lease) — route to that signing window, not the last acquire.
+    let sender = null;
+    if (leaseResolver) {
+      sender = liveSenderFromResolver(leaseResolver);
+      if (sender) lastLeasedSigningResolver = leaseResolver;
+    } else {
+      sender = resolveSharedAgentPromptSender();
+    }
     if (!sender) {
       socket.end(`${JSON.stringify({ ok: false, error: "no_window" })}\n`);
       return;
@@ -273,7 +313,18 @@ function buildFidoAskpassEnv(options = {}) {
 }
 
 function releaseFidoAskpassLease(leaseId) {
-  if (typeof leaseId === "string" && leaseId) askpassLeases.delete(leaseId);
+  if (typeof leaseId !== "string" || !leaseId) return;
+  const released = askpassLeases.get(leaseId);
+  askpassLeases.delete(leaseId);
+  if (released && lastLeasedSigningResolver === released) {
+    lastLeasedSigningResolver = null;
+    for (const resolver of askpassLeases.values()) {
+      if (liveSenderFromResolver(resolver)) {
+        lastLeasedSigningResolver = resolver;
+        break;
+      }
+    }
+  }
 }
 
 function shutdownFidoAskpass() {
@@ -287,6 +338,7 @@ function shutdownFidoAskpass() {
   askpassScriptPath = null;
   askpassWrapperPath = null;
   askpassLeases.clear();
+  lastLeasedSigningResolver = null;
 }
 
 module.exports = {
