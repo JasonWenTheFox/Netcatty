@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   SK_ECDSA_NISTP256,
   SK_SSH_ED25519,
+  decodeOpenSshPrivateKeyBody,
   detectFidoSshKeyType,
   extractOpenSshPublicKeyType,
   isSkPrivateKey,
@@ -68,4 +69,20 @@ test("detectFidoSshKeyType reads sk algorithm from base64-only private PEM", () 
   const ecPem = makeSkPrivatePem(SK_ECDSA_NISTP256);
   assert.equal(detectFidoSshKeyType({ privateKey: edPem }), "ED25519-SK");
   assert.equal(detectFidoSshKeyType({ privateKey: ecPem }), "ECDSA-SK");
+});
+
+test("decodeOpenSshPrivateKeyBody works without Node Buffer (renderer)", () => {
+  const pem = makeSkPrivatePem(SK_SSH_ED25519);
+  const originalBuffer = globalThis.Buffer;
+  // @ts-expect-error intentional renderer simulation
+  delete globalThis.Buffer;
+  try {
+    assert.equal(typeof globalThis.Buffer, "undefined");
+    const decoded = decodeOpenSshPrivateKeyBody(pem);
+    assert.ok(decoded);
+    assert.equal(decoded.includes(SK_SSH_ED25519), true);
+    assert.equal(detectFidoSshKeyType({ privateKey: pem }), "ED25519-SK");
+  } finally {
+    globalThis.Buffer = originalBuffer;
+  }
 });

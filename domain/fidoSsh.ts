@@ -46,6 +46,30 @@ export const isSkPublicKey = (publicKey: string | undefined | null): boolean =>
   isSkPublicKeyType(extractOpenSshPublicKeyType(publicKey));
 
 /**
+ * Renderer-safe base64 decode. Avoids Node `Buffer`, which is unavailable in
+ * Electron windows with `nodeIntegration: false`.
+ */
+const decodeBase64ToBinaryString = (payload: string): string | null => {
+  const normalized = payload.replace(/\s+/g, "");
+  if (!normalized) return null;
+  try {
+    if (typeof atob === "function") {
+      return atob(normalized);
+    }
+  } catch {
+    // fall through to Node Buffer when present (tests / main)
+  }
+  if (typeof Buffer !== "undefined") {
+    try {
+      return Buffer.from(normalized, "base64").toString("binary");
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+/**
  * Decode OpenSSH private-key PEM body (base64) for algorithm probing.
  * Real sk-* handles only contain `sk-*-@openssh.com` *inside* the base64 payload
  * (`@` is not a base64 alphabet character), so raw-text regex on PEM is insufficient.
@@ -56,11 +80,7 @@ export const decodeOpenSshPrivateKeyBody = (
   if (typeof privateKey !== "string" || !privateKey.trim()) return null;
   const match = OPENSSH_PRIVATE_KEY_RE.exec(privateKey);
   if (!match) return null;
-  try {
-    return Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("binary");
-  } catch {
-    return null;
-  }
+  return decodeBase64ToBinaryString(match[1]);
 };
 
 const skTypeInText = (text: string | undefined | null): FidoSshKeyType | undefined => {

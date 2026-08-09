@@ -113,6 +113,9 @@ function hasSelectedAgentIdentity(options) {
 
 function shouldOfferAgentForLogin(options, connectOpts) {
   const selectedMethod = options?.authMethod;
+  // Path/inline sk-* detection may set useFidoAgent after prepare; honor it for
+  // login auth even when the renderer still sent useSshAgent:false.
+  const forceFidoAgent = options?.useFidoAgent === true && selectedMethod !== "password";
   const hasRestrictedSelectedAgent = selectedMethod === "key"
     && options?.useSshAgent === true
     && options?.identitiesOnly === true
@@ -120,8 +123,8 @@ function shouldOfferAgentForLogin(options, connectOpts) {
   const isStrictMethod = selectedMethod === "password"
     || selectedMethod === "key"
     || selectedMethod === "certificate";
-  return (!isStrictMethod || hasRestrictedSelectedAgent)
-    && options?.useSshAgent !== false
+  return (!isStrictMethod || hasRestrictedSelectedAgent || forceFidoAgent)
+    && (options?.useSshAgent !== false || forceFidoAgent)
     && Boolean(connectOpts?.agent);
 }
 
@@ -1200,6 +1203,20 @@ printf '%s\n' '${scanCompleteMarker}'`;
           }
         }
         const forceSystemAgentForFido = isFidoSkAuth && options.authMethod !== "password";
+        // Propagate detected FIDO state onto options so shouldOfferAgentForLogin
+        // (and later auth decisions) see the same agent intent as preparation.
+        // Path-only IdentityFile SK picks often arrive with useSshAgent:false.
+        if (forceSystemAgentForFido) {
+          options.useSshAgent = true;
+          options.useFidoAgent = true;
+          options.identitiesOnly = options.identitiesOnly === true
+            || Boolean(
+              (Array.isArray(options.agentPublicKeys) && options.agentPublicKeys.length)
+              || (Array.isArray(options.identityFilePaths) && options.identityFilePaths.length),
+            );
+          options.addKeysToAgent = options.addKeysToAgent || "yes";
+          options.loadIdentityFilesIntoAgent = true;
+        }
         const systemAuthAgent = (shouldPrepareSystemAgentForLogin(options) || forceSystemAgentForFido)
           ? await prepareSystemSshAgentForAuth({
             ...options,
