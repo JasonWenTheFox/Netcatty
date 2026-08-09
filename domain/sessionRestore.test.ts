@@ -693,6 +693,20 @@ test("resolveInteractiveTerminalCdIntent quotes path-only cd without session tra
   assert.equal(resolveInteractiveTerminalCdIntent("C:\\Users\\alice"), null);
 });
 
+test("resolveInteractiveTerminalCdIntent rejects control bytes that readline would interpret", () => {
+  // Tab / ESC / Ctrl-U / newline / DEL must not be typed into an interactive PTY.
+  assert.equal(resolveInteractiveTerminalCdIntent("/srv/app\tdir"), null);
+  assert.equal(resolveInteractiveTerminalCdIntent("/srv/app\u001bdir"), null);
+  assert.equal(resolveInteractiveTerminalCdIntent("/srv/app\u0015dir"), null);
+  assert.equal(resolveInteractiveTerminalCdIntent("/srv/app\ndir"), null);
+  assert.equal(resolveInteractiveTerminalCdIntent("/srv/app\u007fdir"), null);
+  // Trailing spaces remain valid POSIX names and must still quote exactly.
+  assert.deepEqual(resolveInteractiveTerminalCdIntent("/srv/project "), {
+    cwd: "/srv/project ",
+    command: "cd -- '/srv/project '",
+  });
+});
+
 test("resolveRestoreCwdIntent captures a one-shot restore command", () => {
   assert.deepEqual(resolveRestoreCwdIntent({
     enabled: true,

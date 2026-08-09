@@ -87,6 +87,8 @@ test("canLocateSftpPathInTerminal rejects ineligible paths", () => {
   assert.equal(canLocateSftpPathInTerminal({ ...base, path: "" }), false);
   assert.equal(canLocateSftpPathInTerminal({ ...base, path: "C:\\Users\\alice" }), false);
   assert.equal(canLocateSftpPathInTerminal({ ...base, path: "relative/path" }), false);
+  assert.equal(canLocateSftpPathInTerminal({ ...base, path: "/srv/app\tdir" }), false);
+  assert.equal(canLocateSftpPathInTerminal({ ...base, path: "/srv/app\u001bdir" }), false);
 });
 
 test("resolveLocateSftpPathInTerminalAction builds a quoted cd payload", () => {
