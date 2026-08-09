@@ -1505,10 +1505,24 @@ export const useVaultState = () => {
         // Invalidate write-version readers, but do not clear snippetsWriteOwnerRef:
         // an in-flight updateSnippets rebases onto this disk snapshot under the
         // vault lock instead of being cancelled (which would drop local edits).
-        // Clear the shared rebase ancestor so a *new* local save after this
-        // event uses the remote snapshot; in-flight saves keep their closure base.
         ++snippetsWriteVersion.current;
-        snippetsWriteBaseRef.current = null;
+        const pendingBase = snippetsWriteBaseRef.current;
+        if (pendingBase !== null) {
+          // A queued local save still owns an outstanding ancestor. Replacing
+          // optimistic state with the remote snapshot (and clearing that base)
+          // would make the next local edit derive from remote-only and drop the
+          // first mutation when it supersedes the queued owner.
+          const merged = normalizeVaultOrder(
+            rebaseSnippetVaultWrite({
+              base: pendingBase,
+              ours: snippetsRef.current,
+              theirs: next,
+            }),
+          );
+          snippetsRef.current = merged;
+          setSnippets(merged);
+          return;
+        }
         snippetsRef.current = next;
         setSnippets(next);
         return;

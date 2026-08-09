@@ -102,3 +102,17 @@ test("updateSnippets keeps the persisted rebase ancestor across superseded saves
     /if \(!persisted\) \{[\s\S]*Snippets could not be saved/,
   );
 });
+
+test("snippet storage events keep queued local edits and their rebase ancestor", () => {
+  // A cross-window write must not clear snippetsWriteBaseRef / replace optimistic
+  // state while a local owner is still queued — the next edit would supersede
+  // that owner from a remote-only snapshot and drop the first local mutation.
+  assert.match(
+    source,
+    /if \(key === STORAGE_KEY_SNIPPETS\) \{[\s\S]*const pendingBase = snippetsWriteBaseRef\.current;\s*if \(pendingBase !== null\) \{[\s\S]*rebaseSnippetVaultWrite\(\{\s*base: pendingBase,\s*ours: snippetsRef\.current,\s*theirs: next,\s*\}\)/,
+  );
+  assert.doesNotMatch(
+    source,
+    /if \(key === STORAGE_KEY_SNIPPETS\) \{[\s\S]*snippetsWriteBaseRef\.current = null;\s*snippetsRef\.current = next/,
+  );
+});

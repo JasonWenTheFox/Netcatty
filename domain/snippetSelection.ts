@@ -71,26 +71,65 @@ function sameIdSequence(left: readonly string[], right: readonly string[]): bool
   return left.every((id, index) => id === right[index]);
 }
 
-/** True when `side` contains an id that was not present on the base ancestor. */
-function hasIdsOutsideBase(
-  side: readonly Snippet[],
-  baseIds: ReadonlySet<string>,
-): boolean {
-  for (const snippet of side) {
-    if (!snippet.id || baseIds.has(snippet.id)) continue;
-    return true;
-  }
-  return false;
-}
-
 function applyPreferredOrder(
   content: Snippet,
   ourItem: Snippet,
   theirItem: Snippet,
-  preferTheirOrder: boolean,
+  preferTheirSharedOrder: boolean,
 ): Snippet {
-  const order = preferTheirOrder ? theirItem.order : ourItem.order;
+  const order = preferTheirSharedOrder ? theirItem.order : ourItem.order;
   return content.order === order ? content : { ...content, order };
+}
+
+/**
+ * Place ids that are new relative to `baseIds` into `result`, preserving each
+ * side's insertion anchors (between left/right neighbors already present).
+ * A trailing insertion (no right neighbor) appends so a local add stays at the
+ * end after an unrelated disk reorder of shared ids.
+ */
+function placeInsertions(
+  result: string[],
+  side: readonly Snippet[],
+  baseIds: ReadonlySet<string>,
+  keep: ReadonlyMap<string, Snippet>,
+): void {
+  const present = new Set(result);
+  for (let index = 0; index < side.length; index += 1) {
+    const id = side[index]?.id;
+    if (!id || !keep.has(id) || baseIds.has(id) || present.has(id)) continue;
+
+    let left: string | null = null;
+    for (let j = index - 1; j >= 0; j -= 1) {
+      const prev = side[j]?.id;
+      if (prev && present.has(prev)) {
+        left = prev;
+        break;
+      }
+    }
+    let right: string | null = null;
+    for (let j = index + 1; j < side.length; j += 1) {
+      const next = side[j]?.id;
+      if (next && present.has(next)) {
+        right = next;
+        break;
+      }
+    }
+
+    if (right === null) {
+      result.push(id);
+    } else if (left === null) {
+      result.splice(result.indexOf(right), 0, id);
+    } else {
+      const leftIdx = result.indexOf(left);
+      const rightIdx = result.indexOf(right);
+      if (leftIdx < rightIdx) {
+        result.splice(rightIdx, 0, id);
+      } else {
+        result.splice(leftIdx + 1, 0, id);
+      }
+    }
+    present.add(id);
+  }
 }
 
 /**
@@ -101,9 +140,9 @@ function applyPreferredOrder(
  * the same id so bulk-delete cannot be resurrected by a stale window write.
  * When an id exists on all sides, preserve a disk-only content edit; both-sides
  * content conflicts prefer the local write (same as sync merge).
- * List order is merged independently: a disk-only reorder or insertion survives
- * an unrelated local content edit or local addition; a local reorder of shared
- * ids still wins over disk (including when both sides reordered shared ids).
+ * List order is merged independently: shared-id reorder picks a backbone, then
+ * each side's insertions are placed by their own anchors so a local append does
+ * not discard a remote mid-list insertion (and the reverse).
  */
 export function rebaseSnippetVaultWrite({
   base,
@@ -145,18 +184,9 @@ export function rebaseSnippetVaultWrite({
     sharedIdSequence(base, baseTheirsIds),
     sharedIdSequence(theirs, baseTheirsIds),
   );
-  const oursHasInsertions = hasIdsOutsideBase(ours, baseIds);
-  const theirsHasInsertions = hasIdsOutsideBase(theirs, baseIds);
-  // Prefer disk order when local did not reorder shared ids and disk either
-  // reordered those ids or inserted while local only edited/kept the list.
-  // Local insertions alone must not block a disk-only shared reorder; concurrent
-  // additions on both sides still prefer ours (then append theirs).
-  const preferTheirOrder =
-    !oursSharedReordered
-    && (
-      theirsSharedReordered
-      || (theirsHasInsertions && !oursHasInsertions)
-    );
+  // Backbone follows disk only for a disk-only shared reorder. Insertions are
+  // merged by anchor below — not by picking one side's entire list order.
+  const preferTheirSharedOrder = !oursSharedReordered && theirsSharedReordered;
 
   for (const id of allIds) {
     if (!id) continue;
@@ -185,12 +215,17 @@ export function rebaseSnippetVaultWrite({
       const theirsChanged =
         snippetContentFingerprint(theirItem) !== snippetContentFingerprint(baseItem);
       if (!oursChanged && theirsChanged) {
-        // Disk-only content edit: keep their body; order follows the side that
-        // actually reordered (disk-only reorder, else local).
-        keep.set(id, applyPreferredOrder(theirItem, ourItem, theirItem, preferTheirOrder));
+        // Disk-only content edit: keep their body; order follows shared reorder.
+        keep.set(
+          id,
+          applyPreferredOrder(theirItem, ourItem, theirItem, preferTheirSharedOrder),
+        );
       } else {
         // Unchanged, ours-only, or both-changed conflict → local content wins.
-        keep.set(id, applyPreferredOrder(ourItem, ourItem, theirItem, preferTheirOrder));
+        keep.set(
+          id,
+          applyPreferredOrder(ourItem, ourItem, theirItem, preferTheirSharedOrder),
+        );
       }
       continue;
     }
@@ -200,21 +235,25 @@ export function rebaseSnippetVaultWrite({
     if (inBase && inOurs && !inTheirs) continue;
   }
 
-  const primary = preferTheirOrder ? theirs : ours;
-  const secondary = preferTheirOrder ? ours : theirs;
-  const ordered: Snippet[] = [];
+  const backboneSide = preferTheirSharedOrder ? theirs : ours;
+  const secondarySide = preferTheirSharedOrder ? ours : theirs;
+  const orderedIds: string[] = [];
   const seen = new Set<string>();
-  for (const snippet of primary) {
-    const kept = keep.get(snippet.id);
-    if (!kept || seen.has(snippet.id)) continue;
-    ordered.push(kept);
-    seen.add(snippet.id);
+  for (const snippet of backboneSide) {
+    const id = snippet.id;
+    if (!id || !keep.has(id) || !baseIds.has(id) || seen.has(id)) continue;
+    orderedIds.push(id);
+    seen.add(id);
   }
-  for (const snippet of secondary) {
-    const kept = keep.get(snippet.id);
-    if (!kept || seen.has(snippet.id)) continue;
+  // Place primary then secondary insertions so each side keeps its anchors.
+  placeInsertions(orderedIds, backboneSide, baseIds, keep);
+  placeInsertions(orderedIds, secondarySide, baseIds, keep);
+
+  const ordered: Snippet[] = [];
+  for (const id of orderedIds) {
+    const kept = keep.get(id);
+    if (!kept) continue;
     ordered.push(kept);
-    seen.add(snippet.id);
   }
   return ordered;
 }

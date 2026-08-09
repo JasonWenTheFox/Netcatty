@@ -262,9 +262,32 @@ test('rebaseSnippetVaultWrite preserves disk insertion position across unrelated
   const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
   assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'x', 'b']);
   assert.equal(merged[0]?.label, 'A edited');
-  assert.equal(merged[0]?.order, 1000);
+  // Insertion anchors drive list position; shared rows keep local order fields
+  // unless shared ids were reordered (call sites renumber via normalizeVaultOrder).
+  assert.equal(merged[1]?.label, 'X');
   assert.equal(merged[1]?.order, 2000);
-  assert.equal(merged[2]?.order, 3000);
+});
+
+test('rebaseSnippetVaultWrite preserves remote insertion anchors alongside local additions', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Local append — must not force whole-list "ours first" ordering.
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+    { id: 'l', label: 'Local', command: 'echo l', order: 3000 },
+  ];
+  // Remote inserted R between A and B.
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'r', label: 'Remote', command: 'echo r', order: 2000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 3000 },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'r', 'b', 'l']);
 });
 
 test('rebaseSnippetVaultWrite preserves disk reorder alongside a local addition', () => {
