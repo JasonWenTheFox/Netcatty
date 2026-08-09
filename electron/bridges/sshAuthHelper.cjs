@@ -1340,16 +1340,24 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
         }));
       if (!ownedFidoAgent && sharedAgentIdentities.length > 0) {
         const { retainSharedAgentIdentity } = require("./systemSshAgent.cjs");
+        let transferredSkTempCleanup = false;
         for (const entry of sharedAgentIdentities) {
           const cleanupDir = skTempCleanup
             && typeof entry.identityPath === "string"
             && entry.identityPath.startsWith(skTempCleanup)
             ? skTempCleanup
             : null;
-          retainSharedAgentIdentity(entry.key, entry.identityPath, cleanupDir);
+          const retained = retainSharedAgentIdentity(entry.key, entry.identityPath, cleanupDir);
+          // Only the first retainer for a public identity adopts staging cleanup.
+          // Later sessions materialize a redundant temp dir that must stay on
+          // skTempCleanup so the finally block can remove it immediately.
+          if (retained?.acceptedCleanup) {
+            transferredSkTempCleanup = true;
+          }
         }
-        // Temp lifetime is owned by the shared-identity refcount now.
-        skTempCleanup = null;
+        if (transferredSkTempCleanup) {
+          skTempCleanup = null;
+        }
       }
       const askpassLeaseId = askpassEnv?.NETCATTY_FIDO_ASKPASS_LEASE;
       if (ownedFidoAgent || askpassLeaseId || sharedAgentIdentities.length > 0 || acquiredFidoAgent) {

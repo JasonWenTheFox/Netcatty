@@ -33,6 +33,9 @@ const sharedAgentIdentityRefs = new Map();
  * @param {string} key Public identity blob (or path fallback)
  * @param {string} identityPath Path suitable for `ssh-add -d`
  * @param {string|null} [cleanupDir] Temp dir to remove with the last release
+ * @returns {{ entry: { refCount: number, identityPath: string, cleanupDir: string|null }, acceptedCleanup: boolean }|null}
+ *   `acceptedCleanup` is true only when this call recorded `cleanupDir` on a new
+ *   map entry. Reuses increment refcount but do not adopt a second staging dir.
  */
 function retainSharedAgentIdentity(key, identityPath, cleanupDir = null) {
   if (typeof key !== "string" || !key || typeof identityPath !== "string" || !identityPath) {
@@ -41,15 +44,17 @@ function retainSharedAgentIdentity(key, identityPath, cleanupDir = null) {
   const existing = sharedAgentIdentityRefs.get(key);
   if (existing) {
     existing.refCount += 1;
-    return existing;
+    // First retainer owns identityPath + cleanupDir for ssh-add -d / rm.
+    return { entry: existing, acceptedCleanup: false };
   }
+  const normalizedCleanup = typeof cleanupDir === "string" && cleanupDir ? cleanupDir : null;
   const entry = {
     refCount: 1,
     identityPath,
-    cleanupDir: typeof cleanupDir === "string" && cleanupDir ? cleanupDir : null,
+    cleanupDir: normalizedCleanup,
   };
   sharedAgentIdentityRefs.set(key, entry);
-  return entry;
+  return { entry, acceptedCleanup: Boolean(normalizedCleanup) };
 }
 
 /**

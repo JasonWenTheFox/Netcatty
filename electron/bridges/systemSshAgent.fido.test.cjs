@@ -421,8 +421,10 @@ test("retainSharedAgentIdentity reference-counts identical public identities", (
   } = require("./systemSshAgent.cjs");
   resetSharedAgentIdentityRefsForTests();
   try {
-    retainSharedAgentIdentity("blob-1", "/tmp/a");
-    retainSharedAgentIdentity("blob-1", "/tmp/b");
+    const first = retainSharedAgentIdentity("blob-1", "/tmp/a");
+    const second = retainSharedAgentIdentity("blob-1", "/tmp/b");
+    assert.equal(first?.acceptedCleanup, false);
+    assert.equal(second?.acceptedCleanup, false);
     assert.deepEqual(releaseSharedAgentIdentity("blob-1"), {
       shouldRemove: false,
       identityPath: "/tmp/a",
@@ -432,6 +434,35 @@ test("retainSharedAgentIdentity reference-counts identical public identities", (
       shouldRemove: true,
       identityPath: "/tmp/a",
       cleanupDir: null,
+    });
+  } finally {
+    resetSharedAgentIdentityRefsForTests();
+  }
+});
+
+test("retainSharedAgentIdentity adopts cleanupDir only on the first retainer", () => {
+  const {
+    retainSharedAgentIdentity,
+    releaseSharedAgentIdentity,
+    resetSharedAgentIdentityRefsForTests,
+  } = require("./systemSshAgent.cjs");
+  resetSharedAgentIdentityRefsForTests();
+  try {
+    const first = retainSharedAgentIdentity("blob-1", "/tmp/a/key", "/tmp/a");
+    const second = retainSharedAgentIdentity("blob-1", "/tmp/b/key", "/tmp/b");
+    assert.equal(first?.acceptedCleanup, true);
+    assert.equal(first?.entry.cleanupDir, "/tmp/a");
+    assert.equal(second?.acceptedCleanup, false);
+    assert.equal(second?.entry.cleanupDir, "/tmp/a");
+    assert.deepEqual(releaseSharedAgentIdentity("blob-1"), {
+      shouldRemove: false,
+      identityPath: "/tmp/a/key",
+      cleanupDir: "/tmp/a",
+    });
+    assert.deepEqual(releaseSharedAgentIdentity("blob-1"), {
+      shouldRemove: true,
+      identityPath: "/tmp/a/key",
+      cleanupDir: "/tmp/a",
     });
   } finally {
     resetSharedAgentIdentityRefsForTests();
