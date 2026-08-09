@@ -231,11 +231,21 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
     prevSortKeyRef.current = sortKey;
     sortedChildrenCacheRef.current.clear();
   }
-  // Ancestor keep decisions follow expandedPaths; invalidate sorted snapshots
-  // when expand/collapse changes which descendants are visible to the filter.
+  // Ancestor keep decisions follow expand/load/error visibility; invalidate
+  // sorted snapshots when those states change which descendants the filter may use.
   const prevExpandedPathsRef = useRef(expandedPaths);
   if (prevExpandedPathsRef.current !== expandedPaths) {
     prevExpandedPathsRef.current = expandedPaths;
+    sortedChildrenCacheRef.current.clear();
+  }
+  const prevLoadingPathsRef = useRef(loadingPaths);
+  if (prevLoadingPathsRef.current !== loadingPaths) {
+    prevLoadingPathsRef.current = loadingPaths;
+    sortedChildrenCacheRef.current.clear();
+  }
+  const prevErrorPathsRef = useRef(errorPaths);
+  if (prevErrorPathsRef.current !== errorPaths) {
+    prevErrorPathsRef.current = errorPaths;
     sortedChildrenCacheRef.current.clear();
   }
   useEffect(() => {
@@ -499,9 +509,14 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
             joinPath,
             isDirectory: isNavigableDirectory,
             getChildren: (entryPath) => {
-              // Match buildTree visibility: collapsed directories do not render
-              // children, so cached descendants must not keep ancestors either.
+              // Match buildTree visibility: collapsed, loading, and error paths
+              // do not render children, so cached descendants must not keep
+              // ancestors either (reload/failure would otherwise leave a
+              // nonmatching parent with only a spinner/error row).
               if (!expandedPaths.has(entryPath)) return undefined;
+              if (loadingPaths.has(entryPath) || errorPaths.has(entryPath)) {
+                return undefined;
+              }
               const children = childrenCacheRef.current.get(entryPath);
               if (!children) return undefined;
               // Match visible-row hidden policy so ancestor keep decisions

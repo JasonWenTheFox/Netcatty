@@ -373,9 +373,10 @@ export type SftpTreeNameFilterOptions<T extends { name: string }> = {
 
 /**
  * Tree-aware name filter: keeps list-view match rules, and also keeps directory
- * ancestors when an expanded loaded descendant matches. Collapsed/unloaded
- * directories only appear when their own name matches (callers should treat
- * collapsed paths as unloaded in getChildren; no server-side recursive search).
+ * ancestors when an expanded loaded descendant matches. Collapsed, loading,
+ * error, and unloaded directories only appear when their own name matches
+ * (callers should treat those paths as unavailable in getChildren; no
+ * server-side recursive search).
  */
 export const filterSftpTreeEntriesByName = <T extends { name: string }>(
     files: T[],

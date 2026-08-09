@@ -129,6 +129,54 @@ test('SFTP tree filter does not keep ancestors for collapsed descendant matches'
   );
 });
 
+test('SFTP tree filter does not keep ancestors for loading or error descendant matches', () => {
+  // Expanded dirs keep children in cache during reload / after LOAD_ERROR, but
+  // buildTree only shows the loading or error row. getChildren must treat those
+  // paths as unavailable or a nonmatching parent stays as an empty result.
+  const childrenByPath = new Map<string, ReturnType<typeof entry>[]>([
+    ['/project/src', [entry('README.md'), entry('utils.ts')]],
+  ]);
+  const expandedPaths = new Set(['/project/src']);
+  const loadingPaths = new Set<string>();
+  const errorPaths = new Set<string>();
+  const root = [entry('src', 'directory'), entry('app.js')];
+  const getChildren = (path: string) => {
+    if (!expandedPaths.has(path)) return undefined;
+    if (loadingPaths.has(path) || errorPaths.has(path)) return undefined;
+    return childrenByPath.get(path);
+  };
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren,
+    }).map(({ name }) => name),
+    ['src'],
+  );
+  loadingPaths.add('/project/src');
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren,
+    }).map(({ name }) => name),
+    [],
+  );
+  loadingPaths.clear();
+  errorPaths.add('/project/src');
+  assert.deepEqual(
+    filterSftpTreeEntriesByName(root, 'readme', {
+      parentPath: '/project',
+      joinPath: (parent, name) => `${parent}/${name}`,
+      isDirectory,
+      getChildren,
+    }).map(({ name }) => name),
+    [],
+  );
+});
+
 test('SFTP tree view applies the tree name filter to visible rows', () => {
   const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
   assert.match(
@@ -138,11 +186,19 @@ test('SFTP tree view applies the tree name filter to visible rows', () => {
   assert.match(treeSource, /pane\.showHiddenFiles\}:\$\{pane\.filter\}/);
   assert.match(
     treeSource,
-    /getChildren:\s*\(entryPath\)\s*=>\s*\{[\s\S]*?expandedPaths\.has\(entryPath\)[\s\S]*?filterHiddenFiles\([\s\S]*?pane\.showHiddenFiles/,
+    /getChildren:\s*\(entryPath\)\s*=>\s*\{[\s\S]*?expandedPaths\.has\(entryPath\)[\s\S]*?loadingPaths\.has\(entryPath\)[\s\S]*?errorPaths\.has\(entryPath\)[\s\S]*?filterHiddenFiles\([\s\S]*?pane\.showHiddenFiles/,
   );
   assert.match(
     treeSource,
     /prevExpandedPathsRef[\s\S]*?sortedChildrenCacheRef\.current\.clear\(\)/,
+  );
+  assert.match(
+    treeSource,
+    /prevLoadingPathsRef[\s\S]*?sortedChildrenCacheRef\.current\.clear\(\)/,
+  );
+  assert.match(
+    treeSource,
+    /prevErrorPathsRef[\s\S]*?sortedChildrenCacheRef\.current\.clear\(\)/,
   );
 });
 
