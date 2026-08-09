@@ -9,7 +9,7 @@ test("snippets delete handler cleans host bindings via deleteSelectedSnippets", 
   assert.match(source, /deleteSelectedSnippets/);
   assert.match(
     source,
-    /netcatty:snippets:delete[\s\S]*deleteSelectedSnippets\(ids\)/,
+    /netcatty:snippets:delete[\s\S]*void deleteSelectedSnippets\(ids\)/,
   );
   assert.doesNotMatch(
     source,

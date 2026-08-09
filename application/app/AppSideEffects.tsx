@@ -1607,14 +1607,13 @@ export function AppSideEffects() {
   // here (rather than in QuickAddSnippetDialog) because delete needs no UI.
   // Goes through useVaultState.deleteSelectedSnippets so login/connect script
   // bindings clear with the snippets (SnippetsManager parity) against the
-  // vault hook's live snapshot - not a component ref that can lag a concurrent
-  // updateHosts/updateSnippets that has not re-rendered yet.
+  // latest persisted vault snapshot under the shared cross-window lock.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string; ids?: string[] }>).detail;
       const ids = collectSnippetDeleteIds(detail);
       if (ids.size === 0) return;
-      deleteSelectedSnippets(ids);
+      void deleteSelectedSnippets(ids);
     };
     window.addEventListener('netcatty:snippets:delete', handler);
     return () => window.removeEventListener('netcatty:snippets:delete', handler);

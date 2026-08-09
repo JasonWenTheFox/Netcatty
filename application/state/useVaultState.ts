@@ -605,20 +605,65 @@ export const useVaultState = () => {
     localStorageAdapter.write(STORAGE_KEY_SNIPPETS, cleaned);
   }, []);
 
-  // Delete against useVaultState's live hosts/snippets refs so a concurrent
-  // vault mutation that has already advanced those refs (but not yet
-  // re-rendered AppSideEffects) is not discarded by writing a stale snapshot.
-  const deleteSelectedSnippets = useCallback((selectedSnippetIds: ReadonlySet<string>) => {
-    const result = deleteSelectedSnippetsFromVault(
-      snippetsRef.current,
-      hostsRef.current,
-      selectedSnippetIds,
-    );
-    if (result.deletedCount === 0) return result;
-    updateSnippets(result.snippets);
-    void updateHosts(result.hosts);
-    return result;
-  }, [updateHosts, updateSnippets]);
+  // Cross-window safe: merge binding cleanup into the latest persisted
+  // hosts/snippets under the shared vault lock. Popup terminals own a separate
+  // useVaultState instance — writing hostsRef from that window can discard a
+  // main-window host edit, or a storage-event version bump can cancel the host
+  // write after snippets were already removed.
+  const deleteSelectedSnippets = useCallback(async (selectedSnippetIds: ReadonlySet<string>) => {
+    if (selectedSnippetIds.size === 0) {
+      return {
+        snippets: snippetsRef.current,
+        hosts: hostsRef.current,
+        deletedCount: 0,
+      };
+    }
+
+    while (true) {
+      await waitForPendingVaultWrites();
+      const attempt = await withVaultImportLock("vault", async () => {
+        const writeVersions = {
+          hosts: hostsWriteVersion.current,
+          snippets: snippetsWriteVersion.current,
+        };
+        const rawHosts = localStorageAdapter.readString(STORAGE_KEY_HOSTS);
+        const rawSnippets = localStorageAdapter.readString(STORAGE_KEY_SNIPPETS);
+        const storedHosts = readStoredArray<Host>(STORAGE_KEY_HOSTS, rawHosts);
+        const storedSnippets = readStoredArray<Snippet>(STORAGE_KEY_SNIPPETS, rawSnippets);
+        const latestHosts = normalizeVaultOrder(
+          (await decryptHosts(storedHosts)).map((host) => sanitizeHost(host)),
+        );
+        const latestSnippets = normalizeVaultOrder(storedSnippets);
+        const result = deleteSelectedSnippetsFromVault(
+          latestSnippets,
+          latestHosts,
+          selectedSnippetIds,
+        );
+        if (result.deletedCount === 0) return result;
+
+        const encryptedHosts = await encryptHosts(result.hosts);
+        const changedWhilePreparing = (
+          writeVersions.hosts !== hostsWriteVersion.current
+          || writeVersions.snippets !== snippetsWriteVersion.current
+          || localStorageAdapter.readString(STORAGE_KEY_HOSTS) !== rawHosts
+          || localStorageAdapter.readString(STORAGE_KEY_SNIPPETS) !== rawSnippets
+        );
+        if (changedWhilePreparing) return null;
+
+        ++hostsWriteVersion.current;
+        ++snippetsWriteVersion.current;
+        localStorageAdapter.write(STORAGE_KEY_HOSTS, encryptedHosts);
+        localStorageAdapter.write(STORAGE_KEY_SNIPPETS, result.snippets);
+        hostsRef.current = result.hosts;
+        snippetsRef.current = result.snippets;
+        setHosts(result.hosts);
+        setSnippets(result.snippets);
+        hostsWritePendingRef.current = Promise.resolve("unchanged" as const);
+        return result;
+      });
+      if (attempt !== null) return attempt;
+    }
+  }, [waitForPendingVaultWrites]);
 
   const updateSnippetPackages = useCallback((data: string[]) => {
     setSnippetPackages(data);
