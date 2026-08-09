@@ -4,6 +4,7 @@ import type { Host, Snippet } from './models';
 import {
   collectSnippetDeleteIds,
   deleteSelectedSnippetsFromVault,
+  rebaseSnippetVaultWrite,
 } from './snippetSelection.ts';
 
 test('collectSnippetDeleteIds merges id and ids payloads', () => {
@@ -68,4 +69,57 @@ test('deleteSelectedSnippetsFromVault removes host bindings for every selected s
   assert.deepEqual(result.hosts[1].connectScriptIds, []);
   assert.equal(hosts[0].loginScriptId, 'login');
   assert.deepEqual(hosts[0].connectScriptIds, ['connect', 'keep']);
+});
+
+test('rebaseSnippetVaultWrite does not resurrect snippets deleted on disk', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'b', label: 'B', command: 'echo b' },
+  ];
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A edited', command: 'echo a2' },
+    { id: 'b', label: 'B', command: 'echo b' },
+  ];
+  // Concurrent bulk-delete removed B before our queued save ran.
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a']);
+  assert.equal(merged[0]?.label, 'A edited');
+});
+
+test('rebaseSnippetVaultWrite keeps concurrent disk additions and local additions', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'local', label: 'Local', command: 'echo local' },
+  ];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'remote', label: 'Remote', command: 'echo remote' },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id).sort(), ['a', 'local', 'remote']);
+});
+
+test('rebaseSnippetVaultWrite keeps local deletes even when disk still has the row', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'b', label: 'B', command: 'echo b' },
+  ];
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'b', label: 'B edited elsewhere', command: 'echo b2' },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a']);
 });

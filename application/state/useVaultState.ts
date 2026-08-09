@@ -64,7 +64,10 @@ import {
   type ConnectionLogTerminalDataMap,
 } from "../../domain/connectionLogTerminalData";
 import { getNextVaultOrder, normalizeVaultOrder } from "../../domain/vaultOrder";
-import { deleteSelectedSnippetsFromVault } from "../../domain/snippetSelection";
+import {
+  deleteSelectedSnippetsFromVault,
+  rebaseSnippetVaultWrite,
+} from "../../domain/snippetSelection";
 import { loadSanitizedShellHistory } from "./shellHistoryPersistence";
 import {
   publishConnectionLogsSnapshot,
@@ -310,6 +313,10 @@ export const useVaultState = () => {
   const identitiesWriteVersion = useRef(0);
   const proxyProfilesWriteVersion = useRef(0);
   const snippetsWriteVersion = useRef(0);
+  // Tracks the latest local updateSnippets schedule. Storage events also bump
+  // snippetsWriteVersion (to invalidate naive writers), so queued saves must
+  // key supersede checks off this owner instead of that shared counter.
+  const snippetsWriteOwnerRef = useRef(0);
   const customGroupsWriteVersion = useRef(0);
   const groupConfigsWriteVersion = useRef(0);
   // Encrypt-phase promises can always be awaited, even under the vault lock.
@@ -599,19 +606,35 @@ export const useVaultState = () => {
   }, []);
 
   const updateSnippets = useCallback((data: Snippet[]) => {
+    // Capture the pre-update snapshot for a 3-way rebase once we hold the lock.
+    // Callers pass a full array derived from this window's view; a popup delete
+    // (or another window's import) may land on disk before our write runs.
+    const base = snippetsRef.current;
     const cleaned = normalizeVaultOrder(data);
     const ver = ++snippetsWriteVersion.current;
+    snippetsWriteOwnerRef.current = ver;
     // Keep live snapshot ahead of React commit so same-tick readers (delete,
     // agent bridge) do not observe a stale pre-write array.
     snippetsRef.current = cleaned;
     setSnippets(cleaned);
     // Serialize with deleteSelectedSnippets / plugin importer under the shared
-    // vault lock. A direct unlocked write can land between delete's raw read
-    // and journal commit, so bulk-delete would persist an older snapshot and
-    // discard the concurrent edit/import/reorder.
+    // vault lock, then rebase onto the latest persisted snapshot so a queued
+    // full-array write cannot resurrect concurrently deleted snippets (or drop
+    // concurrent additions).
     const writePromise = withVaultImportLock("vault", async () => {
-      if (ver !== snippetsWriteVersion.current) return "superseded" as const;
-      localStorageAdapter.write(STORAGE_KEY_SNIPPETS, cleaned);
+      if (snippetsWriteOwnerRef.current !== ver) return "superseded" as const;
+      const rawSnippets = localStorageAdapter.readString(STORAGE_KEY_SNIPPETS);
+      const latest = normalizeVaultOrder(
+        readStoredArray<Snippet>(STORAGE_KEY_SNIPPETS, rawSnippets),
+      );
+      const rebased = normalizeVaultOrder(
+        rebaseSnippetVaultWrite({ base, ours: cleaned, theirs: latest }),
+      );
+      localStorageAdapter.write(STORAGE_KEY_SNIPPETS, rebased);
+      if (snippetsWriteOwnerRef.current === ver) {
+        snippetsRef.current = rebased;
+        setSnippets(rebased);
+      }
       return "written" as const;
     });
     snippetsWritePendingRef.current = writePromise;
@@ -1454,9 +1477,13 @@ export const useVaultState = () => {
       }
 
       if (key === STORAGE_KEY_SNIPPETS) {
-        const next = safeParse<Snippet[]>(event.newValue) ?? [];
+        const next = normalizeVaultOrder(safeParse<Snippet[]>(event.newValue) ?? []);
+        // Invalidate write-version readers, but do not clear snippetsWriteOwnerRef:
+        // an in-flight updateSnippets rebases onto this disk snapshot under the
+        // vault lock instead of being cancelled (which would drop local edits).
         ++snippetsWriteVersion.current;
-        setSnippets(normalizeVaultOrder(next));
+        snippetsRef.current = next;
+        setSnippets(next);
         return;
       }
 

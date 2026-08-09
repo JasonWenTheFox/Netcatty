@@ -42,7 +42,7 @@ test("updateSnippets disk writes take the shared vault lock", () => {
   // and be visible to waitForPendingVaultWrites.
   assert.match(
     source,
-    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\)/,
+    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\)/,
   );
   assert.match(
     source,
@@ -55,5 +55,18 @@ test("updateSnippets disk writes take the shared vault lock", () => {
   assert.doesNotMatch(
     source,
     /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*setSnippets\(cleaned\);\s*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\);\s*\}, \[\]\);/,
+  );
+});
+
+test("updateSnippets rebases onto the latest persisted snapshot under the lock", () => {
+  // Web Locks serialize writers but do not merge snapshots. A popup bulk-delete
+  // that lands while a main-window save is queued must not be resurrected.
+  assert.match(
+    source,
+    /rebaseSnippetVaultWrite\(\{\s*base,\s*ours: cleaned,\s*theirs: latest\s*\}\)/,
+  );
+  assert.match(
+    source,
+    /snippetsWriteOwnerRef\.current !== ver/,
   );
 });
