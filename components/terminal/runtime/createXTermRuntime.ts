@@ -1258,6 +1258,20 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
           type: "keydown",
         };
         const identity = pressEvent.code || pressEvent.key;
+        // Event-type mode (flag 2) without report-all leaves printable presses
+        // on the text path, but still emits a paired :3 release on keyup.
+        // Mirror the ordinary keydown handler so that release is not dropped.
+        if (
+          kittyKeyboardProtocolEnabled &&
+          shouldTrackKittyKeyRelease(kittyKeyboardMode, pressEvent)
+        ) {
+          upsertKittyKeyboardForwardedPress(
+            kittyForwardedKeys,
+            identity,
+            pressEvent,
+            [],
+          );
+        }
         const forwarded = broadcastKittyInput({
           kind: "key",
           event: pressEvent,

@@ -154,8 +154,8 @@ test("createXTermRuntime defers ASCII punctuation keydowns to insertText", () =>
   );
   assert.ok(unchangedFallbackIdx > unchangedIdx);
   assert.match(
-    runtimeSource.slice(unchangedFallbackIdx, unchangedFallbackIdx + 900),
-    /handleTerminalInputData\(text\);[\s\S]*broadcastKittyInput\(\{[\s\S]*kind: "key",[\s\S]*fallbackToLegacy: true,/,
+    runtimeSource.slice(unchangedFallbackIdx, unchangedFallbackIdx + 1800),
+    /handleTerminalInputData\(text\);[\s\S]*shouldTrackKittyKeyRelease\(kittyKeyboardMode, pressEvent\)[\s\S]*upsertKittyKeyboardForwardedPress\(\s*kittyForwardedKeys,[\s\S]*broadcastKittyInput\(\{[\s\S]*kind: "key",[\s\S]*fallbackToLegacy: true,/,
   );
   // Remap path must fall back to literal text when composition encoding is null
   // (report-all without associated text).
