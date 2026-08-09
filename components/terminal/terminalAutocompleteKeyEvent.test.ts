@@ -46,6 +46,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
   const previews: number[] = [];
   const accepted: number[] = [];
   const clears: number[] = [];
+  const dismissals: Array<number | undefined> = [];
   const stateRef = { current: state };
 
   return {
@@ -53,6 +54,8 @@ function createContext(overrides: Record<string, unknown> = {}) {
     previews,
     accepted,
     clears,
+    dismissals,
+    getState: () => state,
     context: {
       settingsRef: {
         current: {
@@ -82,6 +85,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
       expandSubDir() {},
       writeToTerminal(text: string) { writes.push(text); },
       clearState() { clears.push(1); },
+      dismissSubDirCascade(toFocusLevel?: number) { dismissals.push(toFocusLevel); },
       renderSubDirPath() {},
       handleSubDirSelect() {},
       renderPreviewSelection(index: number) { previews.push(index); },
@@ -348,4 +352,80 @@ test("live-preview Enter passes through an edited preview instead of accepting t
   assert.equal(event.defaultPrevented, false);
   assert.deepEqual(accepted, []);
   assert.deepEqual(clears, [1]);
+});
+
+test("Escape at level 0 dismisses cascade via dismissSubDirCascade so in-flight fetches cannot reinstall", () => {
+  // Escape clears panels while keeping the main-row selection. Without
+  // invalidating outstanding directory fetches, a late response would
+  // reinstall the panel and undo the dismissal.
+  const { context, dismissals } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [{
+          text: "cd docs/",
+          displayText: "docs/",
+          source: "path" as const,
+          score: 1,
+          fileType: "directory" as const,
+        }],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [{
+          entries: [{ name: "src", type: "directory" as const }],
+          selectedIndex: -1,
+          dirPath: "/home/docs",
+        }],
+        subDirFocusLevel: 0,
+      },
+    },
+  });
+  const event = keyEvent("Escape");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, false);
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(dismissals, [undefined]);
+});
+
+test("Escape at nested level dismisses via dismissSubDirCascade with prior focus level", () => {
+  const { context, dismissals } = createContext({
+    stateRef: {
+      current: {
+        suggestions: [{
+          text: "cd docs/",
+          displayText: "docs/",
+          source: "path" as const,
+          score: 1,
+          fileType: "directory" as const,
+        }],
+        selectedIndex: 0,
+        popupVisible: true,
+        popupAnchorViewport: { left: 0, top: 0, bottom: 0 },
+        expandUpward: false,
+        subDirPanels: [
+          {
+            entries: [{ name: "src", type: "directory" as const }],
+            selectedIndex: 0,
+            dirPath: "/home/docs",
+          },
+          {
+            entries: [{ name: "main.ts", type: "file" as const }],
+            selectedIndex: 0,
+            dirPath: "/home/docs/src",
+          },
+        ],
+        subDirFocusLevel: 1,
+      },
+    },
+  });
+  const event = keyEvent("Escape");
+
+  const result = handleTerminalAutocompleteKeyEvent(event, context);
+
+  assert.equal(result, false);
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(dismissals, [0]);
 });

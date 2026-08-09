@@ -35,6 +35,7 @@ import {
   resolveAutocompleteCursorColumn,
   resolveAutocompleteCwdWithSource,
   resolveAutocompletePopupSelectedIndex,
+  shouldApplySubDirPrefetchResult,
   shouldPreserveAutocompletePopupSelection,
 } from "./terminalAutocompleteLayout";
 import { handleTerminalAutocompleteInput } from "./terminalAutocompleteInput";
@@ -392,6 +393,32 @@ export function useTerminalAutocomplete(
     setState(next);
   }, []);
 
+  /**
+   * Dismiss cascade panels (Escape) while keeping the main popup selection.
+   * Always bumps the fetch generation so a late listing cannot reopen panels.
+   */
+  const dismissSubDirCascade = useCallback((toFocusLevel?: number) => {
+    subDirFetchVersionRef.current++;
+    setState((prev) => {
+      if (toFocusLevel !== undefined && toFocusLevel >= 0) {
+        const nextPanels = prev.subDirPanels.slice(0, toFocusLevel + 1);
+        if (
+          prev.subDirFocusLevel === toFocusLevel &&
+          areSubDirPanelsEqual(prev.subDirPanels, nextPanels)
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          subDirPanels: nextPanels,
+          subDirFocusLevel: toFocusLevel,
+        };
+      }
+      if (prev.subDirPanels.length === 0 && prev.subDirFocusLevel < 0) return prev;
+      return { ...prev, subDirPanels: [], subDirFocusLevel: -1 };
+    });
+  }, []);
+
   const repositionPopup = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
@@ -474,11 +501,23 @@ export function useTerminalAutocomplete(
     if (!dirPath) return;
 
     const requestVersion = ++subDirFetchVersionRef.current;
+    const requestSuggestionText = item.text;
     fetchDirEntries(dirPath).then((entries) => {
       if (requestVersion !== subDirFetchVersionRef.current) return;
       startTransition(() => {
         setState((prev) => {
-          if (prev.selectedIndex !== index) return prev;
+          if (
+            !shouldApplySubDirPrefetchResult({
+              requestVersion,
+              currentVersion: subDirFetchVersionRef.current,
+              requestIndex: index,
+              selectedIndex: prev.selectedIndex,
+              requestSuggestionText,
+              selectedSuggestionText: prev.suggestions[index]?.text,
+            })
+          ) {
+            return prev;
+          }
           const nextPanels = entries.length > 0 ? [{ entries, selectedIndex: -1, dirPath }] : [];
           if (
             prev.subDirFocusLevel === -1 &&
@@ -924,6 +963,7 @@ export function useTerminalAutocomplete(
       expandSubDir,
       writeToTerminal,
       clearState,
+      dismissSubDirCascade,
       renderSubDirPath,
       handleSubDirSelect,
       renderPreviewSelection,

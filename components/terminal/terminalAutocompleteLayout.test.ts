@@ -10,6 +10,7 @@ import {
   resolveAutocompleteClampViewport,
   resolveAutocompleteCursorColumn,
   resolveAutocompletePopupSelectedIndex,
+  shouldApplySubDirPrefetchResult,
   shouldPreserveAutocompletePopupSelection,
   type PopupPlacementInput,
 } from "./autocomplete/terminalAutocompleteLayout.ts";
@@ -652,5 +653,60 @@ test("typing clear invalidates in-flight sub-dir fetches and restores default on
   assert.match(
     source,
     /shouldPreserveAutocompletePopupSelection\(\{\s*suggestionsUnchanged,\s*previousInputBaseline,\s*nextInputBaseline: input,/,
+  );
+  assert.match(
+    source,
+    /const dismissSubDirCascade = useCallback\(\([\s\S]*?subDirFetchVersionRef\.current\+\+;/,
+  );
+  assert.match(
+    source,
+    /shouldApplySubDirPrefetchResult\(\{/,
+  );
+});
+
+test("shouldApplySubDirPrefetchResult rejects stale version, index, or suggestion identity", () => {
+  assert.equal(
+    shouldApplySubDirPrefetchResult({
+      requestVersion: 3,
+      currentVersion: 3,
+      requestIndex: 0,
+      selectedIndex: 0,
+      requestSuggestionText: "cd docs/",
+      selectedSuggestionText: "cd docs/",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldApplySubDirPrefetchResult({
+      requestVersion: 3,
+      currentVersion: 4,
+      requestIndex: 0,
+      selectedIndex: 0,
+      requestSuggestionText: "cd docs/",
+      selectedSuggestionText: "cd docs/",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldApplySubDirPrefetchResult({
+      requestVersion: 3,
+      currentVersion: 3,
+      requestIndex: 0,
+      selectedIndex: 1,
+      requestSuggestionText: "cd docs/",
+      selectedSuggestionText: "cd docs/",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldApplySubDirPrefetchResult({
+      requestVersion: 3,
+      currentVersion: 3,
+      requestIndex: 0,
+      selectedIndex: 0,
+      requestSuggestionText: "cd docs/",
+      selectedSuggestionText: "cd src/",
+    }),
+    false,
   );
 });

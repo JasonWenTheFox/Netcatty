@@ -24,6 +24,12 @@ interface TerminalAutocompleteKeyEventContext {
   expandSubDir: (level: number, entry: SubDirEntry, moveFocus?: boolean) => void;
   writeToTerminal: (text: string) => void;
   clearState: () => void;
+  /**
+   * Clear cascade panels (and optionally retreat focus) while invalidating
+   * in-flight directory fetches so a late response cannot reinstall them.
+   * Omit `toFocusLevel` to dismiss the whole cascade back to the main list.
+   */
+  dismissSubDirCascade: (toFocusLevel?: number) => void;
   renderSubDirPath: (level: number, entry: SubDirEntry) => void;
   handleSubDirSelect: (level: number, entry: SubDirEntry) => void;
   renderPreviewSelection: (index: number) => void;
@@ -60,6 +66,7 @@ export function handleTerminalAutocompleteKeyEvent(
     expandSubDir,
     writeToTerminal,
     clearState,
+    dismissSubDirCascade,
     renderSubDirPath,
     handleSubDirSelect,
     renderPreviewSelection,
@@ -260,14 +267,13 @@ export function handleTerminalAutocompleteKeyEvent(
       }
       if (e.key === "Escape") {
         e.preventDefault();
+        // Invalidate outstanding listings: Escape keeps the main-row
+        // selection, so an index-only fetch guard would otherwise reinstall
+        // the panels the user just dismissed.
         if (focusLevel > 0) {
-          setState((prev) => ({
-            ...prev,
-            subDirPanels: prev.subDirPanels.slice(0, focusLevel),
-            subDirFocusLevel: focusLevel - 1,
-          }));
+          dismissSubDirCascade(focusLevel - 1);
         } else {
-          setState((prev) => ({ ...prev, subDirPanels: [], subDirFocusLevel: -1 }));
+          dismissSubDirCascade();
         }
         return false;
       }

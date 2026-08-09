@@ -174,6 +174,27 @@ export function isPreviewlessSelectionCurrentForLine(options: {
   return options.suggestionText.startsWith(options.currentLine);
 }
 
+/**
+ * Whether a level-0 directory prefetch may install its panel.
+ *
+ * Index-only checks are not enough after typing replaces the first row:
+ * an older in-flight listing can share index 0 with a newer suggestion.
+ * Require matching fetch generation and suggestion identity too.
+ */
+export function shouldApplySubDirPrefetchResult(options: {
+  requestVersion: number;
+  currentVersion: number;
+  requestIndex: number;
+  selectedIndex: number;
+  requestSuggestionText: string;
+  selectedSuggestionText: string | undefined;
+}): boolean {
+  if (options.requestVersion !== options.currentVersion) return false;
+  if (options.selectedIndex !== options.requestIndex) return false;
+  if (options.selectedSuggestionText === undefined) return false;
+  return options.selectedSuggestionText === options.requestSuggestionText;
+}
+
 export function areSubDirPanelsEqual(left: SubDirPanel[], right: SubDirPanel[]): boolean {
   if (left.length !== right.length) return false;
   for (let i = 0; i < left.length; i++) {
