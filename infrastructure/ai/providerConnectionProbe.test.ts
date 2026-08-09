@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildProviderProbeUrl,
   classifyProviderProbeResponse,
+  probeProviderConnection,
   resolveProviderProbeEndpoint,
   validateProviderProbeInputs,
 } from "./providerConnectionProbe";
@@ -96,4 +97,75 @@ test("classifyProviderProbeResponse accepts Google ListModels name-only entries"
   });
   assert.equal(result.health, "ok");
   assert.equal(result.modelCount, 1);
+});
+
+test("probeProviderConnection orchestrates allowlist, headers, fetch, and classification", async () => {
+  const calls: Array<{
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    skipTLSVerify?: boolean;
+  }> = [];
+  const allowlist: string[] = [];
+  let clock = 1_000;
+  const run = await probeProviderConnection({
+    bridge: {
+      aiAllowlistAddHost: async (baseURL) => {
+        allowlist.push(baseURL);
+        return { ok: true };
+      },
+      aiFetch: async (url, method, headers, _body, _providerId, _skipHostCheck, _followRedirects, skipTLSVerify) => {
+        calls.push({ url, method, headers, skipTLSVerify });
+        return {
+          ok: true,
+          status: 200,
+          data: JSON.stringify({ data: [{ id: "deepseek-chat" }] }),
+        };
+      },
+    },
+    baseURL: "https://api.deepseek.com/v1/",
+    apiKey: "sk-test",
+    providerId: "openai",
+    style: "openai",
+    skipTLSVerify: true,
+    now: () => {
+      clock += 150;
+      return clock;
+    },
+  });
+
+  assert.deepEqual(allowlist, ["https://api.deepseek.com/v1/"]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, "https://api.deepseek.com/v1/models");
+  assert.equal(calls[0]?.method, "GET");
+  assert.equal(calls[0]?.skipTLSVerify, true);
+  assert.deepEqual(calls[0]?.headers, { Authorization: "Bearer sk-test" });
+  assert.equal(run.ok, true);
+  if (!run.ok) throw new Error("expected probe success");
+  assert.equal(run.classification.health, "ok");
+  assert.equal(run.classification.latencyMs, 150);
+  assert.equal(run.classification.modelCount, 1);
+});
+
+test("probeProviderConnection returns typed failures before fetch", async () => {
+  assert.deepEqual(
+    await probeProviderConnection({
+      bridge: { aiFetch: async () => ({ ok: true, status: 200, data: "{}" }) },
+      baseURL: "",
+      apiKey: "sk",
+      providerId: "openai",
+      style: "openai",
+    }),
+    { ok: false, reason: "missing_base_url" },
+  );
+  assert.deepEqual(
+    await probeProviderConnection({
+      bridge: undefined,
+      baseURL: "https://api.openai.com/v1",
+      apiKey: "sk",
+      providerId: "openai",
+      style: "openai",
+    }),
+    { ok: false, reason: "unavailable" },
+  );
 });

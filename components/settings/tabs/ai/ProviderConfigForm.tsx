@@ -4,13 +4,10 @@ import type { ProviderConfig, ProviderAdvancedParams, ProviderStyle } from "../.
 import { PROVIDER_PRESETS, resolveProviderStyle } from "../../../../infrastructure/ai/types";
 import { sanitizeContextWindow } from "../../../../infrastructure/ai/contextCompaction";
 import {
-  buildProviderProbeUrl,
-  classifyProviderProbeResponse,
-  resolveProviderProbeEndpoint,
+  probeProviderConnection,
   validateProviderProbeInputs,
   type ProviderProbeHealth,
 } from "../../../../infrastructure/ai/providerConnectionProbe";
-import { buildModelDiscoveryHeaders } from "../../../../infrastructure/ai/modelDiscoveryHeaders";
 import { encryptField, decryptField } from "../../../../infrastructure/persistence/secureFieldAdapter";
 import { useI18n } from "../../../../application/i18n/I18nProvider";
 import { Button } from "../../../ui/button";
@@ -110,7 +107,22 @@ export const ProviderConfigForm: React.FC<{
     preset?.modelsEndpoint,
     resolvedStyle,
   ]);
+  const probeFingerprint = useMemo(() => JSON.stringify({
+    baseURL: form.baseURL || preset?.defaultBaseURL || "",
+    apiKey: form.apiKey,
+    style: resolvedStyle,
+    skipTLSVerify: form.skipTLSVerify,
+    modelsEndpoint: preset?.modelsEndpoint ?? "",
+  }), [
+    form.apiKey,
+    form.baseURL,
+    form.skipTLSVerify,
+    preset?.defaultBaseURL,
+    preset?.modelsEndpoint,
+    resolvedStyle,
+  ]);
   const modelMetadataSourceKeyRef = useRef<string | null>(null);
+  const probeFingerprintRef = useRef<string | null>(null);
   const previewProvider: Pick<ProviderConfig, "providerId" | "name" | "iconId" | "iconDataUrl"> = {
     providerId: provider.providerId,
     name: form.name,
@@ -146,6 +158,19 @@ export const ProviderConfigForm: React.FC<{
       ? { ...prev, modelContextWindows: {} }
       : prev);
   }, [modelMetadataSourceKey]);
+
+  useEffect(() => {
+    if (probeFingerprintRef.current == null) {
+      probeFingerprintRef.current = probeFingerprint;
+      return;
+    }
+    if (probeFingerprintRef.current === probeFingerprint) return;
+
+    probeFingerprintRef.current = probeFingerprint;
+    probeRequestIdRef.current += 1;
+    setProbeResult(null);
+    setIsTesting(false);
+  }, [probeFingerprint]);
 
   const [advancedParamRaw, setAdvancedParamRaw] = useState<Record<string, string>>({});
   const handleAdvancedParam = useCallback((key: keyof ProviderAdvancedParams, raw: string) => {
@@ -195,13 +220,15 @@ export const ProviderConfigForm: React.FC<{
   }, []);
 
   const handleTestConnection = useCallback(async () => {
-    const baseURL = (form.baseURL || preset?.defaultBaseURL || "").trim();
+    const baseURL = form.baseURL || preset?.defaultBaseURL || "";
     const inputCheck = validateProviderProbeInputs({
       baseURL,
       apiKey: form.apiKey,
       providerId: provider.providerId,
     });
     if (!inputCheck.ok) {
+      probeRequestIdRef.current += 1;
+      setIsTesting(false);
       setProbeResult({
         health: "error",
         message: t(
@@ -213,46 +240,34 @@ export const ProviderConfigForm: React.FC<{
       return;
     }
 
-    const endpoint = resolveProviderProbeEndpoint(resolvedStyle, preset?.modelsEndpoint);
-    if (!endpoint) {
-      setProbeResult({ health: "error", message: t("ai.providers.test.unavailable") });
-      return;
-    }
-
-    const bridge = getFetchBridge();
-    if (!bridge?.aiFetch) {
-      setProbeResult({ health: "error", message: t("ai.providers.test.unavailable") });
-      return;
-    }
-
     const requestId = ++probeRequestIdRef.current;
     setIsTesting(true);
     setProbeResult(null);
-    const startedAt = Date.now();
     try {
-      if (bridge.aiAllowlistAddHost) {
-        await bridge.aiAllowlistAddHost(baseURL);
-      }
-      const url = buildProviderProbeUrl(baseURL, endpoint);
-      const headers = buildModelDiscoveryHeaders(resolvedStyle, form.apiKey);
-      const result = await bridge.aiFetch(
-        url,
-        "GET",
-        headers,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        form.skipTLSVerify,
-      );
-      if (probeRequestIdRef.current !== requestId) return;
-      const classified = classifyProviderProbeResponse({
-        ok: result.ok,
-        status: result.status ?? (result.ok ? 200 : 0),
-        latencyMs: Date.now() - startedAt,
-        data: result.data,
-        error: result.error,
+      const run = await probeProviderConnection({
+        bridge: getFetchBridge(),
+        baseURL,
+        apiKey: form.apiKey,
+        providerId: provider.providerId,
+        style: resolvedStyle,
+        presetModelsEndpoint: preset?.modelsEndpoint,
+        skipTLSVerify: form.skipTLSVerify,
       });
+      if (probeRequestIdRef.current !== requestId) return;
+      if (!run.ok) {
+        setProbeResult({
+          health: "error",
+          message: t(
+            run.reason === "missing_base_url"
+              ? "ai.providers.test.missingBaseUrl"
+              : run.reason === "missing_api_key"
+                ? "ai.providers.test.missingApiKey"
+                : "ai.providers.test.unavailable",
+          ),
+        });
+        return;
+      }
+      const classified = run.classification;
       const latency = String(classified.latencyMs);
       if (classified.health === "ok") {
         setProbeResult({
