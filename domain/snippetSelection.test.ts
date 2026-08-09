@@ -185,3 +185,27 @@ test('rebaseSnippetVaultWrite treats order-only local renumber as unchanged cont
   assert.equal(merged[0]?.order, 1000);
   assert.equal(merged[1]?.order, 2000);
 });
+
+test('rebaseSnippetVaultWrite preserves concurrent disk reorder across unrelated local edits', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Local content edit of A only; relative order matches base.
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A edited', command: 'echo a2', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Another window reordered the list on disk.
+  const theirs: Snippet[] = [
+    { id: 'b', label: 'B', command: 'echo b', order: 1000 },
+    { id: 'a', label: 'A', command: 'echo a', order: 2000 },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['b', 'a']);
+  assert.equal(merged[0]?.order, 1000);
+  assert.equal(merged[1]?.label, 'A edited');
+  assert.equal(merged[1]?.command, 'echo a2');
+  assert.equal(merged[1]?.order, 2000);
+});

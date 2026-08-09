@@ -53,6 +53,34 @@ function snippetContentFingerprint(snippet: Snippet): string {
   });
 }
 
+/** Relative id sequence for ids present on both sides (order-change detector). */
+function sharedIdSequence(
+  snippets: readonly Snippet[],
+  sharedIds: ReadonlySet<string>,
+): string[] {
+  const sequence: string[] = [];
+  for (const snippet of snippets) {
+    if (!snippet.id || !sharedIds.has(snippet.id)) continue;
+    sequence.push(snippet.id);
+  }
+  return sequence;
+}
+
+function sameIdSequence(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((id, index) => id === right[index]);
+}
+
+function applyPreferredOrder(
+  content: Snippet,
+  ourItem: Snippet,
+  theirItem: Snippet,
+  preferTheirOrder: boolean,
+): Snippet {
+  const order = preferTheirOrder ? theirItem.order : ourItem.order;
+  return content.order === order ? content : { ...content, order };
+}
+
 /**
  * Three-way rebase for a queued full-array snippet save against the latest
  * persisted vault snapshot.
@@ -61,6 +89,9 @@ function snippetContentFingerprint(snippet: Snippet): string {
  * the same id so bulk-delete cannot be resurrected by a stale window write.
  * When an id exists on all sides, preserve a disk-only content edit; both-sides
  * content conflicts prefer the local write (same as sync merge).
+ * List order is merged independently: a disk-only reorder survives an unrelated
+ * local content edit; a local reorder still wins over disk (including when both
+ * sides reordered).
  */
 export function rebaseSnippetVaultWrite({
   base,
@@ -81,6 +112,25 @@ export function rebaseSnippetVaultWrite({
     ...oursMap.keys(),
     ...theirsMap.keys(),
   ]);
+
+  const baseOursIds = new Set<string>();
+  const baseTheirsIds = new Set<string>();
+  for (const id of baseMap.keys()) {
+    if (!id) continue;
+    if (oursMap.has(id)) baseOursIds.add(id);
+    if (theirsMap.has(id)) baseTheirsIds.add(id);
+  }
+  const oursReordered = !sameIdSequence(
+    sharedIdSequence(base, baseOursIds),
+    sharedIdSequence(ours, baseOursIds),
+  );
+  const theirsReordered = !sameIdSequence(
+    sharedIdSequence(base, baseTheirsIds),
+    sharedIdSequence(theirs, baseTheirsIds),
+  );
+  // Disk-only reorder must not be clobbered by a content edit from the older
+  // ordering; local reorder (or both-sides reorder) still prefers ours.
+  const preferTheirOrder = theirsReordered && !oursReordered;
 
   for (const id of allIds) {
     if (!id) continue;
@@ -109,17 +159,12 @@ export function rebaseSnippetVaultWrite({
       const theirsChanged =
         snippetContentFingerprint(theirItem) !== snippetContentFingerprint(baseItem);
       if (!oursChanged && theirsChanged) {
-        // Disk-only content edit: keep their body, retain our order so a local
-        // reorder of another row is not undone by their stale order field.
-        keep.set(
-          id,
-          ourItem.order === theirItem.order
-            ? theirItem
-            : { ...theirItem, order: ourItem.order },
-        );
+        // Disk-only content edit: keep their body; order follows the side that
+        // actually reordered (disk-only reorder, else local).
+        keep.set(id, applyPreferredOrder(theirItem, ourItem, theirItem, preferTheirOrder));
       } else {
-        // Unchanged, ours-only, or both-changed conflict → local wins.
-        keep.set(id, ourItem);
+        // Unchanged, ours-only, or both-changed conflict → local content wins.
+        keep.set(id, applyPreferredOrder(ourItem, ourItem, theirItem, preferTheirOrder));
       }
       continue;
     }
@@ -129,15 +174,17 @@ export function rebaseSnippetVaultWrite({
     if (inBase && inOurs && !inTheirs) continue;
   }
 
+  const primary = preferTheirOrder ? theirs : ours;
+  const secondary = preferTheirOrder ? ours : theirs;
   const ordered: Snippet[] = [];
   const seen = new Set<string>();
-  for (const snippet of ours) {
+  for (const snippet of primary) {
     const kept = keep.get(snippet.id);
     if (!kept || seen.has(snippet.id)) continue;
     ordered.push(kept);
     seen.add(snippet.id);
   }
-  for (const snippet of theirs) {
+  for (const snippet of secondary) {
     const kept = keep.get(snippet.id);
     if (!kept || seen.has(snippet.id)) continue;
     ordered.push(kept);
