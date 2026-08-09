@@ -241,3 +241,28 @@ test('rebaseSnippetVaultWrite preserves concurrent disk reorder across unrelated
   assert.equal(merged[1]?.command, 'echo a2');
   assert.equal(merged[1]?.order, 2000);
 });
+
+test('rebaseSnippetVaultWrite preserves disk insertion position across unrelated local edits', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Local content edit only; shared-id sequence still matches base.
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A edited', command: 'echo a2', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Another window inserted X between A and B and renumbered orders.
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'x', label: 'X', command: 'echo x', order: 2000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 3000 },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'x', 'b']);
+  assert.equal(merged[0]?.label, 'A edited');
+  assert.equal(merged[0]?.order, 1000);
+  assert.equal(merged[1]?.order, 2000);
+  assert.equal(merged[2]?.order, 3000);
+});
