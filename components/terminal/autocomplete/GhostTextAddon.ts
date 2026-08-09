@@ -72,7 +72,9 @@ function readBeforeCursorAcrossWraps(
   let line = buf.getLine(absY);
   if (!line || typeof line.translateToString !== "function") return null;
 
-  let beforeCursor = line.translateToString(false).slice(0, buf.cursorX);
+  // cursorX is a cell column, not a UTF-16 offset — slice() breaks on
+  // wide / multi-code-unit graphemes (emoji prompts, CJK).
+  let beforeCursor = line.translateToString(false, 0, buf.cursorX);
   let y = absY;
   while (line.isWrapped && y > 0) {
     y -= 1;

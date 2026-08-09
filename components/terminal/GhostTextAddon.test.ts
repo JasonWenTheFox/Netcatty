@@ -401,6 +401,54 @@ test("anchors ghost using only the unechoed suffix after a partial shell echo", 
   }
 });
 
+test("anchors ghost by cell columns when the prompt is a multi-code-unit emoji", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    // Family ZWJ emoji is many UTF-16 units but only 2 terminal cells.
+    // A UTF-16 slice(0, cursorX) would stop inside the emoji and treat the
+    // fully-echoed "docker" as unechoed, shifting the ghost right.
+    const emoji = "👨‍👩‍👧‍👦";
+    const cells: Array<{ chars: string; width: number }> = [
+      { chars: emoji, width: 2 },
+      { chars: " ", width: 1 },
+      { chars: "$", width: 1 },
+      { chars: " ", width: 1 },
+      ...Array.from("docker", (ch) => ({ chars: ch, width: 1 })),
+    ];
+    const totalCols = cells.reduce((sum, cell) => sum + cell.width, 0);
+    term.buffer.active.cursorX = totalCols;
+    term.buffer.active.baseY = 0;
+    term.buffer.active.getLine = () => ({
+      translateToString: (
+        _trimRight?: boolean,
+        startColumn = 0,
+        endColumn = totalCols,
+      ) => {
+        let col = 0;
+        let text = "";
+        for (const cell of cells) {
+          if (col >= endColumn) break;
+          if (col >= startColumn) text += cell.chars;
+          col += cell.width;
+        }
+        return text;
+      },
+    });
+    addon.activate(term as never);
+    addon.show("docker compose", "docker");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    assert.equal(ghost.textContent, " compose");
+    // Fully echoed → stay at live cursor (11 cells → 99px), not 11+6.
+    assert.equal(ghost.style.left, "99px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("does not overshoot the ghost when the echoed command already wrapped", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();
