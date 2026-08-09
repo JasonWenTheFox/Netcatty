@@ -191,6 +191,16 @@ test("snippet storage events retain outstanding replace snapshots", () => {
   );
 });
 
+test("snippet storage events reject payloads older than current disk", () => {
+  // After a queued replace commits, snippetsWriteReplaceRef is false again. A
+  // delayed peer StorageEvent still carries the pre-replacement newValue; if
+  // adopted, the next edit would persist that resurrected catalog.
+  assert.match(
+    source,
+    /if \(key === STORAGE_KEY_SNIPPETS\) \{[\s\S]*event\.newValue !== localStorageAdapter\.readString\(STORAGE_KEY_SNIPPETS\)[\s\S]*return;/,
+  );
+});
+
 test("startup host re-encryption uses the locked prune writer", () => {
   // A second renderer migrating saved hosts must not write the pre-delete
   // encryption blob unlocked after bulk-delete cleared login/connect bindings.

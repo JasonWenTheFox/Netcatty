@@ -1562,6 +1562,13 @@ export const useVaultState = () => {
       }
 
       if (key === STORAGE_KEY_SNIPPETS) {
+        // StorageEvent.newValue is the value at fire time. A peer write can be
+        // delivered only after this window's replace already committed and
+        // cleared snippetsWriteReplaceRef — adopting that older payload would
+        // resurrect the pre-replacement catalog in memory (and on the next edit).
+        if (event.newValue !== localStorageAdapter.readString(STORAGE_KEY_SNIPPETS)) {
+          return;
+        }
         const next = normalizeVaultOrder(safeParse<Snippet[]>(event.newValue) ?? []);
         // Invalidate write-version readers, but do not clear snippetsWriteOwnerRef:
         // an in-flight updateSnippets rebases onto this disk snapshot under the
