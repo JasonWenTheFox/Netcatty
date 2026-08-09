@@ -139,6 +139,22 @@ test('rebaseSnippetVaultWrite keeps concurrent disk additions and local addition
   assert.deepEqual(merged.map((snippet) => snippet.id).sort(), ['a', 'local', 'remote']);
 });
 
+test('rebaseSnippetVaultWrite preserves concurrent disk adds across a local clear', () => {
+  // Documents why clearVaultData must bypass rebase (replace: true): an empty
+  // local array still looks like "keep theirs-only ids" under 3-way merge.
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+  const ours: Snippet[] = [];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'remote', label: 'Remote', command: 'echo remote' },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['remote']);
+});
+
 test('rebaseSnippetVaultWrite keeps local deletes even when disk still has the row', () => {
   const base: Snippet[] = [
     { id: 'a', label: 'A', command: 'echo a' },

@@ -609,12 +609,16 @@ export const useVaultState = () => {
     });
   }, []);
 
-  const updateSnippets = useCallback((data: Snippet[]) => {
+  const updateSnippets = useCallback((
+    data: Snippet[],
+    options?: { replace?: boolean },
+  ) => {
     // Capture the pre-update snapshot for a 3-way rebase once we hold the lock.
     // Callers pass a full array derived from this window's view; a popup delete
     // (or another window's import) may land on disk before our write runs.
     // Keep the first outstanding ancestor across superseded local saves so a
     // second edit does not rebase against the first save's optimistic memory.
+    const replace = options?.replace === true;
     const base = snippetsWriteBaseRef.current ?? snippetsRef.current;
     if (snippetsWriteBaseRef.current === null) {
       snippetsWriteBaseRef.current = base;
@@ -629,15 +633,23 @@ export const useVaultState = () => {
     // Serialize with deleteSelectedSnippets / plugin importer under the shared
     // vault lock, then rebase onto the latest persisted snapshot so a queued
     // full-array write cannot resurrect concurrently deleted snippets (or drop
-    // concurrent additions).
+    // concurrent additions). Explicit replace (Clear All Local Data) skips the
+    // additive rebase so a concurrent disk-only add cannot survive the clear.
     const writePromise = withVaultImportLock("vault", async () => {
       if (snippetsWriteOwnerRef.current !== ver) return "superseded" as const;
-      const rawSnippets = localStorageAdapter.readString(STORAGE_KEY_SNIPPETS);
-      const latest = normalizeVaultOrder(
-        readStoredArray<Snippet>(STORAGE_KEY_SNIPPETS, rawSnippets),
-      );
       const rebased = normalizeVaultOrder(
-        rebaseSnippetVaultWrite({ base, ours: cleaned, theirs: latest }),
+        replace
+          ? cleaned
+          : rebaseSnippetVaultWrite({
+              base,
+              ours: cleaned,
+              theirs: normalizeVaultOrder(
+                readStoredArray<Snippet>(
+                  STORAGE_KEY_SNIPPETS,
+                  localStorageAdapter.readString(STORAGE_KEY_SNIPPETS),
+                ),
+              ),
+            }),
       );
       const persisted = localStorageAdapter.write(STORAGE_KEY_SNIPPETS, rebased);
       if (!persisted) {
@@ -980,7 +992,7 @@ export const useVaultState = () => {
     updateKeys([]);
     updateIdentities([]);
     updateProxyProfiles([]);
-    updateSnippets([]);
+    updateSnippets([], { replace: true });
     updateSnippetPackages([]);
     updateNotes([]);
     updateNoteGroups([]);

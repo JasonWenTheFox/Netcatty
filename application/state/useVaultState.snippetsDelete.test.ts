@@ -42,7 +42,7 @@ test("updateSnippets disk writes take the shared vault lock", () => {
   // and be visible to waitForPendingVaultWrites.
   assert.match(
     source,
-    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\)/,
+    /const updateSnippets = useCallback\(\(\s*data: Snippet\[\],\s*options\?: \{ replace\?: boolean \},\s*\) => \{[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\)/,
   );
   assert.match(
     source,
@@ -54,7 +54,7 @@ test("updateSnippets disk writes take the shared vault lock", () => {
   );
   assert.doesNotMatch(
     source,
-    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*setSnippets\(cleaned\);\s*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\);\s*\}, \[\]\);/,
+    /const updateSnippets = useCallback\(\([\s\S]*?\) => \{[\s\S]*setSnippets\(cleaned\);\s*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\);\s*\}, \[\]\);/,
   );
 });
 
@@ -63,11 +63,28 @@ test("updateSnippets rebases onto the latest persisted snapshot under the lock",
   // that lands while a main-window save is queued must not be resurrected.
   assert.match(
     source,
-    /rebaseSnippetVaultWrite\(\{\s*base,\s*ours: cleaned,\s*theirs: latest\s*\}\)/,
+    /rebaseSnippetVaultWrite\(\{\s*base,\s*ours: cleaned,\s*theirs:/,
   );
   assert.match(
     source,
     /snippetsWriteOwnerRef\.current !== ver/,
+  );
+});
+
+test("clearVaultData replaces snippets without additive rebase", () => {
+  // Clear All Local Data must not preserve concurrent disk-only snippet adds
+  // that rebaseSnippetVaultWrite would otherwise keep.
+  assert.match(
+    source,
+    /updateSnippets\(\[\],\s*\{\s*replace:\s*true\s*\}\)/,
+  );
+  assert.match(
+    source,
+    /const replace = options\?\.replace === true/,
+  );
+  assert.match(
+    source,
+    /replace\s*\?\s*cleaned\s*:\s*rebaseSnippetVaultWrite/,
   );
 });
 
