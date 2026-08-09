@@ -217,3 +217,21 @@ test("startup host re-encryption uses the locked prune writer", () => {
     /migrateHostsFromLegacyLineTimestamps[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_HOSTS, enc\)/,
   );
 });
+
+test("startup snippet order backfill uses the locked vault writer", () => {
+  // An initializing renderer must not rewrite a pre-delete snippet snapshot
+  // unlocked after peer bulk-delete cleared host bindings — that resurrects
+  // every selected snippet while binding cleanup remains committed.
+  assert.match(
+    source,
+    /needsOrderPersist[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*readStoredArray<Snippet>\([\s\S]*STORAGE_KEY_SNIPPETS[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, latest\)/,
+  );
+  assert.match(
+    source,
+    /needsOrderPersist[\s\S]*snippetsWritePendingRef\.current = writePromise/,
+  );
+  assert.doesNotMatch(
+    source,
+    /const orderedSnippets = normalizeVaultOrder\(savedSnippets\);\s*setSnippets\(orderedSnippets\);\s*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, orderedSnippets\);/,
+  );
+});

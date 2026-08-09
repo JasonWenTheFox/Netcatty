@@ -1369,8 +1369,43 @@ export const useVaultState = () => {
 
         if (savedSnippets) {
           const orderedSnippets = normalizeVaultOrder(savedSnippets);
+          snippetsRef.current = orderedSnippets;
           setSnippets(orderedSnippets);
-          localStorageAdapter.write(STORAGE_KEY_SNIPPETS, orderedSnippets);
+          // Persist order backfill only when fields changed. Never rewrite the
+          // pre-lock snapshot unlocked: another renderer can delete under the
+          // vault lock after this read and before this write, resurrecting
+          // snippets while host-binding cleanup stays committed. Re-normalize
+          // the live disk catalog under the same lock as deleteSelectedSnippets.
+          const needsOrderPersist = orderedSnippets.some(
+            (snippet, index) => snippet !== savedSnippets[index],
+          );
+          if (needsOrderPersist) {
+            const ver = ++snippetsWriteVersion.current;
+            snippetsWriteOwnerRef.current = ver;
+            const writePromise = withVaultImportLock("vault", async () => {
+              if (snippetsWriteOwnerRef.current !== ver) return "superseded" as const;
+              const latest = normalizeVaultOrder(
+                readStoredArray<Snippet>(
+                  STORAGE_KEY_SNIPPETS,
+                  localStorageAdapter.readString(STORAGE_KEY_SNIPPETS),
+                ),
+              );
+              const persisted = localStorageAdapter.write(STORAGE_KEY_SNIPPETS, latest);
+              if (!persisted) {
+                notify.error(
+                  "Snippets could not be saved. Free some local storage space and try again.",
+                  "Scripts",
+                );
+                return "failed" as const;
+              }
+              if (snippetsWriteOwnerRef.current === ver) {
+                snippetsRef.current = latest;
+                setSnippets(latest);
+              }
+              return "written" as const;
+            });
+            snippetsWritePendingRef.current = writePromise;
+          }
         }
         else updateSnippets(INITIAL_SNIPPETS);
 
