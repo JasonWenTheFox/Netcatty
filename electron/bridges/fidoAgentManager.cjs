@@ -142,6 +142,22 @@ function clearAgentState({ kill = true } = {}) {
 }
 
 /**
+ * Env for the long-lived ssh-agent process. Must not include a caller-bound
+ * NETCATTY_FIDO_ASKPASS_LEASE: ssh-sk-helper for later verify-required signing
+ * is a descendant of the agent and would inherit that lease, routing a second
+ * window's PIN/touch prompt to the starter forever. Callers still receive a
+ * per-acquire lease via askpassEnv for ssh-add. Agent-spawned prompts fall
+ * through to the shared/focused WebContents resolver in fidoAskpass.
+ * @param {Record<string, string>|null|undefined} askpassEnv
+ * @returns {Record<string, string>}
+ */
+function askpassEnvForAgentProcess(askpassEnv) {
+  if (!askpassEnv || typeof askpassEnv !== "object") return {};
+  const { NETCATTY_FIDO_ASKPASS_LEASE: _callerLease, ...agentAskpassEnv } = askpassEnv;
+  return agentAskpassEnv;
+}
+
+/**
  * Acquire a Netcatty FIDO agent socket. Multiple callers share one agent.
  * Concurrent acquires are serialized via startingPromise.
  */
@@ -210,12 +226,16 @@ async function acquireFidoAgent(options = {}) {
       fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
       const sockPath = path.join(agentDir, "agent.sock");
 
+      // Keep SSH_ASKPASS on the agent so verify-required sk-helper prompts work,
+      // but never bake the starter's caller lease into the shared process env.
+      const agentProcessEnv = { ...env, ...askpassEnvForAgentProcess(askpassEnv) };
+
       let stdout = "";
       try {
         const result = await run(sshAgent, ["-a", sockPath, "-s"], {
           timeout: 10000,
           windowsHide: true,
-          env: { ...env, ...askpassEnv },
+          env: agentProcessEnv,
         });
         stdout = result.stdout?.toString?.() || result.stdout || "";
       } catch (error) {
@@ -223,7 +243,7 @@ async function acquireFidoAgent(options = {}) {
           const result = await run(sshAgent, ["-s"], {
             timeout: 10000,
             windowsHide: true,
-            env: { ...env, ...askpassEnv },
+            env: agentProcessEnv,
           });
           stdout = result.stdout?.toString?.() || result.stdout || "";
         } catch (fallbackError) {
@@ -343,6 +363,7 @@ module.exports = {
   shutdownFidoAgentSubsystem,
   installFidoAgentQuitHook,
   isAgentLive,
+  askpassEnvForAgentProcess,
   // exposed for tests
   getTempBase,
 };

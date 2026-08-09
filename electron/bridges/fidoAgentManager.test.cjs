@@ -79,6 +79,59 @@ test("acquireFidoAgent releases askpass lease when agent start fails", async () 
   }
 });
 
+test("askpassEnvForAgentProcess strips caller-bound askpass lease", () => {
+  const { askpassEnvForAgentProcess } = require("./fidoAgentManager.cjs");
+  const stripped = askpassEnvForAgentProcess({
+    SSH_ASKPASS: "/tmp/askpass.sh",
+    SSH_ASKPASS_REQUIRE: "force",
+    NETCATTY_FIDO_ASKPASS_SOCK: "/tmp/askpass.sock",
+    NETCATTY_FIDO_ASKPASS_LEASE: "starter-lease",
+  });
+  assert.equal(stripped.SSH_ASKPASS, "/tmp/askpass.sh");
+  assert.equal(stripped.NETCATTY_FIDO_ASKPASS_SOCK, "/tmp/askpass.sock");
+  assert.equal(stripped.SSH_ASKPASS_REQUIRE, "force");
+  assert.equal("NETCATTY_FIDO_ASKPASS_LEASE" in stripped, false);
+});
+
+test("ssh-agent spawn env omits caller-bound askpass lease", async () => {
+  shutdownFidoAgentSubsystem();
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const { releaseFidoAskpassLease } = require("./fidoAskpass.cjs");
+  const managedTemp = fs.mkdtempSync(path.join(__dirname, "netcatty-fido-agent-env-"));
+  const originalGetTempDir = tempDirBridge.getTempDir;
+  tempDirBridge.getTempDir = () => managedTemp;
+  const sockPath = path.join(managedTemp, "agent.sock");
+  fs.writeFileSync(sockPath, "");
+  /** @type {Record<string, string>|null} */
+  let spawnEnv = null;
+
+  try {
+    const acquired = await acquireFidoAgent({
+      platform: "linux",
+      resolveWebContents: () => ({ id: "starter" }),
+      env: { PATH: process.env.PATH || "/usr/bin:/bin", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async (_bin, _args, opts) => {
+        spawnEnv = opts?.env || null;
+        return {
+          stdout: `SSH_AUTH_SOCK=${sockPath}; export SSH_AUTH_SOCK;\n`,
+        };
+      },
+    });
+    assert.ok(spawnEnv);
+    assert.ok(spawnEnv.SSH_ASKPASS);
+    assert.equal(spawnEnv.NETCATTY_FIDO_ASKPASS_LEASE, undefined);
+    assert.ok(acquired.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAskpassLease(acquired.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
+    releaseFidoAgent(acquired.generation);
+  } finally {
+    tempDirBridge.getTempDir = originalGetTempDir;
+    shutdownFidoAgentSubsystem();
+    fs.rmSync(managedTemp, { recursive: true, force: true });
+  }
+});
+
 test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", async () => {
   shutdownFidoAgentSubsystem();
   const fs = require("node:fs");

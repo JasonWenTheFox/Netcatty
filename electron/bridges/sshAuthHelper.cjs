@@ -1202,7 +1202,10 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     }
   }
 
+  let fidoResourcesReleased = false;
   const releaseAcquiredFidoResources = () => {
+    if (fidoResourcesReleased) return;
+    fidoResourcesReleased = true;
     try {
       if (ownedFidoAgent) {
         require("./fidoAgentManager.cjs").releaseFidoAgent(ownedFidoAgentGeneration);

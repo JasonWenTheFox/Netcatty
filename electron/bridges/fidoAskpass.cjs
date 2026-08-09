@@ -152,7 +152,14 @@ function handleAskpassClient(socket) {
     const kind = fidoPromptHandler.classifyAskpassPrompt(prompt);
     const leaseId = typeof msg?.leaseId === "string" ? msg.leaseId : "";
     const leaseResolver = leaseId ? askpassLeases.get(leaseId) : null;
-    const sender = (leaseResolver || resolveWebContents || defaultResolveWebContents)();
+    // Caller-bound leases (ssh-add) win. Agent-spawned ssh-sk-helper has no
+    // lease (shared agent must not inherit a starter lease) — prefer the
+    // focused window as the active signing caller, then the last registered
+    // resolver / any open window.
+    const sender = leaseResolver
+      ? leaseResolver()
+      : (defaultResolveWebContents()
+        || (typeof resolveWebContents === "function" ? resolveWebContents() : null));
     if (!sender) {
       socket.end(`${JSON.stringify({ ok: false, error: "no_window" })}\n`);
       return;
