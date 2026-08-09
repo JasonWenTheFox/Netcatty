@@ -37,6 +37,54 @@ export function deleteSelectedSnippetsFromVault(
 }
 
 /**
+ * Drop login/connect script bindings that point at snippets absent from the
+ * latest catalog. A queued full-array host write that encrypted before a
+ * concurrent bulk-delete must not restore those bindings after the delete
+ * releases the vault lock.
+ */
+export function pruneStaleHostSnippetBindings(
+  host: Host,
+  snippetIds: ReadonlySet<string>,
+): Host {
+  let next = host;
+  if (host.loginScriptId && !snippetIds.has(host.loginScriptId)) {
+    next = { ...next, loginScriptId: undefined };
+  }
+  const connectIds = next.connectScriptIds;
+  if (connectIds?.length) {
+    const pruned = connectIds.filter((id) => Boolean(id) && snippetIds.has(id));
+    if (
+      pruned.length !== connectIds.length
+      || pruned.some((id, index) => id !== connectIds[index])
+    ) {
+      next = {
+        ...next,
+        connectScriptIds: pruned.length > 0 ? pruned : undefined,
+      };
+    }
+  }
+  return next;
+}
+
+/** Returns `hosts` unchanged when every binding still resolves. */
+export function pruneHostsStaleSnippetBindings(
+  hosts: readonly Host[],
+  snippets: readonly Snippet[],
+): Host[] {
+  const snippetIds = new Set<string>();
+  for (const snippet of snippets) {
+    if (snippet.id) snippetIds.add(snippet.id);
+  }
+  let changed = false;
+  const next = hosts.map((host) => {
+    const pruned = pruneStaleHostSnippetBindings(host, snippetIds);
+    if (pruned !== host) changed = true;
+    return pruned;
+  });
+  return changed ? next : (hosts as Host[]);
+}
+
+/**
  * Content fingerprint for three-way rebase. Omits `order` so a local reorder
  * (which renumbers every row) does not look like an edit of unrelated snippets.
  */

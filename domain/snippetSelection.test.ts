@@ -4,6 +4,7 @@ import type { Host, Snippet } from './models';
 import {
   collectSnippetDeleteIds,
   deleteSelectedSnippetsFromVault,
+  pruneHostsStaleSnippetBindings,
   rebaseSnippetVaultWrite,
 } from './snippetSelection.ts';
 
@@ -69,6 +70,38 @@ test('deleteSelectedSnippetsFromVault removes host bindings for every selected s
   assert.deepEqual(result.hosts[1].connectScriptIds, []);
   assert.equal(hosts[0].loginScriptId, 'login');
   assert.deepEqual(hosts[0].connectScriptIds, ['connect', 'keep']);
+});
+
+test('pruneHostsStaleSnippetBindings drops bindings to missing snippets', () => {
+  const snippets: Snippet[] = [
+    {
+      id: 'keep',
+      label: 'Keep',
+      command: 'echo keep',
+      kind: 'script',
+      trigger: 'onConnect',
+    },
+  ];
+  const hosts: Host[] = [
+    {
+      id: 'host-a',
+      name: 'Host A',
+      host: 'host-a.example.com',
+      port: 22,
+      username: 'root',
+      loginScriptId: 'gone',
+      connectScriptIds: ['gone', 'keep'],
+    },
+  ];
+
+  const pruned = pruneHostsStaleSnippetBindings(hosts, snippets);
+  assert.notEqual(pruned, hosts);
+  assert.equal(pruned[0].loginScriptId, undefined);
+  assert.deepEqual(pruned[0].connectScriptIds, ['keep']);
+  assert.equal(
+    pruneHostsStaleSnippetBindings(pruned, snippets),
+    pruned,
+  );
 });
 
 test('rebaseSnippetVaultWrite does not resurrect snippets deleted on disk', () => {

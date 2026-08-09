@@ -36,6 +36,30 @@ test("deleteSelectedSnippets merges into persisted vault under the shared lock",
   );
 });
 
+test("updateHosts prunes stale snippet bindings under the vault lock", () => {
+  // Cross-window bulk-delete can land while a host writer is queued with a
+  // pre-delete encrypted blob. Re-check the live snippet catalog under the lock
+  // before persisting so login/connect bindings are not restored.
+  assert.match(
+    source,
+    /commitEncryptedHostsUnderVaultLock[\s\S]*pruneHostsStaleSnippetBindings\(hostsToPersist, latestSnippets\)/,
+  );
+  assert.match(
+    source,
+    /const writePromise = encryptPromise\.then\(async \(enc\) => \{[\s\S]*return commitEncryptedHostsUnderVaultLock\(ver, cleaned, enc\)/,
+  );
+});
+
+test("importData replaces snippets instead of additive-rebasing", () => {
+  // Sync restore / backup import must match the selected snapshot. Additive
+  // rebase would keep concurrent disk-only ids and report a successful restore
+  // that still contains snippets absent from the imported payload.
+  assert.match(
+    source,
+    /updateSnippets\(payload\.snippets,\s*\{\s*replace:\s*true\s*\}\)/,
+  );
+});
+
 test("updateSnippets disk writes take the shared vault lock", () => {
   // Unlocked snippet saves can interleave with bulk-delete's journaled commit
   // and discard concurrent edits. Ordinary writers must queue on the same lock
@@ -85,6 +109,10 @@ test("clearVaultData replaces snippets without additive rebase", () => {
   assert.match(
     source,
     /replace\s*\?\s*cleaned\s*:\s*rebaseSnippetVaultWrite/,
+  );
+  assert.match(
+    source,
+    /if \(replace\) \{\s*\/\/ Restore\/import\/clear[\s\S]*snippetsWriteBaseRef\.current = null/,
   );
 });
 
