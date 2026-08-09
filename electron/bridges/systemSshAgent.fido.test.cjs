@@ -128,8 +128,13 @@ test("prepareSystemSshAgent tracks newly loaded identities for shared-agent clea
   ]);
 });
 
-test("prepareSystemSshAgent does not mark already-loaded identities as newly loaded", async () => {
-  const { prepareSystemSshAgent, publicKeyBlob } = require("./systemSshAgent.cjs");
+test("prepareSystemSshAgent does not adopt pre-existing agent identities for cleanup", async () => {
+  const {
+    prepareSystemSshAgent,
+    publicKeyBlob,
+    resetSharedAgentIdentityRefsForTests,
+  } = require("./systemSshAgent.cjs");
+  resetSharedAgentIdentityRefsForTests();
   const type = Buffer.from("sk-ssh-ed25519@openssh.com");
   const pub = Buffer.alloc(32, 7);
   const app = Buffer.from("ssh:");
@@ -157,25 +162,87 @@ test("prepareSystemSshAgent does not mark already-loaded identities as newly loa
     sign: (_key, _data, _opts, cb) => cb(new Error("unused")),
   };
 
-  const prepared = await prepareSystemSshAgent({
-    socketPath: "/tmp/fake-agent.sock",
-    identityFilePaths: [identityPath],
-    loadIdentityFilesIntoAgent: true,
-  }, {
-    createAgent: () => fakeAgent,
-    readFile: async (p) => {
-      if (p === `${identityPath}.pub`) return pubLine;
-      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    },
-    runSshAdd: async (args) => { sshAddCalls.push(args); },
-    platform: "win32",
-  });
+  try {
+    const prepared = await prepareSystemSshAgent({
+      socketPath: "/tmp/fake-agent.sock",
+      identityFilePaths: [identityPath],
+      loadIdentityFilesIntoAgent: true,
+    }, {
+      createAgent: () => fakeAgent,
+      readFile: async (p) => {
+        if (p === `${identityPath}.pub`) return pubLine;
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+      runSshAdd: async (args) => { sshAddCalls.push(args); },
+      platform: "win32",
+    });
 
-  assert.deepEqual(sshAddCalls, []);
-  assert.equal(prepared._netcattyNewlyLoadedIdentityPaths, undefined);
-  assert.deepEqual(prepared._netcattySharedAgentIdentities, [
-    { key: blob, identityPath },
-  ]);
+    assert.deepEqual(sshAddCalls, []);
+    assert.equal(prepared._netcattyNewlyLoadedIdentityPaths, undefined);
+    assert.equal(prepared._netcattySharedAgentIdentities, undefined);
+  } finally {
+    resetSharedAgentIdentityRefsForTests();
+  }
+});
+
+test("prepareSystemSshAgent joins Netcatty-owned already-loaded identities for shared cleanup", async () => {
+  const {
+    prepareSystemSshAgent,
+    publicKeyBlob,
+    retainSharedAgentIdentity,
+    resetSharedAgentIdentityRefsForTests,
+  } = require("./systemSshAgent.cjs");
+  resetSharedAgentIdentityRefsForTests();
+  const type = Buffer.from("sk-ssh-ed25519@openssh.com");
+  const pub = Buffer.alloc(32, 9);
+  const app = Buffer.from("ssh:");
+  const parts = [type, pub, app];
+  let len = 0;
+  for (const part of parts) len += 4 + part.length;
+  const buf = Buffer.alloc(len);
+  let offset = 0;
+  for (const part of parts) {
+    buf.writeUInt32BE(part.length, offset);
+    offset += 4;
+    part.copy(buf, offset);
+    offset += part.length;
+  }
+  const pubLine = `sk-ssh-ed25519@openssh.com ${buf.toString("base64")} test`;
+  const identityPath = "/tmp/id_ed25519_sk_owned";
+  const blob = publicKeyBlob(pubLine);
+  const fakeKey = {
+    getPublicSSH: () => Buffer.from(blob, "base64"),
+  };
+  const fakeAgent = {
+    getIdentities: (cb) => cb(null, [fakeKey]),
+    sign: (_key, _data, _opts, cb) => cb(new Error("unused")),
+  };
+
+  try {
+    retainSharedAgentIdentity(blob, "/tmp/id_ed25519_sk_first");
+    const prepared = await prepareSystemSshAgent({
+      socketPath: "/tmp/fake-agent.sock",
+      identityFilePaths: [identityPath],
+      loadIdentityFilesIntoAgent: true,
+    }, {
+      createAgent: () => fakeAgent,
+      readFile: async (p) => {
+        if (p === `${identityPath}.pub`) return pubLine;
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+      runSshAdd: async () => {
+        throw new Error("ssh-add must not run for already-loaded owned identity");
+      },
+      platform: "win32",
+    });
+
+    assert.equal(prepared._netcattyNewlyLoadedIdentityPaths, undefined);
+    assert.deepEqual(prepared._netcattySharedAgentIdentities, [
+      { key: blob, identityPath },
+    ]);
+  } finally {
+    resetSharedAgentIdentityRefsForTests();
+  }
 });
 
 test("retainSharedAgentIdentity reference-counts identical public identities", () => {

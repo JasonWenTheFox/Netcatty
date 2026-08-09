@@ -91,6 +91,8 @@ const askpassLeases = new Map();
  * @type {(() => import("electron").WebContents|null)|null}
  */
 let lastLeasedSigningResolver = null;
+/** @type {string|null} Lease id that last marked lastLeasedSigningResolver. */
+let lastLeasedSigningLeaseId = null;
 
 function getTempBase() {
   const tempDirBridge = require("./tempDirBridge.cjs");
@@ -193,12 +195,20 @@ function handleAskpassClient(socket) {
     // Caller-bound leases (ssh-add) win and mark the active signing window.
     // Agent-spawned ssh-sk-helper has no lease (shared agent must not inherit a
     // starter lease) — route to that signing window, not the last acquire.
+    // Tag leaseless prompts with the last signing lease so teardown can cancel.
     let sender = null;
+    /** @type {string} */
+    let ownerLeaseId = "";
     if (leaseResolver) {
       sender = liveSenderFromResolver(leaseResolver);
-      if (sender) lastLeasedSigningResolver = leaseResolver;
+      if (sender) {
+        lastLeasedSigningResolver = leaseResolver;
+        lastLeasedSigningLeaseId = leaseId;
+        ownerLeaseId = leaseId;
+      }
     } else {
       sender = resolveSharedAgentPromptSender();
+      ownerLeaseId = lastLeasedSigningLeaseId || "";
     }
     if (!sender) {
       socket.end(`${JSON.stringify({ ok: false, error: "no_window" })}\n`);
@@ -209,6 +219,7 @@ function handleAskpassClient(socket) {
         kind,
         message: prompt,
         keyName: "FIDO2",
+        leaseId: ownerLeaseId,
       });
       if (!result || result.cancelled) {
         socket.end(`${JSON.stringify({ ok: false, error: "cancelled" })}\n`);
@@ -316,14 +327,23 @@ function releaseFidoAskpassLease(leaseId) {
   if (typeof leaseId !== "string" || !leaseId) return;
   const released = askpassLeases.get(leaseId);
   askpassLeases.delete(leaseId);
+  try {
+    fidoPromptHandler.cancelFidoPromptRequestsForLease(leaseId, "lease-released");
+  } catch {
+    // ignore
+  }
   if (released && lastLeasedSigningResolver === released) {
     lastLeasedSigningResolver = null;
-    for (const resolver of askpassLeases.values()) {
+    lastLeasedSigningLeaseId = null;
+    for (const [otherLeaseId, resolver] of askpassLeases.entries()) {
       if (liveSenderFromResolver(resolver)) {
         lastLeasedSigningResolver = resolver;
+        lastLeasedSigningLeaseId = otherLeaseId;
         break;
       }
     }
+  } else if (lastLeasedSigningLeaseId === leaseId) {
+    lastLeasedSigningLeaseId = null;
   }
 }
 
@@ -337,8 +357,17 @@ function shutdownFidoAskpass() {
   askpassSocketPath = null;
   askpassScriptPath = null;
   askpassWrapperPath = null;
+  const outstandingLeaseIds = [...askpassLeases.keys()];
   askpassLeases.clear();
   lastLeasedSigningResolver = null;
+  lastLeasedSigningLeaseId = null;
+  for (const leaseId of outstandingLeaseIds) {
+    try {
+      fidoPromptHandler.cancelFidoPromptRequestsForLease(leaseId, "askpass-shutdown");
+    } catch {
+      // ignore
+    }
+  }
 }
 
 module.exports = {

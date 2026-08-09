@@ -78,6 +78,14 @@ function releaseSharedAgentIdentity(key) {
   };
 }
 
+/**
+ * @param {string} key
+ * @returns {boolean}
+ */
+function hasSharedAgentIdentity(key) {
+  return typeof key === "string" && key.length > 0 && sharedAgentIdentityRefs.has(key);
+}
+
 function resetSharedAgentIdentityRefsForTests() {
   sharedAgentIdentityRefs.clear();
 }
@@ -393,8 +401,13 @@ async function prepareSystemSshAgent(options, injected = {}) {
         // No .pub selector — still attempt ssh-add when requested.
       }
       if (alreadyLoaded) {
-        // Still retain for shared-agent refcounting even though we skip ssh-add.
-        sharedAgentIdentities.push({ key: blob || identityPath, identityPath });
+        // Join refcount only when Netcatty already owns this identity (another
+        // session loaded it). Pre-existing user agent identities must not be
+        // adopted into cleanup — last release would ssh-add -d them.
+        const key = blob || identityPath;
+        if (hasSharedAgentIdentity(key)) {
+          sharedAgentIdentities.push({ key, identityPath });
+        }
         continue;
       }
       if (!(await shouldLoadIdentityFileIntoAgent(identityPath, options, deps))) continue;
@@ -481,5 +494,6 @@ module.exports = {
   shouldLoadIdentityFileIntoAgent,
   retainSharedAgentIdentity,
   releaseSharedAgentIdentity,
+  hasSharedAgentIdentity,
   resetSharedAgentIdentityRefsForTests,
 };

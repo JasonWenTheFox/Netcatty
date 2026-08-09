@@ -12,6 +12,7 @@ const { randomUUID } = require("node:crypto");
  *   sender: Electron.WebContents,
  *   webContentsId: number,
  *   kind: string,
+ *   leaseId: string,
  *   createdAt: number,
  *   timeoutId: NodeJS.Timeout,
  * }>} */
@@ -59,12 +60,29 @@ function cancelFidoPromptRequest(requestId, reason = "cancelled") {
 }
 
 /**
+ * Cancel prompts owned by an askpass lease (ssh-add or inherited agent signing).
+ * @param {string} leaseId
+ * @param {string} [reason]
+ * @returns {number}
+ */
+function cancelFidoPromptRequestsForLease(leaseId, reason = "lease-released") {
+  if (typeof leaseId !== "string" || !leaseId) return 0;
+  let cancelled = 0;
+  for (const [requestId, pending] of [...fidoPromptRequests.entries()]) {
+    if (pending.leaseId !== leaseId) continue;
+    if (cancelFidoPromptRequest(requestId, reason)) cancelled += 1;
+  }
+  return cancelled;
+}
+
+/**
  * @param {Electron.WebContents|null|undefined} sender
  * @param {{
  *   kind: "pin" | "touch" | "confirm",
  *   message?: string,
  *   title?: string,
  *   keyName?: string,
+ *   leaseId?: string,
  * }} options
  * @returns {Promise<{ cancelled?: boolean, response?: string|null } | null>}
  */
@@ -77,6 +95,7 @@ function requestFidoPrompt(sender, options = {}) {
     }
 
     const kind = options.kind === "touch" || options.kind === "confirm" ? options.kind : "pin";
+    const leaseId = typeof options.leaseId === "string" ? options.leaseId : "";
     const requestId = generateRequestId(kind);
     const timeoutId = setTimeout(() => {
       settleRequest(
@@ -91,6 +110,7 @@ function requestFidoPrompt(sender, options = {}) {
       sender,
       webContentsId: sender.id,
       kind,
+      leaseId,
       createdAt: Date.now(),
       timeoutId,
     });
@@ -156,6 +176,7 @@ module.exports = {
   generateRequestId,
   requestFidoPrompt,
   cancelFidoPromptRequest,
+  cancelFidoPromptRequestsForLease,
   handleResponse,
   registerHandler,
   getRequests,

@@ -6,9 +6,11 @@ const {
   classifyAskpassPrompt,
   buildFidoAskpassEnv,
   ensureFidoAskpass,
+  releaseFidoAskpassLease,
   shutdownFidoAskpass,
   getTempBase,
 } = require("./fidoAskpass.cjs");
+const fidoPromptHandler = require("./fidoPromptHandler.cjs");
 const fs = require("node:fs");
 
 test("buildFidoAskpassEnv creates helper artifacts", () => {
@@ -32,4 +34,23 @@ test("getTempBase uses Netcatty managed temp dir (no os.tmpdir fallback)", () =>
 test("classifyAskpassPrompt re-export works", () => {
   assert.equal(classifyAskpassPrompt("Enter PIN for authenticator"), "pin");
   assert.equal(classifyAskpassPrompt("Confirm user presence"), "touch");
+});
+
+test("releaseFidoAskpassLease cancels outstanding FIDO prompts for that lease", async () => {
+  const sent = [];
+  const sender = {
+    id: 77,
+    isDestroyed: () => false,
+    send: (channel, payload) => sent.push({ channel, payload }),
+  };
+  const leaseId = "lease-release-cancel-test";
+  const pending = fidoPromptHandler.requestFidoPrompt(sender, {
+    kind: "pin",
+    message: "Enter PIN",
+    leaseId,
+  });
+  releaseFidoAskpassLease(leaseId);
+  assert.deepEqual(await pending, { cancelled: true });
+  assert.equal(fidoPromptHandler.getRequests().size, 0);
+  assert.ok(sent.some((entry) => entry.channel === "netcatty:fido-prompt-cancelled"));
 });

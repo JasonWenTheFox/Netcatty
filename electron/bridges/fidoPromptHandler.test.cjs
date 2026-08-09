@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const {
   classifyAskpassPrompt,
   requestFidoPrompt,
+  cancelFidoPromptRequestsForLease,
   handleResponse,
   getRequests,
 } = require("./fidoPromptHandler.cjs");
@@ -60,4 +61,37 @@ test("requestFidoPrompt cancel path", async () => {
   handleResponse({ sender: { id: 7 } }, { requestId, cancelled: true });
   const resolved = await pending;
   assert.deepEqual(resolved, { cancelled: true });
+});
+
+test("cancelFidoPromptRequestsForLease settles owned prompts and notifies renderer", async () => {
+  const sent = [];
+  const sender = {
+    id: 11,
+    isDestroyed: () => false,
+    send: (channel, payload) => sent.push({ channel, payload }),
+  };
+  const pending = requestFidoPrompt(sender, {
+    kind: "pin",
+    message: "Enter PIN",
+    leaseId: "lease-abc",
+  });
+  const other = requestFidoPrompt(sender, {
+    kind: "touch",
+    message: "Touch key",
+    leaseId: "lease-other",
+  });
+  const otherRequestId = sent.find((entry) => (
+    entry.channel === "netcatty:fido-prompt-request" && entry.payload.kind === "touch"
+  )).payload.requestId;
+
+  assert.equal(cancelFidoPromptRequestsForLease("lease-abc", "lease-released"), 1);
+  assert.deepEqual(await pending, { cancelled: true });
+  assert.equal(getRequests().size, 1);
+  assert.ok(sent.some((entry) => (
+    entry.channel === "netcatty:fido-prompt-cancelled"
+    && entry.payload.reason === "lease-released"
+  )));
+
+  handleResponse({ sender: { id: 11 } }, { requestId: otherRequestId, cancelled: true });
+  await other;
 });
