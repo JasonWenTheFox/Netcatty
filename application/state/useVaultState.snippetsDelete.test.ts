@@ -18,6 +18,12 @@ test("deleteSelectedSnippets merges into persisted vault under the shared lock",
     source,
     /deleteSelectedSnippets[\s\S]*commitPluginImporterTransaction\(localStorageAdapter, \[[\s\S]*STORAGE_KEY_HOSTS[\s\S]*STORAGE_KEY_SNIPPETS/,
   );
+  // Persistence rejection must be caught: callers void the promise after the
+  // confirm dialog closes, so an uncaught throw would leave no retry feedback.
+  assert.match(
+    source,
+    /deleteSelectedSnippets[\s\S]*try \{\s*commitPluginImporterTransaction[\s\S]*catch \{[\s\S]*notify\.error\([\s\S]*Snippets could not be deleted/,
+  );
   // Must not rebuild hosts from a per-window in-memory snapshot (popup race).
   assert.doesNotMatch(
     source,

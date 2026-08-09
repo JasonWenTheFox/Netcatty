@@ -654,10 +654,24 @@ export const useVaultState = () => {
         ++snippetsWriteVersion.current;
         // Journaled pair write: a partial hosts/snippets persist would drop
         // login/connect bindings on restart while leaving the snippets behind.
-        commitPluginImporterTransaction(localStorageAdapter, [
-          [STORAGE_KEY_HOSTS, encryptedHosts],
-          [STORAGE_KEY_SNIPPETS, result.snippets],
-        ]);
+        // Callers fire-and-forget this promise after closing the confirm dialog,
+        // so storage rejection must not become an unhandled rejection.
+        try {
+          commitPluginImporterTransaction(localStorageAdapter, [
+            [STORAGE_KEY_HOSTS, encryptedHosts],
+            [STORAGE_KEY_SNIPPETS, result.snippets],
+          ]);
+        } catch {
+          notify.error(
+            "Snippets could not be deleted. Free some local storage space and try again.",
+            "Scripts",
+          );
+          return {
+            snippets: latestSnippets,
+            hosts: latestHosts,
+            deletedCount: 0,
+          };
+        }
         hostsRef.current = result.hosts;
         snippetsRef.current = result.snippets;
         setHosts(result.hosts);
