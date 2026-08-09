@@ -423,6 +423,15 @@ function createPreloadApi(ctx) {
   listAccelerators: async (sessionId) => {
     return ipcRenderer.invoke("netcatty:system:listAccelerators", { sessionId });
   },
+  listListeningPorts: async (sessionId) => {
+    return ipcRenderer.invoke("netcatty:system:listListeningPorts", { sessionId });
+  },
+  listSystemServices: async (sessionId) => {
+    return ipcRenderer.invoke("netcatty:system:listSystemServices", { sessionId });
+  },
+  systemServiceAction: async (options) => {
+    return ipcRenderer.invoke("netcatty:system:systemServiceAction", options);
+  },
   dockerInspect: async (options) => {
     return ipcRenderer.invoke("netcatty:system:dockerInspect", options);
   },
@@ -1229,6 +1238,15 @@ function createPreloadApi(ctx) {
   listPortForwards: async () => {
     return ipcRenderer.invoke("netcatty:portforward:list");
   },
+  getPortForwardSnapshot: async () => {
+    return ipcRenderer.invoke("netcatty:portforward:snapshot");
+  },
+  subscribePortForwardRuntime: async () => {
+    return ipcRenderer.invoke("netcatty:portforward:subscribeRuntime");
+  },
+  unsubscribePortForwardRuntime: async () => {
+    return ipcRenderer.invoke("netcatty:portforward:unsubscribeRuntime");
+  },
   stopAllPortForwards: async () => {
     return ipcRenderer.invoke("netcatty:portforward:stopAll");
   },
@@ -1245,6 +1263,12 @@ function createPreloadApi(ctx) {
       if (portForwardStatusListeners.get(tunnelId)?.size === 0) {
         portForwardStatusListeners.delete(tunnelId);
       }
+    };
+  },
+  onPortForwardRuntime: (cb) => {
+    portForwardRuntimeListeners.add(cb);
+    return () => {
+      portForwardRuntimeListeners.delete(cb);
     };
   },
   // Chain progress listener for jump host connections

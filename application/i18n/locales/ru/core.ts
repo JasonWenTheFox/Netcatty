@@ -88,8 +88,12 @@ export const ruCoreMessages: Messages = {
   'settings.tab.appearance': 'Внешний вид',
   'settings.tab.terminal': 'Терминал',
   'settings.tab.shortcuts': 'Горячие клавиши',
+  'settings.tab.ai': 'AI',
   'settings.tab.syncCloud': 'Синхронизация и облако',
   'settings.tab.system': 'Система',
+  'settings.search.open': 'Поиск настроек',
+  'settings.search.placeholder': 'Искать настройки…',
+  'settings.search.noResults': 'Совпадений не найдено',
 
   // Settings > System
   'settings.system.title': 'Система',
@@ -222,6 +226,7 @@ export const ruCoreMessages: Messages = {
   'tray.status.active': 'Активно',
   'tray.status.inactive': 'Неактивно',
   'tray.status.error': 'Ошибка',
+  'tray.status.unknown': 'Неизвестно',
   'tray.recentHosts': 'Недавние хосты',
   'tray.empty.title': 'Пока здесь ничего нет',
   'tray.empty.subtitle': 'Подключитесь к серверу, они по вам скучают 🚀',

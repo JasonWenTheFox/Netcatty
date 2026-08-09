@@ -89,8 +89,12 @@ export const enCoreMessages: Messages = {
   'settings.tab.appearance': 'Appearance',
   'settings.tab.terminal': 'Terminal',
   'settings.tab.shortcuts': 'Shortcuts',
+  'settings.tab.ai': 'AI',
   'settings.tab.syncCloud': 'Sync & Cloud',
   'settings.tab.system': 'System',
+  'settings.search.open': 'Search settings',
+  'settings.search.placeholder': 'Search settings…',
+  'settings.search.noResults': 'No matching settings',
 
   // Settings > System
   'settings.system.title': 'System',
@@ -234,6 +238,7 @@ export const enCoreMessages: Messages = {
   'tray.status.active': 'Active',
   'tray.status.inactive': 'Inactive',
   'tray.status.error': 'Error',
+  'tray.status.unknown': 'Unknown',
   'tray.recentHosts': 'Recent Hosts',
   'tray.empty.title': 'Nothing here yet',
   'tray.empty.subtitle': 'Go connect to a server, they miss you 🚀',
