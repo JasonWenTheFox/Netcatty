@@ -70,3 +70,25 @@ test("updateSnippets rebases onto the latest persisted snapshot under the lock",
     /snippetsWriteOwnerRef\.current !== ver/,
   );
 });
+
+test("updateSnippets keeps the persisted rebase ancestor across superseded saves", () => {
+  // Two queued local saves must not let the second treat the first save's
+  // optimistic in-memory array as base — that array never hit disk, so an add
+  // would look like a concurrent delete and be dropped.
+  assert.match(
+    source,
+    /const snippetsWriteBaseRef = useRef<Snippet\[\] \| null>\(null\)/,
+  );
+  assert.match(
+    source,
+    /const base = snippetsWriteBaseRef\.current \?\? snippetsRef\.current/,
+  );
+  assert.match(
+    source,
+    /if \(snippetsWriteBaseRef\.current === null\) \{\s*snippetsWriteBaseRef\.current = base;\s*\}/,
+  );
+  assert.match(
+    source,
+    /localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\);\s*\/\/ Disk caught up[\s\S]*snippetsWriteBaseRef\.current = null/,
+  );
+});

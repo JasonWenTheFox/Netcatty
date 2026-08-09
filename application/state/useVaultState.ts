@@ -317,6 +317,10 @@ export const useVaultState = () => {
   // snippetsWriteVersion (to invalidate naive writers), so queued saves must
   // key supersede checks off this owner instead of that shared counter.
   const snippetsWriteOwnerRef = useRef(0);
+  // Last persisted ancestor for in-flight updateSnippets rebases. Superseded
+  // saves must not advance this to an optimistic in-memory array that never
+  // landed on disk — that would make a local add look like a concurrent delete.
+  const snippetsWriteBaseRef = useRef<Snippet[] | null>(null);
   const customGroupsWriteVersion = useRef(0);
   const groupConfigsWriteVersion = useRef(0);
   // Encrypt-phase promises can always be awaited, even under the vault lock.
@@ -609,7 +613,12 @@ export const useVaultState = () => {
     // Capture the pre-update snapshot for a 3-way rebase once we hold the lock.
     // Callers pass a full array derived from this window's view; a popup delete
     // (or another window's import) may land on disk before our write runs.
-    const base = snippetsRef.current;
+    // Keep the first outstanding ancestor across superseded local saves so a
+    // second edit does not rebase against the first save's optimistic memory.
+    const base = snippetsWriteBaseRef.current ?? snippetsRef.current;
+    if (snippetsWriteBaseRef.current === null) {
+      snippetsWriteBaseRef.current = base;
+    }
     const cleaned = normalizeVaultOrder(data);
     const ver = ++snippetsWriteVersion.current;
     snippetsWriteOwnerRef.current = ver;
@@ -631,6 +640,8 @@ export const useVaultState = () => {
         rebaseSnippetVaultWrite({ base, ours: cleaned, theirs: latest }),
       );
       localStorageAdapter.write(STORAGE_KEY_SNIPPETS, rebased);
+      // Disk caught up; next save should treat this write as its ancestor.
+      snippetsWriteBaseRef.current = null;
       if (snippetsWriteOwnerRef.current === ver) {
         snippetsRef.current = rebased;
         setSnippets(rebased);
@@ -710,6 +721,9 @@ export const useVaultState = () => {
         }
         hostsRef.current = result.hosts;
         snippetsRef.current = result.snippets;
+        // Persisted delete is the new ancestor; drop any stale rebase base from
+        // a superseded/queued updateSnippets that never landed.
+        snippetsWriteBaseRef.current = null;
         setHosts(result.hosts);
         setSnippets(result.snippets);
         hostsWritePendingRef.current = Promise.resolve("unchanged" as const);
@@ -1481,7 +1495,10 @@ export const useVaultState = () => {
         // Invalidate write-version readers, but do not clear snippetsWriteOwnerRef:
         // an in-flight updateSnippets rebases onto this disk snapshot under the
         // vault lock instead of being cancelled (which would drop local edits).
+        // Clear the shared rebase ancestor so a *new* local save after this
+        // event uses the remote snapshot; in-flight saves keep their closure base.
         ++snippetsWriteVersion.current;
+        snippetsWriteBaseRef.current = null;
         snippetsRef.current = next;
         setSnippets(next);
         return;
@@ -1802,6 +1819,8 @@ export const useVaultState = () => {
           [STORAGE_KEY_GROUP_CONFIGS, encryptedGroupConfigs],
         ]);
         customGroupsRef.current = nextGroups;
+        snippetsRef.current = nextSnippets;
+        snippetsWriteBaseRef.current = null;
         setHosts(nextHosts);
         setKeys(nextKeys);
         setIdentities(nextIdentities);

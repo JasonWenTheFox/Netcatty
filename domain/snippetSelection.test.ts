@@ -90,6 +90,38 @@ test('rebaseSnippetVaultWrite does not resurrect snippets deleted on disk', () =
   assert.equal(merged[0]?.label, 'A edited');
 });
 
+test('rebaseSnippetVaultWrite keeps local adds when base is the persisted ancestor', () => {
+  // Queued save 1 added X (never persisted); save 2 edited X. Rebase must use
+  // the disk ancestor — not save 1's optimistic array — or X looks deleted.
+  const persisted: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+  const afterAdd: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'x', label: 'X', command: 'echo x' },
+  ];
+  const afterEdit: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+    { id: 'x', label: 'X edited', command: 'echo x2' },
+  ];
+
+  const wrongBase = rebaseSnippetVaultWrite({
+    base: afterAdd,
+    ours: afterEdit,
+    theirs: persisted,
+  });
+  assert.deepEqual(wrongBase.map((snippet) => snippet.id), ['a']);
+
+  const merged = rebaseSnippetVaultWrite({
+    base: persisted,
+    ours: afterEdit,
+    theirs: persisted,
+  });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'x']);
+  assert.equal(merged[1]?.label, 'X edited');
+  assert.equal(merged[1]?.command, 'echo x2');
+});
+
 test('rebaseSnippetVaultWrite keeps concurrent disk additions and local additions', () => {
   const base: Snippet[] = [
     { id: 'a', label: 'A', command: 'echo a' },
