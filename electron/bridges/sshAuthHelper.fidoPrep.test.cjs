@@ -206,6 +206,7 @@ test("prepareSystemSshAgentForAuth releases FIDO resources when preparation thro
       NETCATTY_FIDO_ASKPASS_LEASE: leaseId,
     },
     owned: true,
+    generation: 1,
   });
   fidoAgentManager.releaseFidoAgent = () => { releasedAgent += 1; };
   fidoAskpass.releaseFidoAskpassLease = (id) => {
@@ -229,5 +230,73 @@ test("prepareSystemSshAgentForAuth releases FIDO resources when preparation thro
     fidoAgentManager.acquireFidoAgent = originalAcquire;
     fidoAgentManager.releaseFidoAgent = originalRelease;
     fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
+  }
+});
+
+test("prepareSystemSshAgentForAuth removes newly loaded identities from a shared Windows agent on release", async () => {
+  const fidoAgentManager = require("./fidoAgentManager.cjs");
+  const fidoAskpass = require("./fidoAskpass.cjs");
+  const systemSshAgent = require("./systemSshAgent.cjs");
+  const childProcess = require("node:child_process");
+  const originalAcquire = fidoAgentManager.acquireFidoAgent;
+  const originalRelease = fidoAgentManager.releaseFidoAgent;
+  const originalReleaseLease = fidoAskpass.releaseFidoAskpassLease;
+  const originalPrepare = systemSshAgent.prepareSystemSshAgent;
+  const originalExecFile = childProcess.execFile;
+  const leaseId = "test-lease-shared-win";
+  const identityPath = "/tmp/netcatty-shared-sk";
+  const skPub =
+    "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABHNzaDo= test";
+  const deleted = [];
+  let releasedAgent = 0;
+
+  fidoAgentManager.acquireFidoAgent = async () => ({
+    socketPath: "\\\\.\\pipe\\openssh-ssh-agent",
+    askpassEnv: {
+      SSH_ASKPASS: "/bin/true",
+      NETCATTY_FIDO_ASKPASS_LEASE: leaseId,
+    },
+    owned: false,
+    generation: 7,
+  });
+  fidoAgentManager.releaseFidoAgent = (generation) => {
+    assert.equal(generation, 7);
+    releasedAgent += 1;
+  };
+  fidoAskpass.releaseFidoAskpassLease = () => {};
+  systemSshAgent.prepareSystemSshAgent = async () => ({
+    getIdentities: (cb) => cb(null, []),
+    sign: (_k, _d, _o, cb) => cb(new Error("unused")),
+    _netcattyNewlyLoadedIdentityPaths: [identityPath],
+  });
+  childProcess.execFile = (file, args, opts, cb) => {
+    if (Array.isArray(args) && args[0] === "-d") {
+      deleted.push(args[1]);
+      if (typeof cb === "function") cb(null, "", "");
+      return { kill() {} };
+    }
+    return originalExecFile(file, args, opts, cb);
+  };
+
+  try {
+    const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
+    const agent = await prepareSystemSshAgentForAuth({
+      useSshAgent: true,
+      useFidoAgent: true,
+      agentPublicKeys: [skPub],
+      loadIdentityFilesIntoAgent: true,
+      identityFilePaths: [identityPath],
+    }, "[test]");
+    assert.ok(agent);
+    assert.equal(typeof agent._releaseNetcattyFidoAgent, "function");
+    agent._releaseNetcattyFidoAgent();
+    assert.deepEqual(deleted, [identityPath]);
+    assert.equal(releasedAgent, 1);
+  } finally {
+    fidoAgentManager.acquireFidoAgent = originalAcquire;
+    fidoAgentManager.releaseFidoAgent = originalRelease;
+    fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
+    systemSshAgent.prepareSystemSshAgent = originalPrepare;
+    childProcess.execFile = originalExecFile;
   }
 });

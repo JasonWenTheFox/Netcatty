@@ -161,7 +161,25 @@ function resolveSshAddBinary(platform, env = process.env) {
       }
     }
   }
-  if (platform === "win32") return "ssh-add";
+  if (platform === "win32") {
+    // Pair with Git/MSYS OpenSSH when present (same stack as user-mode ssh-agent).
+    const programFiles = env.ProgramFiles || "C:\\Program Files";
+    const programFilesX86 = env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    const localAppData = env.LOCALAPPDATA || "";
+    const userProfile = env.USERPROFILE || "";
+    for (const candidate of [
+      path.join(programFiles, "Git", "usr", "bin", "ssh-add.exe"),
+      path.join(programFilesX86, "Git", "usr", "bin", "ssh-add.exe"),
+      path.join(localAppData, "Programs", "Git", "usr", "bin", "ssh-add.exe"),
+      path.join(userProfile, "scoop", "apps", "git", "current", "usr", "bin", "ssh-add.exe"),
+    ]) {
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        // continue
+      }
+    }
+  }
   return "ssh-add";
 }
 
@@ -287,6 +305,8 @@ async function prepareSystemSshAgent(options, injected = {}) {
 
   // Load FIDO2 / SK identity files (and other identities when addKeysToAgent is
   // set) into the agent so ssh2 can request hardware signatures.
+  /** @type {string[]} Paths newly ssh-add'd this preparation (for shared-agent cleanup). */
+  const newlyLoadedIdentityPaths = [];
   if (resolvedIdentityPaths.length > 0) {
     let loadedBlobs = new Set();
     try {
@@ -320,6 +340,7 @@ async function prepareSystemSshAgent(options, injected = {}) {
             askpassEnv: deps.askpassEnv,
           });
         }
+        newlyLoadedIdentityPaths.push(identityPath);
         deps.log?.("Loaded identity into SSH agent", { identityPath });
       } catch (error) {
         deps.log?.("Could not load identity into SSH agent", {
@@ -334,6 +355,24 @@ async function prepareSystemSshAgent(options, injected = {}) {
     options.identitiesOnly === true
     && (preferred.size === 0 || (unavailablePublicKeyPaths.length > 0 && providedPreferredCount === 0))
   ) {
+    // Roll back identities we just added so a failed prep does not leak keys
+    // into a shared (e.g. Windows system) agent.
+    for (const identityPath of newlyLoadedIdentityPaths) {
+      try {
+        const args = ["-d", identityPath];
+        if (deps.runSshAdd) await deps.runSshAdd(args);
+        else {
+          await defaultRunSshAdd(args, {
+            socketPath: options.socketPath,
+            env: deps.env,
+            platform: deps.platform,
+            askpassEnv: { SSH_ASKPASS_REQUIRE: "never" },
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
     const error = new Error(
       unavailablePublicKeyPaths.length > 0
         ? `IdentitiesOnly requires a readable public key selector. Missing or invalid: ${unavailablePublicKeyPaths.join(", ")}`
@@ -343,7 +382,11 @@ async function prepareSystemSshAgent(options, injected = {}) {
     throw error;
   }
 
-  return new IdentityAwareAgent(agent, preferred, options.identitiesOnly === true);
+  const wrapped = new IdentityAwareAgent(agent, preferred, options.identitiesOnly === true);
+  if (newlyLoadedIdentityPaths.length > 0) {
+    wrapped._netcattyNewlyLoadedIdentityPaths = newlyLoadedIdentityPaths;
+  }
+  return wrapped;
 }
 
 module.exports = {

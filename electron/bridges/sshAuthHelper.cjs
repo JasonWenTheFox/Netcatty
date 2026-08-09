@@ -7,9 +7,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { createHash } = require("node:crypto");
-const { exec } = require("node:child_process");
+const childProcess = require("node:child_process");
+const { exec } = childProcess;
 const { utils: sshUtils } = require("ssh2");
-const { prepareSystemSshAgent } = require("./systemSshAgent.cjs");
+const systemSshAgent = require("./systemSshAgent.cjs");
 const keyboardInteractiveHandler = require("./keyboardInteractiveHandler.cjs");
 const passphraseHandler = require("./passphraseHandler.cjs");
 const {
@@ -1098,6 +1099,10 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
   let ownedFidoAgent = false;
   /** @type {number|undefined} */
   let ownedFidoAgentGeneration;
+  /** @type {string|null} */
+  let fidoSshAddPath = null;
+  /** True when acquireFidoAgent succeeded (owned or shared Windows pipe). */
+  let acquiredFidoAgent = false;
 
   if (isFidoFlow) {
     try {
@@ -1112,7 +1117,12 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       askpassEnv = fidoAgent.askpassEnv || null;
       ownedFidoAgent = fidoAgent.owned === true;
       ownedFidoAgentGeneration = fidoAgent.generation;
-      console.log(`${logPrefix} Using Netcatty FIDO ssh-agent`, { socketPath });
+      fidoSshAddPath = typeof fidoAgent.sshAddPath === "string" ? fidoAgent.sshAddPath : null;
+      acquiredFidoAgent = true;
+      console.log(`${logPrefix} Using Netcatty FIDO ssh-agent`, {
+        socketPath,
+        owned: ownedFidoAgent,
+      });
     } catch (error) {
       console.log(`${logPrefix} FIDO agent start failed; falling back to system agent`, {
         error: error instanceof Error ? error.message : String(error),
@@ -1202,12 +1212,43 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     }
   }
 
+  /** @type {string[]} */
+  let newlyLoadedIdentityPaths = [];
+  /** @type {string|null} */
+  let deferredSkTempCleanup = null;
   let fidoResourcesReleased = false;
   const releaseAcquiredFidoResources = () => {
     if (fidoResourcesReleased) return;
     fidoResourcesReleased = true;
+    // Shared Windows system agent: remove identities we added so vault keys do
+    // not remain available to unrelated agent clients after disconnect.
+    if (!ownedFidoAgent && newlyLoadedIdentityPaths.length > 0 && socketPath) {
+      const { resolveSshAddBinary } = require("./systemSshAgent.cjs");
+      const sshAdd = fidoSshAddPath || resolveSshAddBinary(process.platform, process.env);
+      for (const identityPath of newlyLoadedIdentityPaths) {
+        try {
+          childProcess.execFile(
+            sshAdd,
+            ["-d", identityPath],
+            {
+              timeout: 5000,
+              windowsHide: true,
+              env: {
+                ...process.env,
+                SSH_AUTH_SOCK: socketPath,
+                SSH_ASKPASS_REQUIRE: "never",
+              },
+            },
+            () => {},
+          );
+        } catch {
+          // ignore
+        }
+      }
+    }
     try {
-      if (ownedFidoAgent) {
+      // Always drop the acquire refcount (owned child or Windows system-pipe slot).
+      if (acquiredFidoAgent) {
         require("./fidoAgentManager.cjs").releaseFidoAgent(ownedFidoAgentGeneration);
       }
     } catch {
@@ -1221,10 +1262,17 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     } catch {
       // ignore
     }
+    if (deferredSkTempCleanup) {
+      fs.promises.rm(deferredSkTempCleanup, { recursive: true, force: true }).catch(() => {});
+      deferredSkTempCleanup = null;
+    }
   };
 
   try {
-    const agent = await prepareSystemSshAgent({
+    const prepEnv = fidoSshAddPath
+      ? { ...process.env, NETCATTY_SSH_ADD_PATH: fidoSshAddPath }
+      : process.env;
+    const agent = await systemSshAgent.prepareSystemSshAgent({
       socketPath,
       identityFilePaths,
       identitiesOnly: options.identitiesOnly,
@@ -1235,20 +1283,26 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
         || (Array.isArray(options.agentPublicKeys)
           && options.agentPublicKeys.some((key) => looksLikeSkOpenSshMaterial(key)))
         || options.loadIdentityFilesIntoAgent === true
-        || ownedFidoAgent,
+        || ownedFidoAgent
+        // Windows system-pipe fallback still needs SK handles loaded for ssh2.
+        || (!ownedFidoAgent && acquiredFidoAgent),
       hostname: options.hostname,
       port: options.port,
       username: options.username,
     }, {
       log: (message, details) => console.log(`${logPrefix} ${message}`, details ?? ""),
       askpassEnv,
+      env: prepEnv,
     });
     if (agent) {
       // Expose the socket so Mosh/ET/native OpenSSH can point IdentityAgent at
       // the same agent that received ssh-add of SK handles.
       agent._netcattyAgentSocket = socketPath;
+      newlyLoadedIdentityPaths = Array.isArray(agent._netcattyNewlyLoadedIdentityPaths)
+        ? agent._netcattyNewlyLoadedIdentityPaths
+        : [];
       const askpassLeaseId = askpassEnv?.NETCATTY_FIDO_ASKPASS_LEASE;
-      if (ownedFidoAgent || askpassLeaseId) {
+      if (ownedFidoAgent || askpassLeaseId || newlyLoadedIdentityPaths.length > 0 || acquiredFidoAgent) {
         agent._netcattyOwnedFidoAgent = ownedFidoAgent === true;
         // Shared lease; quit/exit hooks hard-kill the owned agent as a backstop.
         agent._releaseNetcattyFidoAgent = releaseAcquiredFidoResources;
@@ -1265,8 +1319,13 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
     throw error;
   } finally {
     if (skTempCleanup) {
-      // Best-effort cleanup after ssh-add; agent keeps the loaded identity.
-      fs.promises.rm(skTempCleanup, { recursive: true, force: true }).catch(() => {});
+      // Owned agents die with their identities. Shared agents need the key path
+      // to remain for ssh-add -d on release, so defer temp cleanup in that case.
+      if (!ownedFidoAgent && newlyLoadedIdentityPaths.length > 0) {
+        deferredSkTempCleanup = skTempCleanup;
+      } else {
+        fs.promises.rm(skTempCleanup, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
 }

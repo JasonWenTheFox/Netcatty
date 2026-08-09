@@ -45,16 +45,67 @@ function getTempBase() {
   return tempDirBridge.getTempDir();
 }
 
-function resolveSshAgentBinary(env = process.env) {
+const WIN_SYSTEM_AGENT_PIPE = "\\\\.\\pipe\\openssh-ssh-agent";
+
+/**
+ * User-mode ssh-agent binaries on Windows (not the Win32-OpenSSH service host).
+ * These can run as our child with SSH_ASKPASS so verify-required sk-helper
+ * prompts reach the Netcatty modal.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string[]}
+ */
+function listWindowsUserModeSshAgentCandidates(env = process.env) {
+  const programFiles = env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const localAppData = env.LOCALAPPDATA || "";
+  const userProfile = env.USERPROFILE || "";
+  return [
+    path.join(programFiles, "Git", "usr", "bin", "ssh-agent.exe"),
+    path.join(programFilesX86, "Git", "usr", "bin", "ssh-agent.exe"),
+    path.join(localAppData, "Programs", "Git", "usr", "bin", "ssh-agent.exe"),
+    path.join(userProfile, "scoop", "apps", "git", "current", "usr", "bin", "ssh-agent.exe"),
+  ];
+}
+
+/**
+ * Pair ssh-add with a user-mode ssh-agent (same directory) when possible.
+ * @param {string} sshAgentPath
+ * @returns {string|null}
+ */
+function companionSshAddPath(sshAgentPath) {
+  if (typeof sshAgentPath !== "string" || !sshAgentPath.trim()) return null;
+  const dir = path.dirname(sshAgentPath);
+  const base = path.basename(sshAgentPath).toLowerCase().replace(/\.exe$/i, "");
+  if (base !== "ssh-agent") return null;
+  const candidate = path.join(dir, path.basename(sshAgentPath).replace(/ssh-agent/i, "ssh-add"));
+  try {
+    if (fs.existsSync(candidate)) return candidate;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function resolveSshAgentBinary(env = process.env, platform = process.platform) {
   if (typeof env.NETCATTY_SSH_AGENT_PATH === "string" && env.NETCATTY_SSH_AGENT_PATH.trim()) {
     return env.NETCATTY_SSH_AGENT_PATH.trim();
   }
-  if (process.platform === "darwin") {
+  if (platform === "darwin") {
     for (const candidate of [
       "/opt/homebrew/bin/ssh-agent",
       "/usr/local/bin/ssh-agent",
       "/usr/bin/ssh-agent",
     ]) {
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        // continue
+      }
+    }
+  }
+  if (platform === "win32") {
+    // Prefer Git/MSYS (or similar) user-mode agents over System32's service binary.
+    for (const candidate of listWindowsUserModeSshAgentCandidates(env)) {
       try {
         if (fs.existsSync(candidate)) return candidate;
       } catch {
@@ -84,16 +135,26 @@ function isProcessAlive(pid) {
   }
 }
 
+function isWindowsNamedPipe(socketPath) {
+  return typeof socketPath === "string"
+    && /^\\\\[.,]\\pipe\\/i.test(socketPath);
+}
+
 function isAgentLive() {
   if (!agentSocket) return false;
-  try {
-    if (!fs.existsSync(agentSocket)) return false;
-  } catch {
-    return false;
+  // Named pipes are not reliable with existsSync; rely on PID / child state.
+  if (!isWindowsNamedPipe(agentSocket)) {
+    try {
+      if (!fs.existsSync(agentSocket)) return false;
+    } catch {
+      return false;
+    }
   }
   if (agentChild?.pid) return isProcessAlive(agentChild.pid);
   // Socket exists but no PID tracking — treat as live until connect fails.
-  return !agentChild?.killed;
+  // System-pipe fallback sets agentChild=null; treat that as live while socket is set.
+  if (!agentChild) return isWindowsNamedPipe(agentSocket);
+  return !agentChild.killed;
 }
 
 function clearAgentState({ kill = true } = {}) {
@@ -172,6 +233,7 @@ async function acquireFidoAgent(options = {}) {
         askpassEnv: buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents }),
         owned: shared.owned,
         generation: shared.generation,
+        sshAddPath: shared.sshAddPath || null,
       };
     }
   }
@@ -181,8 +243,10 @@ async function acquireFidoAgent(options = {}) {
     return {
       socketPath: agentSocket,
       askpassEnv: buildFidoAskpassEnv({ resolveWebContents: options.resolveWebContents }),
-      owned: true,
+      // Preserve ownership of the live singleton (Windows system-pipe fallback is not owned).
+      owned: Boolean(agentChild),
       generation: agentGeneration,
+      sshAddPath: companionSshAddPath(resolveSshAgentBinary(options.env || process.env, options.platform || process.platform)),
     };
   }
 
@@ -203,42 +267,48 @@ async function acquireFidoAgent(options = {}) {
     };
 
     try {
-      // Win32-OpenSSH's ssh-agent is a Windows service bound to a fixed named
-      // pipe (`\\.\pipe\openssh-ssh-agent`) and does not support `ssh-agent -a`.
-      // Reuse the system pipe and keep Netcatty askpass on ssh-add / ssh-sk-helper.
-      if (platform === "win32") {
-        const systemPipe = "\\\\.\\pipe\\openssh-ssh-agent";
-        agentSocket = systemPipe;
-        agentChild = null;
-        agentDir = null;
-        refCount = 1;
-        return {
-          socketPath: systemPipe,
-          askpassEnv,
-          owned: false,
-          generation: agentGeneration,
-        };
-      }
-
-      const sshAgent = resolveSshAgentBinary(env);
+      const sshAgent = resolveSshAgentBinary(env, platform);
+      const sshAddPath = companionSshAddPath(sshAgent);
 
       agentDir = path.join(getTempBase(), `netcatty-fido-agent-${randomUUID().slice(0, 8)}`);
       fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
-      const sockPath = path.join(agentDir, "agent.sock");
 
       // Keep SSH_ASKPASS on the agent so verify-required sk-helper prompts work,
       // but never bake the starter's caller lease into the shared process env.
       const agentProcessEnv = { ...env, ...askpassEnvForAgentProcess(askpassEnv) };
 
+      // Windows: try a Netcatty-owned named pipe first (ssh2 speaks it natively),
+      // then a filesystem socket for MSYS/Git user-mode agents.
+      const sockCandidates = platform === "win32"
+        ? [
+          `\\\\.\\pipe\\netcatty-fido-agent-${randomUUID().slice(0, 8)}`,
+          path.join(agentDir, "agent.sock"),
+        ]
+        : [path.join(agentDir, "agent.sock")];
+
       let stdout = "";
-      try {
-        const result = await run(sshAgent, ["-a", sockPath, "-s"], {
-          timeout: 10000,
-          windowsHide: true,
-          env: agentProcessEnv,
-        });
-        stdout = result.stdout?.toString?.() || result.stdout || "";
-      } catch (error) {
+      let boundSockPath = sockCandidates[0];
+      let started = false;
+      /** @type {Error|null} */
+      let lastStartError = null;
+
+      for (const sockPath of sockCandidates) {
+        boundSockPath = sockPath;
+        try {
+          const result = await run(sshAgent, ["-a", sockPath, "-s"], {
+            timeout: 10000,
+            windowsHide: true,
+            env: agentProcessEnv,
+          });
+          stdout = result.stdout?.toString?.() || result.stdout || "";
+          started = true;
+          break;
+        } catch (error) {
+          lastStartError = error instanceof Error ? error : new Error(String(error));
+        }
+      }
+
+      if (!started) {
         try {
           const result = await run(sshAgent, ["-s"], {
             timeout: 10000,
@@ -246,52 +316,100 @@ async function acquireFidoAgent(options = {}) {
             env: agentProcessEnv,
           });
           stdout = result.stdout?.toString?.() || result.stdout || "";
+          started = true;
         } catch (fallbackError) {
-          clearAgentState({ kill: false });
-          const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-          const err = new Error(
-            `Could not start a FIDO-capable ssh-agent (${message}). Install OpenSSH with libfido2 (macOS: brew install openssh libfido2).`,
-          );
-          err.code = "ERR_FIDO_AGENT_START";
-          throw err;
+          lastStartError = fallbackError instanceof Error
+            ? fallbackError
+            : new Error(String(fallbackError));
         }
       }
 
-      const parsed = parseAgentStdout(stdout);
-      agentSocket = parsed.socketPath || (fs.existsSync(sockPath) ? sockPath : null);
-      if (!agentSocket) {
-        clearAgentState({ kill: true });
-        const err = new Error("ssh-agent started but SSH_AUTH_SOCK was not reported.");
-        err.code = "ERR_FIDO_AGENT_SOCK";
-        throw err;
+      if (started) {
+        const parsed = parseAgentStdout(stdout);
+        const fallbackSock = isWindowsNamedPipe(boundSockPath)
+          ? boundSockPath
+          : (fs.existsSync(boundSockPath) ? boundSockPath : null);
+        agentSocket = parsed.socketPath || fallbackSock;
+        if (!agentSocket) {
+          clearAgentState({ kill: true });
+          const err = new Error("ssh-agent started but SSH_AUTH_SOCK was not reported.");
+          err.code = "ERR_FIDO_AGENT_SOCK";
+          throw err;
+        }
+
+        // In-box Win32-OpenSSH `ssh-agent -s` often just advertises the system
+        // service pipe — that is not a Netcatty child and must not be killed.
+        const isSystemServicePipe = typeof agentSocket === "string"
+          && /openssh-ssh-agent$/i.test(agentSocket.replace(/\//g, "\\"));
+        if (isSystemServicePipe) {
+          agentChild = null;
+          agentDir = null;
+          refCount = 1;
+          return {
+            socketPath: agentSocket,
+            askpassEnv,
+            owned: false,
+            generation: agentGeneration,
+            sshAddPath: null,
+          };
+        }
+
+        if (parsed.agentPid && Number.isFinite(parsed.agentPid) && parsed.agentPid > 0) {
+          const pid = parsed.agentPid;
+          agentChild = {
+            killed: false,
+            pid,
+            kill(sig = "TERM") {
+              try { process.kill(pid, sig); } catch { /* ignore */ }
+              this.killed = true;
+            },
+          };
+        } else {
+          // No PID — still usable via socket; kill via ssh-agent -k on release.
+          agentChild = {
+            killed: false,
+            pid: 0,
+            kill() { this.killed = true; },
+          };
+        }
+
+        refCount = 1;
+        return {
+          socketPath: agentSocket,
+          askpassEnv,
+          owned: true,
+          generation: agentGeneration,
+          sshAddPath,
+        };
       }
 
-      if (parsed.agentPid && Number.isFinite(parsed.agentPid) && parsed.agentPid > 0) {
-        const pid = parsed.agentPid;
-        agentChild = {
-          killed: false,
-          pid,
-          kill(sig = "TERM") {
-            try { process.kill(pid, sig); } catch { /* ignore */ }
-            this.killed = true;
-          },
-        };
-      } else {
-        // No PID — still usable via socket; kill via ssh-agent -k on release.
-        agentChild = {
-          killed: false,
-          pid: 0,
-          kill() { this.killed = true; },
+      // Win32-OpenSSH's in-box ssh-agent is a service bound to a fixed named
+      // pipe and usually rejects `ssh-agent -a`. Fall back to that pipe so
+      // non-verify-required keys still work, but mark owned:false so callers
+      // remove any identities they ssh-add (see prepareSystemSshAgentForAuth).
+      // verify-required signing still needs a prompt-capable child agent above.
+      if (platform === "win32") {
+        clearAgentState({ kill: false });
+        agentSocket = WIN_SYSTEM_AGENT_PIPE;
+        agentChild = null;
+        agentDir = null;
+        refCount = 1;
+        return {
+          socketPath: WIN_SYSTEM_AGENT_PIPE,
+          askpassEnv,
+          owned: false,
+          generation: agentGeneration,
+          sshAddPath: null,
         };
       }
 
-      refCount = 1;
-      return {
-        socketPath: agentSocket,
-        askpassEnv,
-        owned: true,
-        generation: agentGeneration,
-      };
+      clearAgentState({ kill: false });
+      const message = lastStartError instanceof Error ? lastStartError.message : String(lastStartError || "unknown");
+      const err = new Error(
+        `Could not start a FIDO-capable ssh-agent (${message}). Install OpenSSH with libfido2 (macOS: brew install openssh libfido2).`,
+      );
+      err.code = "ERR_FIDO_AGENT_START";
+      throw err;
     } catch (error) {
       // Starter allocated a caller-specific askpass lease before launch; drop it
       // whenever startup fails so WebContents resolvers are not retained.
@@ -364,6 +482,9 @@ module.exports = {
   installFidoAgentQuitHook,
   isAgentLive,
   askpassEnvForAgentProcess,
+  listWindowsUserModeSshAgentCandidates,
+  companionSshAddPath,
+  WIN_SYSTEM_AGENT_PIPE,
   // exposed for tests
   getTempBase,
 };

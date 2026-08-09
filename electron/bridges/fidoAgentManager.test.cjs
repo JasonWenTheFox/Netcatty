@@ -35,18 +35,80 @@ test("release without acquire is safe", () => {
   shutdownFidoAgentSubsystem();
 });
 
-test("acquireFidoAgent on win32 reuses the system OpenSSH named pipe", async () => {
-  const agent = await acquireFidoAgent({
-    platform: "win32",
-    resolveWebContents: () => null,
-    execFile: async () => {
-      throw new Error("ssh-agent -a must not run on win32");
-    },
+async function withManagedTemp(run) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const tempDirBridge = require("./tempDirBridge.cjs");
+  const managedTemp = fs.mkdtempSync(path.join(__dirname, "netcatty-fido-win-"));
+  const originalGetTempDir = tempDirBridge.getTempDir;
+  tempDirBridge.getTempDir = () => managedTemp;
+  try {
+    return await run(managedTemp);
+  } finally {
+    tempDirBridge.getTempDir = originalGetTempDir;
+    shutdownFidoAgentSubsystem();
+    fs.rmSync(managedTemp, { recursive: true, force: true });
+  }
+}
+
+test("acquireFidoAgent on win32 starts a prompt-capable child agent when -a works", async () => {
+  await withManagedTemp(async () => {
+    shutdownFidoAgentSubsystem();
+    const pipe = "\\\\.\\pipe\\netcatty-fido-agent-testown";
+    const agent = await acquireFidoAgent({
+      platform: "win32",
+      resolveWebContents: () => null,
+      env: { PATH: process.env.PATH || "", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async (_bin, args, opts) => {
+        assert.ok(opts?.env?.SSH_ASKPASS, "child agent must inherit askpass");
+        assert.equal(opts?.env?.NETCATTY_FIDO_ASKPASS_LEASE, undefined);
+        assert.ok(Array.isArray(args) && args.includes("-a"));
+        return {
+          stdout: `SSH_AUTH_SOCK=${pipe}; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=4242; export SSH_AGENT_PID;\n`,
+        };
+      },
+    });
+    assert.equal(agent.socketPath, pipe);
+    assert.equal(agent.owned, true);
+    assert.ok(agent.askpassEnv?.SSH_ASKPASS);
+    releaseFidoAgent(agent.generation);
   });
-  assert.equal(agent.socketPath, "\\\\.\\pipe\\openssh-ssh-agent");
-  assert.equal(agent.owned, false);
-  assert.ok(agent.askpassEnv?.SSH_ASKPASS);
-  shutdownFidoAgentSubsystem();
+});
+
+test("acquireFidoAgent on win32 falls back to system pipe when child agent cannot start", async () => {
+  await withManagedTemp(async () => {
+    shutdownFidoAgentSubsystem();
+    const agent = await acquireFidoAgent({
+      platform: "win32",
+      resolveWebContents: () => null,
+      env: { PATH: process.env.PATH || "", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async () => {
+        throw new Error("ssh-agent -a unsupported");
+      },
+    });
+    assert.equal(agent.socketPath, "\\\\.\\pipe\\openssh-ssh-agent");
+    assert.equal(agent.owned, false);
+    assert.ok(agent.askpassEnv?.SSH_ASKPASS);
+    releaseFidoAgent(agent.generation);
+  });
+});
+
+test("acquireFidoAgent on win32 does not claim ownership of the system service pipe", async () => {
+  await withManagedTemp(async () => {
+    shutdownFidoAgentSubsystem();
+    const systemPipe = "\\\\.\\pipe\\openssh-ssh-agent";
+    const agent = await acquireFidoAgent({
+      platform: "win32",
+      resolveWebContents: () => null,
+      env: { PATH: process.env.PATH || "", NETCATTY_SSH_AGENT_PATH: "/bin/true" },
+      execFile: async () => ({
+        stdout: `SSH_AUTH_SOCK=${systemPipe}; export SSH_AUTH_SOCK;\n`,
+      }),
+    });
+    assert.equal(agent.socketPath, systemPipe);
+    assert.equal(agent.owned, false);
+    releaseFidoAgent(agent.generation);
+  });
 });
 
 test("acquireFidoAgent releases askpass lease when agent start fails", async () => {
@@ -133,18 +195,16 @@ test("ssh-agent spawn env omits caller-bound askpass lease", async () => {
 });
 
 test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", async () => {
-  shutdownFidoAgentSubsystem();
-  const fs = require("node:fs");
-  const os = require("node:os");
-  const path = require("node:path");
-  const { releaseFidoAskpassLease } = require("./fidoAskpass.cjs");
-  const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-fido-sock-"));
-  const sockPath = path.join(sockDir, "agent.sock");
-  fs.writeFileSync(sockPath, "");
-  let releaseStart;
-  const startGate = new Promise((resolve) => { releaseStart = resolve; });
+  await withManagedTemp(async (managedTemp) => {
+    shutdownFidoAgentSubsystem();
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const { releaseFidoAskpassLease } = require("./fidoAskpass.cjs");
+    const sockPath = path.join(managedTemp, "agent.sock");
+    fs.writeFileSync(sockPath, "");
+    let releaseStart;
+    const startGate = new Promise((resolve) => { releaseStart = resolve; });
 
-  try {
     const first = acquireFidoAgent({
       platform: "linux",
       resolveWebContents: () => ({ id: "first" }),
@@ -178,10 +238,7 @@ test("concurrent acquireFidoAgent returns a fresh askpass lease per caller", asy
     releaseFidoAskpassLease(b.askpassEnv.NETCATTY_FIDO_ASKPASS_LEASE);
     releaseFidoAgent(a.generation);
     releaseFidoAgent(b.generation);
-  } finally {
-    shutdownFidoAgentSubsystem();
-    fs.rmSync(sockDir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("stale releaseFidoAgent ignores a newer agent generation", async () => {
