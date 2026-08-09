@@ -35,3 +35,25 @@ test("deleteSelectedSnippets merges into persisted vault under the shared lock",
     /deleteSelectedSnippets[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_HOSTS, encryptedHosts\)[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS/,
   );
 });
+
+test("updateSnippets disk writes take the shared vault lock", () => {
+  // Unlocked snippet saves can interleave with bulk-delete's journaled commit
+  // and discard concurrent edits. Ordinary writers must queue on the same lock
+  // and be visible to waitForPendingVaultWrites.
+  assert.match(
+    source,
+    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*withVaultImportLock\("vault", async \(\) => \{[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\)/,
+  );
+  assert.match(
+    source,
+    /snippetsWritePendingRef\.current = writePromise/,
+  );
+  assert.match(
+    source,
+    /waitForPendingVaultWrites[\s\S]*snippetsWritePendingRef\.current/,
+  );
+  assert.doesNotMatch(
+    source,
+    /const updateSnippets = useCallback\(\(data: Snippet\[\]\) => \{[\s\S]*setSnippets\(cleaned\);\s*localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, cleaned\);\s*\}, \[\]\);/,
+  );
+});

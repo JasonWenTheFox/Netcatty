@@ -323,6 +323,7 @@ export const useVaultState = () => {
   const keysWritePendingRef = useRef<Promise<unknown>>(Promise.resolve());
   const identitiesWritePendingRef = useRef<Promise<unknown>>(Promise.resolve());
   const groupConfigsWritePendingRef = useRef<Promise<unknown>>(Promise.resolve());
+  const snippetsWritePendingRef = useRef<Promise<unknown>>(Promise.resolve());
 
   const waitForPendingVaultWrites = useCallback(async () => {
     while (true) {
@@ -347,6 +348,7 @@ export const useVaultState = () => {
         keysWritePendingRef.current,
         identitiesWritePendingRef.current,
         groupConfigsWritePendingRef.current,
+        snippetsWritePendingRef.current,
       ];
       await Promise.all(writePending);
       if (
@@ -354,6 +356,7 @@ export const useVaultState = () => {
         && writePending[1] === keysWritePendingRef.current
         && writePending[2] === identitiesWritePendingRef.current
         && writePending[3] === groupConfigsWritePendingRef.current
+        && writePending[4] === snippetsWritePendingRef.current
         && encryptPending[0] === hostsEncryptPendingRef.current
         && encryptPending[1] === keysEncryptPendingRef.current
         && encryptPending[2] === identitiesEncryptPendingRef.current
@@ -597,12 +600,22 @@ export const useVaultState = () => {
 
   const updateSnippets = useCallback((data: Snippet[]) => {
     const cleaned = normalizeVaultOrder(data);
-    ++snippetsWriteVersion.current;
+    const ver = ++snippetsWriteVersion.current;
     // Keep live snapshot ahead of React commit so same-tick readers (delete,
     // agent bridge) do not observe a stale pre-write array.
     snippetsRef.current = cleaned;
     setSnippets(cleaned);
-    localStorageAdapter.write(STORAGE_KEY_SNIPPETS, cleaned);
+    // Serialize with deleteSelectedSnippets / plugin importer under the shared
+    // vault lock. A direct unlocked write can land between delete's raw read
+    // and journal commit, so bulk-delete would persist an older snapshot and
+    // discard the concurrent edit/import/reorder.
+    const writePromise = withVaultImportLock("vault", async () => {
+      if (ver !== snippetsWriteVersion.current) return "superseded" as const;
+      localStorageAdapter.write(STORAGE_KEY_SNIPPETS, cleaned);
+      return "written" as const;
+    });
+    snippetsWritePendingRef.current = writePromise;
+    return writePromise;
   }, []);
 
   // Cross-window safe: merge binding cleanup into the latest persisted
@@ -677,6 +690,7 @@ export const useVaultState = () => {
         setHosts(result.hosts);
         setSnippets(result.snippets);
         hostsWritePendingRef.current = Promise.resolve("unchanged" as const);
+        snippetsWritePendingRef.current = Promise.resolve("unchanged" as const);
         return result;
       });
       if (attempt !== null) return attempt;
@@ -1612,7 +1626,9 @@ export const useVaultState = () => {
       if (payload.keys) encryptedWrites.push(updateKeys(payload.keys));
       if (payload.identities) encryptedWrites.push(updateIdentities(payload.identities));
       if (Array.isArray(payload.proxyProfiles)) encryptedWrites.push(updateProxyProfiles(payload.proxyProfiles));
-      if (payload.snippets) updateSnippets(payload.snippets);
+      if (payload.snippets) {
+        encryptedWrites.push(updateSnippets(payload.snippets).then(() => undefined));
+      }
       if (payload.customGroups) updateCustomGroups(payload.customGroups);
       if (payload.snippetPackages) updateSnippetPackages(payload.snippetPackages);
       if (payload.notes) updateNotes(payload.notes);
