@@ -322,6 +322,10 @@ export const useVaultState = () => {
   // saves must not advance this to an optimistic in-memory array that never
   // landed on disk — that would make a local add look like a concurrent delete.
   const snippetsWriteBaseRef = useRef<Snippet[] | null>(null);
+  // Outstanding clear/restore/import replace must survive a superseding local
+  // save. Otherwise the later owner rebases additively against the old disk
+  // catalog and resurrects every pre-replacement snippet.
+  const snippetsWriteReplaceRef = useRef(false);
   const customGroupsWriteVersion = useRef(0);
   const groupConfigsWriteVersion = useRef(0);
   // Encrypt-phase promises can always be awaited, even under the vault lock.
@@ -647,11 +651,18 @@ export const useVaultState = () => {
     // (or another window's import) may land on disk before our write runs.
     // Keep the first outstanding ancestor across superseded local saves so a
     // second edit does not rebase against the first save's optimistic memory.
-    const replace = options?.replace === true;
+    const replace =
+      options?.replace === true || snippetsWriteReplaceRef.current;
     const base = snippetsWriteBaseRef.current ?? snippetsRef.current;
+    if (options?.replace === true) {
+      snippetsWriteReplaceRef.current = true;
+    }
     if (replace) {
       // Restore/import/clear must not keep an additive ancestor — storage events
       // would otherwise merge disk-only ids back into memory while replace waits.
+      // Keep this cleared when a later create/edit supersedes the replacement
+      // owner so that save stays in replace mode instead of capturing []/restored
+      // memory as an additive rebase base against the stale disk catalog.
       snippetsWriteBaseRef.current = null;
     } else if (snippetsWriteBaseRef.current === null) {
       snippetsWriteBaseRef.current = base;
@@ -697,6 +708,7 @@ export const useVaultState = () => {
       }
       // Disk caught up; next save should treat this write as its ancestor.
       snippetsWriteBaseRef.current = null;
+      snippetsWriteReplaceRef.current = false;
       if (snippetsWriteOwnerRef.current === ver) {
         snippetsRef.current = rebased;
         setSnippets(rebased);
@@ -779,6 +791,7 @@ export const useVaultState = () => {
         // Persisted delete is the new ancestor; drop any stale rebase base from
         // a superseded/queued updateSnippets that never landed.
         snippetsWriteBaseRef.current = null;
+        snippetsWriteReplaceRef.current = false;
         setHosts(result.hosts);
         setSnippets(result.snippets);
         hostsWritePendingRef.current = Promise.resolve("unchanged" as const);
@@ -1885,6 +1898,7 @@ export const useVaultState = () => {
         customGroupsRef.current = nextGroups;
         snippetsRef.current = nextSnippets;
         snippetsWriteBaseRef.current = null;
+        snippetsWriteReplaceRef.current = false;
         setHosts(nextHosts);
         setKeys(nextKeys);
         setIdentities(nextIdentities);

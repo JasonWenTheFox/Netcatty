@@ -104,7 +104,7 @@ test("clearVaultData replaces snippets without additive rebase", () => {
   );
   assert.match(
     source,
-    /const replace = options\?\.replace === true/,
+    /const replace =\s*options\?\.replace === true \|\| snippetsWriteReplaceRef\.current/,
   );
   assert.match(
     source,
@@ -113,6 +113,25 @@ test("clearVaultData replaces snippets without additive rebase", () => {
   assert.match(
     source,
     /if \(replace\) \{\s*\/\/ Restore\/import\/clear[\s\S]*snippetsWriteBaseRef\.current = null/,
+  );
+});
+
+test("updateSnippets preserves replace mode across superseded local saves", () => {
+  // A clear/restore queued behind the vault lock must not lose replacement
+  // intent when a later create/edit becomes the write owner — otherwise that
+  // save additively rebases against the stale disk catalog and resurrects
+  // every pre-replacement snippet.
+  assert.match(
+    source,
+    /const snippetsWriteReplaceRef = useRef\(false\)/,
+  );
+  assert.match(
+    source,
+    /if \(options\?\.replace === true\) \{\s*snippetsWriteReplaceRef\.current = true;\s*\}/,
+  );
+  assert.match(
+    source,
+    /snippetsWriteBaseRef\.current = null;\s*snippetsWriteReplaceRef\.current = false;/,
   );
 });
 
