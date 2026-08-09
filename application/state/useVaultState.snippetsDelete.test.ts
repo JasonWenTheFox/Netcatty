@@ -180,3 +180,30 @@ test("snippet storage events keep queued local edits and their rebase ancestor",
     /if \(key === STORAGE_KEY_SNIPPETS\) \{[\s\S]*snippetsWriteBaseRef\.current = null;\s*snippetsRef\.current = next/,
   );
 });
+
+test("snippet storage events retain outstanding replace snapshots", () => {
+  // clear/restore sets replace with base null. Adopting a remote old catalog
+  // before the lock is acquired would pollute memory; a later local edit would
+  // still replace disk with that polluted snapshot.
+  assert.match(
+    source,
+    /if \(key === STORAGE_KEY_SNIPPETS\) \{[\s\S]*if \(snippetsWriteReplaceRef\.current\) \{[\s\S]*return;\s*\}[\s\S]*snippetsRef\.current = next/,
+  );
+});
+
+test("startup host re-encryption uses the locked prune writer", () => {
+  // A second renderer migrating saved hosts must not write the pre-delete
+  // encryption blob unlocked after bulk-delete cleared login/connect bindings.
+  assert.match(
+    source,
+    /migrateHostsFromLegacyLineTimestamps[\s\S]*commitEncryptedHostsUnderVaultLock\(ver, sanitized, enc\)/,
+  );
+  assert.match(
+    source,
+    /migrateHostsFromLegacyLineTimestamps[\s\S]*hostsWritePendingRef\.current = writePromise/,
+  );
+  assert.doesNotMatch(
+    source,
+    /migrateHostsFromLegacyLineTimestamps[\s\S]*localStorageAdapter\.write\(STORAGE_KEY_HOSTS, enc\)/,
+  );
+});

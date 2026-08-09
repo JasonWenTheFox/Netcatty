@@ -1262,15 +1262,21 @@ export const useVaultState = () => {
                 readLegacyLineTimestampsEnabled(),
               ),
             );
+            hostsRef.current = sanitized;
             setHosts(sanitized);
             // Always re-encrypt the batch. Stale enc:v1 placeholders are left
             // unchanged by encryptCredentialValue (no double-wrap); plaintext
             // siblings still need encryption when safeStorage was previously
-            // unavailable for some records.
-            encryptHosts(sanitized).then((enc) => {
-              if (ver === hostsWriteVersion.current)
-                localStorageAdapter.write(STORAGE_KEY_HOSTS, enc);
+            // unavailable for some records. Route through the locked writer so
+            // a concurrent snippet delete can prune login/connect bindings
+            // before this migration blob lands.
+            const encryptPromise = encryptHosts(sanitized);
+            hostsEncryptPendingRef.current = encryptPromise.then(() => undefined);
+            const writePromise = encryptPromise.then(async (enc) => {
+              if (ver !== hostsWriteVersion.current) return;
+              return commitEncryptedHostsUnderVaultLock(ver, sanitized, enc);
             });
+            hostsWritePendingRef.current = writePromise;
           }
         } else {
           updateHosts(INITIAL_HOSTS);
@@ -1451,7 +1457,7 @@ export const useVaultState = () => {
     return () => {
       cancelled = true;
     };
-  }, [updateHosts, updateSnippets]);
+  }, [commitEncryptedHostsUnderVaultLock, updateHosts, updateSnippets]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -1576,6 +1582,13 @@ export const useVaultState = () => {
           );
           snippetsRef.current = merged;
           setSnippets(merged);
+          return;
+        }
+        if (snippetsWriteReplaceRef.current) {
+          // Clear/restore/import left base null while replace is outstanding.
+          // Adopting the remote catalog here would pollute memory; a later local
+          // edit would still run in replace mode and overwrite disk with the old
+          // catalog plus that edit.
           return;
         }
         snippetsRef.current = next;
