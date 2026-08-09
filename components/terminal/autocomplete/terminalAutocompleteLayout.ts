@@ -354,6 +354,10 @@ export type AutocompleteCursorCell = {
  * When the live cursor already sits on a soft-wrapped continuation row,
  * measure from the logical line start so a still-unechoed `userInput` suffix
  * advances past the partial wrap instead of anchoring at the lagged cell.
+ *
+ * A wrap past the last visible row scrolls the buffer; xterm keeps the cursor
+ * on `term.rows - 1`. Clamp the predicted row so a completion that resolves
+ * before that scroll does not place the popup one cell below the grid.
  */
 export function resolveAutocompleteCursorCell(
   term: XTerm,
@@ -361,6 +365,7 @@ export function resolveAutocompleteCursorCell(
 ): AutocompleteCursorCell {
   const buffer = term.buffer.active;
   const cols = Math.max(1, Number(term.cols) || 80);
+  const termRows = Number(term.rows);
   const absY = buffer.cursorY + buffer.baseY;
 
   // Walk back to the first physical row of this soft-wrapped logical line.
@@ -389,9 +394,15 @@ export function resolveAutocompleteCursorCell(
   const fromPrompt =
     stringCellWidth(prompt.promptText, term) + stringCellWidth(prompt.userInput, term);
   const rawColumn = Math.max(fromLine, fromPrompt);
+  const predictedRow = Math.max(0, startRowY + Math.floor(rawColumn / cols));
+  // Only clamp when the terminal reports a real viewport height; missing
+  // `rows` (tests/mocks) must not collapse every wrap onto row 0.
+  const row = Number.isFinite(termRows) && termRows > 0
+    ? Math.min(predictedRow, termRows - 1)
+    : predictedRow;
   return {
     column: rawColumn % cols,
-    row: startRowY + Math.floor(rawColumn / cols),
+    row,
   };
 }
 

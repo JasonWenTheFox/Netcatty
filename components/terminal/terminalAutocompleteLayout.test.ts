@@ -302,6 +302,7 @@ test("resolveAutocompleteCursorColumn counts wide glyphs as two cells for pre-ec
 test("resolveAutocompleteCursorCell wraps synthetic pre-echo columns onto the next row", () => {
   const term = {
     cols: 10,
+    rows: 24,
     buffer: {
       active: {
         cursorX: 8,
@@ -324,6 +325,33 @@ test("resolveAutocompleteCursorCell wraps synthetic pre-echo columns onto the ne
   assert.equal(cell.row, 1);
 });
 
+test("resolveAutocompleteCursorCell clamps a bottom-row wrap to the visible grid", () => {
+  // Pending wrap from the last visible row would predict row === term.rows,
+  // but xterm scrolls and keeps the cursor on term.rows - 1.
+  const term = {
+    cols: 10,
+    rows: 24,
+    buffer: {
+      active: {
+        cursorX: 8,
+        cursorY: 23,
+        baseY: 0,
+        getLine: () => ({
+          isWrapped: false,
+          translateToString: () => "$       ",
+        }),
+      },
+    },
+  };
+
+  const cell = resolveAutocompleteCursorCell(term as never, {
+    promptText: "$       ",
+    userInput: "部署",
+  });
+  assert.equal(cell.column, 2);
+  assert.equal(cell.row, 23);
+});
+
 test("resolveAutocompleteCursorCell advances past a partial wrap using unechoed userInput", () => {
   // cols=10: "$ docker c" | "o|" — echo wrapped after a prefix while the
   // buffered input is still the full "docker compose". Anchoring at the
@@ -334,6 +362,7 @@ test("resolveAutocompleteCursorCell advances past a partial wrap using unechoed 
   };
   const term = {
     cols: 10,
+    rows: 24,
     buffer: {
       active: {
         cursorX: 1,
