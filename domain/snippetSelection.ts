@@ -37,11 +37,30 @@ export function deleteSelectedSnippetsFromVault(
 }
 
 /**
+ * Content fingerprint for three-way rebase. Omits `order` so a local reorder
+ * (which renumbers every row) does not look like an edit of unrelated snippets.
+ */
+function snippetContentFingerprint(snippet: Snippet): string {
+  const { order: _order, ...content } = snippet;
+  return JSON.stringify(content, (_key, value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.keys(value).sort().reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = (value as Record<string, unknown>)[key];
+        return acc;
+      }, {});
+    }
+    return value;
+  });
+}
+
+/**
  * Three-way rebase for a queued full-array snippet save against the latest
  * persisted vault snapshot.
  *
  * Unlike sync merge, a concurrent disk delete always wins over a local edit of
  * the same id so bulk-delete cannot be resurrected by a stale window write.
+ * When an id exists on all sides, preserve a disk-only content edit; both-sides
+ * content conflicts prefer the local write (same as sync merge).
  */
 export function rebaseSnippetVaultWrite({
   base,
@@ -85,7 +104,23 @@ export function rebaseSnippetVaultWrite({
       continue;
     }
     if (inBase && inOurs && inTheirs) {
-      keep.set(id, ourItem);
+      const oursChanged =
+        snippetContentFingerprint(ourItem) !== snippetContentFingerprint(baseItem);
+      const theirsChanged =
+        snippetContentFingerprint(theirItem) !== snippetContentFingerprint(baseItem);
+      if (!oursChanged && theirsChanged) {
+        // Disk-only content edit: keep their body, retain our order so a local
+        // reorder of another row is not undone by their stale order field.
+        keep.set(
+          id,
+          ourItem.order === theirItem.order
+            ? theirItem
+            : { ...theirItem, order: ourItem.order },
+        );
+      } else {
+        // Unchanged, ours-only, or both-changed conflict → local wins.
+        keep.set(id, ourItem);
+      }
       continue;
     }
     // Local delete (even if disk still has / edited the row).

@@ -123,3 +123,65 @@ test('rebaseSnippetVaultWrite keeps local deletes even when disk still has the r
   const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
   assert.deepEqual(merged.map((snippet) => snippet.id), ['a']);
 });
+
+test('rebaseSnippetVaultWrite preserves concurrent disk edits of unrelated snippets', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Local edit/reorder of A only; B content matches base (order may renumber).
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A edited', command: 'echo a2', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B edited elsewhere', command: 'echo b2', order: 2000 },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'b']);
+  assert.equal(merged[0]?.label, 'A edited');
+  assert.equal(merged[1]?.label, 'B edited elsewhere');
+  assert.equal(merged[1]?.command, 'echo b2');
+});
+
+test('rebaseSnippetVaultWrite prefers local when both sides edited the same snippet', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a' },
+  ];
+  const ours: Snippet[] = [
+    { id: 'a', label: 'A local', command: 'echo local' },
+  ];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A remote', command: 'echo remote' },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.equal(merged[0]?.label, 'A local');
+  assert.equal(merged[0]?.command, 'echo local');
+});
+
+test('rebaseSnippetVaultWrite treats order-only local renumber as unchanged content', () => {
+  const base: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B', command: 'echo b', order: 2000 },
+  ];
+  // Local reorder renumbers every row without editing B's body.
+  const ours: Snippet[] = [
+    { id: 'b', label: 'B', command: 'echo b', order: 1000 },
+    { id: 'a', label: 'A', command: 'echo a', order: 2000 },
+  ];
+  const theirs: Snippet[] = [
+    { id: 'a', label: 'A', command: 'echo a', order: 1000 },
+    { id: 'b', label: 'B disk', command: 'echo b2', order: 2000 },
+  ];
+
+  const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
+  assert.deepEqual(merged.map((snippet) => snippet.id), ['b', 'a']);
+  assert.equal(merged[0]?.label, 'B disk');
+  assert.equal(merged[0]?.command, 'echo b2');
+  // Keep local order field so the reorder is not undone by disk's stale order.
+  assert.equal(merged[0]?.order, 1000);
+  assert.equal(merged[1]?.order, 2000);
+});
