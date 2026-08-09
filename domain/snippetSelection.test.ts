@@ -311,10 +311,12 @@ test('rebaseSnippetVaultWrite preserves disk insertion position across unrelated
   const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
   assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'x', 'b']);
   assert.equal(merged[0]?.label, 'A edited');
-  // Insertion anchors drive list position; shared rows keep local order fields
-  // unless shared ids were reordered (call sites renumber via normalizeVaultOrder).
+  // Renumber so sortByVaultOrder matches the anchored sequence (X must not
+  // share B's pre-merge order of 2000).
   assert.equal(merged[1]?.label, 'X');
+  assert.equal(merged[0]?.order, 1000);
   assert.equal(merged[1]?.order, 2000);
+  assert.equal(merged[2]?.order, 3000);
 });
 
 test('rebaseSnippetVaultWrite preserves remote insertion anchors alongside local additions', () => {
@@ -337,6 +339,10 @@ test('rebaseSnippetVaultWrite preserves remote insertion anchors alongside local
 
   const merged = rebaseSnippetVaultWrite({ base, ours, theirs });
   assert.deepEqual(merged.map((snippet) => snippet.id), ['a', 'r', 'b', 'l']);
+  assert.deepEqual(
+    merged.map((snippet) => snippet.order),
+    [1000, 2000, 3000, 4000],
+  );
 });
 
 test('rebaseSnippetVaultWrite preserves disk reorder alongside a local addition', () => {

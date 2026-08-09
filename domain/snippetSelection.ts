@@ -1,5 +1,6 @@
 import type { Host, Snippet } from './models';
 import { deleteSnippetFromVault } from './snippetAgentOps.ts';
+import { renumberVaultOrder } from './vaultOrder.ts';
 
 /** Normalize `netcatty:snippets:delete` detail into a set of snippet ids. */
 export function collectSnippetDeleteIds(
@@ -303,5 +304,8 @@ export function rebaseSnippetVaultWrite({
     if (!kept) continue;
     ordered.push(kept);
   }
-  return ordered;
+  // Anchored merge can leave duplicate finite `order` values (e.g. remote
+  // insertion X at 2000 while local B still has 2000). normalizeVaultOrder
+  // preserves finite orders, so renumber to match the merged sequence.
+  return renumberVaultOrder(ordered);
 }
