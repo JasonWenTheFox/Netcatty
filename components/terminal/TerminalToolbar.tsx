@@ -29,6 +29,7 @@ import type { ToolbarItemLayoutDefaults } from '../../domain/toolbarItemLayout';
 import { STORAGE_KEY_TERMINAL_TOOLBAR_LAYOUT } from '../../infrastructure/config/storageKeys';
 import { Host, Snippet } from '../../types';
 import { ScriptsSidePanel } from '../ScriptsSidePanel';
+import { VaultDeleteConfirmDialog } from '../vault/VaultDeleteConfirmDialog';
 import { Button } from '../ui/button';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { ToolbarCustomizeContextMenu } from '../ui/toolbar-item-layout';
@@ -179,6 +180,12 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
     .sort(comparePluginMenus);
   const [highlightPopoverOpen, setHighlightPopoverOpen] = useState(false);
   const [scriptsPopoverOpen, setScriptsPopoverOpen] = useState(false);
+  // Owned outside the scripts Popover so portalled Dialog focus cannot dismiss
+  // the menu and unmount ScriptsSidePanel before the user confirms.
+  const [pendingScriptDeleteIds, setPendingScriptDeleteIds] = useState<string[] | null>(null);
+  const pendingScriptDeleteCount = (pendingScriptDeleteIds ?? []).filter((id) =>
+    snippets.some((snippet) => snippet.id === id),
+  ).length;
   // Overflow popover + encoding submenu are both controlled so that
   // picking an encoding closes the whole chain, and so the parent popover
   // can ignore clicks that land in the submenu portal (otherwise the
@@ -356,17 +363,7 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
           <TooltipContent side="bottom">{t('terminal.toolbar.searchTerminal')}</TooltipContent>
         </Tooltip>
 
-        <Popover
-          open={scriptsPopoverOpen}
-          onOpenChange={(open) => {
-            // Bulk-delete confirm is a portalled Dialog; focus moving into it
-            // would otherwise dismiss this popover and clear pendingDeleteIds.
-            if (!open && document.querySelector('[data-vault-delete-confirm="true"]')) {
-              return;
-            }
-            setScriptsPopoverOpen(open);
-          }}
-        >
+        <Popover open={scriptsPopoverOpen} onOpenChange={setScriptsPopoverOpen}>
           <Tooltip>
             <TooltipTrigger asChild>
               <PopoverTrigger asChild>
@@ -384,26 +381,12 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
             </TooltipTrigger>
             <TooltipContent side="bottom">{t('terminal.toolbar.scripts')}</TooltipContent>
           </Tooltip>
-          <PopoverContent
-            className="w-80 p-0 h-80 flex flex-col overflow-hidden"
-            align="end"
-            onFocusOutside={(e) => {
-              if (document.querySelector('[data-vault-delete-confirm="true"]')) {
-                e.preventDefault();
-              }
-            }}
-            onInteractOutside={(e) => {
-              // Same guard as the encoding submenu: portalled confirm UI is
-              // "outside" this popover and must not dismiss it.
-              if (document.querySelector('[data-vault-delete-confirm="true"]')) {
-                e.preventDefault();
-              }
-            }}
-          >
+          <PopoverContent className="w-80 p-0 h-80 flex flex-col overflow-hidden" align="end">
             <ScriptsSidePanel
               snippets={snippets}
               packages={snippetPackages}
               isVisible={scriptsPopoverOpen}
+              onBulkDeleteRequest={setPendingScriptDeleteIds}
               onSnippetClick={(snippet) => {
                 onSnippetClick?.(snippet);
                 setScriptsPopoverOpen(false);
@@ -411,6 +394,26 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
             />
           </PopoverContent>
         </Popover>
+        <VaultDeleteConfirmDialog
+          open={Boolean(pendingScriptDeleteIds)}
+          title={t('snippets.selection.deleteConfirmTitle', {
+            count: pendingScriptDeleteCount,
+          })}
+          description={t('snippets.selection.deleteConfirmDesc')}
+          onOpenChange={(open) => {
+            if (!open) setPendingScriptDeleteIds(null);
+          }}
+          onConfirm={() => {
+            const ids = (pendingScriptDeleteIds ?? []).filter((id) =>
+              snippets.some((snippet) => snippet.id === id),
+            );
+            setPendingScriptDeleteIds(null);
+            if (ids.length === 0) return;
+            window.dispatchEvent(
+              new CustomEvent('netcatty:snippets:delete', { detail: { ids } }),
+            );
+          }}
+        />
         </TooltipProvider>
       </div>
     );

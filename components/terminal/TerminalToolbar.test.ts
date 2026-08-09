@@ -9,10 +9,6 @@ import type { Host } from "../../types.ts";
 import { TerminalToolbar } from "./TerminalToolbar.tsx";
 
 const toolbarSource = readFileSync(new URL("./TerminalToolbar.tsx", import.meta.url), "utf8");
-const vaultDeleteConfirmSource = readFileSync(
-  new URL("../vault/VaultDeleteConfirmDialog.tsx", import.meta.url),
-  "utf8",
-);
 
 const sshHost: Host = {
   id: "host-1",
@@ -177,13 +173,20 @@ test("uses the terminal active button color for pressed toolbar actions", () => 
   );
 });
 
-test("compact scripts popover ignores dismiss while vault delete confirm is open", () => {
-  // ScriptsSidePanel's VaultDeleteConfirmDialog is portalled; without these
-  // guards the popover closes, isVisible flips, and pendingDeleteIds clears.
-  assert.match(vaultDeleteConfirmSource, /data-vault-delete-confirm="true"/);
-  assert.ok(
-    toolbarSource.includes('document.querySelector(\'[data-vault-delete-confirm="true"]\')'),
+test("compact scripts popover hosts bulk-delete confirm outside the popover", () => {
+  // Dialog focus leaves PopoverContent; if confirm stays inside ScriptsSidePanel,
+  // the popover closes, isVisible clears pendingDeleteIds, and the prompt dies.
+  assert.match(toolbarSource, /onBulkDeleteRequest=\{setPendingScriptDeleteIds\}/);
+  assert.match(toolbarSource, /<VaultDeleteConfirmDialog/);
+  assert.match(toolbarSource, /netcatty:snippets:delete/);
+  const scriptsPopoverIdx = toolbarSource.indexOf("open={scriptsPopoverOpen}");
+  const popoverEndIdx = toolbarSource.indexOf("</Popover>", scriptsPopoverIdx);
+  const dialogIdx = toolbarSource.indexOf("<VaultDeleteConfirmDialog", popoverEndIdx);
+  assert.ok(scriptsPopoverIdx >= 0, "scripts popover open binding");
+  assert.ok(popoverEndIdx > scriptsPopoverIdx, "scripts popover closes");
+  assert.ok(dialogIdx > popoverEndIdx, "confirm dialog is a sibling after the popover");
+  assert.equal(
+    toolbarSource.includes("document.querySelector('[data-vault-delete-confirm=\"true\"]')"),
+    false,
   );
-  assert.match(toolbarSource, /onFocusOutside=\{\(e\) => \{/);
-  assert.match(toolbarSource, /onInteractOutside=\{\(e\) => \{/);
 });

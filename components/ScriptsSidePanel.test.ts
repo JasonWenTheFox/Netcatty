@@ -92,6 +92,15 @@ test("scripts side panel confirms bulk delete and routes it through the shared d
   );
 });
 
+test("scripts side panel defers bulk-delete confirm when a parent owns the dialog", () => {
+  // Compact TerminalToolbar nests this panel in a Popover; the portalled confirm
+  // must be owned outside that tree so focus cannot unmount the prompt.
+  assert.match(source, /onBulkDeleteRequest\?:/);
+  assert.match(source, /if\s*\(\s*onBulkDeleteRequest\s*\)\s*\{/);
+  assert.match(source, /onBulkDeleteRequest\(ids\)/);
+  assert.match(source, /!onBulkDeleteRequest/);
+});
+
 test("scripts side panel clears pending bulk delete when the panel hides", () => {
   // Returning null while isVisible is false unmounts the confirm dialog; drop
   // pending deletes so a later re-show does not resurrect a half-dismissed prompt.

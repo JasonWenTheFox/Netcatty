@@ -93,10 +93,6 @@ export const VaultDeleteConfirmDialog: React.FC<VaultDeleteConfirmDialogProps> =
       if (!disabled) onOpenChange(nextOpen);
     }}>
       <DialogContent
-        // Nested popovers (e.g. compact terminal Scripts menu) treat this
-        // portalled dialog as an outside focus/pointer target; the marker lets
-        // parents ignore dismiss while the confirm is open.
-        data-vault-delete-confirm="true"
         className="max-w-[calc(100vw-2rem)] overflow-hidden sm:max-w-[400px]"
         aria-describedby={descriptionId}
       >

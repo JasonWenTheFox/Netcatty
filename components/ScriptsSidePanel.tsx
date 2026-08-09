@@ -74,6 +74,12 @@ interface ScriptsSidePanelProps {
   onResumeRun?: (runId: string) => void;
   onStartRecording?: () => void;
   focusedSessionId?: string;
+  /**
+   * When set, bulk-delete confirmation is owned by the parent. Required when
+   * this panel is nested in a Popover — the portalled confirm would otherwise
+   * steal focus, dismiss the popover, and unmount the prompt.
+   */
+  onBulkDeleteRequest?: (ids: string[]) => void;
 }
 
 type TreeRow =
@@ -278,6 +284,7 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
   onResumeRun,
   onStartRecording,
   focusedSessionId,
+  onBulkDeleteRequest,
 }) => {
   const { t } = useI18n();
   const [search, setSearch] = useState('');
@@ -393,6 +400,19 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
     if (!isVisible) setPendingDeleteIds(null);
   }, [isVisible]);
 
+  // Parent-owned confirm (compact toolbar popover) dispatches the shared delete
+  // event; clear local multi-select when that bulk delete lands.
+  useEffect(() => {
+    if (!onBulkDeleteRequest) return;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ ids?: string[] }>).detail;
+      if (!detail?.ids?.length) return;
+      clearSnippetSelection();
+    };
+    window.addEventListener('netcatty:snippets:delete', handler);
+    return () => window.removeEventListener('netcatty:snippets:delete', handler);
+  }, [clearSnippetSelection, onBulkDeleteRequest]);
+
   const toggleSnippetSelection = useCallback((id: string) => {
     setSelectedSnippetIds((prev) => {
       const next = new Set(prev);
@@ -407,8 +427,12 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
       .filter((snippet) => selectedSnippetIds.has(snippet.id))
       .map((snippet) => snippet.id);
     if (ids.length === 0) return;
+    if (onBulkDeleteRequest) {
+      onBulkDeleteRequest(ids);
+      return;
+    }
     setPendingDeleteIds(ids);
-  }, [selectedSnippetIds, snippets]);
+  }, [onBulkDeleteRequest, selectedSnippetIds, snippets]);
 
   const existingPendingDeleteIds = pendingDeleteIds
     ? pendingDeleteIds.filter((id) => snippets.some((snippet) => snippet.id === id))
@@ -1216,17 +1240,19 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
         </div>
       ) : null}
 
-      <VaultDeleteConfirmDialog
-        open={Boolean(pendingDeleteIds)}
-        title={t('snippets.selection.deleteConfirmTitle', {
-          count: existingPendingDeleteIds.length,
-        })}
-        description={t('snippets.selection.deleteConfirmDesc')}
-        onOpenChange={(open) => {
-          if (!open) setPendingDeleteIds(null);
-        }}
-        onConfirm={confirmDeleteSelectedSnippets}
-      />
+      {!onBulkDeleteRequest ? (
+        <VaultDeleteConfirmDialog
+          open={Boolean(pendingDeleteIds)}
+          title={t('snippets.selection.deleteConfirmTitle', {
+            count: existingPendingDeleteIds.length,
+          })}
+          description={t('snippets.selection.deleteConfirmDesc')}
+          onOpenChange={(open) => {
+            if (!open) setPendingDeleteIds(null);
+          }}
+          onConfirm={confirmDeleteSelectedSnippets}
+        />
+      ) : null}
     </div>
     </TooltipProvider>
   );
