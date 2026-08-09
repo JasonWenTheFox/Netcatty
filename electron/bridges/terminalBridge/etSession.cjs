@@ -172,36 +172,51 @@ main();
           return connectionOptions;
         }
         let prepared = connectionOptions;
-        if (connectionOptions.useSshAgent === true || forceFido) {
-          const agent = await prepareSystemSshAgentForAuth(prepOptions, logPrefix);
-          const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
-            || await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
-          if (!socketPath) {
-            throw new Error(
-              forceFido
-                ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
-                : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+        /** @type {(() => void)|null} */
+        let releasePreparedAgent = null;
+        try {
+          if (connectionOptions.useSshAgent === true || forceFido) {
+            const agent = await prepareSystemSshAgentForAuth(prepOptions, logPrefix);
+            if (typeof agent?._releaseNetcattyFidoAgent === "function") {
+              releasePreparedAgent = agent._releaseNetcattyFidoAgent;
+            }
+            const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
+              || await getAvailableAgentSocket(connectionOptions.identityAgent, connectionOptions);
+            if (!socketPath) {
+              throw new Error(
+                forceFido
+                  ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
+                  : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+              );
+            }
+            prepared = {
+              ...prepared,
+              useSshAgent: true,
+              _resolvedSshAgentSocket: socketPath,
+              ...(releasePreparedAgent
+                ? { _releaseNetcattyFidoAgent: releasePreparedAgent }
+                : {}),
+            };
+          }
+          if (connectionOptions.agentForwarding) {
+            // May throw (e.g. Windows Pageant/Cygwin rejected for native OpenSSH).
+            // Release this hop's already-acquired FIDO agent/askpass lease before
+            // rethrowing — preparedEntries only sees hops that return successfully.
+            const forwardingSocketPath = await getAvailableForwardingAgentSocket(
+              connectionOptions.identityAgent,
+              connectionOptions,
             );
+            if (forwardingSocketPath) {
+              prepared = { ...prepared, _resolvedForwardingAgentSocket: forwardingSocketPath };
+            }
           }
-          prepared = {
-            ...prepared,
-            useSshAgent: true,
-            _resolvedSshAgentSocket: socketPath,
-            ...(typeof agent?._releaseNetcattyFidoAgent === "function"
-              ? { _releaseNetcattyFidoAgent: agent._releaseNetcattyFidoAgent }
-              : {}),
-          };
-        }
-        if (connectionOptions.agentForwarding) {
-          const forwardingSocketPath = await getAvailableForwardingAgentSocket(
-            connectionOptions.identityAgent,
-            connectionOptions,
-          );
-          if (forwardingSocketPath) {
-            prepared = { ...prepared, _resolvedForwardingAgentSocket: forwardingSocketPath };
+          return prepared;
+        } catch (error) {
+          if (typeof releasePreparedAgent === "function") {
+            try { releasePreparedAgent(); } catch { /* ignore */ }
           }
+          throw error;
         }
-        return prepared;
       };
 
       // Track successfully prepared hops so a later prepareOne failure can release
@@ -1356,6 +1371,9 @@ main();
           lastIdlePrompt: "",
           lastIdlePromptAt: 0,
           _promptTrackTail: "",
+          // Explicit close deletes the session before onExit; keep the one-shot
+          // release on the session so closeSession / quit cleanup can still run it.
+          releaseNetcattyFidoAgents: releaseFidoAgents,
         };
         {
           const { claimSessionSlot } = require("../sessionBootEpoch.cjs");
@@ -1449,9 +1467,11 @@ main();
         proc.onExit((evt) => {
           flushEtPaced(() => {
             if (etExitFinalized) return;
-            if (sessions.get(sessionId) !== session) return;
             etExitFinalized = true;
+            // Release before the map check: explicit close already deleted the
+            // session entry, but the agent/askpass lease must still be dropped.
             releaseFidoAgents();
+            if (sessions.get(sessionId) !== session) return;
             try { session.etStatsConn?.end(); } catch { /* ignore */ }
             cleanupSessionExternalAuthArtifacts(session);
             sessionLogStreamManager.stopStream(sessionId, session.logStreamToken);

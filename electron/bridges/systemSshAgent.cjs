@@ -461,10 +461,16 @@ async function prepareSystemSshAgent(options, injected = {}) {
         }
         const key = blob || identityPath;
         if (bareAlreadyPresent) {
-          // Reloaded only to advertise a missing companion certificate. Join
-          // Netcatty-owned refcounts; never adopt a pre-existing user identity.
+          // Reloaded only to advertise a missing companion certificate.
           if (hasSharedAgentIdentity(key)) {
+            // Another Netcatty session already owns the bare identity; join its
+            // refcount so the last release can ssh-add -d the private handle.
             sharedAgentIdentities.push({ key, identityPath });
+          } else if (certBlob && certPath) {
+            // Bare key was already in the shared agent (user-managed). Track the
+            // certificate alone so cleanup removes only what we added.
+            newlyLoadedIdentityPaths.push(certPath);
+            sharedAgentIdentities.push({ key: certBlob, identityPath: certPath });
           }
         } else {
           newlyLoadedIdentityPaths.push(identityPath);
