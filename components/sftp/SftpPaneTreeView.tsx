@@ -691,7 +691,6 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
         sourceParent,
         cached.filter((entry) => !movedNameSet.has(entry.name)),
       );
-      sortedChildrenCacheRef.current.delete(sourceParent);
     }
     if (targetPath !== currentPath) {
       const targetCache = childrenCacheRef.current.get(targetPath);
@@ -703,9 +702,12 @@ export const SftpPaneTreeView = React.memo<SftpPaneTreeViewProps>(({
           }
         }
         childrenCacheRef.current.set(targetPath, next);
-        sortedChildrenCacheRef.current.delete(targetPath);
       }
     }
+    // Ancestor filter keep decisions depend on cached descendants; drop every
+    // sorted/filtered snapshot (not only source/target) so Move To / drag-move
+    // cannot leave stale parents visible or hide the new parent under search.
+    sortedChildrenCacheRef.current.clear();
   }, [pane.connection?.currentPath]);
   const executeMoveAction = useCallback(async (sourcePaths: string[], targetPath: string) => {
     try {

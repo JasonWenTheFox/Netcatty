@@ -160,3 +160,25 @@ test('SFTP tree child reload invalidates sorted cache so filter reapplies', () =
   assert.ok(setIdx >= 0, 'expected childrenCache write on successful load');
   assert.ok(clearIdx > setIdx, 'sorted cache must clear after childrenCache write');
 });
+
+test('SFTP tree move mutation clears all sorted snapshots for ancestor filter', () => {
+  // With an active search, ancestor keep decisions depend on cached descendants.
+  // Move To / drag-move update childrenCache for source/target only; deleting just
+  // those sorted keys leaves grandparent/root snapshots stale (old parent kept,
+  // new parent hidden). Mirror loadChildrenForPath and clear every sorted snapshot.
+  const treeSource = readFileSync(new URL('./SftpPaneTreeView.tsx', import.meta.url), 'utf8');
+  const moveFn = treeSource.match(
+    /const applyLocalMoveMutation = useCallback\(\(\s*sourceParentPaths: string\[\],\s*targetPath: string,\s*movedEntries: SftpFileEntry\[\],\s*\) => \{[\s\S]*?\n {2}\}, \[pane\.connection\?\.currentPath\]\);/,
+  );
+  assert.ok(moveFn, 'expected applyLocalMoveMutation callback');
+  const body = moveFn[0];
+  assert.match(body, /childrenCacheRef\.current\.set\(/);
+  const lastChildrenSet = body.lastIndexOf('childrenCacheRef.current.set(');
+  const clearIdx = body.indexOf('sortedChildrenCacheRef.current.clear()');
+  assert.ok(clearIdx > lastChildrenSet, 'sorted cache must clear after childrenCache mutations');
+  assert.equal(
+    (body.match(/sortedChildrenCacheRef\.current\.delete\(/g) || []).length,
+    0,
+    'move mutation must not rely on per-path sorted deletes alone',
+  );
+});
