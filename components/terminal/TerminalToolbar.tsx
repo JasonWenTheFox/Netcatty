@@ -91,6 +91,8 @@ export interface TerminalToolbarProps {
   snippets?: Snippet[];
   snippetPackages?: string[];
   onSnippetClick?: (snippet: Snippet) => void;
+  /** Popup vault mutation path — compact toolbar has no AppSideEffects listener. */
+  onDeleteSnippets?: (ids: ReadonlySet<string>) => void;
   onOpenSFTP: () => void;
   onSendYmodem?: () => void;
   onReceiveYmodem?: () => void;
@@ -128,6 +130,7 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
   snippets = [],
   snippetPackages = [],
   onSnippetClick,
+  onDeleteSnippets,
   onOpenSFTP,
   onSendYmodem,
   onReceiveYmodem,
@@ -409,6 +412,9 @@ export const TerminalToolbar: React.FC<TerminalToolbarProps> = ({
             );
             setPendingScriptDeleteIds(null);
             if (ids.length === 0) return;
+            // Popup terminals own vault state locally (no AppSideEffects).
+            onDeleteSnippets?.(new Set(ids));
+            // Still emit so ScriptsSidePanel can clear multi-select in the popover.
             window.dispatchEvent(
               new CustomEvent('netcatty:snippets:delete', { detail: { ids } }),
             );

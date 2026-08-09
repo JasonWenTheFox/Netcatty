@@ -247,6 +247,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   snippets,
   snippetPackages = [],
   compactToolbar = false,
+  onDeleteSnippets,
   lineTimestampsAvailable = true,
   chainHosts = EMPTY_CHAIN_HOSTS,
   appearanceTheme,
@@ -3615,6 +3616,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       snippets={snippets}
       snippetPackages={snippetPackages}
       onSnippetClick={(snippet) => { void executeSnippet(snippet); }}
+      onDeleteSnippets={onDeleteSnippets}
       onOpenSFTP={handleOpenSFTP}
       onSendYmodem={isSerialConnection ? handleSendYmodem : undefined}
       onReceiveYmodem={isSerialConnection ? handleReceiveYmodem : undefined}
@@ -3678,6 +3680,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     isSessionLogging,
     isWorkspaceComposeBarOpen,
     onCloseSession,
+    onDeleteSnippets,
     onOpenScripts,
     onOpenHistory,
     onOpenTheme,

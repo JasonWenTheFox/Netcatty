@@ -178,6 +178,8 @@ test("compact scripts popover hosts bulk-delete confirm outside the popover", ()
   // the popover closes, isVisible clears pendingDeleteIds, and the prompt dies.
   assert.match(toolbarSource, /onBulkDeleteRequest=\{setPendingScriptDeleteIds\}/);
   assert.match(toolbarSource, /<VaultDeleteConfirmDialog/);
+  // Popup vault mutation goes through the prop; the event only clears popover selection.
+  assert.match(toolbarSource, /onDeleteSnippets\?\.\(new Set\(ids\)\)/);
   assert.match(toolbarSource, /netcatty:snippets:delete/);
   const scriptsPopoverIdx = toolbarSource.indexOf("open={scriptsPopoverOpen}");
   const popoverEndIdx = toolbarSource.indexOf("</Popover>", scriptsPopoverIdx);
