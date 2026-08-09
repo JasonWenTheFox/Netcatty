@@ -1256,8 +1256,14 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
       for (const entry of sharedAgentIdentities) {
         const { shouldRemove, identityPath, cleanupDir } = releaseSharedAgentIdentity(entry.key);
         if (!shouldRemove) continue;
+        const removeCleanupDir = () => {
+          if (!cleanupDir) return;
+          fs.promises.rm(cleanupDir, { recursive: true, force: true }).catch(() => {});
+        };
         if (identityPath) {
           try {
+            // ssh-add -d treats operands as identity-file paths; keep the
+            // staging dir until the child finishes (or fails to spawn).
             childProcess.execFile(
               sshAdd,
               ["-d", identityPath],
@@ -1270,14 +1276,15 @@ async function prepareSystemSshAgentForAuth(options, logPrefix = "[SSHAuth]") {
                   SSH_ASKPASS_REQUIRE: "never",
                 },
               },
-              () => {},
+              () => {
+                removeCleanupDir();
+              },
             );
           } catch {
-            // ignore
+            removeCleanupDir();
           }
-        }
-        if (cleanupDir) {
-          fs.promises.rm(cleanupDir, { recursive: true, force: true }).catch(() => {});
+        } else {
+          removeCleanupDir();
         }
       }
     }

@@ -388,6 +388,94 @@ test("shared Windows agent defers ssh-add -d until the last identity user releas
   }
 });
 
+test("shared Windows agent keeps staging dir until ssh-add -d finishes", async () => {
+  const fidoAgentManager = require("./fidoAgentManager.cjs");
+  const fidoAskpass = require("./fidoAskpass.cjs");
+  const systemSshAgent = require("./systemSshAgent.cjs");
+  const childProcess = require("node:child_process");
+  const originalAcquire = fidoAgentManager.acquireFidoAgent;
+  const originalRelease = fidoAgentManager.releaseFidoAgent;
+  const originalReleaseLease = fidoAskpass.releaseFidoAskpassLease;
+  const originalPrepare = systemSshAgent.prepareSystemSshAgent;
+  const originalRetain = systemSshAgent.retainSharedAgentIdentity;
+  const originalExecFile = childProcess.execFile;
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-sk-staging-"));
+  const identityPath = path.join(stagingDir, "id_sk");
+  fs.writeFileSync(identityPath, makeSkPrivatePem(SK_SSH_ED25519), { mode: 0o600 });
+  /** @type {null | ((err: Error|null, stdout: string, stderr: string) => void)} */
+  let pendingDeleteCb = null;
+
+  fidoAgentManager.acquireFidoAgent = async () => ({
+    socketPath: "\\\\.\\pipe\\openssh-ssh-agent",
+    askpassEnv: {
+      SSH_ASKPASS: "/bin/true",
+      NETCATTY_FIDO_ASKPASS_LEASE: "test-lease-staging-cleanup",
+    },
+    owned: false,
+    generation: 9,
+  });
+  fidoAgentManager.releaseFidoAgent = () => {};
+  fidoAskpass.releaseFidoAskpassLease = () => {};
+  // Prep is mocked (no real ssh-add); still attach staging cleanup the way
+  // materializeSkPrivateKeyFile + retainSharedAgentIdentity would in production.
+  systemSshAgent.retainSharedAgentIdentity = (key, idPath, cleanupDir) => (
+    originalRetain(key, idPath, cleanupDir || stagingDir)
+  );
+  systemSshAgent.prepareSystemSshAgent = async () => ({
+    getIdentities: (cb) => cb(null, []),
+    sign: (_k, _d, _o, cb) => cb(new Error("unused")),
+    _netcattyNewlyLoadedIdentityPaths: [identityPath],
+  });
+  childProcess.execFile = (file, args, opts, cb) => {
+    if (Array.isArray(args) && args[0] === "-d") {
+      pendingDeleteCb = typeof cb === "function" ? cb : null;
+      return { kill() {} };
+    }
+    return originalExecFile(file, args, opts, cb);
+  };
+
+  try {
+    systemSshAgent.resetSharedAgentIdentityRefsForTests?.();
+    const { prepareSystemSshAgentForAuth } = require("./sshAuthHelper.cjs");
+    const agent = await prepareSystemSshAgentForAuth({
+      useSshAgent: true,
+      useFidoAgent: true,
+      agentPublicKeys: [skPub],
+      loadIdentityFilesIntoAgent: true,
+      identityFilePaths: [identityPath],
+    }, "[test-staging-cleanup]");
+    assert.ok(agent);
+    assert.equal(typeof agent._releaseNetcattyFidoAgent, "function");
+
+    agent._releaseNetcattyFidoAgent();
+    assert.ok(pendingDeleteCb, "expected ssh-add -d to start");
+    assert.equal(
+      fs.existsSync(stagingDir),
+      true,
+      "staging must survive until ssh-add -d returns",
+    );
+    assert.equal(fs.existsSync(identityPath), true);
+    pendingDeleteCb(null, "", "");
+    for (let i = 0; i < 40 && fs.existsSync(stagingDir); i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(
+      fs.existsSync(stagingDir),
+      false,
+      "staging removed after ssh-add -d completes",
+    );
+  } finally {
+    fidoAgentManager.acquireFidoAgent = originalAcquire;
+    fidoAgentManager.releaseFidoAgent = originalRelease;
+    fidoAskpass.releaseFidoAskpassLease = originalReleaseLease;
+    systemSshAgent.prepareSystemSshAgent = originalPrepare;
+    systemSshAgent.retainSharedAgentIdentity = originalRetain;
+    childProcess.execFile = originalExecFile;
+    systemSshAgent.resetSharedAgentIdentityRefsForTests?.();
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+  }
+});
+
 test("materializeSkPrivateKeyFile writes companion .pub from publicKey hint", async () => {
   const pem = makeSkPrivatePem(SK_SSH_ED25519);
   const result = await materializeSkPrivateKeyFile(pem, {
