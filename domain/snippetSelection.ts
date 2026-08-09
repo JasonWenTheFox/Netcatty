@@ -102,8 +102,8 @@ function applyPreferredOrder(
  * When an id exists on all sides, preserve a disk-only content edit; both-sides
  * content conflicts prefer the local write (same as sync merge).
  * List order is merged independently: a disk-only reorder or insertion survives
- * an unrelated local content edit; a local reorder still wins over disk
- * (including when both sides reordered).
+ * an unrelated local content edit or local addition; a local reorder of shared
+ * ids still wins over disk (including when both sides reordered shared ids).
  */
 export function rebaseSnippetVaultWrite({
   base,
@@ -134,21 +134,29 @@ export function rebaseSnippetVaultWrite({
     if (oursMap.has(id)) baseOursIds.add(id);
     if (theirsMap.has(id)) baseTheirsIds.add(id);
   }
-  // Shared-id sequences ignore insertions; treat ids outside base as an order
-  // change so mid-list disk adds are not appended after a content-only local save.
-  const oursReordered =
-    !sameIdSequence(
-      sharedIdSequence(base, baseOursIds),
-      sharedIdSequence(ours, baseOursIds),
-    ) || hasIdsOutsideBase(ours, baseIds);
-  const theirsReordered =
-    !sameIdSequence(
-      sharedIdSequence(base, baseTheirsIds),
-      sharedIdSequence(theirs, baseTheirsIds),
-    ) || hasIdsOutsideBase(theirs, baseIds);
-  // Disk-only reorder/insertion must not be clobbered by a content edit from the
-  // older ordering; local reorder (or both-sides reorder) still prefers ours.
-  const preferTheirOrder = theirsReordered && !oursReordered;
+  // Shared-id sequences ignore insertions. Detect reorder of existing ids
+  // separately from new-id placement so a local add does not look like a
+  // reorder that discards an unrelated disk reorder.
+  const oursSharedReordered = !sameIdSequence(
+    sharedIdSequence(base, baseOursIds),
+    sharedIdSequence(ours, baseOursIds),
+  );
+  const theirsSharedReordered = !sameIdSequence(
+    sharedIdSequence(base, baseTheirsIds),
+    sharedIdSequence(theirs, baseTheirsIds),
+  );
+  const oursHasInsertions = hasIdsOutsideBase(ours, baseIds);
+  const theirsHasInsertions = hasIdsOutsideBase(theirs, baseIds);
+  // Prefer disk order when local did not reorder shared ids and disk either
+  // reordered those ids or inserted while local only edited/kept the list.
+  // Local insertions alone must not block a disk-only shared reorder; concurrent
+  // additions on both sides still prefer ours (then append theirs).
+  const preferTheirOrder =
+    !oursSharedReordered
+    && (
+      theirsSharedReordered
+      || (theirsHasInsertions && !oursHasInsertions)
+    );
 
   for (const id of allIds) {
     if (!id) continue;

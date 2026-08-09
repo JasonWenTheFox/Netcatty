@@ -89,6 +89,16 @@ test("updateSnippets keeps the persisted rebase ancestor across superseded saves
   );
   assert.match(
     source,
-    /localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\);\s*\/\/ Disk caught up[\s\S]*snippetsWriteBaseRef\.current = null/,
+    /const persisted = localStorageAdapter\.write\(STORAGE_KEY_SNIPPETS, rebased\)/,
+  );
+  // Quota failure must keep the ancestor; clearing it would drop a local add on
+  // the next save after space is freed.
+  assert.match(
+    source,
+    /if \(!persisted\) \{[\s\S]*return "failed" as const;[\s\S]*\}\s*\/\/ Disk caught up[\s\S]*snippetsWriteBaseRef\.current = null/,
+  );
+  assert.match(
+    source,
+    /if \(!persisted\) \{[\s\S]*Snippets could not be saved/,
   );
 });

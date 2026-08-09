@@ -639,7 +639,17 @@ export const useVaultState = () => {
       const rebased = normalizeVaultOrder(
         rebaseSnippetVaultWrite({ base, ours: cleaned, theirs: latest }),
       );
-      localStorageAdapter.write(STORAGE_KEY_SNIPPETS, rebased);
+      const persisted = localStorageAdapter.write(STORAGE_KEY_SNIPPETS, rebased);
+      if (!persisted) {
+        // Keep the pre-update ancestor. Clearing it here would make the next
+        // save rebase against the optimistic array while disk still lacks the
+        // add, so rebase would treat the add as a concurrent delete.
+        notify.error(
+          "Snippets could not be saved. Free some local storage space and try again.",
+          "Scripts",
+        );
+        return "failed" as const;
+      }
       // Disk caught up; next save should treat this write as its ancestor.
       snippetsWriteBaseRef.current = null;
       if (snippetsWriteOwnerRef.current === ver) {
