@@ -297,6 +297,37 @@ test("Mosh explicitly disables native agent login after an opt-out", async () =>
   assert.equal(forwardingEnv.SSH_AUTH_SOCK, undefined);
 });
 
+test("Mosh releases prepared FIDO agent when forwarding-agent resolution fails", async () => {
+  let releaseCount = 0;
+  const api = createMoshSessionApi({
+    os,
+    path,
+    fs,
+    process,
+    randomUUID: () => "fixed",
+    prepareSystemSshAgentForAuth: async () => ({
+      _releaseNetcattyFidoAgent: () => { releaseCount += 1; },
+    }),
+    getAvailableAgentSocket: async () => "/tmp/login-agent.sock",
+    getAvailableForwardingAgentSocket: async () => {
+      const error = new Error(
+        "This SSH agent is available only to Netcatty's built-in SSH client.",
+      );
+      error.code = "ERR_SSH_AGENT_NATIVE_UNSUPPORTED";
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    () => api.prepareMoshSshAgentOptions({
+      useSshAgent: true,
+      agentForwarding: true,
+    }),
+    (error) => error?.code === "ERR_SSH_AGENT_NATIVE_UNSUPPORTED",
+  );
+  assert.equal(releaseCount, 1);
+});
+
 test("Mosh keeps its login agent separate from the discovered forwarding agent", async () => {
   const localAgent = "/private/tmp/com.apple.launchd.test/Listeners";
   const forwardingAgent = "/Users/alice/.bitwarden-ssh-agent.sock";

@@ -185,6 +185,91 @@ test("prepareSystemSshAgent does not adopt pre-existing agent identities for cle
   }
 });
 
+test("prepareSystemSshAgent ssh-adds when bare identity is loaded but companion certificate is missing", async () => {
+  const {
+    prepareSystemSshAgent,
+    publicKeyBlob,
+    retainSharedAgentIdentity,
+    resetSharedAgentIdentityRefsForTests,
+  } = require("./systemSshAgent.cjs");
+  resetSharedAgentIdentityRefsForTests();
+
+  const type = Buffer.from("sk-ssh-ed25519@openssh.com");
+  const pub = Buffer.alloc(32, 11);
+  const app = Buffer.from("ssh:");
+  const parts = [type, pub, app];
+  let len = 0;
+  for (const part of parts) len += 4 + part.length;
+  const buf = Buffer.alloc(len);
+  let offset = 0;
+  for (const part of parts) {
+    buf.writeUInt32BE(part.length, offset);
+    offset += 4;
+    part.copy(buf, offset);
+    offset += part.length;
+  }
+  const pubLine = `sk-ssh-ed25519@openssh.com ${buf.toString("base64")} test`;
+
+  const certType = Buffer.from("sk-ssh-ed25519-cert-v01@openssh.com");
+  const nonce = Buffer.alloc(16, 3);
+  const certParts = [certType, nonce, pub, app];
+  let certLen = 0;
+  for (const part of certParts) certLen += 4 + part.length;
+  const certBuf = Buffer.alloc(certLen);
+  let certOffset = 0;
+  for (const part of certParts) {
+    certBuf.writeUInt32BE(part.length, certOffset);
+    certOffset += 4;
+    part.copy(certBuf, certOffset);
+    certOffset += part.length;
+  }
+  const certLine = `sk-ssh-ed25519-cert-v01@openssh.com ${certBuf.toString("base64")} cert`;
+
+  const identityPath = "/tmp/id_ed25519_sk_cert_reload";
+  const blob = publicKeyBlob(pubLine);
+  const certBlob = publicKeyBlob(certLine);
+  assert.ok(blob);
+  assert.ok(certBlob);
+  assert.notEqual(blob, certBlob);
+
+  const sshAddCalls = [];
+  const fakeKey = {
+    getPublicSSH: () => Buffer.from(blob, "base64"),
+  };
+  const fakeAgent = {
+    getIdentities: (cb) => cb(null, [fakeKey]),
+    sign: (_key, _data, _opts, cb) => cb(new Error("unused")),
+  };
+
+  try {
+    retainSharedAgentIdentity(blob, "/tmp/id_ed25519_sk_first");
+    const prepared = await prepareSystemSshAgent({
+      socketPath: "/tmp/fake-agent.sock",
+      identityFilePaths: [identityPath],
+      loadIdentityFilesIntoAgent: true,
+    }, {
+      createAgent: () => fakeAgent,
+      readFile: async (p) => {
+        if (p === `${identityPath}.pub`) return pubLine;
+        if (p === `${identityPath}-cert.pub`) return certLine;
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+      runSshAdd: async (args) => { sshAddCalls.push(args); },
+      platform: "win32",
+    });
+
+    assert.deepEqual(sshAddCalls, [[identityPath]]);
+    // Bare key was already present; do not treat this cert-only reload as a
+    // newly loaded identity (refcount join only).
+    assert.equal(prepared._netcattyNewlyLoadedIdentityPaths, undefined);
+    assert.deepEqual(prepared._netcattySharedAgentIdentities, [
+      { key: blob, identityPath },
+    ]);
+  } finally {
+    resetSharedAgentIdentityRefsForTests();
+  }
+});
+
 test("prepareSystemSshAgent joins Netcatty-owned already-loaded identities for shared cleanup", async () => {
   const {
     prepareSystemSshAgent,

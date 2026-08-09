@@ -390,17 +390,35 @@ async function prepareSystemSshAgent(options, injected = {}) {
 
     for (const identityPath of resolvedIdentityPaths) {
       const pubPath = identityPath.endsWith(".pub") ? identityPath : `${identityPath}.pub`;
+      const certPath = identityPath.endsWith(".pub") ? null : `${identityPath}-cert.pub`;
       /** @type {string|null} */
       let blob = null;
-      let alreadyLoaded = false;
+      /** @type {string|null} */
+      let certBlob = null;
+      let bareAlreadyPresent = false;
+      let companionCertificateMissing = false;
       try {
         const pub = await deps.readFile(pubPath, "utf8");
         blob = publicKeyBlob(pub);
-        if (blob && loadedBlobs.has(blob)) alreadyLoaded = true;
+        if (blob && loadedBlobs.has(blob)) bareAlreadyPresent = true;
       } catch {
         // No .pub selector — still attempt ssh-add when requested.
       }
-      if (alreadyLoaded) {
+      if (bareAlreadyPresent && certPath) {
+        // OpenSSH ssh-add loads `<identity>-cert.pub` with the private handle.
+        // If only the bare key is already advertised, still run ssh-add so a
+        // staged vault certificate reaches the agent.
+        try {
+          const certPub = await deps.readFile(certPath, "utf8");
+          certBlob = publicKeyBlob(certPub);
+          if (certBlob && !loadedBlobs.has(certBlob)) {
+            companionCertificateMissing = true;
+          }
+        } catch {
+          // No companion certificate — bare-key skip remains valid.
+        }
+      }
+      if (bareAlreadyPresent && !companionCertificateMissing) {
         // Join refcount only when Netcatty already owns this identity (another
         // session loaded it). Pre-existing user agent identities must not be
         // adopted into cleanup — last release would ssh-add -d them.
@@ -422,7 +440,6 @@ async function prepareSystemSshAgent(options, injected = {}) {
             askpassEnv: deps.askpassEnv,
           });
         }
-        newlyLoadedIdentityPaths.push(identityPath);
         if (!blob) {
           try {
             const pub = await deps.readFile(pubPath, "utf8");
@@ -432,7 +449,27 @@ async function prepareSystemSshAgent(options, injected = {}) {
           }
         }
         if (blob) loadedBlobs.add(blob);
-        sharedAgentIdentities.push({ key: blob || identityPath, identityPath });
+        if (certBlob) loadedBlobs.add(certBlob);
+        else if (certPath) {
+          try {
+            const certPub = await deps.readFile(certPath, "utf8");
+            certBlob = publicKeyBlob(certPub);
+            if (certBlob) loadedBlobs.add(certBlob);
+          } catch {
+            // no companion cert
+          }
+        }
+        const key = blob || identityPath;
+        if (bareAlreadyPresent) {
+          // Reloaded only to advertise a missing companion certificate. Join
+          // Netcatty-owned refcounts; never adopt a pre-existing user identity.
+          if (hasSharedAgentIdentity(key)) {
+            sharedAgentIdentities.push({ key, identityPath });
+          }
+        } else {
+          newlyLoadedIdentityPaths.push(identityPath);
+          sharedAgentIdentities.push({ key, identityPath });
+        }
         deps.log?.("Loaded identity into SSH agent", { identityPath });
       } catch (error) {
         deps.log?.("Could not load identity into SSH agent", {

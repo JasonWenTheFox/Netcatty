@@ -141,33 +141,50 @@ function createMoshSessionApi(ctx) {
       const forceFido = prepOptions.useFidoAgent === true && options.authMethod !== "password";
       if (options?.useSshAgent !== true && !options?.agentForwarding && !forceFido) return options;
       let prepared = options;
-      if (options.useSshAgent === true || forceFido) {
-        const agent = await prepareSystemSshAgentForAuth(prepOptions, "[Mosh]");
-        const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
-          || await getAvailableAgentSocket(options.identityAgent, options);
-        if (!socketPath) {
-          throw new Error(
-            forceFido
-              ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
-              : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+      /** @type {(() => void)|null} */
+      let releasePreparedAgent = null;
+      try {
+        if (options.useSshAgent === true || forceFido) {
+          const agent = await prepareSystemSshAgentForAuth(prepOptions, "[Mosh]");
+          if (typeof agent?._releaseNetcattyFidoAgent === "function") {
+            releasePreparedAgent = agent._releaseNetcattyFidoAgent;
+          }
+          const socketPath = resolvePreparedAgentSocket(agent, prepOptions)
+            || await getAvailableAgentSocket(options.identityAgent, options);
+          if (!socketPath) {
+            throw new Error(
+              forceFido
+                ? "FIDO2 SSH agent is unavailable. Install OpenSSH with libfido2 and try again."
+                : "System SSH agent is unavailable. Start or unlock it, or configure a valid agent socket.",
+            );
+          }
+          prepared = {
+            ...prepared,
+            useSshAgent: true,
+            _resolvedSshAgentSocket: socketPath,
+            ...(releasePreparedAgent
+              ? { _releaseNetcattyFidoAgent: releasePreparedAgent }
+              : {}),
+          };
+        }
+        if (options.agentForwarding) {
+          // May throw (e.g. Windows Pageant/Cygwin rejected for native OpenSSH).
+          // Release any already-acquired FIDO agent/askpass lease before rethrowing.
+          const forwardingSocketPath = await getAvailableForwardingAgentSocket(
+            options.identityAgent,
+            options,
           );
+          if (forwardingSocketPath) {
+            prepared = { ...prepared, _resolvedForwardingAgentSocket: forwardingSocketPath };
+          }
         }
-        prepared = {
-          ...prepared,
-          useSshAgent: true,
-          _resolvedSshAgentSocket: socketPath,
-          ...(typeof agent?._releaseNetcattyFidoAgent === "function"
-            ? { _releaseNetcattyFidoAgent: agent._releaseNetcattyFidoAgent }
-            : {}),
-        };
-      }
-      if (options.agentForwarding) {
-        const forwardingSocketPath = await getAvailableForwardingAgentSocket(options.identityAgent, options);
-        if (forwardingSocketPath) {
-          prepared = { ...prepared, _resolvedForwardingAgentSocket: forwardingSocketPath };
+        return prepared;
+      } catch (error) {
+        if (typeof releasePreparedAgent === "function") {
+          try { releasePreparedAgent(); } catch { /* ignore */ }
         }
+        throw error;
       }
-      return prepared;
     }
 
     function createOneShotFidoAgentRelease(releaseFn) {
