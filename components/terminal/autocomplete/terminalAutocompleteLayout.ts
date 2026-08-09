@@ -350,24 +350,36 @@ export type AutocompleteCursorCell = {
  * buffer.cursorX can lag behind the keystroke that triggered completion, so
  * derive the column from the aligned prompt and wrap onto following rows when
  * unechoed wide input crosses `term.cols`.
+ *
+ * When the live cursor already sits on a soft-wrapped continuation row,
+ * measure from the logical line start so a still-unechoed `userInput` suffix
+ * advances past the partial wrap instead of anchoring at the lagged cell.
  */
 export function resolveAutocompleteCursorCell(
   term: XTerm,
   prompt: Pick<PromptDetectionResult, "promptText" | "userInput">,
 ): AutocompleteCursorCell {
   const buffer = term.buffer.active;
+  const cols = Math.max(1, Number(term.cols) || 80);
   const absY = buffer.cursorY + buffer.baseY;
-  const line = buffer.getLine(absY);
-  if (line?.isWrapped) {
-    return { column: buffer.cursorX, row: buffer.cursorY };
-  }
 
-  let fromLine = buffer.cursorX;
-  if (line) {
-    const lineText = line.translateToString(false);
+  // Walk back to the first physical row of this soft-wrapped logical line.
+  let startAbsY = absY;
+  let startLine = buffer.getLine(startAbsY);
+  while (startLine?.isWrapped && startAbsY > 0) {
+    startAbsY -= 1;
+    startLine = buffer.getLine(startAbsY);
+  }
+  const startRowY = startAbsY - buffer.baseY;
+
+  let fromLine = (buffer.cursorY - startRowY) * cols + buffer.cursorX;
+  const cursorLine = buffer.getLine(absY);
+  if (cursorLine) {
+    const lineText = cursorLine.translateToString(false);
     const tail = lineText.substring(buffer.cursorX).trimEnd();
     if (tail.length === 0) {
-      fromLine = Math.max(buffer.cursorX, lineText.trimEnd().length);
+      const endCol = Math.max(buffer.cursorX, lineText.trimEnd().length);
+      fromLine = (buffer.cursorY - startRowY) * cols + endCol;
     }
   }
 
@@ -377,13 +389,9 @@ export function resolveAutocompleteCursorCell(
   const fromPrompt =
     stringCellWidth(prompt.promptText, term) + stringCellWidth(prompt.userInput, term);
   const rawColumn = Math.max(fromLine, fromPrompt);
-  const cols = Math.max(1, Number(term.cols) || 80);
-  if (rawColumn < cols) {
-    return { column: rawColumn, row: buffer.cursorY };
-  }
   return {
     column: rawColumn % cols,
-    row: buffer.cursorY + Math.floor(rawColumn / cols),
+    row: startRowY + Math.floor(rawColumn / cols),
   };
 }
 

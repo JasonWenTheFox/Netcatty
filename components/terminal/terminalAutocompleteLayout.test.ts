@@ -324,6 +324,42 @@ test("resolveAutocompleteCursorCell wraps synthetic pre-echo columns onto the ne
   assert.equal(cell.row, 1);
 });
 
+test("resolveAutocompleteCursorCell advances past a partial wrap using unechoed userInput", () => {
+  // cols=10: "$ docker c" | "o|" — echo wrapped after a prefix while the
+  // buffered input is still the full "docker compose". Anchoring at the
+  // live wrapped cell (col 1) would leave the popup behind.
+  const lines: Record<number, { isWrapped?: boolean; text: string }> = {
+    0: { text: "$ docker c" },
+    1: { isWrapped: true, text: "o" },
+  };
+  const term = {
+    cols: 10,
+    buffer: {
+      active: {
+        cursorX: 1,
+        cursorY: 1,
+        baseY: 0,
+        getLine: (y: number) => {
+          const row = lines[y];
+          if (!row) return undefined;
+          return {
+            isWrapped: row.isWrapped,
+            translateToString: () => row.text,
+          };
+        },
+      },
+    },
+  };
+
+  const cell = resolveAutocompleteCursorCell(term as never, {
+    promptText: "$ ",
+    userInput: "docker compose",
+  });
+  // "$ " + "docker compose" = 16 cells → col 6 on row 1.
+  assert.equal(cell.column, 6);
+  assert.equal(cell.row, 1);
+});
+
 test("resolveAutocompleteCursorColumn counts ZWJ emoji graphemes as one wide cluster", () => {
   const term = {
     buffer: {

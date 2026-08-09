@@ -457,10 +457,20 @@ export class GhostTextAddon implements IDisposable {
     // arrives. When the live row advances, the predicted X may already
     // encode a wrap (column >= cols); adopting the live X/Y pair avoids
     // counting that wrap again in the modulo math below.
+    // When the predicted wrap happens on the bottom row, the echo scrolls
+    // the buffer and Y stays put — adopt live X/Y once it matches the
+    // normalized wrap column so Math.max cannot keep the unnormalized X.
     if (this.currentInput.length === this.anchorInputLength) {
       const liveX = this.term.buffer.active.cursorX;
       const liveY = this.term.buffer.active.cursorY;
+      const cols = Math.max(1, this.term.cols);
       if (liveY !== this.anchorCursorY) {
+        this.anchorCursorX = liveX;
+        this.anchorCursorY = liveY;
+      } else if (
+        this.anchorCursorX >= cols &&
+        liveX === this.anchorCursorX % cols
+      ) {
         this.anchorCursorX = liveX;
         this.anchorCursorY = liveY;
       } else {

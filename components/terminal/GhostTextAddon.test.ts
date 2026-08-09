@@ -313,6 +313,47 @@ test("self-heal adopts live X/Y when echo wraps instead of double-counting", () 
   }
 });
 
+test("self-heal adopts live X when a bottom-row wrap scrolls instead of changing Y", () => {
+  const restoreDocument = installFakeDocument();
+  const { term, ghostElement, fireRender } = createFakeTerm();
+  const addon = new GhostTextAddon();
+
+  try {
+    // Bottom-row prediction: prompt at col 8 + 4 pending cells → X=12.
+    // Echo scrolls the buffer so Y stays on the last row while live X
+    // becomes the normalized wrap column (2). Math.max would keep 12 and
+    // paint the ghost one row below the visible screen.
+    term.cols = 10;
+    term.rows = 24;
+    term.buffer.active.cursorX = 8;
+    term.buffer.active.cursorY = 23;
+    term.buffer.active.baseY = 0;
+    term.buffer.active.getLine = () => ({
+      translateToString: () => "$       ",
+    });
+    addon.activate(term as never);
+    addon.show("abcdefghij", "abcd");
+    const ghost = ghostElement();
+    assert.ok(ghost);
+    // Pre-echo: col 2 on predicted row 24 → top 24*18.
+    assert.equal(ghost.style.left, "18px");
+    assert.equal(ghost.style.top, "432px");
+
+    term.buffer.active.cursorX = 2;
+    term.buffer.active.cursorY = 23;
+    term.buffer.active.getLine = () => ({
+      isWrapped: true,
+      translateToString: () => "abcd",
+    });
+    fireRender();
+
+    assert.equal(ghost.style.left, "18px");
+    assert.equal(ghost.style.top, "414px");
+  } finally {
+    restoreDocument();
+  }
+});
+
 test("anchors ghost after wide pre-echo input when the line has not echoed yet", () => {
   const restoreDocument = installFakeDocument();
   const { term, ghostElement } = createFakeTerm();
