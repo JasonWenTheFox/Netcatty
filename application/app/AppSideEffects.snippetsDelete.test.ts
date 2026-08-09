@@ -4,12 +4,12 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./AppSideEffects.tsx", import.meta.url), "utf8");
 
-test("snippets delete handler cleans host bindings via deleteSelectedSnippetsFromVault", () => {
+test("snippets delete handler cleans host bindings via deleteSelectedSnippets", () => {
   assert.match(source, /collectSnippetDeleteIds/);
-  assert.match(source, /deleteSelectedSnippetsFromVault/);
+  assert.match(source, /deleteSelectedSnippets/);
   assert.match(
     source,
-    /netcatty:snippets:delete[\s\S]*deleteSelectedSnippetsFromVault\([\s\S]*updateHosts/,
+    /netcatty:snippets:delete[\s\S]*deleteSelectedSnippets\(ids\)/,
   );
   assert.doesNotMatch(
     source,
@@ -17,18 +17,14 @@ test("snippets delete handler cleans host bindings via deleteSelectedSnippetsFro
   );
 });
 
-test("snippets delete handler reads vault state from refs to avoid stale closures", () => {
-  // Rapid/double confirms must see the latest snippets/hosts, not the
-  // values closed over when the listener was last registered.
-  assert.match(source, /snippetsRef\.current\s*=\s*snippets/);
-  assert.match(
+test("snippets delete handler uses vault live snapshot instead of component refs", () => {
+  // Component-level snippetsRef/hostsRef lag concurrent vault mutations that
+  // already advanced useVaultState refs before React re-renders AppSideEffects.
+  // Deletion must go through the vault hook's atomic live-snapshot path.
+  assert.match(source, /deleteSelectedSnippets,/);
+  assert.doesNotMatch(source, /snippetsRef\.current\s*=\s*snippets/);
+  assert.doesNotMatch(
     source,
-    /deleteSelectedSnippetsFromVault\(\s*snippetsRef\.current\s*,\s*hostsRef\.current\s*,\s*ids,?\s*\)/,
-  );
-  // Same-tick follow-up deletes must observe the just-applied vault, which
-  // only happens if we write refs before the next listener invocation.
-  assert.match(
-    source,
-    /snippetsRef\.current\s*=\s*result\.snippets[\s\S]*hostsRef\.current\s*=\s*result\.hosts[\s\S]*updateSnippets\(result\.snippets\)/,
+    /deleteSelectedSnippetsFromVault\(\s*snippetsRef\.current/,
   );
 });

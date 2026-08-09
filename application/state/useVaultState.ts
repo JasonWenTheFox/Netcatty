@@ -64,6 +64,7 @@ import {
   type ConnectionLogTerminalDataMap,
 } from "../../domain/connectionLogTerminalData";
 import { getNextVaultOrder, normalizeVaultOrder } from "../../domain/vaultOrder";
+import { deleteSelectedSnippetsFromVault } from "../../domain/snippetSelection";
 import { loadSanitizedShellHistory } from "./shellHistoryPersistence";
 import {
   publishConnectionLogsSnapshot,
@@ -290,12 +291,14 @@ export const useVaultState = () => {
   const customGroupsRef = useRef<string[]>([]);
   const managedSourcesRef = useRef<ManagedSource[]>([]);
   const hostsRef = useRef<Host[]>([]);
+  const snippetsRef = useRef<Snippet[]>([]);
   const notesRef = useRef<VaultNote[]>([]);
   const noteGroupsRef = useRef<string[]>([]);
   const notesPersistFailureNotifiedAtRef = useRef(0);
   customGroupsRef.current = customGroups;
   managedSourcesRef.current = managedSources;
   hostsRef.current = hosts;
+  snippetsRef.current = snippets;
   notesRef.current = notes;
   noteGroupsRef.current = noteGroups;
 
@@ -595,9 +598,27 @@ export const useVaultState = () => {
   const updateSnippets = useCallback((data: Snippet[]) => {
     const cleaned = normalizeVaultOrder(data);
     ++snippetsWriteVersion.current;
+    // Keep live snapshot ahead of React commit so same-tick readers (delete,
+    // agent bridge) do not observe a stale pre-write array.
+    snippetsRef.current = cleaned;
     setSnippets(cleaned);
     localStorageAdapter.write(STORAGE_KEY_SNIPPETS, cleaned);
   }, []);
+
+  // Delete against useVaultState's live hosts/snippets refs so a concurrent
+  // vault mutation that has already advanced those refs (but not yet
+  // re-rendered AppSideEffects) is not discarded by writing a stale snapshot.
+  const deleteSelectedSnippets = useCallback((selectedSnippetIds: ReadonlySet<string>) => {
+    const result = deleteSelectedSnippetsFromVault(
+      snippetsRef.current,
+      hostsRef.current,
+      selectedSnippetIds,
+    );
+    if (result.deletedCount === 0) return result;
+    updateSnippets(result.snippets);
+    void updateHosts(result.hosts);
+    return result;
+  }, [updateHosts, updateSnippets]);
 
   const updateSnippetPackages = useCallback((data: string[]) => {
     setSnippetPackages(data);
@@ -1720,6 +1741,7 @@ export const useVaultState = () => {
     updateIdentities,
     updateProxyProfiles,
     updateSnippets,
+    deleteSelectedSnippets,
     updateSnippetPackages,
     updateNotes,
     updateNoteGroups,

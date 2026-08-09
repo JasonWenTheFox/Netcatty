@@ -82,10 +82,7 @@ import { useDiscoveredShells, resolveShellSetting } from '../../lib/useDiscovere
 import { Host, HostProtocol, KnownHost, SerialConfig, Snippet, SSHKey, TerminalSession } from '../../types';
 import { resolveSnippetCommand } from '../../components/SnippetExecutionProvider';
 import { isScriptSnippet } from '../../domain/snippetScript.ts';
-import {
-  collectSnippetDeleteIds,
-  deleteSelectedSnippetsFromVault,
-} from '../../domain/snippetSelection.ts';
+import { collectSnippetDeleteIds } from '../../domain/snippetSelection.ts';
 import { useAppStartupEffects } from './useAppStartupEffects';
 import { handleTrayJumpToSessionImpl, handleTrayTogglePortForwardImpl, handleTrayPanelConnectImpl, handleTrayPanelConnectRequestImpl, flushQueuedTrayPanelConnectHostsImpl, handleGlobalHotkeyKeyDownImpl, handleEscapeKeyDownImpl, handleKeyboardInteractiveSubmitImpl, handleKeyboardInteractiveCancelImpl, handlePassphraseSubmitImpl, handlePassphraseCancelImpl, handlePassphraseSkipImpl, createLocalTerminalWithCurrentShellImpl, splitSessionWithCurrentShellImpl, copySessionWithCurrentShellImpl, copyWorkspaceWithCurrentShellImpl, copySessionToNewWindowWithCurrentShellImpl, confirmIfBusyLocalTerminalImpl, closeTabsBatchImpl, executeHotkeyActionImpl, handleCreateLocalTerminalImpl, handleConnectToHostImpl, handleTerminalDataCaptureImpl, hasMultipleProtocolsImpl, handleHostConnectWithProtocolCheckImpl, handleProtocolSelectImpl, handleRootContextMenuImpl } from './AppHandlers';
 
@@ -188,6 +185,7 @@ export function AppSideEffects() {
     updateHosts,
     updateKeys,
     updateSnippets,
+    deleteSelectedSnippets,
     updateCustomGroups,
     updateKnownHosts,
     updateManagedSources,
@@ -202,8 +200,6 @@ export function AppSideEffects() {
 
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
-  const snippetsRef = useRef(snippets);
-  snippetsRef.current = snippets;
   const keysRef = useRef(keys);
   keysRef.current = keys;
   const knownHostsRef = useRef(knownHosts);
@@ -1609,32 +1605,20 @@ export function AppSideEffects() {
   // Delete-from-sidepanel plumbing: ScriptsSidePanel dispatches
   // `netcatty:snippets:delete` with `id` (single) or `ids` (bulk). Handled
   // here (rather than in QuickAddSnippetDialog) because delete needs no UI.
-  // Must go through deleteSelectedSnippetsFromVault so login/connect script
-  // bindings on hosts are cleared with the snippets (SnippetsManager parity).
-  // Read snippets/hosts from refs so rapid/double confirms do not apply deletes
-  // against a stale closed-over vault snapshot.
+  // Goes through useVaultState.deleteSelectedSnippets so login/connect script
+  // bindings clear with the snippets (SnippetsManager parity) against the
+  // vault hook's live snapshot - not a component ref that can lag a concurrent
+  // updateHosts/updateSnippets that has not re-rendered yet.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string; ids?: string[] }>).detail;
       const ids = collectSnippetDeleteIds(detail);
       if (ids.size === 0) return;
-      const result = deleteSelectedSnippetsFromVault(
-        snippetsRef.current,
-        hostsRef.current,
-        ids,
-      );
-      if (result.deletedCount === 0) return;
-      // Keep refs ahead of React render so a same-tick second delete (e.g.
-      // double-confirm) cannot re-apply against the pre-delete snapshot and
-      // resurrect already-removed snippets/host bindings.
-      snippetsRef.current = result.snippets;
-      hostsRef.current = result.hosts;
-      updateSnippets(result.snippets);
-      updateHosts(result.hosts);
+      deleteSelectedSnippets(ids);
     };
     window.addEventListener('netcatty:snippets:delete', handler);
     return () => window.removeEventListener('netcatty:snippets:delete', handler);
-  }, [updateHosts, updateSnippets]);
+  }, [deleteSelectedSnippets]);
 
   const handleEndSessionDrag = useCallback(() => {
     setDraggingSessionId(null);
