@@ -8,6 +8,7 @@ type ManualStartPayload = {
   format?: "txt" | "raw" | "html";
   timestampsEnabled?: boolean;
   initialLine?: string;
+  alternateScreenActive?: boolean;
 };
 
 type ManualStopPayload = {

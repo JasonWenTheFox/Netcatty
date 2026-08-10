@@ -192,7 +192,8 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
     };
 
     if (
-      !this.pendingCursorHome
+      !this.alternateScreenActive
+      && !this.pendingCursorHome
       && !this.discardingCsi
       && !this.controlStringMode
       && !hasReplayControlCandidate(data)
@@ -262,6 +263,12 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         const alternateScreenMode = getAlternateScreenMode(sequence);
         if (alternateScreenMode) {
           this.alternateScreenActive = alternateScreenMode === "enter";
+          if (alternateScreenMode === "enter") {
+            this.pendingCursorHome = "";
+            this.pendingAfterCursorHome = "";
+            this.replaySafePendingAfterCursorHome = "";
+            this.pendingAfterCursorHomeOverflowed = false;
+          }
           i = sequence.end;
           continue;
         }

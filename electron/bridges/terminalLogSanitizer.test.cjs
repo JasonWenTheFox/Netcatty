@@ -169,6 +169,13 @@ test("alternate screen omit tracks enter/leave split across chunks", () => {
   assert.equal(renderer.finish(), "$ vim\n$ done");
 });
 
+test("seeded alternate screen omits TUI paint until leave", () => {
+  const renderer = createTerminalTextRenderer({ alternateScreenActive: true });
+  renderer.feed("~\nstatus line\n");
+  renderer.feed("\x1b[?1049l$ done\n");
+  assert.equal(renderer.finish(), "$ done");
+});
+
 test("legacy smcup/rmcup alternate screen modes are omitted", () => {
   assert.equal(
     terminalDataToPlainText("shell\n\x1b[?47hTUI\n\x1b[?47lafter\n"),

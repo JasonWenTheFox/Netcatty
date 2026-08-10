@@ -3567,6 +3567,9 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         format: sessionLog?.format,
         timestampsEnabled: sessionLog?.timestampsEnabled,
         initialLine: termRef.current ? getSessionLogInitialLine(termRef.current) : "",
+        alternateScreenActive: termRef.current
+          ? isTerminalAlternateScreenActive(termRef.current)
+          : false,
       });
       if (startResult?.success) {
         if (!startResult?.started && startResult?.canceled) return;

@@ -36,7 +36,7 @@ const BRIGHT_COLORS = [
 ];
 
 class TerminalTextRenderer {
-  constructor() {
+  constructor(options = {}) {
     this.lines = [[]];
     this.row = 0;
     this.col = 0;
@@ -48,7 +48,8 @@ class TerminalTextRenderer {
     this.justStartedLogScreen = false;
     this.hasPreservedScreenHistory = false;
     this.pendingClearedScreen = null;
-    this.alternateScreenActive = false;
+    // Seed when a session log starts while vim/less is already on the alternate buffer.
+    this.alternateScreenActive = options.alternateScreenActive === true;
   }
 
   feed(input) {
@@ -461,8 +462,8 @@ function terminalDataToHtmlContent(terminalData) {
   return renderer.toHtmlContent();
 }
 
-function createTerminalTextRenderer() {
-  return new TerminalTextRenderer();
+function createTerminalTextRenderer(options = {}) {
+  return new TerminalTextRenderer(options);
 }
 
 module.exports = {

@@ -520,6 +520,7 @@ async function startManualSessionLog(event, payload = {}) {
       initialLine: typeof initialLine === "string" ? initialLine : "",
       separateInitialLineBeforeLeadingCarriageReturn: true,
       stopRequiresToken: true,
+      alternateScreenActive: payload.alternateScreenActive === true,
     });
 
     if (!startResult.ok) {

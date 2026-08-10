@@ -218,6 +218,26 @@ test("alternate-screen omit tracks enter/leave split across chunks", () => {
   assert.equal(log.includes("status"), false);
 });
 
+test("alternate-screen omit does not use plain-text fast path between chunks", () => {
+  const sanitizer = createReplaySafeTerminalLogSanitizer();
+  const log = sanitizer.append("\x1b[?1049h")
+    + sanitizer.append("~\nstatus")
+    + sanitizer.append("\x1b[?1049l")
+    + sanitizer.finish();
+
+  assert.equal(log, "");
+  assert.equal(log.includes("~"), false);
+  assert.equal(log.includes("status"), false);
+});
+
+test("pending cursor-home is discarded when entering alternate screen", () => {
+  const log = createReplaySafeTerminalLog("before\n\x1b[H\x1b[?1049hTUI\x1b[?1049lafter");
+
+  assert.equal(log, "before\nafter");
+  assert.equal(log.includes("\x1b[H"), false);
+  assert.equal(log.includes("TUI"), false);
+});
+
 test("dec cursor save mode is not treated as alternate screen", () => {
   const log = createReplaySafeTerminalLog("before\n\x1b[?1048h\x1b[?1048l\x1b[10;5Hpositioned\n");
 

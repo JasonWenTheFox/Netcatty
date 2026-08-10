@@ -105,6 +105,7 @@ declare global {
       format?: 'txt' | 'raw' | 'html';
       timestampsEnabled?: boolean;
       initialLine?: string;
+      alternateScreenActive?: boolean;
     }): Promise<{ success: boolean; started: boolean; canceled?: boolean; error?: string; filePath?: string }>;
     stopManualSessionLog?(payload: {
       sessionId: string;
