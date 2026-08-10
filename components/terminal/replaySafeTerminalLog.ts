@@ -13,6 +13,11 @@ const MAX_PENDING_ESCAPE_CHARS = 4096;
 
 type ControlStringMode = "osc" | "string";
 
+export type ReplaySafeTerminalLogSanitizerOptions = {
+  /** Seed when attaching mid-TUI so live redraws stay omitted until leave. */
+  alternateScreenActive?: boolean;
+};
+
 export interface ReplaySafeTerminalLogSanitizer {
   append(input: string): string;
   finish(): string;
@@ -175,9 +180,13 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
   private discardingCsi = false;
   private inClearCluster = false;
   private protectingClearedHistory = false;
-  private alternateScreenActive = false;
+  private alternateScreenActive: boolean;
   private hasOutput = false;
   private lastOutputChar = "";
+
+  constructor(options: ReplaySafeTerminalLogSanitizerOptions = {}) {
+    this.alternateScreenActive = options.alternateScreenActive === true;
+  }
 
   append(input: string): string {
     let output = "";
@@ -479,8 +488,10 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
   }
 }
 
-export const createReplaySafeTerminalLogSanitizer = (): ReplaySafeTerminalLogSanitizer =>
-  new ReplaySafeTerminalLogSanitizerImpl();
+export const createReplaySafeTerminalLogSanitizer = (
+  options: ReplaySafeTerminalLogSanitizerOptions = {},
+): ReplaySafeTerminalLogSanitizer =>
+  new ReplaySafeTerminalLogSanitizerImpl(options);
 
 /**
  * Convert terminal output into a form that can be replayed in LogView without

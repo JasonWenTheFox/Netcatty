@@ -230,6 +230,17 @@ test("alternate-screen omit does not use plain-text fast path between chunks", (
   assert.equal(log.includes("status"), false);
 });
 
+test("seeded alternate-screen sanitizer omits TUI paint until leave", () => {
+  const sanitizer = createReplaySafeTerminalLogSanitizer({ alternateScreenActive: true });
+  const log = sanitizer.append("~\nstatus")
+    + sanitizer.append("\x1b[?1049l$ done")
+    + sanitizer.finish();
+
+  assert.equal(log, "$ done");
+  assert.equal(log.includes("~"), false);
+  assert.equal(log.includes("status"), false);
+});
+
 test("pending cursor-home is discarded when entering alternate screen", () => {
   const log = createReplaySafeTerminalLog("before\n\x1b[H\x1b[?1049hTUI\x1b[?1049lafter");
 
