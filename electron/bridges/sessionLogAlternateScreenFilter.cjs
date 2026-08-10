@@ -12,6 +12,8 @@
 const ESC = "\x1b";
 /** 8-bit C1 CSI (0x9b); xterm accepts this as equivalent to ESC [. */
 const C1_CSI = "\x9b";
+/** 8-bit C1 ST (0x9c); valid OSC/DCS string terminator alongside BEL and ESC \\. */
+const C1_ST = "\x9c";
 const ALT_SCREEN_MODES = new Set([47, 1047, 1049]);
 /**
  * Incomplete CSI/OSC tails are normally tiny. Cap retention so an unterminated
@@ -45,7 +47,7 @@ function readCsiSequence(input, startIndex) {
 function readOscSequence(input, startIndex) {
   if (input[startIndex] !== ESC || input[startIndex + 1] !== "]") return null;
   for (let index = startIndex + 2; index < input.length; index += 1) {
-    if (input[index] === "\x07") {
+    if (input[index] === "\x07" || input[index] === C1_ST) {
       return {
         sequence: input.slice(startIndex, index + 1),
         end: index + 1,

@@ -175,6 +175,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
   private discardingCsi = false;
   private inClearCluster = false;
   private protectingClearedHistory = false;
+  private alternateScreenActive = false;
   private hasOutput = false;
   private lastOutputChar = "";
 
@@ -190,10 +191,18 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
       this.lastOutputChar = next[next.length - 1];
     };
 
+    const clearPendingCursorHome = () => {
+      this.pendingCursorHome = "";
+      this.pendingAfterCursorHome = "";
+      this.replaySafePendingAfterCursorHome = "";
+      this.pendingAfterCursorHomeOverflowed = false;
+    };
+
     if (
       !this.pendingCursorHome
       && !this.discardingCsi
       && !this.controlStringMode
+      && !this.alternateScreenActive
       && !hasReplayControlCandidate(data)
     ) {
       appendOutput(data);
@@ -201,6 +210,19 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         this.inClearCluster = false;
       }
       return output;
+    }
+
+    // Fullscreen TUI frames are connection-log chrome (vim "~" lines, etc.).
+    // Drop them here so later txt/html export still works after enter/leave
+    // sequences are stripped for replay safety.
+    if (
+      this.alternateScreenActive
+      && !this.pendingCursorHome
+      && !this.discardingCsi
+      && !this.controlStringMode
+      && !hasReplayControlCandidate(data)
+    ) {
+      return "";
     }
 
     const flushPendingCursorHome = () => {
@@ -211,18 +233,12 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         appendOutput(this.pendingCursorHome);
         appendOutput(this.pendingAfterCursorHome);
       }
-      this.pendingCursorHome = "";
-      this.pendingAfterCursorHome = "";
-      this.replaySafePendingAfterCursorHome = "";
-      this.pendingAfterCursorHomeOverflowed = false;
+      clearPendingCursorHome();
     };
 
     const emitClearSeparator = (preservePendingControls: boolean) => {
       const preservedControls = preservePendingControls ? this.replaySafePendingAfterCursorHome : "";
-      this.pendingCursorHome = "";
-      this.pendingAfterCursorHome = "";
-      this.replaySafePendingAfterCursorHome = "";
-      this.pendingAfterCursorHomeOverflowed = false;
+      clearPendingCursorHome();
       if (!this.inClearCluster && this.hasOutput) {
         appendOutput(/[\r\n]$/.test(this.lastOutputChar) ? "\r\n" : "\r\n\r\n");
       }
@@ -261,8 +277,16 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         const alternateScreenMode = getAlternateScreenMode(sequence);
         if (alternateScreenMode) {
           if (alternateScreenMode === "enter") {
-            emitClearSeparator(false);
+            this.alternateScreenActive = true;
+            clearPendingCursorHome();
+          } else {
+            this.alternateScreenActive = false;
           }
+          i = sequence.end;
+          continue;
+        }
+
+        if (this.alternateScreenActive) {
           i = sequence.end;
           continue;
         }
@@ -314,6 +338,11 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         continue;
       }
 
+      if (this.alternateScreenActive && isC1SingleCharCursorControl(data[i])) {
+        i += 1;
+        continue;
+      }
+
       if (this.protectingClearedHistory && isC1SingleCharCursorControl(data[i])) {
         i += 1;
         continue;
@@ -326,24 +355,32 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         }
 
         if (data[i + 1] === "c") {
+          this.alternateScreenActive = false;
           emitClearSeparator(false);
           i += 2;
           continue;
         }
 
-        if (this.protectingClearedHistory && (data[i + 1] === "7" || data[i + 1] === "8")) {
-          i += 2;
-          continue;
-        }
-
-        if (this.protectingClearedHistory && isEscSingleCharCursorControl(data[i + 1])) {
-          i += 2;
-          continue;
+        if (!this.alternateScreenActive) {
+          if (this.protectingClearedHistory && (data[i + 1] === "7" || data[i + 1] === "8")) {
+            i += 2;
+            continue;
+          }
+          if (this.protectingClearedHistory && isEscSingleCharCursorControl(data[i + 1])) {
+            i += 2;
+            continue;
+          }
         }
       }
 
       // Plain span: no branch above can trigger until the next ESC/C1
       // control. Hop there with a native scan and append it in one slice.
+      if (this.alternateScreenActive) {
+        const nextControl = nextReplayControlCandidate(data, i + 1);
+        i = nextControl === -1 ? data.length : nextControl;
+        continue;
+      }
+
       flushPendingCursorHome();
       const nextControl = nextReplayControlCandidate(data, i + 1);
       const end = nextControl === -1 ? data.length : nextControl;
@@ -360,6 +397,14 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
     this.controlStringMode = null;
     this.controlStringEscPending = false;
     this.discardingCsi = false;
+
+    if (this.alternateScreenActive) {
+      this.pendingCursorHome = "";
+      this.pendingAfterCursorHome = "";
+      this.replaySafePendingAfterCursorHome = "";
+      this.pendingAfterCursorHomeOverflowed = false;
+      return "";
+    }
 
     let output = "";
     if (this.pendingCursorHome) {

@@ -79,3 +79,18 @@ test("recognizes 8-bit C1 CSI alternate-screen enter/leave", () => {
     filter.finish();
   assert.equal(output, "before\nafter\n");
 });
+
+test("recognizes C1 ST as an OSC string terminator", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const output =
+    filter.append("pre\x1b]0;title\x9cafter\n") + filter.finish();
+  assert.equal(output, "pre\x1b]0;title\x9cafter\n");
+});
+
+test("C1-ST-terminated OSC does not truncate later shell output", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const output =
+    filter.append("shell\n\x1b]0;vim\x9c\x1b[?1049h~\n\x1b[?1049lback\n") +
+    filter.finish();
+  assert.equal(output, "shell\n\x1b]0;vim\x9cback\n");
+});
