@@ -98,10 +98,18 @@ declare global {
     }): Promise<{ success: boolean; error?: string; filePath?: string }>;
     openSessionLogsDir?(directory: string): Promise<{ success: boolean; error?: string }>;
     clearSessionLogsDir?(directory: string): Promise<{ success: boolean; deletedCount: number; failedCount: number; error?: string }>;
+    chooseManualSessionLogPath?(payload: {
+      sessionId: string;
+      sessionName?: string;
+      preferredDirectory?: string;
+      format?: 'txt' | 'raw' | 'html';
+    }): Promise<{ success: boolean; canceled?: boolean; error?: string; filePath?: string; format?: 'txt' | 'raw' | 'html' }>;
     startManualSessionLog?(payload: {
       sessionId: string;
       sessionName?: string;
       preferredDirectory?: string;
+      /** When set, skip the save dialog and start logging to this path. */
+      filePath?: string;
       format?: 'txt' | 'raw' | 'html';
       timestampsEnabled?: boolean;
       initialLine?: string;

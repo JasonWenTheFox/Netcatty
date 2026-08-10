@@ -473,15 +473,15 @@ async function clearSessionLogsDir(event, payload = {}, terminalWorkerManager = 
   }
 }
 
-async function startManualSessionLog(event, payload = {}) {
-  const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
-  const { sessionId, sessionName, preferredDirectory, initialLine } = payload;
+/**
+ * Resolve a manual session-log destination via the save dialog (and optional
+ * overwrite confirm). Separated from stream start so the renderer can re-sample
+ * alternate-screen / initial-line state after the dialog closes.
+ */
+async function chooseManualSessionLogPath(event, payload = {}) {
+  const { sessionId, sessionName, preferredDirectory } = payload;
   if (!sessionId) {
-    return { success: false, started: false, error: "Missing sessionId" };
-  }
-
-  if (sessionLogStreamManager.hasStream(sessionId)) {
-    return { success: false, started: false, error: "Session log is already active" };
+    return { success: false, canceled: false, error: "Missing sessionId" };
   }
 
   const targetDirectory = typeof preferredDirectory === "string" && preferredDirectory.trim()
@@ -503,12 +503,54 @@ async function startManualSessionLog(event, payload = {}) {
     });
 
     if (result.canceled || !result.filePath) {
-      return { success: true, started: false, canceled: true };
+      return { success: true, canceled: true };
     }
 
     const filePath = normalizeManualSessionLogFilePath(result.filePath, extension);
     if (filePath !== result.filePath && !(await confirmManualSessionLogOverwrite(filePath))) {
-      return { success: true, started: false, canceled: true };
+      return { success: true, canceled: true };
+    }
+
+    return { success: true, canceled: false, filePath, format };
+  } catch (err) {
+    return { success: false, canceled: false, error: err?.message || String(err) };
+  }
+}
+
+async function startManualSessionLog(event, payload = {}) {
+  const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
+  const { sessionId, sessionName, preferredDirectory, initialLine } = payload;
+  if (!sessionId) {
+    return { success: false, started: false, error: "Missing sessionId" };
+  }
+
+  if (sessionLogStreamManager.hasStream(sessionId)) {
+    return { success: false, started: false, error: "Session log is already active" };
+  }
+
+  const format = SESSION_LOG_FORMATS.has(payload.format) ? payload.format : "raw";
+  const displaySessionName = sessionName || sessionId;
+  let filePath = typeof payload.filePath === "string" && payload.filePath.trim()
+    ? payload.filePath.trim()
+    : "";
+
+  try {
+    // Prefer an explicit path (post-dialog second phase). Fall back to showing
+    // the dialog here for one-shot callers / tests.
+    if (!filePath) {
+      const chosen = await chooseManualSessionLogPath(event, {
+        sessionId,
+        sessionName,
+        preferredDirectory,
+        format,
+      });
+      if (!chosen.success) {
+        return { success: false, started: false, error: chosen.error || "Failed to choose session log path" };
+      }
+      if (chosen.canceled || !chosen.filePath) {
+        return { success: true, started: false, canceled: true };
+      }
+      filePath = chosen.filePath;
     }
 
     const startResult = sessionLogStreamManager.startStreamToFile(sessionId, {
@@ -520,6 +562,8 @@ async function startManualSessionLog(event, payload = {}) {
       initialLine: typeof initialLine === "string" ? initialLine : "",
       separateInitialLineBeforeLeadingCarriageReturn: true,
       stopRequiresToken: true,
+      // Caller should sample this after the save dialog resolves so enter/leave
+      // while the dialog is open does not seed a stale alternate-screen mode.
       alternateScreenActive: payload.alternateScreenActive === true,
     });
 
@@ -621,6 +665,7 @@ function registerHandlers(ipcMain, options = {}) {
   );
   // Main can also answer this (manual / script streams) for symmetry / tests.
   ipcMain.handle("netcatty:sessionLogs:getActivePaths", async () => getLocalActiveLogPaths());
+  ipcMain.handle("netcatty:sessionLog:manualChoosePath", chooseManualSessionLogPath);
   ipcMain.handle("netcatty:sessionLog:manualStart", startManualSessionLog);
   ipcMain.handle("netcatty:sessionLog:manualStop", stopManualSessionLog);
   ipcMain.handle("netcatty:sessionLog:manualStatus", getManualSessionLogStatus);
@@ -651,6 +696,7 @@ module.exports = {
   collectActiveLogPaths,
   getLocalActiveLogPaths,
   isSessionLogArtifactName,
+  chooseManualSessionLogPath,
   startManualSessionLog,
   stopManualSessionLog,
   getManualSessionLogStatus,

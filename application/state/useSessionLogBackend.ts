@@ -1,10 +1,19 @@
 import { useCallback } from "react";
 import { netcattyBridge } from "../../infrastructure/services/netcattyBridge";
 
+type ManualChoosePathPayload = {
+  sessionId: string;
+  sessionName?: string;
+  preferredDirectory?: string;
+  format?: "txt" | "raw" | "html";
+};
+
 type ManualStartPayload = {
   sessionId: string;
   sessionName?: string;
   preferredDirectory?: string;
+  /** When set, skip the save dialog and start logging to this path. */
+  filePath?: string;
   format?: "txt" | "raw" | "html";
   timestampsEnabled?: boolean;
   initialLine?: string;
@@ -20,6 +29,12 @@ type ManualStatusPayload = {
 };
 
 export const useSessionLogBackend = () => {
+  const chooseManualSessionLogPath = useCallback(async (payload: ManualChoosePathPayload) => {
+    const bridge = netcattyBridge.get();
+    return bridge?.chooseManualSessionLogPath?.(payload)
+      ?? { success: false, canceled: false, error: "Session log bridge unavailable" };
+  }, []);
+
   const startManualSessionLog = useCallback(async (payload: ManualStartPayload) => {
     const bridge = netcattyBridge.get();
     return bridge?.startManualSessionLog?.(payload) ?? { success: false, started: false, error: "Session log bridge unavailable" };
@@ -35,5 +50,10 @@ export const useSessionLogBackend = () => {
     return bridge?.getManualSessionLogStatus?.(payload) ?? { success: false, isLogging: false, error: "Session log bridge unavailable" };
   }, []);
 
-  return { startManualSessionLog, stopManualSessionLog, getManualSessionLogStatus };
+  return {
+    chooseManualSessionLogPath,
+    startManualSessionLog,
+    stopManualSessionLog,
+    getManualSessionLogStatus,
+  };
 };

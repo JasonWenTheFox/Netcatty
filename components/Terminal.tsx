@@ -775,7 +775,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   const sudoHintRef = useRef<((active: boolean) => boolean) | undefined>(undefined);
 
   const terminalBackend = useTerminalBackend();
-  const { startManualSessionLog, stopManualSessionLog, getManualSessionLogStatus } = useSessionLogBackend();
+  const {
+    chooseManualSessionLogPath,
+    startManualSessionLog,
+    stopManualSessionLog,
+    getManualSessionLogStatus,
+  } = useSessionLogBackend();
   const {
     resizeSession,
     receiveSerialYmodem,
@@ -3560,10 +3565,25 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         return;
       }
 
-      const startResult = await startManualSessionLog({
+      // Choose the destination first, then re-sample terminal state. The save
+      // dialog can stay open long enough for the user to enter/leave vim, so
+      // alternate-screen / initial-line must be captured at stream activation.
+      const chooseResult = await chooseManualSessionLogPath({
         sessionId: currentSessionId,
         sessionName: host.label || host.hostname || currentSessionId,
         preferredDirectory: sessionLog?.directory,
+        format: sessionLog?.format,
+      });
+      if (!chooseResult?.success) {
+        toast.error(chooseResult?.error || "Failed to start session log");
+        return;
+      }
+      if (chooseResult.canceled || !chooseResult.filePath) return;
+
+      const startResult = await startManualSessionLog({
+        sessionId: currentSessionId,
+        sessionName: host.label || host.hostname || currentSessionId,
+        filePath: chooseResult.filePath,
         format: sessionLog?.format,
         timestampsEnabled: sessionLog?.timestampsEnabled,
         initialLine: termRef.current ? getSessionLogInitialLine(termRef.current) : "",
@@ -3582,6 +3602,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       toast.error("Failed to toggle session log");
     }
   }, [
+    chooseManualSessionLogPath,
     getManualSessionLogStatus,
     host.hostname,
     host.label,
