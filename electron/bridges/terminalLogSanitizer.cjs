@@ -65,12 +65,12 @@ class TerminalTextRenderer {
 
   toString({ includePendingClearedScreen = false } = {}) {
     const lines = includePendingClearedScreen ? this.#linesWithPendingClearedScreen() : this.lines;
-    return formatPlainTextLines(stripVimEmptyLineMarkerRuns(lines));
+    return formatPlainTextLines(lines);
   }
 
   toHtmlContent({ includePendingClearedScreen = false } = {}) {
     const lines = includePendingClearedScreen ? this.#linesWithPendingClearedScreen() : this.lines;
-    return stripVimEmptyLineMarkerRuns(lines)
+    return lines
       .map((line) => renderLineHtml(line))
       .join("\n")
       .replace(/\n+$/g, "");
@@ -516,31 +516,6 @@ function formatPlainTextLines(lines) {
     .map((line) => lineToPlainText(line))
     .join("\n")
     .replace(/\n+$/g, "");
-}
-
-/**
- * Vim/vi draw past-EOF empty rows as a lone "~". Drop runs of two or more so
- * session logs keep a single intentional "~" line but not the empty-buffer
- * gutter.
- */
-function stripVimEmptyLineMarkerRuns(lines) {
-  const result = [];
-  for (let i = 0; i < lines.length;) {
-    if (lineToPlainText(lines[i]) !== "~") {
-      result.push(lines[i]);
-      i += 1;
-      continue;
-    }
-    let end = i + 1;
-    while (end < lines.length && lineToPlainText(lines[end]) === "~") end += 1;
-    if (end - i >= 2) {
-      i = end;
-      continue;
-    }
-    result.push(lines[i]);
-    i += 1;
-  }
-  return result;
 }
 
 function renderLineHtml(line) {

@@ -161,11 +161,8 @@ test("alternate-screen vim empty-line tildes are not recorded", () => {
   );
 });
 
-test("classic vi empty-line tilde markers are stripped from plain text", () => {
-  assert.equal(
-    terminalDataToPlainText("$ vi\n\x1b[H\x1b[2J~\n~\n~\n\"file\" [New File]\n"),
-    "$ vi\n\n\"file\" [New File]",
-  );
+test("consecutive literal tilde lines are preserved outside alternate screen", () => {
+  assert.equal(terminalDataToPlainText("printf\n~\n~\nnext\n"), "printf\n~\n~\nnext");
 });
 
 test("a single tilde content line is preserved", () => {
