@@ -201,6 +201,23 @@ test("split RIS during alternate screen restores logging of later shell output",
   assert.equal(renderer.finish(), "before\nshell-after");
 });
 
+test("RIS after mid-line TUI does not glue post-reset shell text", () => {
+  assert.equal(
+    terminalDataToPlainText("before\x1b[?1049hTUI\x1bcshell-after\n"),
+    "before\nshell-after",
+  );
+});
+
+test("RIS resets SGR so post-reset text is not colored from pre-entry style", () => {
+  const renderer = createTerminalTextRenderer();
+  renderer.feed("\x1b[31mbefore\x1b[?1049hTUI\x1bcshell-after\n");
+  const html = renderer.toHtmlContent();
+  assert.match(html, /shell-after/);
+  // Pre-entry red SGR must not wrap post-RIS shell text.
+  assert.equal(/color:\s*#cd3131[^"]*"[^>]*>shell-after/.test(html), false);
+  assert.match(html, /color:\s*#cd3131[^"]*"[^>]*>before/);
+});
+
 test("C1 CSI alternate-screen modes are omitted like ESC [ forms", () => {
   assert.equal(
     terminalDataToPlainText("before\n\x9b?1049hTUI\n\x9b?1049lafter\n"),

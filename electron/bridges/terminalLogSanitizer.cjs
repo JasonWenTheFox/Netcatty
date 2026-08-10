@@ -162,10 +162,23 @@ class TerminalTextRenderer {
       this.escapeBuffer = "";
       return;
     }
-    // RIS (ESC c) fully resets the terminal, including leaving the alternate
-    // screen. Clear that flag so later shell output is logged again.
+    // RIS (ESC c) fully resets the terminal: leave the alternate buffer, clear
+    // SGR, and home the logical log cursor so later shell text does not glue
+    // onto the pre-TUI line or inherit a pre-entry color. History is kept (this
+    // is a session log, not a live screen wipe).
     if (ch === "c") {
       this.alternateScreenActive = false;
+      this.style = createDefaultStyle();
+      const currentLine = this.lines[this.row] || [];
+      if (this.col > 0 || getTrimmedLineLength(currentLine) > 0) {
+        this.row += 1;
+        this.col = 0;
+        this.#ensureLine();
+      } else {
+        this.col = 0;
+      }
+      this.cursorMovedHomeByCsi = false;
+      this.justStartedLogScreen = false;
     }
     // Single-character ESC sequences are terminal controls. Ignore them for
     // logs, but consume them so they never leak into txt/html output.
