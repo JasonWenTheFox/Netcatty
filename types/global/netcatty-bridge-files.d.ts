@@ -103,13 +103,20 @@ declare global {
       sessionName?: string;
       preferredDirectory?: string;
       format?: 'txt' | 'raw' | 'html';
-    }): Promise<{ success: boolean; canceled?: boolean; error?: string; filePath?: string; format?: 'txt' | 'raw' | 'html' }>;
+    }): Promise<{
+      success: boolean;
+      canceled?: boolean;
+      error?: string;
+      selectionToken?: string;
+      filePath?: string;
+      format?: 'txt' | 'raw' | 'html';
+    }>;
     startManualSessionLog?(payload: {
       sessionId: string;
       sessionName?: string;
       preferredDirectory?: string;
-      /** When set, skip the save dialog and start logging to this path. */
-      filePath?: string;
+      /** Opaque token from chooseManualSessionLogPath (path is main-process only). */
+      selectionToken?: string;
       format?: 'txt' | 'raw' | 'html';
       timestampsEnabled?: boolean;
       initialLine?: string;

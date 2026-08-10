@@ -218,6 +218,18 @@ test("RIS resets SGR so post-reset text is not colored from pre-entry style", ()
   assert.match(html, /color:\s*#cd3131[^"]*"[^>]*>before/);
 });
 
+test("RIS rebases screen so later cursor-home does not overwrite history", () => {
+  // Post-reset "shell" can be partially overwritten by home+write on the new
+  // screen ("newll"), but pre-RIS history ("before") must remain intact.
+  // Without rebasing, CSI H would rewrite history into something like "newore".
+  const log = terminalDataToPlainText("before\x1bcshell\x1b[Hnew");
+  assert.equal(log.startsWith("before\n"), true);
+  assert.equal(log.includes("new"), true);
+  assert.equal(log.startsWith("newore"), false);
+  assert.equal(log, "before\nnewll");
+});
+
+
 test("C1 CSI alternate-screen modes are omitted like ESC [ forms", () => {
   assert.equal(
     terminalDataToPlainText("before\n\x9b?1049hTUI\n\x9b?1049lafter\n"),

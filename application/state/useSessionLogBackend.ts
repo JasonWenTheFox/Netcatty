@@ -12,8 +12,11 @@ type ManualStartPayload = {
   sessionId: string;
   sessionName?: string;
   preferredDirectory?: string;
-  /** When set, skip the save dialog and start logging to this path. */
-  filePath?: string;
+  /**
+   * Opaque token from chooseManualSessionLogPath. Required for the post-dialog
+   * second phase; raw file paths from the renderer are rejected.
+   */
+  selectionToken?: string;
   format?: "txt" | "raw" | "html";
   timestampsEnabled?: boolean;
   initialLine?: string;

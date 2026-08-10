@@ -3578,12 +3578,12 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         toast.error(chooseResult?.error || "Failed to start session log");
         return;
       }
-      if (chooseResult.canceled || !chooseResult.filePath) return;
+      if (chooseResult.canceled || !chooseResult.selectionToken) return;
 
       const startResult = await startManualSessionLog({
         sessionId: currentSessionId,
         sessionName: host.label || host.hostname || currentSessionId,
-        filePath: chooseResult.filePath,
+        selectionToken: chooseResult.selectionToken,
         format: sessionLog?.format,
         timestampsEnabled: sessionLog?.timestampsEnabled,
         initialLine: termRef.current ? getSessionLogInitialLine(termRef.current) : "",

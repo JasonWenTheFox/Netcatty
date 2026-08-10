@@ -163,27 +163,44 @@ class TerminalTextRenderer {
       return;
     }
     // RIS (ESC c) fully resets the terminal: leave the alternate buffer, clear
-    // SGR, and home the logical log cursor so later shell text does not glue
-    // onto the pre-TUI line or inherit a pre-entry color. History is kept (this
-    // is a session log, not a live screen wipe).
+    // SGR, and rebase the log screen so post-reset cursor homes cannot overwrite
+    // preserved history. Prior lines stay in the log (not a live ED2 wipe).
     if (ch === "c") {
-      this.alternateScreenActive = false;
-      this.style = createDefaultStyle();
-      const currentLine = this.lines[this.row] || [];
-      if (this.col > 0 || getTrimmedLineLength(currentLine) > 0) {
-        this.row += 1;
-        this.col = 0;
-        this.#ensureLine();
-      } else {
-        this.col = 0;
-      }
-      this.cursorMovedHomeByCsi = false;
-      this.justStartedLogScreen = false;
+      this.#applyRisReset();
     }
     // Single-character ESC sequences are terminal controls. Ignore them for
     // logs, but consume them so they never leak into txt/html output.
     this.state = "normal";
     this.escapeBuffer = "";
+  }
+
+  #applyRisReset() {
+    this.alternateScreenActive = false;
+    this.style = createDefaultStyle();
+    this.pendingClearedScreen = null;
+
+    // Drop trailing blank rows so "before\\n" + RIS does not leave an empty
+    // separator before the new screen, then base cursor-home on a fresh row.
+    while (this.lines.length > 0 && getTrimmedLineLength(this.lines[this.lines.length - 1]) === 0) {
+      this.lines.pop();
+    }
+
+    if (this.lines.length === 0) {
+      this.lines = [[]];
+      this.row = 0;
+      this.col = 0;
+      this.screenBaseRow = 0;
+      this.hasPreservedScreenHistory = false;
+    } else {
+      this.lines.push([]);
+      this.screenBaseRow = this.lines.length - 1;
+      this.row = this.screenBaseRow;
+      this.col = 0;
+      this.hasPreservedScreenHistory = true;
+    }
+
+    this.cursorMovedHomeByCsi = false;
+    this.justStartedLogScreen = true;
   }
 
   #applyCsi(sequence) {
