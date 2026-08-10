@@ -50,6 +50,13 @@ class TerminalTextRenderer {
     this.pendingClearedScreen = null;
     // Seed when a session log starts while vim/less is already on the alternate buffer.
     this.alternateScreenActive = options.alternateScreenActive === true;
+    // DECSET 1049 saves/restores the normal-buffer cursor; 47/1047 transfer the
+    // alternate buffer's cursor back on leave. Track that distinction so omitted
+    // TUI paint still leaves the log cursor where the live terminal would.
+    // Seeded mid-TUI attach assumes 1049 (modern smcup); we have no pre-entry
+    // cursor to restore, but must not apply legacy transfer tracking either.
+    this.alternateScreenRestoresCursor = this.alternateScreenActive;
+    this.savedNormalCursor = null;
   }
 
   feed(input) {
@@ -125,27 +132,58 @@ class TerminalTextRenderer {
         this.escapeBuffer = "";
         break;
       case "\b":
-        if (this.alternateScreenActive) break;
+        if (this.alternateScreenActive) {
+          if (!this.alternateScreenRestoresCursor) {
+            this.col = Math.max(0, this.col - 1);
+          }
+          break;
+        }
         this.col = Math.max(0, this.col - 1);
         break;
       case "\r":
-        if (this.alternateScreenActive) break;
+        if (this.alternateScreenActive) {
+          if (!this.alternateScreenRestoresCursor) {
+            this.col = 0;
+            this.cursorMovedHomeByCsi = false;
+          }
+          break;
+        }
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         break;
       case "\n":
-        if (this.alternateScreenActive) break;
+        if (this.alternateScreenActive) {
+          if (!this.alternateScreenRestoresCursor) {
+            this.row += 1;
+            this.col = 0;
+            this.cursorMovedHomeByCsi = false;
+            this.#ensureLine();
+          }
+          break;
+        }
         this.row += 1;
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "\t":
-        if (this.alternateScreenActive) break;
+        if (this.alternateScreenActive) {
+          if (!this.alternateScreenRestoresCursor) {
+            this.col += 8 - (this.col % 8);
+            this.cursorMovedHomeByCsi = false;
+          }
+          break;
+        }
         this.#writeText(" ".repeat(8 - (this.col % 8)));
         break;
       default:
-        if (this.alternateScreenActive) break;
+        if (this.alternateScreenActive) {
+          if (!this.alternateScreenRestoresCursor && this.#isPrintable(ch)) {
+            this.col += 1;
+            this.cursorMovedHomeByCsi = false;
+          }
+          break;
+        }
         if (this.#isPrintable(ch)) this.#writeText(ch);
         break;
     }
@@ -176,6 +214,8 @@ class TerminalTextRenderer {
 
   #applyRisReset() {
     this.alternateScreenActive = false;
+    this.alternateScreenRestoresCursor = false;
+    this.savedNormalCursor = null;
     this.style = createDefaultStyle();
     this.pendingClearedScreen = null;
 
@@ -220,52 +260,31 @@ class TerminalTextRenderer {
     if ((final === "h" || final === "l") && isPrivateMode) {
       const alternateModes = values.filter((value) => value === 47 || value === 1047 || value === 1049);
       if (alternateModes.length > 0) {
-        this.alternateScreenActive = final === "h";
+        this.#applyAlternateScreenMode(final === "h", alternateModes.includes(1049));
         return;
       }
     }
 
     if (this.alternateScreenActive) {
+      // 1049 restores the saved normal cursor on leave, so alt-buffer motion can
+      // be ignored. Legacy 47/1047 transfer the alt cursor back — keep tracking.
+      if (!this.alternateScreenRestoresCursor) {
+        this.#applyCursorMotionCsi(final, values, n);
+      }
       return;
     }
 
     switch (final) {
       case "A":
-        this.row = Math.max(this.screenBaseRow, this.row - n);
-        this.cursorMovedHomeByCsi = false;
-        this.#ensureLine();
-        break;
       case "B":
-      case "E":
-        this.row += n;
-        if (final === "E") this.col = 0;
-        this.cursorMovedHomeByCsi = false;
-        this.#ensureLine();
-        break;
       case "C":
-        this.col += n;
-        this.cursorMovedHomeByCsi = false;
-        break;
       case "D":
-        this.col = Math.max(0, this.col - n);
-        this.cursorMovedHomeByCsi = false;
-        break;
+      case "E":
       case "F":
-        this.row = Math.max(this.screenBaseRow, this.row - n);
-        this.col = 0;
-        this.cursorMovedHomeByCsi = false;
-        this.#ensureLine();
-        break;
       case "G":
-        this.col = Math.max(0, n - 1);
-        this.cursorMovedHomeByCsi = false;
-        break;
       case "H":
       case "f":
-        this.row = this.screenBaseRow + Math.max(0, (values[0] || 1) - 1);
-        this.col = Math.max(0, (values[1] || 1) - 1);
-        this.cursorMovedHomeByCsi = this.row === this.screenBaseRow && this.col === 0;
-        this.#ensureLine();
+        this.#applyCursorMotionCsi(final, values, n);
         break;
       case "J":
         this.#eraseDisplay(values[0] || 0);
@@ -279,6 +298,88 @@ class TerminalTextRenderer {
       default:
         // Unsupported CSI controls are intentionally ignored.
         break;
+    }
+  }
+
+  #applyAlternateScreenMode(entering, restoresCursor) {
+    if (entering) {
+      if (!this.alternateScreenActive) {
+        this.alternateScreenRestoresCursor = restoresCursor;
+        if (restoresCursor) {
+          this.savedNormalCursor = {
+            row: this.row,
+            col: this.col,
+            cursorMovedHomeByCsi: this.cursorMovedHomeByCsi,
+          };
+        } else {
+          this.savedNormalCursor = null;
+        }
+      } else if (restoresCursor && !this.alternateScreenRestoresCursor) {
+        // Late upgrade to 1049: adopt save/restore from the current position.
+        this.alternateScreenRestoresCursor = true;
+        this.savedNormalCursor = {
+          row: this.row,
+          col: this.col,
+          cursorMovedHomeByCsi: this.cursorMovedHomeByCsi,
+        };
+      }
+      this.alternateScreenActive = true;
+      return;
+    }
+
+    if (!this.alternateScreenActive) return;
+    if (this.alternateScreenRestoresCursor && this.savedNormalCursor) {
+      this.row = this.savedNormalCursor.row;
+      this.col = this.savedNormalCursor.col;
+      this.cursorMovedHomeByCsi = this.savedNormalCursor.cursorMovedHomeByCsi;
+      this.#ensureLine();
+    }
+    this.alternateScreenActive = false;
+    this.alternateScreenRestoresCursor = false;
+    this.savedNormalCursor = null;
+  }
+
+  #applyCursorMotionCsi(final, values, n) {
+    switch (final) {
+      case "A":
+        this.row = Math.max(this.screenBaseRow, this.row - n);
+        this.cursorMovedHomeByCsi = false;
+        this.#ensureLine();
+        return true;
+      case "B":
+      case "E":
+        this.row += n;
+        if (final === "E") this.col = 0;
+        this.cursorMovedHomeByCsi = false;
+        this.#ensureLine();
+        return true;
+      case "C":
+        this.col += n;
+        this.cursorMovedHomeByCsi = false;
+        return true;
+      case "D":
+        this.col = Math.max(0, this.col - n);
+        this.cursorMovedHomeByCsi = false;
+        return true;
+      case "F":
+        this.row = Math.max(this.screenBaseRow, this.row - n);
+        this.col = 0;
+        this.cursorMovedHomeByCsi = false;
+        this.#ensureLine();
+        return true;
+      case "G":
+        this.col = Math.max(0, n - 1);
+        this.cursorMovedHomeByCsi = false;
+        return true;
+      case "H":
+      case "f":
+        this.row = this.screenBaseRow + Math.max(0, (values[0] || 1) - 1);
+        this.col = Math.max(0, (values[1] || 1) - 1);
+        this.cursorMovedHomeByCsi = this.row === this.screenBaseRow && this.col === 0;
+        this.#ensureLine();
+        return true;
+      default:
+        return false;
     }
   }
 

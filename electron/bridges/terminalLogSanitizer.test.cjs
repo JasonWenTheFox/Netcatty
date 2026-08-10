@@ -179,11 +179,30 @@ test("seeded alternate screen omits TUI paint until leave", () => {
 test("legacy smcup/rmcup alternate screen modes are omitted", () => {
   assert.equal(
     terminalDataToPlainText("shell\n\x1b[?47hTUI\n\x1b[?47lafter\n"),
-    "shell\nafter",
+    "shell\n\nafter",
   );
   assert.equal(
     terminalDataToPlainText("shell\n\x1b[?1047hTUI\n\x1b[?1047lafter\n"),
-    "shell\nafter",
+    "shell\n\nafter",
+  );
+});
+
+test("legacy alternate screen transfers cursor back onto the normal buffer", () => {
+  // DECSET 47/1047 do not save/restore the normal cursor the way 1049 does.
+  // Home + omitted paint still moves the transferred cursor, so post-leave text
+  // overwrites at that position (live terminal: "befafter").
+  assert.equal(
+    terminalDataToPlainText("before\x1b[?47h\x1b[Hxxx\x1b[?47lafter"),
+    "befafter",
+  );
+  assert.equal(
+    terminalDataToPlainText("before\x1b[?1047h\x1b[Hxxx\x1b[?1047lafter"),
+    "befafter",
+  );
+  // 1049 still restores the pre-entry cursor, so omitted TUI must not shift it.
+  assert.equal(
+    terminalDataToPlainText("before\x1b[?1049h\x1b[Hxxx\x1b[?1049lafter"),
+    "beforeafter",
   );
 });
 
@@ -237,7 +256,7 @@ test("C1 CSI alternate-screen modes are omitted like ESC [ forms", () => {
   );
   assert.equal(
     terminalDataToPlainText("before\n\x9b?47hTUI\n\x9b?47lafter\n"),
-    "before\nafter",
+    "before\n\nafter",
   );
 });
 
