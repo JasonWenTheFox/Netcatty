@@ -4,9 +4,10 @@
  * Fullscreen TUIs (vim/vi, less, htop, ...) switch to the terminal alternate
  * buffer via DEC private modes 47 / 1047 / 1049. That buffer is UI chrome for
  * the interactive session -- including vim's "~" empty-line markers -- and
- * should not land in session logs. Mirror the trigger-filter approach: drop
- * enter/leave sequences and everything between them, keeping main-screen
- * shell output intact.
+ * should not land in rendered (txt/html) session logs. Raw logs keep the
+ * original byte stream and must not use this filter. Mirror the trigger-filter
+ * approach: drop enter/leave sequences and everything between them, keeping
+ * main-screen shell output intact.
  */
 
 const ESC = "\x1b";

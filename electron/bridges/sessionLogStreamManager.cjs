@@ -222,7 +222,8 @@ function createStreamEntry(sessionId, opts) {
     hostLabel,
     startTime,
     buffer: "",
-    alternateScreenFilter: createSessionLogAlternateScreenFilter(),
+    // Raw logs keep the original byte stream; filter only rendered txt/html.
+    alternateScreenFilter: isRaw ? null : createSessionLogAlternateScreenFilter(),
     programmaticCommandLogRewriter: createProgrammaticCommandLogRewriter(),
     sudoAutofillRewrites: [],
     sudoAutofillPending: "",

@@ -853,7 +853,7 @@ test("raw stream keeps original bytes when timestamps are enabled", async () => 
   }
 });
 
-test("raw and txt streams omit vim alternate-screen empty-line markers (issue #2871)", async () => {
+test("txt streams omit vim alternate-screen content; raw keeps the byte stream (issue #2871)", async () => {
   const directory = path.join(TEMP_ROOT, `stream-alt-screen-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const rawSessionId = `raw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const txtSessionId = `txt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -869,7 +869,7 @@ test("raw and txt streams omit vim alternate-screen empty-line markers (issue #2
     });
     appendData(rawSessionId, vimChunk);
     const rawPath = await stopStream(rawSessionId);
-    assert.equal(fs.readFileSync(rawPath, "utf8"), "before\r\nafter\r\n");
+    assert.equal(fs.readFileSync(rawPath, "utf8"), vimChunk);
 
     startStream(txtSessionId, {
       hostLabel: "txt-host",
