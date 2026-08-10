@@ -5,6 +5,10 @@
  * erase operations, not plain text with decoration. The renderer below keeps a
  * small virtual text buffer so plain-text and HTML logs reflect what common
  * line-editing output actually leaves on screen.
+ *
+ * Full-screen TUIs (vim/less/htop) use the alternate screen buffer
+ * (DECSET 47/1047/1049). While that mode is active, paint is omitted so session
+ * logs keep shell history instead of tilde rows and status lines.
  */
 
 const CSI_FINAL_RE = /[@-~]/;
@@ -44,6 +48,7 @@ class TerminalTextRenderer {
     this.justStartedLogScreen = false;
     this.hasPreservedScreenHistory = false;
     this.pendingClearedScreen = null;
+    this.alternateScreenActive = false;
   }
 
   feed(input) {
@@ -113,22 +118,27 @@ class TerminalTextRenderer {
         this.escapeBuffer = "";
         break;
       case "\b":
+        if (this.alternateScreenActive) break;
         this.col = Math.max(0, this.col - 1);
         break;
       case "\r":
+        if (this.alternateScreenActive) break;
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         break;
       case "\n":
+        if (this.alternateScreenActive) break;
         this.row += 1;
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "\t":
+        if (this.alternateScreenActive) break;
         this.#writeText(" ".repeat(8 - (this.col % 8)));
         break;
       default:
+        if (this.alternateScreenActive) break;
         if (this.#isPrintable(ch)) this.#writeText(ch);
         break;
     }
@@ -154,6 +164,7 @@ class TerminalTextRenderer {
   #applyCsi(sequence) {
     const final = sequence.at(-1);
     const params = sequence.slice(0, -1);
+    const isPrivateMode = params.includes("?");
     const values = params
       .replace(/[?><=]/g, "")
       .split(";")
@@ -163,6 +174,18 @@ class TerminalTextRenderer {
         return Number.isFinite(n) ? n : undefined;
       });
     const n = values[0] || 1;
+
+    if ((final === "h" || final === "l") && isPrivateMode) {
+      const alternateModes = values.filter((value) => value === 47 || value === 1047 || value === 1049);
+      if (alternateModes.length > 0) {
+        this.alternateScreenActive = final === "h";
+        return;
+      }
+    }
+
+    if (this.alternateScreenActive) {
+      return;
+    }
 
     switch (final) {
       case "A":

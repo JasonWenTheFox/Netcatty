@@ -151,3 +151,31 @@ test("standalone ED3 preserves current visible screen", () => {
     "before\n\nscreen\nafter",
   );
 });
+
+test("alternate screen body is omitted from plain text session logs", () => {
+  assert.equal(
+    terminalDataToPlainText(
+      "$ vim file\n\x1b[?1049h\x1b[H~\n~\n\"file\" 0L, 0B\x1b[?1049l$ ls\n",
+    ),
+    "$ vim file\n$ ls",
+  );
+});
+
+test("alternate screen omit tracks enter/leave split across chunks", () => {
+  const renderer = createTerminalTextRenderer();
+  renderer.feed("$ vim\n\x1b[?1049");
+  renderer.feed("h\x1b[H~\nstatus line");
+  renderer.feed("\x1b[?1049l$ done\n");
+  assert.equal(renderer.finish(), "$ vim\n$ done");
+});
+
+test("legacy smcup/rmcup alternate screen modes are omitted", () => {
+  assert.equal(
+    terminalDataToPlainText("shell\n\x1b[?47hTUI\n\x1b[?47lafter\n"),
+    "shell\nafter",
+  );
+  assert.equal(
+    terminalDataToPlainText("shell\n\x1b[?1047hTUI\n\x1b[?1047lafter\n"),
+    "shell\nafter",
+  );
+});

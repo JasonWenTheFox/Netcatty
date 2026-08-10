@@ -175,6 +175,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
   private discardingCsi = false;
   private inClearCluster = false;
   private protectingClearedHistory = false;
+  private alternateScreenActive = false;
   private hasOutput = false;
   private lastOutputChar = "";
 
@@ -260,9 +261,12 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
       if (sequence) {
         const alternateScreenMode = getAlternateScreenMode(sequence);
         if (alternateScreenMode) {
-          if (alternateScreenMode === "enter") {
-            emitClearSeparator(false);
-          }
+          this.alternateScreenActive = alternateScreenMode === "enter";
+          i = sequence.end;
+          continue;
+        }
+
+        if (this.alternateScreenActive) {
           i = sequence.end;
           continue;
         }
@@ -316,6 +320,16 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
 
       if (this.protectingClearedHistory && isC1SingleCharCursorControl(data[i])) {
         i += 1;
+        continue;
+      }
+
+      if (this.alternateScreenActive) {
+        if (data[i] === ESC && i + 1 >= data.length) {
+          this.setPendingEscapeInput(data.slice(i));
+          break;
+        }
+        const nextControl = nextReplayControlCandidate(data, i + 1);
+        i = nextControl === -1 ? data.length : nextControl;
         continue;
       }
 
