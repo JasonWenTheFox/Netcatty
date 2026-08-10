@@ -151,3 +151,23 @@ test("standalone ED3 preserves current visible screen", () => {
     "before\n\nscreen\nafter",
   );
 });
+
+test("alternate-screen vim empty-line tildes are not recorded", () => {
+  assert.equal(
+    terminalDataToPlainText(
+      "shell\n\x1b[?1049h\x1b[H\x1b[2J\x1b[1;1H~\x1b[2;1H~\x1b[3;1H~\x1b[4;1Hedit\x1b[?1049l$ \n",
+    ),
+    "shell\n$",
+  );
+});
+
+test("classic vi empty-line tilde markers are stripped from plain text", () => {
+  assert.equal(
+    terminalDataToPlainText("$ vi\n\x1b[H\x1b[2J~\n~\n~\n\"file\" [New File]\n"),
+    "$ vi\n\n\"file\" [New File]",
+  );
+});
+
+test("a single tilde content line is preserved", () => {
+  assert.equal(terminalDataToPlainText("echo\n~\nnext\n"), "echo\n~\nnext");
+});

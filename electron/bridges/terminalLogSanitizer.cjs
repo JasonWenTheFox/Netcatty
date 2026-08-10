@@ -8,6 +8,7 @@
  */
 
 const CSI_FINAL_RE = /[@-~]/;
+const ALTERNATE_SCREEN_MODES = new Set([47, 1047, 1049]);
 const DEFAULT_FOREGROUND = "#d4d4d4";
 const DEFAULT_BACKGROUND = "#1e1e1e";
 const BASIC_COLORS = [
@@ -44,6 +45,7 @@ class TerminalTextRenderer {
     this.justStartedLogScreen = false;
     this.hasPreservedScreenHistory = false;
     this.pendingClearedScreen = null;
+    this.inAlternateScreen = false;
   }
 
   feed(input) {
@@ -63,15 +65,12 @@ class TerminalTextRenderer {
 
   toString({ includePendingClearedScreen = false } = {}) {
     const lines = includePendingClearedScreen ? this.#linesWithPendingClearedScreen() : this.lines;
-    return lines
-      .map((line) => line.map((cell) => cell?.ch || " ").join("").replace(/[ \t]+$/g, ""))
-      .join("\n")
-      .replace(/\n+$/g, "");
+    return formatPlainTextLines(stripVimEmptyLineMarkerRuns(lines));
   }
 
   toHtmlContent({ includePendingClearedScreen = false } = {}) {
     const lines = includePendingClearedScreen ? this.#linesWithPendingClearedScreen() : this.lines;
-    return lines
+    return stripVimEmptyLineMarkerRuns(lines)
       .map((line) => renderLineHtml(line))
       .join("\n")
       .replace(/\n+$/g, "");
@@ -113,22 +112,27 @@ class TerminalTextRenderer {
         this.escapeBuffer = "";
         break;
       case "\b":
+        if (this.inAlternateScreen) break;
         this.col = Math.max(0, this.col - 1);
         break;
       case "\r":
+        if (this.inAlternateScreen) break;
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         break;
       case "\n":
+        if (this.inAlternateScreen) break;
         this.row += 1;
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "\t":
+        if (this.inAlternateScreen) break;
         this.#writeText(" ".repeat(8 - (this.col % 8)));
         break;
       default:
+        if (this.inAlternateScreen) break;
         if (this.#isPrintable(ch)) this.#writeText(ch);
         break;
     }
@@ -144,6 +148,10 @@ class TerminalTextRenderer {
       this.state = "osc";
       this.escapeBuffer = "";
       return;
+    }
+    // RIS (ESC c) restores the normal screen; stop discarding TUI output.
+    if (ch === "c") {
+      this.inAlternateScreen = false;
     }
     // Single-character ESC sequences are terminal controls. Ignore them for
     // logs, but consume them so they never leak into txt/html output.
@@ -165,50 +173,70 @@ class TerminalTextRenderer {
     const n = values[0] || 1;
 
     switch (final) {
+      case "h":
+      case "l": {
+        if (params.includes("?")) {
+          const modes = values.filter((value) => Number.isFinite(value));
+          if (modes.some((mode) => ALTERNATE_SCREEN_MODES.has(mode))) {
+            this.inAlternateScreen = final === "h";
+          }
+        }
+        break;
+      }
       case "A":
+        if (this.inAlternateScreen) break;
         this.row = Math.max(this.screenBaseRow, this.row - n);
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "B":
       case "E":
+        if (this.inAlternateScreen) break;
         this.row += n;
         if (final === "E") this.col = 0;
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "C":
+        if (this.inAlternateScreen) break;
         this.col += n;
         this.cursorMovedHomeByCsi = false;
         break;
       case "D":
+        if (this.inAlternateScreen) break;
         this.col = Math.max(0, this.col - n);
         this.cursorMovedHomeByCsi = false;
         break;
       case "F":
+        if (this.inAlternateScreen) break;
         this.row = Math.max(this.screenBaseRow, this.row - n);
         this.col = 0;
         this.cursorMovedHomeByCsi = false;
         this.#ensureLine();
         break;
       case "G":
+        if (this.inAlternateScreen) break;
         this.col = Math.max(0, n - 1);
         this.cursorMovedHomeByCsi = false;
         break;
       case "H":
       case "f":
+        if (this.inAlternateScreen) break;
         this.row = this.screenBaseRow + Math.max(0, (values[0] || 1) - 1);
         this.col = Math.max(0, (values[1] || 1) - 1);
         this.cursorMovedHomeByCsi = this.row === this.screenBaseRow && this.col === 0;
         this.#ensureLine();
         break;
       case "J":
+        if (this.inAlternateScreen) break;
         this.#eraseDisplay(values[0] || 0);
         break;
       case "K":
+        if (this.inAlternateScreen) break;
         this.#eraseLine(values[0] || 0);
         break;
       case "m":
+        if (this.inAlternateScreen) break;
         this.#applySgr(values);
         break;
       default:
@@ -477,6 +505,42 @@ function trimTrailingBlankLines(lines) {
     length -= 1;
   }
   return lines.slice(0, length);
+}
+
+function lineToPlainText(line) {
+  return line.map((cell) => cell?.ch || " ").join("").replace(/[ \t]+$/g, "");
+}
+
+function formatPlainTextLines(lines) {
+  return lines
+    .map((line) => lineToPlainText(line))
+    .join("\n")
+    .replace(/\n+$/g, "");
+}
+
+/**
+ * Vim/vi draw past-EOF empty rows as a lone "~". Drop runs of two or more so
+ * session logs keep a single intentional "~" line but not the empty-buffer
+ * gutter.
+ */
+function stripVimEmptyLineMarkerRuns(lines) {
+  const result = [];
+  for (let i = 0; i < lines.length;) {
+    if (lineToPlainText(lines[i]) !== "~") {
+      result.push(lines[i]);
+      i += 1;
+      continue;
+    }
+    let end = i + 1;
+    while (end < lines.length && lineToPlainText(lines[end]) === "~") end += 1;
+    if (end - i >= 2) {
+      i = end;
+      continue;
+    }
+    result.push(lines[i]);
+    i += 1;
+  }
+  return result;
 }
 
 function renderLineHtml(line) {

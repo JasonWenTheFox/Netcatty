@@ -192,14 +192,37 @@ test("alternate-screen entry protects preserved replay history", () => {
       + "\x1b[?25lcursor hidden\n",
   );
 
-  assert.equal(log, "before\n\r\nvim screen\nafter\n\r\ntop screen\n\x1b[?25lcursor hidden\n");
+  // Alternate-screen bodies (vim/less/etc.) are dropped so cursor-stripped
+  // empty-line markers like "~" do not scramble connection-log replay.
+  assert.equal(log, "before\n\r\nafter\n\r\n\x1b[?25lcursor hidden\n");
   assert.equal(log.includes("\x1b[?1049h"), false);
   assert.equal(log.includes("\x1b[?1049l"), false);
   assert.equal(log.includes("\x1b[?47h"), false);
   assert.equal(log.includes("\x1b[?47l"), false);
   assert.equal(log.includes("\x1b[H"), false);
   assert.equal(log.includes("\x1b[10;5H"), false);
+  assert.equal(log.includes("vim screen"), false);
+  assert.equal(log.includes("top screen"), false);
   assert.equal(log.includes("\x1b[?25l"), true);
+});
+
+test("alternate-screen vim empty-line tildes are not recorded", () => {
+  const log = createReplaySafeTerminalLog(
+    "shell\n\x1b[?1049h\x1b[H\x1b[2J\x1b[1;1H~\x1b[2;1H~\x1b[3;1H~\x1b[4;1Hedit\x1b[?1049l$ \n",
+  );
+
+  assert.equal(log, "shell\n\r\n$ \n");
+  assert.equal(log.includes("~"), false);
+  assert.equal(log.includes("edit"), false);
+});
+
+test("soft reset leaves alternate-screen discard mode", () => {
+  const log = createReplaySafeTerminalLog(
+    "before\n\x1b[?1049h\x1b[Hvim\x1bcafter soft reset\n",
+  );
+
+  assert.equal(log, "before\n\r\nafter soft reset\n");
+  assert.equal(log.includes("vim"), false);
 });
 
 test("dec cursor save mode is not treated as alternate screen", () => {

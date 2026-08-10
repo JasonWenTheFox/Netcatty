@@ -175,6 +175,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
   private discardingCsi = false;
   private inClearCluster = false;
   private protectingClearedHistory = false;
+  private inAlternateScreen = false;
   private hasOutput = false;
   private lastOutputChar = "";
 
@@ -184,7 +185,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
     this.pendingInput = "";
 
     const appendOutput = (next: string) => {
-      if (!next) return;
+      if (!next || this.inAlternateScreen) return;
       output += next;
       this.hasOutput = true;
       this.lastOutputChar = next[next.length - 1];
@@ -194,6 +195,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
       !this.pendingCursorHome
       && !this.discardingCsi
       && !this.controlStringMode
+      && !this.inAlternateScreen
       && !hasReplayControlCandidate(data)
     ) {
       appendOutput(data);
@@ -261,8 +263,18 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         const alternateScreenMode = getAlternateScreenMode(sequence);
         if (alternateScreenMode) {
           if (alternateScreenMode === "enter") {
+            // Emit the history separator before entering discard mode so the
+            // blank gap is still recorded for connection-log replay.
             emitClearSeparator(false);
+            this.inAlternateScreen = true;
+          } else {
+            this.inAlternateScreen = false;
           }
+          i = sequence.end;
+          continue;
+        }
+
+        if (this.inAlternateScreen) {
           i = sequence.end;
           continue;
         }
@@ -314,6 +326,11 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         continue;
       }
 
+      if (this.inAlternateScreen && isC1SingleCharCursorControl(data[i])) {
+        i += 1;
+        continue;
+      }
+
       if (this.protectingClearedHistory && isC1SingleCharCursorControl(data[i])) {
         i += 1;
         continue;
@@ -326,7 +343,19 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         }
 
         if (data[i + 1] === "c") {
+          this.inAlternateScreen = false;
           emitClearSeparator(false);
+          i += 2;
+          continue;
+        }
+
+        if (this.inAlternateScreen) {
+          if (isEscSingleCharCursorControl(data[i + 1]) || data[i + 1] === "7" || data[i + 1] === "8") {
+            i += 2;
+            continue;
+          }
+          // Unknown single-char ESC while discarding the alternate screen:
+          // consume it so it cannot leak into the connection-log replay.
           i += 2;
           continue;
         }
@@ -340,6 +369,12 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
           i += 2;
           continue;
         }
+      }
+
+      if (this.inAlternateScreen) {
+        const nextControl = nextReplayControlCandidate(data, i + 1);
+        i = nextControl === -1 ? data.length : nextControl;
+        continue;
       }
 
       // Plain span: no branch above can trigger until the next ESC/C1
