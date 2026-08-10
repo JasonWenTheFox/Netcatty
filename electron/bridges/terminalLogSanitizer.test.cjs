@@ -200,3 +200,22 @@ test("split RIS during alternate screen restores logging of later shell output",
   renderer.feed("cshell-after\n");
   assert.equal(renderer.finish(), "before\nshell-after");
 });
+
+test("C1 CSI alternate-screen modes are omitted like ESC [ forms", () => {
+  assert.equal(
+    terminalDataToPlainText("before\n\x9b?1049hTUI\n\x9b?1049lafter\n"),
+    "before\nafter",
+  );
+  assert.equal(
+    terminalDataToPlainText("before\n\x9b?47hTUI\n\x9b?47lafter\n"),
+    "before\nafter",
+  );
+});
+
+test("split C1 CSI alternate-screen enter still omits TUI paint", () => {
+  const renderer = createTerminalTextRenderer();
+  renderer.feed("before\n\x9b?1049");
+  renderer.feed("h~\nstatus\n");
+  renderer.feed("\x9b?1049l$ done\n");
+  assert.equal(renderer.finish(), "before\n$ done");
+});

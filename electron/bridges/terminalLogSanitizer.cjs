@@ -118,6 +118,12 @@ class TerminalTextRenderer {
         this.state = "esc";
         this.escapeBuffer = "";
         break;
+      case "\x9b":
+        // 8-bit C1 CSI (single-byte form of ESC [). Same private modes as the
+        // 7-bit sequence, including alternate-screen enter/leave.
+        this.state = "csi";
+        this.escapeBuffer = "";
+        break;
       case "\b":
         if (this.alternateScreenActive) break;
         this.col = Math.max(0, this.col - 1);
