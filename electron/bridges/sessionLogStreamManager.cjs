@@ -13,6 +13,7 @@ const {
 } = require("./sessionLogsBridge.cjs");
 const { createTerminalTextRenderer } = require("./terminalLogSanitizer.cjs");
 const { createProgrammaticCommandLogRewriter } = require("./programmaticCommandLog.cjs");
+const { createSessionLogAlternateScreenFilter } = require("./sessionLogAlternateScreenFilter.cjs");
 
 // Active log streams keyed by sessionId
 const activeStreams = new Map();
@@ -221,6 +222,7 @@ function createStreamEntry(sessionId, opts) {
     hostLabel,
     startTime,
     buffer: "",
+    alternateScreenFilter: createSessionLogAlternateScreenFilter(),
     programmaticCommandLogRewriter: createProgrammaticCommandLogRewriter(),
     sudoAutofillRewrites: [],
     sudoAutofillPending: "",
@@ -392,9 +394,12 @@ function appendData(sessionId, dataChunk) {
 }
 
 function appendBufferedData(entry, dataChunk) {
-  const readableData = entry.programmaticCommandLogRewriter
-    ? entry.programmaticCommandLogRewriter.append(dataChunk)
+  const withoutAlternateScreen = entry.alternateScreenFilter
+    ? entry.alternateScreenFilter.append(dataChunk)
     : dataChunk;
+  const readableData = entry.programmaticCommandLogRewriter
+    ? entry.programmaticCommandLogRewriter.append(withoutAlternateScreen)
+    : withoutAlternateScreen;
   entry.buffer += sanitizeSudoAutofillLogData(entry, readableData);
 
   // Immediate flush if buffer is large
@@ -445,6 +450,7 @@ async function stopStream(sessionId, expectedToken) {
     entry.pendingInitialLineLeadingCarriageReturn = false;
     appendBufferedData(entry, "\n\r");
   }
+  entry.alternateScreenFilter?.finish();
   const readablePending = entry.programmaticCommandLogRewriter?.finish();
   if (readablePending) {
     entry.buffer += sanitizeSudoAutofillLogData(entry, readablePending);

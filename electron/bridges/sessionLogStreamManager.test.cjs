@@ -853,6 +853,41 @@ test("raw stream keeps original bytes when timestamps are enabled", async () => 
   }
 });
 
+test("raw and txt streams omit vim alternate-screen empty-line markers (issue #2871)", async () => {
+  const directory = path.join(TEMP_ROOT, `stream-alt-screen-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const rawSessionId = `raw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const txtSessionId = `txt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const vimChunk = "before\r\n\x1b[?1049h~\r\n~\r\nbuffer line\r\n\x1b[?1049lafter\r\n";
+
+  try {
+    startStream(rawSessionId, {
+      hostLabel: "raw-host",
+      hostname: "raw.example",
+      directory,
+      format: "raw",
+      startTime: Date.UTC(2026, 0, 2, 3, 4, 5),
+    });
+    appendData(rawSessionId, vimChunk);
+    const rawPath = await stopStream(rawSessionId);
+    assert.equal(fs.readFileSync(rawPath, "utf8"), "before\r\nafter\r\n");
+
+    startStream(txtSessionId, {
+      hostLabel: "txt-host",
+      hostname: "txt.example",
+      directory,
+      format: "txt",
+      startTime: Date.UTC(2026, 0, 2, 3, 4, 6),
+    });
+    appendData(txtSessionId, vimChunk);
+    const txtPath = await stopStream(txtSessionId);
+    assert.equal(fs.readFileSync(txtPath, "utf8"), "before\nafter");
+  } finally {
+    await stopStream(rawSessionId);
+    await stopStream(txtSessionId);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 async function waitForFileContent(directory, expectedContent) {
   const deadline = Date.now() + 3000;
   let lastContent = "";

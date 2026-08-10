@@ -151,3 +151,10 @@ test("standalone ED3 preserves current visible screen", () => {
     "before\n\nscreen\nafter",
   );
 });
+
+test("plain text rendering drops vim alternate-screen empty-line markers", () => {
+  assert.equal(
+    terminalDataToPlainText("shell\n\x1b[?1049h~\r\n~\r\nbuffer\r\n\x1b[?1049lafter\n"),
+    "shell\nafter",
+  );
+});

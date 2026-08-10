@@ -7,6 +7,8 @@
  * line-editing output actually leaves on screen.
  */
 
+const { createSessionLogAlternateScreenFilter } = require("./sessionLogAlternateScreenFilter.cjs");
+
 const CSI_FINAL_RE = /[@-~]/;
 const DEFAULT_FOREGROUND = "#d4d4d4";
 const DEFAULT_BACKGROUND = "#1e1e1e";
@@ -425,15 +427,20 @@ class TerminalTextRenderer {
   }
 }
 
+function filterAlternateScreenForLog(terminalData) {
+  const filter = createSessionLogAlternateScreenFilter();
+  return filter.append(terminalData || "") + filter.finish();
+}
+
 function terminalDataToPlainText(terminalData) {
   const renderer = new TerminalTextRenderer();
-  renderer.feed(terminalData || "");
+  renderer.feed(filterAlternateScreenForLog(terminalData));
   return renderer.finish();
 }
 
 function terminalDataToHtmlContent(terminalData) {
   const renderer = new TerminalTextRenderer();
-  renderer.feed(terminalData || "");
+  renderer.feed(filterAlternateScreenForLog(terminalData));
   renderer.finish();
   return renderer.toHtmlContent();
 }
