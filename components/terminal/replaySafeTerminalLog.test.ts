@@ -261,6 +261,26 @@ test("terminal reset controls are dropped from replay data", () => {
   assert.equal(log.includes("\x1bc"), false);
 });
 
+test("RIS during alternate screen restores logging of later shell output", () => {
+  const log = createReplaySafeTerminalLog("before\n\x1b[?1049hTUI\x1bcshell-after\n");
+
+  assert.equal(log, "before\n\r\nshell-after\n");
+  assert.equal(log.includes("TUI"), false);
+  assert.equal(log.includes("\x1bc"), false);
+});
+
+test("split RIS during alternate screen restores logging of later shell output", () => {
+  const sanitizer = createReplaySafeTerminalLogSanitizer();
+
+  const log = sanitizer.append("before\n\x1b[?1049hTUI\x1b")
+    + sanitizer.append("cshell-after\n")
+    + sanitizer.finish();
+
+  assert.equal(log, "before\n\r\nshell-after\n");
+  assert.equal(log.includes("TUI"), false);
+  assert.equal(log.includes("\x1bc"), false);
+});
+
 test("split terminal reset controls are dropped from replay data", () => {
   const sanitizer = createReplaySafeTerminalLogSanitizer();
 

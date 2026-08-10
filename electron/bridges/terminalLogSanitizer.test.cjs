@@ -186,3 +186,17 @@ test("legacy smcup/rmcup alternate screen modes are omitted", () => {
     "shell\nafter",
   );
 });
+
+test("RIS during alternate screen restores logging of later shell output", () => {
+  assert.equal(
+    terminalDataToPlainText("before\n\x1b[?1049hTUI\x1bcshell-after\n"),
+    "before\nshell-after",
+  );
+});
+
+test("split RIS during alternate screen restores logging of later shell output", () => {
+  const renderer = createTerminalTextRenderer();
+  renderer.feed("before\n\x1b[?1049hTUI\x1b");
+  renderer.feed("cshell-after\n");
+  assert.equal(renderer.finish(), "before\nshell-after");
+});

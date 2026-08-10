@@ -335,6 +335,15 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
           this.setPendingEscapeInput(data.slice(i));
           break;
         }
+        // RIS (ESC c) fully resets the terminal, including leaving the
+        // alternate screen. Process it before the omit-scan skip so later
+        // shell output is not dropped from the connection log.
+        if (data[i] === ESC && data[i + 1] === "c") {
+          this.alternateScreenActive = false;
+          emitClearSeparator(false);
+          i += 2;
+          continue;
+        }
         const nextControl = nextReplayControlCandidate(data, i + 1);
         i = nextControl === -1 ? data.length : nextControl;
         continue;
@@ -347,6 +356,7 @@ class ReplaySafeTerminalLogSanitizerImpl implements ReplaySafeTerminalLogSanitiz
         }
 
         if (data[i + 1] === "c") {
+          this.alternateScreenActive = false;
           emitClearSeparator(false);
           i += 2;
           continue;

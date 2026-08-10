@@ -156,6 +156,11 @@ class TerminalTextRenderer {
       this.escapeBuffer = "";
       return;
     }
+    // RIS (ESC c) fully resets the terminal, including leaving the alternate
+    // screen. Clear that flag so later shell output is logged again.
+    if (ch === "c") {
+      this.alternateScreenActive = false;
+    }
     // Single-character ESC sequences are terminal controls. Ignore them for
     // logs, but consume them so they never leak into txt/html output.
     this.state = "normal";
