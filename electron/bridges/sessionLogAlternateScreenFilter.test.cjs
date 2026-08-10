@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   createSessionLogAlternateScreenFilter,
+  MAX_PENDING_ESCAPE_CHARS,
 } = require("./sessionLogAlternateScreenFilter.cjs");
 
 test("drops vim alternate-screen content including empty-line markers", () => {
@@ -52,4 +53,29 @@ test("buffers incomplete ESC intermediate sequences across chunks", () => {
   output += filter.append("Bpost\n");
   output += filter.finish();
   assert.equal(output, "pre\x1b(Bpost\n");
+});
+
+test("recovers when an unterminated OSC exceeds the pending-control cap", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const oversized = `\x1b]${"x".repeat(MAX_PENDING_ESCAPE_CHARS)}recovered\n`;
+  const output = filter.append(`pre${oversized}`) + filter.finish();
+  assert.equal(output, `pre]${"x".repeat(MAX_PENDING_ESCAPE_CHARS)}recovered\n`);
+});
+
+test("RIS clears alternate screen so logging resumes", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const output =
+    filter.append("before\n\x1b[?1049h~tui\n\x1bc") +
+    filter.append("after reset\n") +
+    filter.finish();
+  assert.equal(output, "before\nafter reset\n");
+});
+
+test("recognizes 8-bit C1 CSI alternate-screen enter/leave", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const output =
+    filter.append("before\n\x9b?1049h~tui\n\x9b?1049l") +
+    filter.append("after\n") +
+    filter.finish();
+  assert.equal(output, "before\nafter\n");
 });
