@@ -37,3 +37,19 @@ test("keeps normal CSI sequences outside alternate screen", () => {
     filter.append("red \x1b[31mtext\x1b[0m\n") + filter.finish();
   assert.equal(output, "red \x1b[31mtext\x1b[0m\n");
 });
+
+test("consumes non-CSI ESC forms such as DECSC and charset designation", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  const output =
+    filter.append("save\x1b7 then \x1b(Bcharset\n") + filter.finish();
+  assert.equal(output, "save\x1b7 then \x1b(Bcharset\n");
+});
+
+test("buffers incomplete ESC intermediate sequences across chunks", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  let output = filter.append("pre\x1b(");
+  assert.equal(output, "pre");
+  output += filter.append("Bpost\n");
+  output += filter.finish();
+  assert.equal(output, "pre\x1b(Bpost\n");
+});

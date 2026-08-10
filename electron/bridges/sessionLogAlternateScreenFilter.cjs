@@ -53,11 +53,24 @@ function readEscapeSequence(input, startIndex) {
   if (next === "[") return readCsiSequence(input, startIndex);
   if (next === "]") return readOscSequence(input, startIndex);
 
-  const nextCode = next.charCodeAt(0);
-  if (nextCode >= 0x40 && nextCode <= 0x7e) {
+  // ECMA-48 escape sequences: ESC Intermediate* Final
+  // Intermediate 0x20-0x2F (e.g. "(" in ESC ( B); Final 0x30-0x7E
+  // (covers DECSC ESC 7, charset ESC ( B, RIS ESC c, …).
+  for (let index = startIndex + 1; index < input.length; index += 1) {
+    const code = input.charCodeAt(index);
+    if (code >= 0x20 && code <= 0x2f) {
+      continue;
+    }
+    if (code >= 0x30 && code <= 0x7e) {
+      return {
+        sequence: input.slice(startIndex, index + 1),
+        end: index + 1,
+      };
+    }
+    // Malformed escape: consume ESC alone so pendingEscape never stalls.
     return {
-      sequence: input.slice(startIndex, startIndex + 2),
-      end: startIndex + 2,
+      sequence: input.slice(startIndex, startIndex + 1),
+      end: startIndex + 1,
     };
   }
 
