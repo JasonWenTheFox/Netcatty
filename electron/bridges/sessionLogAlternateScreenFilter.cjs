@@ -23,7 +23,7 @@ const ALT_SCREEN_MODES = new Set([47, 1047, 1049]);
  */
 const MAX_PENDING_ESCAPE_CHARS = 64 * 1024;
 
-function readCsiSequence(input, startIndex) {
+function readCsiSequence(input, startIndex, scanFrom = 0) {
   let bodyStart = -1;
   if (input[startIndex] === ESC && input[startIndex + 1] === "[") {
     bodyStart = startIndex + 2;
@@ -33,7 +33,7 @@ function readCsiSequence(input, startIndex) {
     return null;
   }
 
-  for (let index = bodyStart; index < input.length; index += 1) {
+  for (let index = Math.max(bodyStart, scanFrom); index < input.length; index += 1) {
     const code = input.charCodeAt(index);
     if (code >= 0x40 && code <= 0x7e) {
       return {
@@ -45,9 +45,9 @@ function readCsiSequence(input, startIndex) {
   return null;
 }
 
-function readOscSequence(input, startIndex) {
+function readOscSequence(input, startIndex, scanFrom = 0) {
   if (input[startIndex] !== ESC || input[startIndex + 1] !== "]") return null;
-  for (let index = startIndex + 2; index < input.length; index += 1) {
+  for (let index = Math.max(startIndex + 2, scanFrom); index < input.length; index += 1) {
     if (input[index] === "\x07" || input[index] === C1_ST) {
       return {
         sequence: input.slice(startIndex, index + 1),
@@ -64,21 +64,21 @@ function readOscSequence(input, startIndex) {
   return null;
 }
 
-function readEscapeSequence(input, startIndex) {
+function readEscapeSequence(input, startIndex, scanFrom = 0) {
   if (input[startIndex] === C1_CSI) {
-    return readCsiSequence(input, startIndex);
+    return readCsiSequence(input, startIndex, scanFrom);
   }
   if (input[startIndex] !== ESC) return null;
   if (startIndex + 1 >= input.length) return null;
 
   const next = input[startIndex + 1];
-  if (next === "[") return readCsiSequence(input, startIndex);
-  if (next === "]") return readOscSequence(input, startIndex);
+  if (next === "[") return readCsiSequence(input, startIndex, scanFrom);
+  if (next === "]") return readOscSequence(input, startIndex, scanFrom);
 
   // ECMA-48 escape sequences: ESC Intermediate* Final
   // Intermediate 0x20-0x2F (e.g. "(" in ESC ( B); Final 0x30-0x7E
   // (covers DECSC ESC 7, charset ESC ( B, RIS ESC c, ...).
-  for (let index = startIndex + 1; index < input.length; index += 1) {
+  for (let index = Math.max(startIndex + 1, scanFrom); index < input.length; index += 1) {
     const code = input.charCodeAt(index);
     if (code >= 0x20 && code <= 0x2f) {
       continue;
@@ -97,6 +97,22 @@ function readEscapeSequence(input, startIndex) {
   }
 
   return null;
+}
+
+/**
+ * Resume offset for the next chunk. OSC may end with a lone ESC awaiting `\`,
+ * so re-check that final ESC when more bytes arrive.
+ */
+function nextPendingScanFrom(remainder) {
+  if (
+    remainder.length >= 2 &&
+    remainder[0] === ESC &&
+    remainder[1] === "]" &&
+    remainder.endsWith(ESC)
+  ) {
+    return remainder.length - 1;
+  }
+  return remainder.length;
 }
 
 function getAlternateScreenAction(sequence) {
@@ -132,13 +148,22 @@ function getAlternateScreenAction(sequence) {
 function createSessionLogAlternateScreenFilter() {
   let alternateScreenActive = false;
   let pendingEscape = "";
+  let pendingScanFrom = 0;
 
   return {
     append(chunk) {
       if (!chunk) return "";
 
-      let input = pendingEscape ? `${pendingEscape}${chunk}` : chunk;
-      pendingEscape = "";
+      let input;
+      let resumeScanFrom = 0;
+      if (pendingEscape) {
+        input = `${pendingEscape}${chunk}`;
+        resumeScanFrom = pendingScanFrom;
+        pendingEscape = "";
+        pendingScanFrom = 0;
+      } else {
+        input = chunk;
+      }
       let output = "";
 
       for (let index = 0; index < input.length; index += 1) {
@@ -150,11 +175,13 @@ function createSessionLogAlternateScreenFilter() {
           continue;
         }
 
-        const sequence = readEscapeSequence(input, index);
+        const sequence = readEscapeSequence(input, index, resumeScanFrom);
+        resumeScanFrom = 0;
         if (!sequence) {
           const remainder = input.slice(index);
           if (remainder.length <= MAX_PENDING_ESCAPE_CHARS) {
             pendingEscape = remainder;
+            pendingScanFrom = nextPendingScanFrom(remainder);
             break;
           }
           // Incomplete control exceeded the retention cap: drop the introducer
@@ -179,6 +206,7 @@ function createSessionLogAlternateScreenFilter() {
     finish() {
       // Incomplete escape tails are controls, never printable shell text.
       pendingEscape = "";
+      pendingScanFrom = 0;
       return "";
     },
   };

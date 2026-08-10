@@ -62,6 +62,33 @@ test("recovers when an unterminated OSC exceeds the pending-control cap", () => 
   assert.equal(output, `pre]${"x".repeat(MAX_PENDING_ESCAPE_CHARS)}recovered\n`);
 });
 
+test("unterminated OSC grown one byte at a time recovers at the pending-control cap", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  let output = filter.append("pre\x1b]");
+  // Grow to the retention cap without rescanning the whole prefix each chunk.
+  for (let i = 0; i < MAX_PENDING_ESCAPE_CHARS - 2; i += 1) {
+    output += filter.append("x");
+  }
+  assert.equal(output, "pre");
+  // One more byte pushes past the cap: drop the ESC introducer and emit the rest.
+  output += filter.append("x");
+  output += filter.append("recovered\n");
+  output += filter.finish();
+  assert.equal(
+    output,
+    `pre]${"x".repeat(MAX_PENDING_ESCAPE_CHARS - 1)}recovered\n`,
+  );
+});
+
+test("OSC ST split across chunks after a trailing ESC completes without rescan stalls", () => {
+  const filter = createSessionLogAlternateScreenFilter();
+  let output = filter.append("pre\x1b]0;title\x1b");
+  assert.equal(output, "pre");
+  output += filter.append("\\after\n");
+  output += filter.finish();
+  assert.equal(output, "pre\x1b]0;title\x1b\\after\n");
+});
+
 test("RIS clears alternate screen so logging resumes", () => {
   const filter = createSessionLogAlternateScreenFilter();
   const output =
