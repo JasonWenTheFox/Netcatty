@@ -161,6 +161,22 @@ test("alternate-screen vim empty-line tildes are not recorded", () => {
   );
 });
 
+test("8-bit C1 CSI alternate-screen entry discards TUI body", () => {
+  assert.equal(
+    terminalDataToPlainText(
+      "shell\n\x9b?1049h\x1b[H\x1b[2J\x1b[1;1H~\x1b[2;1H~\x1b[3;1H~\x1b[4;1Hedit\x9b?1049l$ \n",
+    ),
+    "shell\n$",
+  );
+});
+
+test("8-bit C1 CSI alternate-screen exit clears discard mode", () => {
+  assert.equal(
+    terminalDataToPlainText("shell\n\x1b[?1049hvim body\x9b?1049lafter\n"),
+    "shell\nafter",
+  );
+});
+
 test("consecutive literal tilde lines are preserved outside alternate screen", () => {
   assert.equal(terminalDataToPlainText("printf\n~\n~\nnext\n"), "printf\n~\n~\nnext");
 });

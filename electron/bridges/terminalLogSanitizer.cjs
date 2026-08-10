@@ -8,6 +8,8 @@
  */
 
 const CSI_FINAL_RE = /[@-~]/;
+/** 8-bit C1 CSI (0x9b); equivalent to ESC [. */
+const C1_CSI = "\x9b";
 const ALTERNATE_SCREEN_MODES = new Set([47, 1047, 1049]);
 const DEFAULT_FOREGROUND = "#d4d4d4";
 const DEFAULT_BACKGROUND = "#1e1e1e";
@@ -109,6 +111,11 @@ class TerminalTextRenderer {
     switch (ch) {
       case "\x1b":
         this.state = "esc";
+        this.escapeBuffer = "";
+        break;
+      case C1_CSI:
+        // Same as ESC [: enter CSI parameter collection.
+        this.state = "csi";
         this.escapeBuffer = "";
         break;
       case "\b":
@@ -449,7 +456,8 @@ class TerminalTextRenderer {
   #isPrintable(ch) {
     const code = ch.codePointAt(0);
     if (code === undefined) return false;
-    return code >= 0x20 && code !== 0x7f;
+    // Exclude C0 DEL and C1 controls (0x80-0x9f); 0x9b is handled as CSI above.
+    return code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
   }
 }
 
