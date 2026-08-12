@@ -120,6 +120,59 @@ test("a start anchor does not match the middle of a line split across writes", (
   );
 });
 
+test("charset ESC sequences stay out of searchable text", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "prompt",
+    label: "Prompt",
+    patterns: ["^OK"],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  assert.equal(
+    transformer.transform("\x1b(BOK"),
+    `\x1b(B${RED}OK\x1b[39m`,
+  );
+});
+
+test("broad user rules do not insert SGR between surrogate halves", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  const emoji = "😀";
+  assert.equal(
+    transformer.transform(`${emoji}\n`),
+    `${RED}${emoji}\x1b[39m\n`,
+  );
+});
+
+test("keywords split across ordinary writes are recolored after catch-up", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+
+  await write(term, "ER");
+  await write(term, "ROR");
+  assert.doesNotMatch(visibleSerializer.serialize(), /38;2;248;113;113m/);
+
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await highlighter.whenSettled();
+
+  assert.match(visibleSerializer.serialize(), /38;2;248;113;113mERROR/);
+  assert.equal(highlighter.rebuildCount, 1);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("highlighting restores colon-form truecolor output", () => {
   const transformer = new KeywordHighlightTransformer();
   transformer.setRules(rule(), true);

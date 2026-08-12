@@ -74,6 +74,32 @@ const createParserState = (): ParserState => ({
 
 const isCsiFinal = (code: number): boolean => code >= 0x40 && code <= 0x7e;
 
+/** ESC intermediates are 0x20-0x2F; the final byte is 0x30-0x7E (ECMA-48). */
+const isEscIntermediate = (code: number): boolean => code >= 0x20 && code <= 0x2f;
+
+const snapRangeToCodePoints = (
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } | null => {
+  let from = start;
+  let to = end;
+  if (from < 0 || to > text.length || from >= to) return null;
+  if (from > 0) {
+    const code = text.charCodeAt(from);
+    if (code >= 0xdc00 && code <= 0xdfff) from -= 1;
+  }
+  if (to > 0 && to <= text.length) {
+    const prev = text.charCodeAt(to - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) {
+      if (to >= text.length) return null;
+      to += 1;
+    }
+  }
+  if (from >= to) return null;
+  return { start: from, end: to };
+};
+
 const updateForeground = (current: ForegroundState, sequence: string): ForegroundState => {
   if (!sequence.endsWith("m")) return current;
   const introducerLength = sequence.startsWith(C1_CSI) ? 1 : 2;
@@ -201,7 +227,9 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
         continue;
       }
       try {
-        const regex = new RegExp(pattern, "gi");
+        // Unicode mode keeps `.` / classes on code points so SGR is not inserted
+        // between UTF-16 surrogate halves of non-BMP text.
+        const regex = new RegExp(pattern, "giu");
         compiled.push({
           priority,
           colorSequence,
@@ -221,6 +249,7 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
 export class KeywordHighlightTransformer {
   private compiledPatterns: CompiledPattern[] = [];
   private state = createParserState();
+  private missedBoundaryMatch = false;
 
   setRules(rules: readonly RuntimeKeywordHighlightRule[], enabled: boolean): void {
     this.compiledPatterns = compilePatterns(rules, enabled);
@@ -228,10 +257,19 @@ export class KeywordHighlightTransformer {
 
   resetParserState(): void {
     this.state = createParserState();
+    this.missedBoundaryMatch = false;
+  }
+
+  /** True when a match spanned a prior write and could not be colored inline. */
+  takeMissedBoundaryMatch(): boolean {
+    const missed = this.missedBoundaryMatch;
+    this.missedBoundaryMatch = false;
+    return missed;
   }
 
   transform(input: string, options: { bypass?: boolean } = {}): string {
     if (!input) return input;
+    this.missedBoundaryMatch = false;
     let output = "";
     let plain = "";
     let pluginMatchCount = 0;
@@ -249,10 +287,17 @@ export class KeywordHighlightTransformer {
         for (const pattern of this.compiledPatterns) {
           if (pattern.plugin && pluginMatchCount >= MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE) continue;
           pattern.visit(searchable, (start, length) => {
-            if (length <= 0 || start < offset) return;
+            if (length <= 0) return;
+            if (start < offset) {
+              // Match begins in a prior write's already-emitted text; schedule catch-up.
+              if (start + length > offset) this.missedBoundaryMatch = true;
+              return;
+            }
+            const snapped = snapRangeToCodePoints(line, start - offset, start + length - offset);
+            if (!snapped) return;
             matches.push({
-              start: start - offset,
-              end: start + length - offset,
+              start: snapped.start,
+              end: snapped.end,
               priority: pattern.priority,
               colorSequence: pattern.colorSequence,
             });
@@ -351,7 +396,8 @@ export class KeywordHighlightTransformer {
           this.state.pendingKind = "osc";
         } else if (char === "P" || char === "X" || char === "^" || char === "_") {
           this.state.pendingKind = "string";
-        } else {
+        } else if (!isEscIntermediate(char.charCodeAt(0))) {
+          // Wait for intermediate bytes (e.g. ESC ( B); complete on the final byte.
           completeSequence();
         }
         continue;
@@ -510,7 +556,9 @@ export class KeywordHighlighter implements IDisposable {
     });
     const visible = this.writeVisible(transformed);
     void Promise.all([pristine, visible]).then(() => callback?.());
-    if (bypass && this.enabled) this.scheduleBulkCatchUp();
+    if ((bypass || this.transformer.takeMissedBoundaryMatch()) && this.enabled) {
+      this.scheduleBulkCatchUp();
+    }
     if (this.pendingRulesChanged) this.scheduleRebuild();
   };
 
