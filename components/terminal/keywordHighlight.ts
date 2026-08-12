@@ -2,7 +2,11 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import HeadlessXTerm from "@xterm/headless";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import type { Terminal as HeadlessTerminalType } from "@xterm/headless";
-import type { IDisposable, Terminal as XTerm } from "@xterm/xterm";
+import type {
+  IDisposable,
+  ILink,
+  Terminal as XTerm,
+} from "@xterm/xterm";
 
 import { isSafePluginDecorationPattern } from "../../domain/pluginTerminalProviders";
 import { checkRegexSafetyPattern } from "../../lib/regexSafety";
@@ -10,6 +14,18 @@ import type { KeywordHighlightRule } from "../../types";
 import { compileRe2RangeMatcher, forEachNonEmptyRegexMatch } from "./keywordHighlightRegex";
 import { restoreTerminalLineTimestampAnchors } from "./runtime/terminalLineTimestamps";
 import { shouldDegradeTerminalKeywordHighlight } from "./runtime/terminalOutputPressure";
+
+type OscLinkData = { readonly id?: string; readonly uri: string };
+
+type OscLinkServiceLike = {
+  getLinkData(linkId: number): OscLinkData | undefined;
+};
+
+type CellWithUrlId = {
+  getChars(): string;
+  getWidth(): number;
+  extended?: { urlId?: number };
+};
 
 type RuntimeKeywordHighlightRule = KeywordHighlightRule & { readonly providerId?: string };
 
@@ -23,6 +39,8 @@ type CompiledPattern = {
   priority: number;
   colorSequence: string;
   plugin: boolean;
+  /** True when `$`, `\b`, or lookaround can depend on end-of-chunk. */
+  endSensitive: boolean;
   visit(text: string, onMatch: (start: number, length: number) => boolean | void): void;
 };
 
@@ -98,6 +116,86 @@ const snapRangeToCodePoints = (
   }
   if (from >= to) return null;
   return { start: from, end: to };
+};
+
+const getOscLinkService = (term: HeadlessTerminalType | XTerm): OscLinkServiceLike | null => {
+  const core = (term as unknown as { _core?: { _oscLinkService?: OscLinkServiceLike } })._core;
+  const service = core?._oscLinkService;
+  return service && typeof service.getLinkData === "function" ? service : null;
+};
+
+const getCellUrlId = (cell: CellWithUrlId | undefined): number => cell?.extended?.urlId ?? 0;
+
+/**
+ * Detects patterns whose matches at end-of-string can change when more text arrives.
+ * Approximate (string-level) so we never re-enter a sticky /g RegExp during visit.
+ */
+const isEndSensitivePattern = (pattern: string): boolean => (
+  /(?:^|[^\\])(?:\\\\)*(?:\\[bB]|\$|\\[zZ])/.test(pattern)
+  || /\(\?[=<!]/.test(pattern)
+);
+
+const bufferLineHasOscLinks = (line: { getCell(x: number): unknown }, cols: number): boolean => {
+  for (let x = 0; x < cols; x += 1) {
+    if (getCellUrlId(line.getCell(x) as CellWithUrlId | undefined)) return true;
+  }
+  return false;
+};
+
+/**
+ * After history rebuild, SerializeAddon keeps link labels (as underline) but drops
+ * OSC 8 metadata. Serve those links from the pristine buffer so they stay clickable
+ * without duplicating xterm's built-in provider while urlIds are still present.
+ */
+const collectPristineOscLinksForLine = (
+  pristine: HeadlessTerminalType,
+  visible: XTerm,
+  bufferLineNumber: number,
+): ILink[] | undefined => {
+  const lineIndex = bufferLineNumber - 1;
+  if (lineIndex < 0) return undefined;
+  const cols = visible.cols;
+  const visibleLine = visible.buffer.normal.getLine(lineIndex);
+  if (visibleLine && bufferLineHasOscLinks(visibleLine, cols)) return undefined;
+
+  const service = getOscLinkService(pristine);
+  const pristineLine = pristine.buffer.normal.getLine(lineIndex);
+  if (!service || !pristineLine) return undefined;
+
+  const links: ILink[] = [];
+  let currentId = 0;
+  let startX = 0;
+  const finish = (endX: number): void => {
+    if (!currentId || endX <= startX) return;
+    const data = service.getLinkData(currentId);
+    if (!data?.uri) return;
+    const range = {
+      start: { x: startX, y: bufferLineNumber },
+      end: { x: Math.max(startX, endX - 1), y: bufferLineNumber },
+    };
+    const handler = visible.options.linkHandler;
+    links.push({
+      text: data.uri,
+      range,
+      decorations: { pointerCursor: true, underline: true },
+      activate: (event, text) => {
+        if (handler) handler.activate(event, text, range);
+      },
+      hover: (event, text) => handler?.hover?.(event, text, range),
+      leave: (event, text) => handler?.leave?.(event, text, range),
+    });
+  };
+
+  for (let x = 0; x <= cols; x += 1) {
+    const cell = x < cols ? pristineLine.getCell(x) as CellWithUrlId | undefined : undefined;
+    const urlId = x < cols ? getCellUrlId(cell) : 0;
+    if (urlId !== currentId) {
+      finish(x);
+      currentId = urlId;
+      startX = x;
+    }
+  }
+  return links.length > 0 ? links : undefined;
 };
 
 const updateForeground = (current: ForegroundState, sequence: string): ForegroundState => {
@@ -217,6 +315,7 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
             priority,
             colorSequence,
             plugin: true,
+            endSensitive: isEndSensitivePattern(pattern),
             visit(text, onMatch) {
               matcher(text.slice(0, MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS), onMatch);
             },
@@ -227,13 +326,14 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
         continue;
       }
       try {
-        // Unicode mode keeps `.` / classes on code points so SGR is not inserted
-        // between UTF-16 surrogate halves of non-BMP text.
-        const regex = new RegExp(pattern, "giu");
+        // Match settings editors (`gi`). Surrogate-safe ranges come from
+        // snapRangeToCodePoints when matches are applied.
+        const regex = new RegExp(pattern, "gi");
         compiled.push({
           priority,
           colorSequence,
           plugin: false,
+          endSensitive: isEndSensitivePattern(pattern),
           visit(text, onMatch) {
             forEachNonEmptyRegexMatch(regex, text, (match) => onMatch(match.index, match[0].length));
           },
@@ -267,7 +367,7 @@ export class KeywordHighlightTransformer {
     return missed;
   }
 
-  transform(input: string, options: { bypass?: boolean } = {}): string {
+  transform(input: string, options: { bypass?: boolean; linesComplete?: boolean } = {}): string {
     if (!input) return input;
     this.missedBoundaryMatch = false;
     let output = "";
@@ -277,7 +377,7 @@ export class KeywordHighlightTransformer {
       if (!plain) return;
       const text = plain;
       plain = "";
-      const highlightLine = (line: string, prefix: string): string => {
+      const highlightLine = (line: string, prefix: string, lineComplete: boolean): string => {
         if (options.bypass || this.state.alternateScreen || this.compiledPatterns.length === 0) {
           return line;
         }
@@ -291,6 +391,16 @@ export class KeywordHighlightTransformer {
             if (start < offset) {
               // Match begins in a prior write's already-emitted text; schedule catch-up.
               if (start + length > offset) this.missedBoundaryMatch = true;
+              return;
+            }
+            // End anchors / word boundaries / lookarounds treat the write chunk as
+            // end-of-string. Defer those matches until the logical line completes.
+            if (
+              !lineComplete
+              && pattern.endSensitive
+              && start + length >= searchable.length
+            ) {
+              this.missedBoundaryMatch = true;
               return;
             }
             const snapped = snapRangeToCodePoints(line, start - offset, start + length - offset);
@@ -343,8 +453,9 @@ export class KeywordHighlightTransformer {
           this.state.linePrefixTruncated = false;
           continue;
         }
+        const lineComplete = options.linesComplete === true || index + 1 < parts.length;
         const prefix = `${this.state.linePrefixTruncated ? "\0" : ""}${this.state.linePrefix}`;
-        output += highlightLine(part, prefix);
+        output += highlightLine(part, prefix, lineComplete);
         const nextPrefix = this.state.linePrefix + part;
         this.state.linePrefixTruncated = (
           this.state.linePrefixTruncated || nextPrefix.length > MAX_LINE_PREFIX_CHARS
@@ -500,6 +611,11 @@ export class KeywordHighlighter implements IDisposable {
           this.scheduleRebuild();
         }
       }),
+      term.registerLinkProvider({
+        provideLinks: (bufferLineNumber, callback) => {
+          callback(collectPristineOscLinksForLine(this.pristineTerm, this.term, bufferLineNumber));
+        },
+      }),
     );
   }
 
@@ -643,7 +759,9 @@ export class KeywordHighlighter implements IDisposable {
       : 0;
     this.rebuildCount += 1;
     this.transformer.resetParserState();
-    const highlighted = this.transformer.transform(snapshot);
+    // Snapshot lines are already committed buffer rows; treat trailing text as complete
+    // so end-sensitive rules (`\b`, `$`, …) still color the final row.
+    const highlighted = this.transformer.transform(snapshot, { linesComplete: true });
     if (generation !== this.resetGeneration || this.disposed) return;
     this.originalReset();
     await new Promise<void>((resolve) => this.originalWrite(highlighted, resolve));

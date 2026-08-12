@@ -153,6 +153,38 @@ test("broad user rules do not insert SGR between surrogate halves", () => {
   );
 });
 
+test("end-sensitive rules wait for a complete line before coloring", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "error",
+    label: "Error",
+    patterns: ["\\berror\\b"],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  assert.equal(transformer.transform("error"), "error");
+  assert.equal(transformer.takeMissedBoundaryMatch(), true);
+  assert.equal(transformer.transform("Code"), "Code");
+  assert.equal(
+    transformer.transform("\r\nerror done\n"),
+    `\r\n${RED}error\x1b[39m done\n`,
+  );
+});
+
+test("settings-accepted escapes without Unicode mode still compile", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "hash",
+    label: "Hash",
+    patterns: ["\\#"],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  assert.equal(transformer.transform("#tag\n"), `${RED}#\x1b[39mtag\n`);
+});
+
 test("keywords split across ordinary writes are recolored after catch-up", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();
@@ -456,6 +488,48 @@ test("terminal reset wins over an in-flight rule rebuild", async () => {
   await highlighter.whenSettled();
 
   assert.equal(visibleSerializer.serialize(), "fresh plain");
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild keeps OSC 8 links clickable via the pristine buffer", async () => {
+  type LinkProvider = {
+    provideLinks(
+      bufferLineNumber: number,
+      callback: (links: Array<{ text: string }> | undefined) => void,
+    ): void;
+  };
+  const providers: LinkProvider[] = [];
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100, allowProposedApi: true });
+  const originalRegister = term.registerLinkProvider.bind(term);
+  term.registerLinkProvider = ((provider: LinkProvider) => {
+    providers.push(provider);
+    return originalRegister(provider);
+  }) as typeof term.registerLinkProvider;
+
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b]8;;https://example.com\x07click\x1b]8;;\x07 ERROR");
+
+  const before = await new Promise<Array<{ text: string }> | undefined>((resolve) => {
+    providers.at(-1)?.provideLinks(1, resolve);
+  });
+  assert.equal(before, undefined, "built-in OSC 8 cells should suppress the fallback provider");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const cell = term.buffer.normal.getLine(0)?.getCell(0) as { extended?: { urlId?: number } } | undefined;
+  assert.equal(cell?.extended?.urlId ?? 0, 0, "serialize rebuild drops visible OSC 8 metadata");
+
+  const after = await new Promise<Array<{ text: string }> | undefined>((resolve) => {
+    providers.at(-1)?.provideLinks(1, resolve);
+  });
+  assert.deepEqual(
+    after?.map((link) => link.text),
+    ["https://example.com"],
+  );
+
   highlighter.dispose();
   term.dispose();
 });
