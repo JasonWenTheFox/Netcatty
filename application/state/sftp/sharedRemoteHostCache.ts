@@ -5,6 +5,8 @@ export interface SharedRemoteHostCacheEntry {
   homeDir: string;
   files: SftpFileEntry[];
   filenameEncoding: SftpFilenameEncoding;
+  /** Bridge/discovery metadata; persist so reconnects do not infer HOME=/ as provisional. */
+  provisionalHome?: boolean;
   updatedAt: number;
 }
 

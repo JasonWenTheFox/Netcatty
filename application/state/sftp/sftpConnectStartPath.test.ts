@@ -38,6 +38,21 @@ test("remote SFTP current-path duplication uses the requested path instead of st
   assert.equal(state.cachedStartPath, "/var/www/app");
 });
 
+test("remote SFTP cache hits keep home provisional metadata for reconnect", () => {
+  const state = resolveRemoteSftpStartState({
+    filenameEncoding: "auto",
+    sharedHostCacheCandidate: {
+      ...cached,
+      path: "/",
+      homeDir: "/",
+      provisionalHome: false,
+    },
+  });
+
+  assert.equal(state.sharedHostCache?.provisionalHome, false);
+  assert.equal(state.cachedStartPath, "/");
+});
+
 test("remote SFTP initial paths preserve meaningful whitespace", () => {
   assert.equal(normalizeSftpInitialPath("/var/www/app "), "/var/www/app ");
 

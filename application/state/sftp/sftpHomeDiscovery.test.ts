@@ -66,6 +66,17 @@ test("list fallback for authoritative HOME=/ does not redirect to /home/<user>",
   );
 });
 
+test("list fallback infers provisional HOME=/ when reconnect metadata is missing", () => {
+  assert.deepEqual(
+    buildSftpListFallbackPaths({
+      startPath: "/",
+      homeDir: "/",
+      username: "deploy",
+    }),
+    ["/home/deploy", "/root"],
+  );
+});
+
 test("list fallback for concrete home still tries / after homeDir", () => {
   assert.deepEqual(
     buildSftpListFallbackPaths({

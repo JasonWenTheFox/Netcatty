@@ -5,6 +5,8 @@ export interface RemoteSftpStartCache {
   homeDir: string;
   files: SftpFileEntry[];
   filenameEncoding: SftpFilenameEncoding;
+  /** When known, reconnects must not re-infer HOME=/ as a provisional realpath. */
+  provisionalHome?: boolean;
 }
 
 interface ResolveRemoteSftpStartStateParams {

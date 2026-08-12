@@ -55,3 +55,25 @@ test("shared host cache skips one listing larger than the global file budget", (
   });
   assert.equal(getSharedRemoteHostCache("oversized"), null);
 });
+
+test("shared host cache preserves authoritative HOME=/ provisional metadata", () => {
+  _resetSharedRemoteHostCacheForTests();
+  setSharedRemoteHostCache("host-root", {
+    ...entry(1),
+    homeDir: "/",
+    provisionalHome: false,
+  });
+
+  assert.equal(getSharedRemoteHostCache("host-root")?.provisionalHome, false);
+});
+
+test("shared host cache preserves provisional realpath HOME=/ metadata", () => {
+  _resetSharedRemoteHostCacheForTests();
+  setSharedRemoteHostCache("host-provisional", {
+    ...entry(1),
+    homeDir: "/",
+    provisionalHome: true,
+  });
+
+  assert.equal(getSharedRemoteHostCache("host-provisional")?.provisionalHome, true);
+});

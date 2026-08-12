@@ -24,6 +24,8 @@ export interface SftpConnection {
   error?: string;
   currentPath: string;
   homeDir?: string;
+  /** When set, overrides path-only inference for homeDir === "/". */
+  provisionalHome?: boolean;
   /** True when this SFTP connection reuses an existing terminal SSH session */
   reusedConnection?: boolean;
   fileProtocol?: 'auto' | 'sftp' | 'scp';

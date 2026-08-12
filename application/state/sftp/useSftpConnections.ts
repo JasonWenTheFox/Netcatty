@@ -684,8 +684,9 @@ export const useSftpConnections = ({
 
           let startPath = sharedHostCache?.path ?? "/";
           let homeDir = sharedHostCache?.homeDir ?? startPath;
-          // Undefined until bridge reports; path-only inference used for cache / legacy.
-          let provisionalHome: boolean | undefined;
+          // Cache-hit reconnects skip getSftpHomeDir; restore metadata so
+          // authoritative HOME=/ is not inferred as a provisional realpath.
+          let provisionalHome: boolean | undefined = sharedHostCache?.provisionalHome;
 
           if (!sharedHostCache) {
             // Detect home directory: SSH exec `echo ~` → SFTP realpath('.') → hardcoded fallback.
@@ -815,6 +816,7 @@ export const useSftpConnections = ({
             homeDir,
             files,
             filenameEncoding,
+            provisionalHome,
           });
 
           clearSideReconnecting();
@@ -827,6 +829,7 @@ export const useSftpConnections = ({
                   status: "connected",
                   currentPath: startPath,
                   homeDir,
+                  provisionalHome,
                   reusedConnection: undefined,
                 }
               : null,

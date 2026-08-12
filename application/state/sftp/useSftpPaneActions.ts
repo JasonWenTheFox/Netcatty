@@ -225,6 +225,7 @@ export const useSftpPaneActions = ({
             homeDir: pane.connection.homeDir ?? normalizedPath,
             files: cached.files,
             filenameEncoding: pane.filenameEncoding,
+            provisionalHome: pane.connection.provisionalHome,
           });
         }
         return "reached";
@@ -391,6 +392,7 @@ export const useSftpPaneActions = ({
             homeDir: pane.connection.homeDir ?? normalizedPath,
             files,
             filenameEncoding: pane.filenameEncoding,
+            provisionalHome: pane.connection.provisionalHome,
           });
         }
         return "reached";
