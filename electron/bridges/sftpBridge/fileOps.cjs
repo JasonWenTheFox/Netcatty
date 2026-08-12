@@ -897,7 +897,8 @@ function createFileOpsApi(ctx) {
               }
             },
           });
-          return { success: true, homeDir: home };
+          // SCP $HOME (including "/") is authoritative — never provisional.
+          return { success: true, homeDir: home, provisional: false };
         } catch (err) {
           return { success: false, error: err?.message || String(err) };
         }
@@ -919,7 +920,8 @@ function createFileOpsApi(ctx) {
           throwIfAborted(signal);
           const home = result.stdout?.trim();
           if (home && home.startsWith("/")) {
-            return { success: true, homeDir: home };
+            // Authoritative shell HOME, including HOME=/ — do not treat as provisional.
+            return { success: true, homeDir: home, provisional: false };
           }
         } catch (err) {
           // Timeout or error — kill the exec channel if still open
@@ -935,9 +937,9 @@ function createFileOpsApi(ctx) {
       // Method 2: SFTP realpath('.'). A virtual/chroot SFTP server (including
       // bastion products such as JumpServer) can legitimately expose '/' as
       // the authenticated user's root even when SSH exec channels are denied.
-      // Callers must treat homeDir === '/' as provisional and still probe
+      // Only realpath('/') is provisional: callers must still probe
       // /home/<user> / /root when listing '/' fails or before accepting it
-      // as the final browse root (#2940).
+      // as the final browse root (#2940). Exec/SCP "/" is not provisional.
       try {
         const sftp = await requireSftpChannel(client, {
           signal,
@@ -947,7 +949,11 @@ function createFileOpsApi(ctx) {
         const absPath = await realpathAsync(sftp, ".");
         throwIfAborted(signal);
         if (absPath && absPath.startsWith("/")) {
-          return { success: true, homeDir: absPath };
+          return {
+            success: true,
+            homeDir: absPath,
+            provisional: absPath === "/",
+          };
         }
       } catch (err) {
         if (signal?.aborted) {

@@ -202,6 +202,7 @@ describe("SCP-mode session ops via fileOps entry points (AI/UI shared path)", ()
     const home = await api.getSftpHomeDir(null, { sftpId: "scp-session-1" });
     assert.equal(home.success, true);
     assert.equal(home.homeDir, "/home/agent");
+    assert.equal(home.provisional, false);
   });
 
   it("capability catalog still exposes stable sftp.* CLI verbs", () => {

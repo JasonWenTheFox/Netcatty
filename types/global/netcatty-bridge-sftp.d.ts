@@ -19,7 +19,13 @@ declare global {
     renameSftp?(sftpId: string, oldPath: string, newPath: string, encoding?: SftpFilenameEncoding): Promise<void>;
     statSftp?(sftpId: string, path: string, encoding?: SftpFilenameEncoding): Promise<SftpStatResult>;
     chmodSftp?(sftpId: string, path: string, mode: string, encoding?: SftpFilenameEncoding): Promise<void>;
-    getSftpHomeDir?(sftpId: string, encoding?: SftpFilenameEncoding): Promise<{ success: boolean; homeDir?: string; error?: string }>;
+    getSftpHomeDir?(sftpId: string, encoding?: SftpFilenameEncoding): Promise<{
+      success: boolean;
+      homeDir?: string;
+      /** True only when home came from realpath('.') === '/'; exec/SCP HOME=/ is false. */
+      provisional?: boolean;
+      error?: string;
+    }>;
 
     // Transfer with progress
     cancelTransfer?(transferId: string): Promise<void>;

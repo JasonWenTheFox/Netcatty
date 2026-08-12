@@ -11,6 +11,7 @@ import { resolveRemoteSftpStartState } from "./sftpConnectStartPath";
 import {
   buildSftpHomeCandidates,
   buildSftpListFallbackPaths,
+  isProvisionalSftpHomeDiscovery,
   shouldSuppressSftpHomeCandidateProbe,
 } from "./sftpHomeDiscovery";
 import { normalizeSftpPaneNavigationPath } from "./utils";
@@ -683,10 +684,13 @@ export const useSftpConnections = ({
 
           let startPath = sharedHostCache?.path ?? "/";
           let homeDir = sharedHostCache?.homeDir ?? startPath;
+          // Undefined until bridge reports; path-only inference used for cache / legacy.
+          let provisionalHome: boolean | undefined;
 
           if (!sharedHostCache) {
             // Detect home directory: SSH exec `echo ~` → SFTP realpath('.') → hardcoded fallback.
-            // realpath('.') === '/' is provisional (#2940): keep probing /home/<user> and /root.
+            // Only realpath('.') === '/' is provisional (#2940): keep probing /home/<user> and /root.
+            // Authoritative exec/SCP HOME=/ must not be redirected (#2940 review).
             // Listable virtual roots still win when those candidates are absent (#2934).
             let suppressCandidates = false;
 
@@ -696,7 +700,14 @@ export const useSftpConnections = ({
                 if (result?.success && result.homeDir) {
                   startPath = result.homeDir;
                   homeDir = result.homeDir;
-                  suppressCandidates = shouldSuppressSftpHomeCandidateProbe(result.homeDir);
+                  provisionalHome = isProvisionalSftpHomeDiscovery({
+                    homeDir: result.homeDir,
+                    provisional: result.provisional,
+                  });
+                  suppressCandidates = shouldSuppressSftpHomeCandidateProbe({
+                    homeDir: result.homeDir,
+                    provisional: result.provisional,
+                  });
                 }
               } catch {
                 // Fall through to hardcoded candidates
@@ -713,6 +724,7 @@ export const useSftpConnections = ({
                     if (stat?.type === "directory") {
                       startPath = candidate;
                       homeDir = candidate;
+                      provisionalHome = false;
                       break;
                     }
                   } catch {
@@ -727,6 +739,7 @@ export const useSftpConnections = ({
                     if (listed) {
                       startPath = candidate;
                       homeDir = candidate;
+                      provisionalHome = false;
                       break;
                     }
                   } catch {
@@ -767,6 +780,7 @@ export const useSftpConnections = ({
               startPath,
               homeDir,
               username: credentials.username,
+              provisionalHome,
             });
             let fallbackSucceeded = false;
             for (const fallbackPath of fallbackPaths) {
@@ -776,6 +790,7 @@ export const useSftpConnections = ({
                 // Prefer a concrete home when recovery lands on /home/<user> or /root.
                 if (fallbackPath !== "/") {
                   homeDir = fallbackPath;
+                  provisionalHome = false;
                 }
                 fallbackSucceeded = true;
                 break;
