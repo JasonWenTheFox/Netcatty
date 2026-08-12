@@ -536,7 +536,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     cursorStyle,
     cursorBlink,
     scrollback,
-    // Decorations (keyword highlighting) use proposed APIs; enable globally so toggles work at runtime.
+    // Cursor-line rendering and Unicode width handling use proposed APIs.
     allowProposedApi: true,
     drawBoldTextInBrightColors,
     minimumContrastRatio,
@@ -601,9 +601,6 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
-
-  const serializeAddon = new SerializeAddon();
-  term.loadAddon(serializeAddon);
 
   const searchAddon = new SearchAddon();
   term.loadAddon(searchAddon);
@@ -2218,7 +2215,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     resizeScheduler.schedule({ sessionId: id, cols, rows });
   });
 
-  const keywordHighlighter = new KeywordHighlighter(term);
+  const keywordHighlighter = new KeywordHighlighter(term, {
+    canRebuild: () => !hasInlineImages(),
+  });
   keywordHighlighter.setRules(keywordHighlightRules, keywordHighlightEnabled);
 
   const cursorLineHighlighter = new CursorLineHighlighter(term);
@@ -2230,7 +2229,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   return {
     term,
     fitAddon,
-    serializeAddon,
+    serializeAddon: keywordHighlighter.serializeAddon,
     searchAddon,
     keywordHighlighter,
     cursorLineHighlighter,
@@ -2313,11 +2312,6 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
         fitAddon.dispose();
       } catch (err) {
         logger.warn("[XTerm] fitAddon dispose failed", err);
-      }
-      try {
-        serializeAddon.dispose();
-      } catch (err) {
-        logger.warn("[XTerm] serializeAddon dispose failed", err);
       }
       try {
         searchAddon.dispose();

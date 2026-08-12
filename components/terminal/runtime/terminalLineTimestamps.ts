@@ -792,6 +792,20 @@ const attachLedgerAnchors = (
   }
 };
 
+/** Reattach sparse anchors after a display-only terminal buffer rebuild. */
+export const restoreTerminalLineTimestampAnchors = (term: XTerm): void => {
+  const store = getTimestampStore(term);
+  for (const entry of store.ledger) {
+    if (!entry.marker?.isDisposed) continue;
+    entry.marker = undefined;
+  }
+  attachLedgerAnchors(term, store, store.ledger);
+  store.lastSeenBaseY = term.buffer.normal.baseY;
+  store.lastSeenBufferLength = term.buffer.normal.length;
+  store.lastSeenCols = _getTerminalColumnCount(term);
+  notifyTimestampStore(store);
+};
+
 /**
  * Refresh ledger.line from live sparse anchors. Drops entries whose markers
  * were disposed by scrollback trim. Bare (unanchored) lines keep their values
