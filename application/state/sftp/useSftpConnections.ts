@@ -8,6 +8,11 @@ import { useSftpDirectoryListing } from "./useSftpDirectoryListing";
 import { useSftpHostCredentials } from "./useSftpHostCredentials";
 import { buildCacheKey, getSharedRemoteHostCache, setSharedRemoteHostCache } from "./sharedRemoteHostCache";
 import { resolveRemoteSftpStartState } from "./sftpConnectStartPath";
+import {
+  buildSftpHomeCandidates,
+  buildSftpListFallbackPaths,
+  shouldSuppressSftpHomeCandidateProbe,
+} from "./sftpHomeDiscovery";
 import { normalizeSftpPaneNavigationPath } from "./utils";
 import {
   setDirectoryCacheEntry,
@@ -680,9 +685,10 @@ export const useSftpConnections = ({
           let homeDir = sharedHostCache?.homeDir ?? startPath;
 
           if (!sharedHostCache) {
-            // Detect home directory: SSH exec `echo ~` → SFTP realpath('.') → hardcoded fallback
-            const bridge = netcattyBridge.get();
-            let detected = false;
+            // Detect home directory: SSH exec `echo ~` → SFTP realpath('.') → hardcoded fallback.
+            // realpath('.') === '/' is provisional (#2940): keep probing /home/<user> and /root.
+            // Listable virtual roots still win when those candidates are absent (#2934).
+            let suppressCandidates = false;
 
             if (bridge?.getSftpHomeDir) {
               try {
@@ -690,23 +696,15 @@ export const useSftpConnections = ({
                 if (result?.success && result.homeDir) {
                   startPath = result.homeDir;
                   homeDir = result.homeDir;
-                  detected = true;
+                  suppressCandidates = shouldSuppressSftpHomeCandidateProbe(result.homeDir);
                 }
               } catch {
                 // Fall through to hardcoded candidates
               }
             }
 
-            if (!detected) {
-              const candidates: string[] = [];
-              if (credentials.username === "root") {
-                candidates.push("/root");
-              } else if (credentials.username) {
-                candidates.push(`/home/${credentials.username}`);
-                candidates.push("/root");
-              } else {
-                candidates.push("/root");
-              }
+            if (!suppressCandidates) {
+              const candidates = buildSftpHomeCandidates(credentials.username);
               const statSftp = bridge?.statSftp;
               if (statSftp) {
                 for (const candidate of candidates) {
@@ -725,8 +723,8 @@ export const useSftpConnections = ({
                 // Fallback: probe candidates via listSftp when statSftp is unavailable
                 for (const candidate of candidates) {
                   try {
-                    const files = await bridge?.listSftp(sftpId, candidate, filenameEncoding);
-                    if (files) {
+                    const listed = await bridge?.listSftp(sftpId, candidate, filenameEncoding);
+                    if (listed) {
                       startPath = candidate;
                       homeDir = candidate;
                       break;
@@ -763,25 +761,26 @@ export const useSftpConnections = ({
             if (provisionalCacheKey) {
               dirCacheRef.current.delete(provisionalCacheKey);
             }
-            // Fall back to homeDir, then "/", chaining attempts.
+            // Fall back to homeDir, then "/", then provisional-root home candidates (#2940).
             // Remembered/reconnect paths can be stale even when shared cache is gone.
+            const fallbackPaths = buildSftpListFallbackPaths({
+              startPath,
+              homeDir,
+              username: credentials.username,
+            });
             let fallbackSucceeded = false;
-            if (startPath !== homeDir) {
+            for (const fallbackPath of fallbackPaths) {
               try {
-                startPath = homeDir;
-                files = await listRemoteFiles(sftpId, startPath, filenameEncoding);
+                files = await listRemoteFiles(sftpId, fallbackPath, filenameEncoding);
+                startPath = fallbackPath;
+                // Prefer a concrete home when recovery lands on /home/<user> or /root.
+                if (fallbackPath !== "/") {
+                  homeDir = fallbackPath;
+                }
                 fallbackSucceeded = true;
+                break;
               } catch {
-                // homeDir also failed, try root
-              }
-            }
-            if (!fallbackSucceeded && startPath !== "/") {
-              try {
-                startPath = "/";
-                files = await listRemoteFiles(sftpId, startPath, filenameEncoding);
-                fallbackSucceeded = true;
-              } catch {
-                // root also failed
+                // try next fallback path
               }
             }
             if (!fallbackSucceeded) {

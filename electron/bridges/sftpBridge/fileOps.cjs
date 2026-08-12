@@ -935,6 +935,9 @@ function createFileOpsApi(ctx) {
       // Method 2: SFTP realpath('.'). A virtual/chroot SFTP server (including
       // bastion products such as JumpServer) can legitimately expose '/' as
       // the authenticated user's root even when SSH exec channels are denied.
+      // Callers must treat homeDir === '/' as provisional and still probe
+      // /home/<user> / /root when listing '/' fails or before accepting it
+      // as the final browse root (#2940).
       try {
         const sftp = await requireSftpChannel(client, {
           signal,
