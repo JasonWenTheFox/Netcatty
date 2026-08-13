@@ -82,6 +82,9 @@ type InternalScrollTerminal = {
 type InternalBrowserTerminal = {
   _core?: {
     _bufferService?: { buffer?: InternalBrowserBuffer };
+    _inputHandler?: {
+      _parser?: { currentState?: number; precedingJoinState?: number };
+    };
     _charsetService?: {
       glevel: number;
       _charsets: unknown[];
@@ -101,10 +104,24 @@ type InternalBrowserTerminal = {
       activeProtocol: string;
       activeEncoding: string;
     };
+    _selectionService?: InternalSelectionService;
   };
 };
 
+type InternalSelectionService = {
+  _activeSelectionMode?: number;
+  _model?: {
+    selectionStart?: [number, number];
+    selectionEnd?: [number, number];
+    selectionStartLength?: number;
+  };
+  reset?(): void;
+  refresh?(isLinuxMouseSelection?: boolean): void;
+};
+
 type InternalBrowserBuffer = {
+  x?: number;
+  y?: number;
   tabs?: Record<string, boolean>;
   savedX?: number;
   savedY?: number;
@@ -117,6 +134,8 @@ type InternalBrowserBuffer = {
 };
 
 const snapshotSavedCursorState = (buffer: InternalBrowserBuffer | undefined) => buffer ? {
+  x: buffer.x,
+  y: buffer.y,
   savedX: buffer.savedX,
   savedY: buffer.savedY,
   savedCurAttrData: buffer.savedCurAttrData?.clone?.() ?? buffer.savedCurAttrData,
@@ -134,6 +153,21 @@ const restoreSavedCursorState = (
   for (const [key, value] of Object.entries(state)) {
     if (value !== undefined) (buffer as Record<string, unknown>)[key] = value;
   }
+};
+
+const snapshotParserJoinState = (term: XTerm): number | undefined => (
+  (term as unknown as InternalBrowserTerminal)._core?._inputHandler?._parser?.precedingJoinState
+);
+
+const restoreParserJoinState = (term: XTerm, state: number | undefined): void => {
+  if (state === undefined) return;
+  const parser = (term as unknown as InternalBrowserTerminal)._core?._inputHandler?._parser;
+  if (parser) parser.precedingJoinState = state;
+};
+
+const isTerminalParserGrounded = (term: XTerm): boolean => {
+  const parser = (term as unknown as InternalBrowserTerminal)._core?._inputHandler?._parser;
+  return parser?.currentState === undefined || parser.currentState === 0;
 };
 
 const cloneTerminalProtocolState = (term: XTerm) => {
@@ -171,6 +205,33 @@ const restoreTerminalProtocolState = (
   if (mouseStateService && state.mouseEncoding !== undefined) {
     mouseStateService.activeEncoding = state.mouseEncoding;
   }
+};
+
+const snapshotSelectionState = (term: XTerm) => {
+  const service = (term as unknown as InternalBrowserTerminal)._core?._selectionService;
+  const start = service?._model?.selectionStart;
+  const end = service?._model?.selectionEnd;
+  if (!service || !start) return null;
+  return {
+    mode: service._activeSelectionMode,
+    start: [...start] as [number, number],
+    end: end ? [...end] as [number, number] : undefined,
+    startLength: service._model?.selectionStartLength ?? 0,
+  };
+};
+
+const restoreSelectionState = (
+  term: XTerm,
+  state: NonNullable<ReturnType<typeof snapshotSelectionState>>,
+): void => {
+  const service = (term as unknown as InternalBrowserTerminal)._core?._selectionService;
+  const model = service?._model;
+  if (!service || !model) return;
+  service._activeSelectionMode = state.mode;
+  model.selectionStart = [...state.start];
+  model.selectionEnd = state.end ? [...state.end] : undefined;
+  model.selectionStartLength = state.startLength;
+  service.refresh?.();
 };
 
 type PristineFlushState = {
@@ -992,7 +1053,8 @@ export class KeywordHighlighter implements IDisposable {
       this.scheduleBulkCatchUp();
       if (this.pendingRulesChanged) this.scheduleRebuild();
       if (this.options.canRebuild?.() === false) {
-        this.transformer.resetParserState();
+        // The visible terminal keeps its parser state while images prevent a
+        // text replay, so the transformer must keep tracking that same stream.
         this.transformerNeedsRebuild = false;
       }
       return;
@@ -1011,7 +1073,11 @@ export class KeywordHighlighter implements IDisposable {
     this.startPristineBackpressureIfNeeded();
     const skipHotPathTransform = bypass || this.transformerNeedsRebuild;
     if (bypass) this.transformerNeedsRebuild = true;
-    const transformed = skipHotPathTransform ? data : this.transformer.transform(data);
+    const transformed = skipHotPathTransform
+      ? this.options.canRebuild?.() === false
+        ? this.transformer.transform(data, { bypass: true })
+        : data
+      : this.transformer.transform(data);
     const visible = this.writeVisible(transformed);
     const writeSettled = hasEraseInDisplay && !shouldDeferPristine
       ? visible.then(() => this.writePristine(data))
@@ -1033,9 +1099,10 @@ export class KeywordHighlighter implements IDisposable {
       this.transformerNeedsRebuild = true;
       this.scheduleBulkCatchUp();
     }
-    if (this.pendingRulesChanged) this.scheduleRebuild();
+    if (this.pendingRulesChanged) {
+      void visible.then(() => this.scheduleRebuild());
+    }
     if (skipHotPathTransform && this.options.canRebuild?.() === false) {
-      this.transformer.resetParserState();
       this.transformerNeedsRebuild = false;
     }
   };
@@ -1178,6 +1245,8 @@ export class KeywordHighlighter implements IDisposable {
     }
     this.syncPristineOptions();
     const shouldSlice = sliced && this.catchUpTimer !== null;
+    const queuedBytes = queued.reduce((total, data) => total + data.length, 0);
+    this.activePristineBytesRemaining = queuedBytes;
     this.pristineFlushPromise = (async () => {
       if (!shouldSlice) {
         const combined = queued.every((data) => typeof data === "string")
@@ -1192,6 +1261,8 @@ export class KeywordHighlighter implements IDisposable {
             });
           });
         }
+        this.activePristineBytesRemaining = 0;
+        this.resolvePristineBackpressureIfReady();
         return;
       }
       const chunks: Array<string | Uint8Array> = [];
@@ -1347,13 +1418,13 @@ export class KeywordHighlighter implements IDisposable {
     if (this.options.canRebuild?.() === false) {
       // Inline images cannot survive a text replay. Leave the missed historical
       // colors pending, but resume inline coloring for subsequent ordinary text.
-      this.transformer.resetParserState();
       this.transformerNeedsRebuild = false;
       return;
     }
     if (
       this.rebuilding
       || this.term.buffer.active.type === "alternate"
+      || !isTerminalParserGrounded(this.term)
       || this.options.canRebuild?.() === false
     ) return;
     this.rebuilding = true;
@@ -1362,6 +1433,7 @@ export class KeywordHighlighter implements IDisposable {
       while (!this.disposed && this.pendingRulesChanged) {
         if (
           this.term.buffer.active.type === "alternate"
+          || !isTerminalParserGrounded(this.term)
           || this.options.canRebuild?.() === false
         ) break;
         this.pendingRulesChanged = false;
@@ -1414,16 +1486,13 @@ export class KeywordHighlighter implements IDisposable {
     const serializedAt = performance.now();
     if (snapshot === null || generation !== this.resetGeneration || this.disposed) return;
     const viewportOffset = Math.max(0, this.term.buffer.normal.baseY - this.term.buffer.normal.viewportY);
-    const selection = this.term.getSelectionPosition();
-    const selectionLength = selection
-      ? (selection.end.y - selection.start.y) * this.term.cols
-        + (selection.end.x - selection.start.x)
-      : 0;
+    const selectionState = snapshotSelectionState(this.term);
     const timestampLedger = snapshotTerminalLineTimestampLedger(this.term);
     const visibleBuffer = (this.term as unknown as InternalBrowserTerminal)
       ._core?._bufferService?.buffer;
     const tabStops = visibleBuffer?.tabs ? { ...visibleBuffer.tabs } : null;
     const savedCursorState = snapshotSavedCursorState(visibleBuffer);
+    const parserJoinState = snapshotParserJoinState(this.term);
     const charsetService = (this.term as unknown as InternalBrowserTerminal)._core?._charsetService;
     const charsetState = charsetService ? {
       glevel: charsetService.glevel,
@@ -1465,6 +1534,7 @@ export class KeywordHighlighter implements IDisposable {
       if (savedCursorState && rebuiltVisibleBuffer) {
         restoreSavedCursorState(rebuiltVisibleBuffer, savedCursorState);
       }
+      restoreParserJoinState(this.term, parserJoinState);
       const rebuiltCharsetService = (this.term as unknown as InternalBrowserTerminal)
         ._core?._charsetService;
       if (charsetState && rebuiltCharsetService) {
@@ -1490,12 +1560,8 @@ export class KeywordHighlighter implements IDisposable {
     if (viewportOffset > 0) {
       this.term.scrollToLine(Math.max(0, this.term.buffer.normal.baseY - viewportOffset));
     }
-    if (
-      selection
-      && selectionLength > 0
-      && selection.start.y < this.term.buffer.normal.length
-    ) {
-      this.term.select(selection.start.x, selection.start.y, selectionLength);
+    if (selectionState && selectionState.start[1] < this.term.buffer.normal.length) {
+      restoreSelectionState(this.term, selectionState);
     }
   }
 

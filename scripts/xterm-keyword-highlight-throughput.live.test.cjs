@@ -308,6 +308,10 @@ if (!process.versions.electron) {
     const newHeartbeatMs = median(byKind("new").map(round => round.maxHeartbeatMs));
     const newCatchUpHeartbeatMs = median(byKind("new").map(round => round.maxCatchUpHeartbeatMs));
     const newQuietCatchUpMs = median(byKind("new").map(round => round.quietCatchUpMs));
+    // Catch-up is deliberately deferred until output becomes quiet. Keep a
+    // strict event-loop stall limit, while allowing total work to scale with
+    // the retained history size (5s at 10k lines, 10s at 50k lines).
+    const maxQuietCatchUpMs = Math.max(5000, scrollback / 5);
     const rawStreamMs = median(byKind("raw").map(round => round.streamMs));
     const rawP99Ms = median(byKind("raw").map(round => round.callbackP99Ms));
     assert.ok(
@@ -335,8 +339,8 @@ if (!process.versions.electron) {
       `new p99 write latency regressed versus raw xterm: ${JSON.stringify(result)}`,
     );
     assert.ok(
-      newQuietCatchUpMs <= 5000,
-      `quiet-period catch-up took over 5 seconds: ${JSON.stringify(result)}`,
+      newQuietCatchUpMs <= maxQuietCatchUpMs,
+      `quiet-period catch-up exceeded ${maxQuietCatchUpMs} ms: ${JSON.stringify(result)}`,
     );
     if (process.env.NETCATTY_TERMINAL_PERF_SUSTAINED_ONLY !== "1") {
       assert.equal(

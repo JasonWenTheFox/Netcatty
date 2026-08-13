@@ -446,6 +446,48 @@ test("output arriving during a history rebuild is appended after the rebuilt his
   term.dispose();
 });
 
+test("rule changes wait for a control sequence split across writes", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "seed ERROR\x1b[");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  assert.equal(highlighter.rebuildCount, 0);
+  await write(term, "31mX");
+  await highlighter.whenSettled();
+
+  assert.equal(highlighter.rebuildCount, 1);
+  assert.equal(term.buffer.active.getLine(0)?.translateToString(true), "seed ERRORX");
+  assert.equal(term.buffer.active.getLine(0)?.getCell(10)?.getFgColor(), 1);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("rule changes wait for a string control split across writes", async () => {
+  for (const [start, end] of [
+    ["\x1b]0;title", "\x07"],
+    ["\x1bPpayload", "\x1b\\"],
+  ]) {
+    const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+    const highlighter = new KeywordHighlighter(term);
+    highlighter.setRules(rule(), true);
+    await write(term, `seed ERROR${start}`);
+
+    highlighter.setRules(rule("#60A5FA"), true);
+    await highlighter.whenSettled();
+    assert.equal(highlighter.rebuildCount, 0);
+    await write(term, `${end}X`);
+    await highlighter.whenSettled();
+
+    assert.equal(highlighter.rebuildCount, 1);
+    assert.equal(term.buffer.active.getLine(0)?.translateToString(true), "seed ERRORX");
+    highlighter.dispose();
+    term.dispose();
+  }
+});
+
 test("rule changes wait until the terminal leaves the alternate screen", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();
@@ -511,6 +553,30 @@ test("history rebuild waits while a non-text terminal resource blocks reset", as
   term.dispose();
 });
 
+test("blocked image rebuild keeps the current foreground and screen state", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  let blocked = true;
+  const highlighter = new KeywordHighlighter(term, { canRebuild: () => !blocked });
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[32mgreen\x1b[?1049hTUI");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  await write(term, " ERROR\x1b[?1049lERROR");
+
+  assert.equal(term.buffer.active.type, "normal");
+  assert.equal(highlighter.rebuildCount, 0);
+  assert.equal(
+    visibleSerializer.serialize().includes(`38;2;96;165;250mERROR${String.fromCharCode(27)}[32m`),
+    true,
+  );
+  blocked = false;
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("bulk output skipped on the hot path is highlighted after output becomes quiet", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();
@@ -547,6 +613,22 @@ test("deferred pristine history applies high and low water backpressure", async 
   await highlighter.waitForPristineBackpressure();
   assert.equal(highlighter.pendingPristineBytes <= 4 * 1024 * 1024, true);
   assert.equal(callbacks, 10, "visible writes must not wait for pristine catch-up");
+
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("a single large pristine flush counts toward backpressure", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term, { shouldBypassHighlight: () => true });
+  highlighter.setRules(rule(), true);
+  const payload = "x".repeat(9 * 1024 * 1024);
+
+  term.write(payload);
+  assert.equal(highlighter.isPristineBackpressured, true);
+  assert.equal(highlighter.pendingPristineBytes >= payload.length, true);
+  await highlighter.waitForPristineBackpressure();
+  assert.equal(highlighter.pendingPristineBytes <= 4 * 1024 * 1024, true);
 
   highlighter.dispose();
   term.dispose();
@@ -1052,6 +1134,75 @@ test("history rebuild preserves saved cursor state", async () => {
   const restoredCell = term.buffer.active.getLine(term.buffer.active.baseY + 1)?.getCell(5);
   assert.equal(restoredCell?.getChars(), "Z");
   assert.equal(restoredCell?.getFgColor(), 1);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves the active cursor position", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[3;7Habc ERROR\x1b[2;4H");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  assert.equal(term.buffer.active.cursorX, 3);
+  assert.equal(term.buffer.active.cursorY, 1);
+  await write(term, "Z");
+  assert.equal(term.buffer.active.getLine(term.buffer.active.baseY + 1)?.getCell(3)?.getChars(), "Z");
+
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves cursor position inside an origin-mode scroll region", async () => {
+  const term = new XTerm({ cols: 20, rows: 6, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "seed ERROR\x1b[2;5r\x1b[?6h\x1b[3;13H");
+  const before = [term.buffer.active.cursorX, term.buffer.active.cursorY];
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  assert.deepEqual([term.buffer.active.cursorX, term.buffer.active.cursorY], before);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves rectangular selections", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "one ERROR\r\ntwo ERROR\r\nthree ERROR");
+  const selectionService = {
+    _activeSelectionMode: 3,
+    _model: {
+      selectionStart: [1, 0] as [number, number],
+      selectionEnd: [4, 2] as [number, number],
+      selectionStartLength: 0,
+    } as {
+      selectionStart?: [number, number];
+      selectionEnd?: [number, number];
+      selectionStartLength: number;
+    },
+    reset() {
+      this._activeSelectionMode = 0;
+      this._model.selectionStart = undefined;
+      this._model.selectionEnd = undefined;
+    },
+    refresh() {},
+  };
+  Object.assign((term as unknown as { _core: Record<string, unknown> })._core, {
+    _selectionService: selectionService,
+  });
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  assert.equal(selectionService._activeSelectionMode, 3);
+  assert.deepEqual(selectionService._model.selectionStart, [1, 0]);
+  assert.deepEqual(selectionService._model.selectionEnd, [4, 2]);
   highlighter.dispose();
   term.dispose();
 });
