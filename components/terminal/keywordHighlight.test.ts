@@ -1282,6 +1282,49 @@ test("history rebuild preserves saved cursor state", async () => {
   term.dispose();
 });
 
+test("history rebuild keeps saved foreground restoration aligned", async () => {
+  for (const [save, restore] of [
+    ["\x1b7", "\x1b8"],
+    ["\x1b[s", "\x1b[u"],
+    ["\x1b[?1048h", "\x1b[?1048l"],
+  ]) {
+    const term = new XTerm({ cols: 40, rows: 5, scrollback: 100 });
+    const highlighter = new KeywordHighlighter(term);
+    highlighter.setRules(rule(), true);
+    await write(term, `\x1b[31m${save}\x1b[34mseed ERROR`);
+
+    highlighter.setRules(rule("#60A5FA"), true);
+    await highlighter.whenSettled();
+    await write(term, `${restore}ERROR tail`);
+
+    const line = term.buffer.active.getLine(term.buffer.active.baseY + term.buffer.active.cursorY);
+    const text = line?.translateToString(true) ?? "";
+    const errorStart = text.lastIndexOf("ERROR tail");
+    assert.equal(line?.getCell(errorStart)?.getFgColor(), 0x60a5fa);
+    assert.equal(line?.getCell(errorStart + "ERROR ".length)?.getFgColor(), 1);
+    highlighter.dispose();
+    term.dispose();
+  }
+});
+
+test("long non-ASCII broad matches remain linear", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+  const text = "界".repeat(16_000);
+  const startedAt = performance.now();
+  const transformed = transformer.transform(`${text}\n`);
+  const elapsed = performance.now() - startedAt;
+
+  assert.equal(transformed.endsWith("\x1b[39m\n"), true);
+  assert.equal(elapsed < 250, true, `16k graphemes took ${elapsed.toFixed(1)}ms`);
+});
+
 test("history rebuild preserves the active cursor position", async () => {
   const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
   const highlighter = new KeywordHighlighter(term);

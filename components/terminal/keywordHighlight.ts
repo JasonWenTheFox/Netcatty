@@ -139,6 +139,34 @@ type InternalBrowserBuffer = {
   savedWraparoundMode?: boolean;
 };
 
+type InternalAttributeData = {
+  isFgDefault(): boolean;
+  isFgPalette(): boolean;
+  isFgRGB(): boolean;
+  getFgColor(): number;
+};
+
+const foregroundFromAttribute = (attribute: unknown): ForegroundState => {
+  const value = attribute as Partial<InternalAttributeData> | undefined;
+  if (value?.isFgDefault?.()) return DEFAULT_FOREGROUND;
+  if (value?.isFgRGB?.()) {
+    const color = value.getFgColor?.() ?? 0;
+    return {
+      kind: "rgb",
+      red: color >>> 16 & 0xff,
+      green: color >>> 8 & 0xff,
+      blue: color & 0xff,
+    };
+  }
+  if (value?.isFgPalette?.()) {
+    const index = value.getFgColor?.() ?? 0;
+    return index <= 15
+      ? { kind: "ansi", code: index < 8 ? 30 + index : 90 + index - 8 }
+      : { kind: "palette", index };
+  }
+  return DEFAULT_FOREGROUND;
+};
+
 const snapshotSavedCursorState = (buffer: InternalBrowserBuffer | undefined) => buffer ? {
   x: buffer.x,
   y: buffer.y,
@@ -358,22 +386,19 @@ const createGraphemeRangeSnapper = (text: string) => {
     );
   }
   if (graphemeSegmenter) {
-    const boundaries = Array.from(
-      graphemeSegmenter.segment(text),
-      (segment) => [segment.index, segment.index + segment.segment.length] as const,
-    );
+    const starts = new Uint32Array(text.length);
+    const ends = new Uint32Array(text.length + 1);
+    for (const segment of graphemeSegmenter.segment(text)) {
+      const segmentStart = segment.index;
+      const segmentEnd = segmentStart + segment.segment.length;
+      starts.fill(segmentStart, segmentStart, segmentEnd);
+      ends.fill(segmentEnd, segmentStart + 1, segmentEnd + 1);
+    }
     return (start: number, end: number): { start: number; end: number } | null => {
       if (start < 0 || end > text.length || start >= end) return null;
       if (hasIncompleteTrailingSurrogate && end === text.length) return null;
-      let from = start;
-      let to = end;
-      for (const [segmentStart, segmentEnd] of boundaries) {
-        if (from >= segmentStart && from < segmentEnd) from = segmentStart;
-        if (to > segmentStart && to <= segmentEnd) {
-          to = segmentEnd;
-          break;
-        }
-      }
+      const from = starts[start];
+      const to = ends[end];
       return from < to ? { start: from, end: to } : null;
     };
   }
@@ -670,6 +695,11 @@ export class KeywordHighlightTransformer {
   resetParserState(): void {
     this.state = createParserState();
     this.missedBoundaryMatch = false;
+  }
+
+  restoreSavedForegrounds(normal: ForegroundState, alternate: ForegroundState): void {
+    this.state.normalSavedForeground = normal;
+    this.state.alternateSavedForeground = alternate;
   }
 
   /** True when a match spanned a prior write and could not be colored inline. */
@@ -1586,6 +1616,16 @@ export class KeywordHighlighter implements IDisposable {
     const timestampLedger = snapshotTerminalLineTimestampLedger(this.term);
     const visibleBuffer = (this.term as unknown as InternalBrowserTerminal)
       ._core?._bufferService?.buffer;
+    const internalBuffers = (this.term as unknown as {
+      _core?: { _bufferService?: { buffers?: {
+        normal?: InternalBrowserBuffer;
+        alt?: InternalBrowserBuffer;
+      } } };
+    })._core?._bufferService?.buffers;
+    const savedForegrounds = {
+      normal: foregroundFromAttribute(internalBuffers?.normal?.savedCurAttrData),
+      alternate: foregroundFromAttribute(internalBuffers?.alt?.savedCurAttrData),
+    };
     const tabStops = visibleBuffer?.tabs ? { ...visibleBuffer.tabs } : null;
     const savedCursorState = snapshotSavedCursorState(visibleBuffer);
     const parserJoinState = snapshotParserJoinState(this.term);
@@ -1597,6 +1637,10 @@ export class KeywordHighlighter implements IDisposable {
     const protocolState = cloneTerminalProtocolState(this.term);
     this.rebuildCount += 1;
     this.transformer.resetParserState();
+    this.transformer.restoreSavedForegrounds(
+      savedForegrounds.normal,
+      savedForegrounds.alternate,
+    );
     this.transformerNeedsRebuild = false;
     // Snapshot lines are already committed buffer rows; treat trailing text as complete
     // so end-sensitive rules (`\b`, `$`, …) still color the final row.
