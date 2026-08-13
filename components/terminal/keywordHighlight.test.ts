@@ -611,6 +611,23 @@ test("clear keeps pristine history aligned with the visible terminal", async () 
   term.dispose();
 });
 
+test("clear does not treat the retained logical line as a fresh line start", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules([{ ...rule()[0], patterns: ["^new"] }], true);
+  await write(term, "old");
+
+  term.clear();
+  await write(term, "new");
+  await highlighter.whenSettled();
+
+  assert.equal(visibleSerializer.serialize(), "oldnew");
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("local viewport clear mirrors its pre-scroll into pristine history", async () => {
   const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();

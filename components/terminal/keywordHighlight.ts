@@ -900,7 +900,8 @@ export class KeywordHighlighter implements IDisposable {
     this.pristineTerm.clear();
     this.originalClear();
     this.transformer.resetParserState();
-    this.transformerNeedsRebuild = false;
+    this.transformerNeedsRebuild = this.hasPristineContent;
+    if (this.transformerNeedsRebuild && this.enabled) this.scheduleBulkCatchUp();
   };
 
   private syncPristineOptions(): void {
