@@ -56,5 +56,11 @@ jobs:
         # GitHub-hosted runners do not configure Electron's SUID sandbox helper.
         run: xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/xterm-keyword-highlight-performance.live.test.cjs
 
+      - name: Test terminal keyword highlight throughput
+        env:
+          NETCATTY_TERMINAL_PERF_ROUNDS: "1"
+          NETCATTY_TERMINAL_PERF_SHOW_WINDOW: "1"
+        run: xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/xterm-keyword-highlight-throughput.live.test.cjs
+
       - name: Build
         run: npm run build

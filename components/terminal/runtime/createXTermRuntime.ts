@@ -2032,6 +2032,12 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     },
   );
 
+  let keywordHighlighter: KeywordHighlighter | null = null;
+  const viewportScrollMirrorDisposable = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => keywordHighlighter?.mirrorViewportScroll(lines),
+  );
+
   const eraseScrollbackDisposable = installEraseInDisplayHandlers(term, {
     getClearWipesScrollback: () => ctx.terminalSettingsRef.current?.clearWipesScrollback ?? true,
     isInDec2026SyncBlock: () => inDec2026SyncBlock,
@@ -2216,13 +2222,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     resizeScheduler.schedule({ sessionId: id, cols, rows });
   });
 
-  const keywordHighlighter = new KeywordHighlighter(term, {
+  keywordHighlighter = new KeywordHighlighter(term, {
     canRebuild: () => !hasInlineImages(),
   });
-  const viewportScrollMirrorDisposable = registerTerminalViewportScrollMirror(
-    term,
-    (lines) => keywordHighlighter.mirrorViewportScroll(lines),
-  );
   keywordHighlighter.setRules(keywordHighlightRules, keywordHighlightEnabled);
 
   const cursorLineHighlighter = new CursorLineHighlighter(term);

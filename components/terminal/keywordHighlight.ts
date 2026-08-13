@@ -73,6 +73,21 @@ type InternalScrollTerminal = {
   };
 };
 
+type InternalBrowserTerminal = {
+  _core?: {
+    _renderService?: {
+      _isPaused?: boolean;
+      refreshRows(start: number, end: number): void;
+    };
+  };
+};
+
+type PristineFlushState = {
+  chunks: Array<string | Uint8Array>;
+  generation: number;
+  nextIndex: number;
+};
+
 const ESC = "\x1b";
 const BEL = "\x07";
 const C1_CSI = "\x9b";
@@ -86,6 +101,9 @@ const MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS = 4_096;
 const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
 const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
 const MAX_DEFERRED_PRISTINE_BYTES = 8 * 1024 * 1024;
+const PRISTINE_WRITE_SLICE_BYTES = 32 * 1024;
+const REBUILD_SERIALIZE_SLICE_LINES = 512;
+const REBUILD_TRANSFORM_SLICE_LINES = 512;
 const MAX_LINE_PREFIX_CHARS = 4_096;
 
 const DEFAULT_FOREGROUND: ForegroundState = Object.freeze({ kind: "default" });
@@ -99,6 +117,27 @@ const createParserState = (): ParserState => ({
   pendingKind: null,
   pendingStringEscape: false,
 });
+
+const yieldToTerminalRenderer = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+const splitStringByLineCount = (value: string, maxLines: number): string[] => {
+  if (!value || maxLines <= 0) return value ? [value] : [];
+  const chunks: string[] = [];
+  let start = 0;
+  let lines = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char !== "\r" && char !== "\n") continue;
+    if (char === "\r" && value[index + 1] === "\n") index += 1;
+    lines += 1;
+    if (lines < maxLines) continue;
+    chunks.push(value.slice(start, index + 1));
+    start = index + 1;
+    lines = 0;
+  }
+  if (start < value.length) chunks.push(value.slice(start));
+  return chunks;
+};
 
 const isCsiFinal = (code: number): boolean => code >= 0x40 && code <= 0x7e;
 
@@ -599,6 +638,7 @@ export class KeywordHighlightTransformer {
 export class KeywordHighlighter implements IDisposable {
   readonly serializeAddon = new SerializeAddon();
   rebuildCount = 0;
+  lastRebuildTimings: Record<string, number> = {};
 
   private readonly pristineTerm: HeadlessTerminalType;
   private readonly transformer = new KeywordHighlightTransformer();
@@ -614,16 +654,20 @@ export class KeywordHighlighter implements IDisposable {
   private pendingRulesChanged = false;
   private settlePromise: Promise<void> = Promise.resolve();
   private pristineSettled: Promise<void> = Promise.resolve();
+  private pristineFlushPromise: Promise<void> | null = null;
+  private activePristineFlush: PristineFlushState | null = null;
   private visibleSettled: Promise<void> = Promise.resolve();
   private queuedWrites: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
   private hasPristineContent = false;
   private catchUpTimer: ReturnType<typeof setTimeout> | null = null;
   private catchUpSettled: Promise<void> = Promise.resolve();
   private resolveCatchUp: (() => void) | null = null;
+  private settleVersion = 0;
   private resetGeneration = 0;
   private deferredPristineWrites: Array<string | Uint8Array> = [];
   private deferredPristineBytes = 0;
   private transformerNeedsRebuild = false;
+  private visibleRendererWasPaused = false;
 
   constructor(
     private readonly term: XTerm,
@@ -695,10 +739,16 @@ export class KeywordHighlighter implements IDisposable {
 
   async whenSettled(): Promise<void> {
     while (!this.disposed) {
+      const version = this.settleVersion;
       const catchUp = this.catchUpSettled;
       const rebuild = this.settlePromise;
       await Promise.all([catchUp, rebuild]);
-      if (catchUp === this.catchUpSettled && rebuild === this.settlePromise) return;
+      if (
+        version === this.settleVersion
+        && this.catchUpTimer === null
+        && !this.rebuilding
+      ) return;
+      await yieldToTerminalRenderer();
     }
   }
 
@@ -733,14 +783,25 @@ export class KeywordHighlighter implements IDisposable {
     }
     const bypass = this.options.shouldBypassHighlight?.()
       ?? shouldDegradeTerminalKeywordHighlight(this.term, data);
-    const shouldDeferPristine = bypass || this.deferredPristineWrites.length > 0;
-    const pristine = shouldDeferPristine ? null : this.writePristine(data);
+    // eslint-disable-next-line no-control-regex -- terminal protocol bytes are intentional.
+    const hasEraseInDisplay = /(?:\x1b\[|\x9b)[?\d;]*J/.test(data);
+    const shouldDeferPristine = (
+      bypass
+      || this.deferredPristineWrites.length > 0
+      || this.pristineFlushPromise !== null
+    );
+    const pristine = shouldDeferPristine || hasEraseInDisplay ? null : this.writePristine(data);
     if (shouldDeferPristine) this.deferPristine(data);
     const skipHotPathTransform = bypass || this.transformerNeedsRebuild;
     if (bypass) this.transformerNeedsRebuild = true;
     const transformed = skipHotPathTransform ? data : this.transformer.transform(data);
     const visible = this.writeVisible(transformed);
-    void (pristine ? Promise.all([pristine, visible]) : visible).then(() => callback?.());
+    const settled = hasEraseInDisplay && !shouldDeferPristine
+      ? visible.then(() => this.writePristine(data))
+      : pristine
+        ? Promise.all([pristine, visible]).then(() => undefined)
+        : visible;
+    void settled.then(() => callback?.());
     const hasBareCarriageReturn = data.includes("\r") && /\r(?!\n)/.test(data);
     if (skipHotPathTransform) {
       // Even with coloring disabled, drain the bounded pristine backlog after
@@ -784,6 +845,11 @@ export class KeywordHighlighter implements IDisposable {
     this.pristineTerm.options.scrollback = this.term.options.scrollback;
   }
 
+  syncScrollback(): void {
+    this.flushDeferredPristineSync();
+    this.syncPristineOptions();
+  }
+
   /** Mirror Netcatty's local clear pre-scroll, which mutates xterm outside write(). */
   mirrorViewportScroll(lines: number): void {
     if (lines <= 0) return;
@@ -802,38 +868,116 @@ export class KeywordHighlighter implements IDisposable {
     this.deferredPristineWrites.push(stableData);
     this.deferredPristineBytes += stableData.length;
     if (this.deferredPristineBytes >= MAX_DEFERRED_PRISTINE_BYTES) {
-      void this.flushDeferredPristine();
+      void this.flushDeferredPristine(true);
     }
   }
 
-  private flushDeferredPristine(): Promise<void> {
-    const queued = this.deferredPristineWrites.splice(0);
+  private flushDeferredPristine(sliced = false): Promise<void> {
+    if (this.pristineFlushPromise) return this.pristineFlushPromise;
+    const queued = this.deferredPristineWrites;
+    this.deferredPristineWrites = [];
     this.deferredPristineBytes = 0;
     if (queued.length === 0) return this.pristineSettled;
     this.syncPristineOptions();
-    const combined = queued.every((data) => typeof data === "string")
-      ? (queued as string[]).join("")
-      : null;
-    this.pristineSettled = new Promise<void>((resolve) => {
-      if (combined !== null) {
-        this.pristineTerm.write(combined, resolve);
+    const shouldSlice = sliced && this.catchUpTimer !== null;
+    this.pristineFlushPromise = (async () => {
+      if (!shouldSlice) {
+        const combined = queued.every((data) => typeof data === "string")
+          ? (queued as string[]).join("")
+          : null;
+        if (combined !== null) {
+          await new Promise<void>((resolve) => this.pristineTerm.write(combined, resolve));
+        } else {
+          await new Promise<void>((resolve) => {
+            queued.forEach((data, index) => {
+              this.pristineTerm.write(data, index === queued.length - 1 ? resolve : undefined);
+            });
+          });
+        }
         return;
       }
-      queued.forEach((data, index) => {
-        this.pristineTerm.write(data, index === queued.length - 1 ? resolve : undefined);
-      });
+      const chunks: Array<string | Uint8Array> = [];
+      let stringBatch: string[] = [];
+      let stringBatchLength = 0;
+      const flushStringBatch = (): void => {
+        if (stringBatchLength === 0) return;
+        chunks.push(stringBatch.join(""));
+        stringBatch = [];
+        stringBatchLength = 0;
+      };
+      for (const data of queued) {
+        if (typeof data !== "string") {
+          flushStringBatch();
+          for (let offset = 0; offset < data.length; offset += PRISTINE_WRITE_SLICE_BYTES) {
+            const end = Math.min(data.length, offset + PRISTINE_WRITE_SLICE_BYTES);
+            chunks.push(data.slice(offset, end));
+          }
+          continue;
+        }
+        let offset = 0;
+        while (offset < data.length) {
+          const remaining = PRISTINE_WRITE_SLICE_BYTES - stringBatchLength;
+          const end = Math.min(data.length, offset + remaining);
+          stringBatch.push(data.slice(offset, end));
+          stringBatchLength += end - offset;
+          offset = end;
+          if (stringBatchLength === PRISTINE_WRITE_SLICE_BYTES) flushStringBatch();
+        }
+      }
+      flushStringBatch();
+      const state: PristineFlushState = { chunks, generation: 0, nextIndex: 0 };
+      this.activePristineFlush = state;
+      while (state.nextIndex < state.chunks.length) {
+        const generation = state.generation;
+        const chunk = state.chunks[state.nextIndex];
+        state.nextIndex += 1;
+        await new Promise<void>((resolve) => this.pristineTerm.write(chunk, resolve));
+        if (generation !== state.generation) return;
+        await yieldToTerminalRenderer();
+        if (generation !== state.generation) return;
+      }
+    })().finally(() => {
+      this.activePristineFlush = null;
+      this.pristineFlushPromise = null;
+      if (this.deferredPristineWrites.length > 0) void this.flushDeferredPristine(true);
     });
+    this.pristineSettled = this.pristineFlushPromise;
     return this.pristineSettled;
   }
 
   private flushDeferredPristineSync(): void {
-    void this.flushDeferredPristine();
+    const active = this.activePristineFlush;
+    if (active) {
+      active.generation += 1;
+      while (active.nextIndex < active.chunks.length) {
+        this.pristineTerm.write(active.chunks[active.nextIndex]);
+        active.nextIndex += 1;
+      }
+      this.activePristineFlush = null;
+    }
+    const queued = this.deferredPristineWrites;
+    this.deferredPristineWrites = [];
+    this.deferredPristineBytes = 0;
+    for (const data of queued) this.pristineTerm.write(data);
     const writeBuffer = (
       this.pristineTerm as unknown as {
         _core?: { _writeBuffer?: { flushSync(): void } };
       }
     )._core?._writeBuffer;
     writeBuffer?.flushSync();
+  }
+
+  private setVisibleRenderPaused(paused: boolean): void {
+    const internal = this.term as unknown as InternalBrowserTerminal;
+    const renderService = internal._core?._renderService;
+    if (!renderService) return;
+    if (paused) {
+      this.visibleRendererWasPaused = renderService._isPaused === true;
+      renderService._isPaused = true;
+      return;
+    }
+    renderService._isPaused = this.visibleRendererWasPaused;
+    if (!this.visibleRendererWasPaused) renderService.refreshRows(0, this.term.rows - 1);
   }
 
   private writePristine(data: string | Uint8Array): Promise<void> {
@@ -861,12 +1005,16 @@ export class KeywordHighlighter implements IDisposable {
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     this.catchUpTimer = setTimeout(async () => {
       this.catchUpTimer = null;
-      if (!this.disposed) await this.flushDeferredPristine();
+      if (!this.disposed) {
+        await this.flushDeferredPristine();
+        if (this.enabled || this.pendingRulesChanged) {
+          this.pendingRulesChanged = true;
+          this.scheduleRebuild();
+          await this.settlePromise;
+        }
+      }
       this.resolveCatchUp?.();
       this.resolveCatchUp = null;
-      if (this.disposed || !this.enabled) return;
-      this.pendingRulesChanged = true;
-      this.scheduleRebuild();
     }, BULK_HIGHLIGHT_CATCH_UP_MS);
   }
 
@@ -877,7 +1025,8 @@ export class KeywordHighlighter implements IDisposable {
       || this.options.canRebuild?.() === false
     ) return;
     this.rebuilding = true;
-    this.settlePromise = this.settlePromise.then(async () => {
+    const priorSettle = this.settlePromise;
+    this.settlePromise = priorSettle.then(async () => {
       while (!this.disposed && this.pendingRulesChanged) {
         if (
           this.term.buffer.active.type === "alternate"
@@ -892,18 +1041,41 @@ export class KeywordHighlighter implements IDisposable {
       this.rebuilding = false;
       this.flushQueuedWrites();
     });
+    this.settleVersion += 1;
+  }
+
+  private async serializePristineSnapshotSliced(generation: number): Promise<string | null> {
+    const bufferLength = this.pristineTerm.buffer.normal.length;
+    const retainedLines = Math.max(
+      this.pristineTerm.rows,
+      this.term.options.scrollback + this.pristineTerm.rows,
+    );
+    const startLine = Math.max(0, bufferLength - retainedLines);
+    const chunks: string[] = [];
+    for (let start = startLine; start < bufferLength; start += REBUILD_SERIALIZE_SLICE_LINES) {
+      if (generation !== this.resetGeneration || this.disposed) return null;
+      const end = Math.min(bufferLength - 1, start + REBUILD_SERIALIZE_SLICE_LINES - 1);
+      chunks.push(this.originalSerialize({
+        range: { start, end },
+        excludeAltBuffer: true,
+        excludeModes: end < bufferLength - 1,
+      }));
+      await yieldToTerminalRenderer();
+      if (generation !== this.resetGeneration || this.disposed) return null;
+    }
+    return chunks.join("");
   }
 
   private async rebuild(): Promise<void> {
+    const rebuildStarted = performance.now();
     await this.flushDeferredPristine();
+    const pristineFlushedAt = performance.now();
     await Promise.all([this.pristineSettled, this.visibleSettled]);
     const generation = this.resetGeneration;
     this.syncPristineOptions();
-    const snapshot = this.serializeAddon.serialize({
-      scrollback: this.term.options.scrollback,
-      excludeAltBuffer: true,
-      excludeModes: false,
-    });
+    const snapshot = await this.serializePristineSnapshotSliced(generation);
+    const serializedAt = performance.now();
+    if (snapshot === null || generation !== this.resetGeneration || this.disposed) return;
     const viewportOffset = Math.max(0, this.term.buffer.normal.baseY - this.term.buffer.normal.viewportY);
     const selection = this.term.getSelectionPosition();
     const selectionLength = selection
@@ -915,11 +1087,42 @@ export class KeywordHighlighter implements IDisposable {
     this.transformerNeedsRebuild = false;
     // Snapshot lines are already committed buffer rows; treat trailing text as complete
     // so end-sensitive rules (`\b`, `$`, …) still color the final row.
-    const highlighted = this.transformer.transform(snapshot, { linesComplete: true });
+    const snapshotChunks = splitStringByLineCount(snapshot, REBUILD_TRANSFORM_SLICE_LINES);
+    const highlightedChunks: string[] = [];
+    for (const chunk of snapshotChunks) {
+      highlightedChunks.push(this.transformer.transform(chunk, { linesComplete: true }));
+      await yieldToTerminalRenderer();
+      if (generation !== this.resetGeneration || this.disposed) return;
+    }
+    const highlightedLength = highlightedChunks.reduce((total, chunk) => total + chunk.length, 0);
+    const transformedAt = performance.now();
     if (generation !== this.resetGeneration || this.disposed) return;
-    this.originalReset();
-    await new Promise<void>((resolve) => this.originalWrite(highlighted, resolve));
-    if (generation !== this.resetGeneration || this.disposed) return;
+    this.setVisibleRenderPaused(true);
+    try {
+      this.originalReset();
+      for (let index = 0; index < highlightedChunks.length; index += 1) {
+        await new Promise<void>((resolve) => this.originalWrite(highlightedChunks[index], resolve));
+        if (generation !== this.resetGeneration || this.disposed) break;
+        if (index < highlightedChunks.length - 1) await yieldToTerminalRenderer();
+      }
+      const writtenAt = performance.now();
+      if (generation !== this.resetGeneration || this.disposed) {
+        this.originalReset();
+        this.pendingRulesChanged = this.hasPristineContent;
+        return;
+      }
+      this.lastRebuildTimings = {
+        pristine: pristineFlushedAt - rebuildStarted,
+        serialize: serializedAt - pristineFlushedAt,
+        transform: transformedAt - serializedAt,
+        write: writtenAt - transformedAt,
+        total: writtenAt - rebuildStarted,
+        snapshotChars: snapshot.length,
+        highlightedChars: highlightedLength,
+      };
+    } finally {
+      this.setVisibleRenderPaused(false);
+    }
     restoreTerminalLineTimestampAnchors(this.term);
     if (viewportOffset > 0) {
       this.term.scrollToLine(Math.max(0, this.term.buffer.normal.baseY - viewportOffset));

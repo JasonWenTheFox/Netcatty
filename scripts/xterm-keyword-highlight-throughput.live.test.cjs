@@ -17,7 +17,7 @@ if (!process.versions.electron) {
   const tempDirBridge = require("../electron/bridges/tempDirBridge.cjs");
 
   const appRoot = path.resolve(__dirname, "..");
-  const chunkCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_CHUNKS ?? "800", 10);
+  const chunkCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_CHUNKS ?? "1600", 10);
   const roundCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_ROUNDS ?? "3", 10);
   const userData = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("xterm-highlight-throughput")}-`);
   electron.app.setPath("userData", userData);
@@ -36,7 +36,7 @@ if (!process.versions.electron) {
     }
   };
 
-  const buildModule = (source, resolveDir) => esbuild.buildSync({
+  const buildModule = (source, resolveDir, plugins = []) => esbuild.buildSync({
     stdin: { contents: source, loader: "ts", resolveDir },
     alias: {
       "@xterm/headless": path.join(
@@ -49,15 +49,75 @@ if (!process.versions.electron) {
     platform: "browser",
     target: "chrome142",
     write: false,
+    plugins,
   }).outputFiles[0].text;
 
+  const buildMainModule = async () => {
+    const entryPath = "components/terminal/__keywordHighlightThroughputEntry.ts";
+    const entrySource = [
+      'export * from "./keywordHighlight";',
+      'export { noteTerminalOutputPressureData } from "./runtime/terminalOutputPressure";',
+    ].join("\n");
+    const resolveMainFile = (repoPath) => {
+      const candidates = repoPath === entryPath
+        ? [entryPath]
+        : [repoPath, `${repoPath}.ts`, `${repoPath}.tsx`, `${repoPath}/index.ts`, `${repoPath}/index.tsx`];
+      for (const candidate of candidates) {
+        if (candidate === entryPath) return candidate;
+        const exists = childProcess.spawnSync(
+          "git",
+          ["cat-file", "-e", `origin/main:${candidate}`],
+          { cwd: appRoot, stdio: "ignore" },
+        ).status === 0;
+        if (exists) return candidate;
+      }
+      throw new Error(`Unable to resolve origin/main source: ${repoPath}`);
+    };
+    const readMainFile = (repoPath) => repoPath === entryPath
+      ? entrySource
+      : childProcess.execFileSync("git", ["show", `origin/main:${repoPath}`], {
+        cwd: appRoot,
+        encoding: "utf8",
+      });
+    const mainPlugin = {
+      name: "main-source",
+      setup(build) {
+        build.onResolve({ filter: /.*/ }, (args) => {
+          if (args.kind !== "entry-point") return undefined;
+          return { path: entryPath, namespace: "main-source" };
+        });
+        build.onResolve({ filter: /^\.\.?\// }, (args) => ({
+          path: resolveMainFile(
+            path.posix.normalize(path.posix.join(path.posix.dirname(args.importer), args.path)),
+          ),
+          namespace: "main-source",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "main-source" }, (args) => ({
+          contents: readMainFile(args.path),
+          loader: args.path.endsWith(".json") ? "json" : args.path.endsWith(".tsx") ? "tsx" : "ts",
+          resolveDir: path.posix.dirname(args.path),
+        }));
+      },
+    };
+    return (await esbuild.build({
+      entryPoints: [entryPath],
+      alias: {
+        "@xterm/headless": path.join(
+          appRoot,
+          "node_modules/@xterm/headless/lib-headless/xterm-headless.js",
+        ),
+      },
+      bundle: true,
+      format: "cjs",
+      platform: "browser",
+      target: "chrome142",
+      write: false,
+      plugins: [mainPlugin],
+    })).outputFiles[0].text;
+  };
+
   void electron.app.whenReady().then(async () => {
-    const oldSource = childProcess.execFileSync(
-      "git",
-      ["show", "origin/main:components/terminal/keywordHighlight.ts"],
-      { cwd: appRoot, encoding: "utf8" },
-    );
-    const oldBundle = buildModule(oldSource, path.join(appRoot, "components/terminal"));
+    const oldBundle = await buildMainModule();
     const currentBundle = buildModule([
       `export * from ${JSON.stringify(path.join(appRoot, "components/terminal/keywordHighlight.ts"))};`,
       `export { noteTerminalOutputPressureData } from ${JSON.stringify(path.join(appRoot, "components/terminal/runtime/terminalOutputPressure.ts"))};`,
@@ -93,7 +153,6 @@ if (!process.versions.electron) {
       };
       const oldModule = loadBundle(${JSON.stringify(oldBundle)});
       const currentModule = loadBundle(${JSON.stringify(currentBundle)});
-      const { noteTerminalOutputPressureData } = currentModule;
       const rules = [
         { id: "info", label: "Info", patterns: ["INFO"], color: "#60A5FA", enabled: true },
         { id: "warn", label: "Warn", patterns: ["WARN"], color: "#FBBF24", enabled: true },
@@ -132,6 +191,7 @@ if (!process.versions.electron) {
           term.loadAddon(new WebglAddon());
           renderer = "webgl";
         } catch {}
+        const selectedModule = kind === "old" ? oldModule : currentModule;
         const Highlighter = kind === "old"
           ? oldModule.KeywordHighlighter
           : currentModule.KeywordHighlighter;
@@ -139,12 +199,19 @@ if (!process.versions.electron) {
         highlighter?.setRules(rules, true);
         const write = data => new Promise(resolve => term.write(data, resolve));
         const callbackLatencies = [];
+        const heartbeatLatencies = [];
+        let heartbeatAt = performance.now();
+        const heartbeat = setInterval(() => {
+          const now = performance.now();
+          heartbeatLatencies.push(now - heartbeatAt);
+          heartbeatAt = now;
+        }, 10);
         let renders = 0;
         const renderDisposable = term.onRender(() => { renders += 1; });
         const streamStarted = performance.now();
         for (let index = 0; index < chunks.length; index += 1) {
           const chunk = chunks[index];
-          noteTerminalOutputPressureData(term, chunk);
+          selectedModule.noteTerminalOutputPressureData(term, chunk);
           const callbackStarted = performance.now();
           await write(chunk);
           callbackLatencies.push(performance.now() - callbackStarted);
@@ -154,9 +221,19 @@ if (!process.versions.electron) {
         const rendersAtStreamEnd = renders;
         const quietStarted = performance.now();
         await wait(700);
+        const quietDelayMs = performance.now() - quietStarted;
+        const rendersBeforeSettle = renders;
+        const settleStarted = performance.now();
         await highlighter?.whenSettled?.();
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const settleWaitMs = performance.now() - settleStarted;
+        const quietWorkMs = performance.now() - quietStarted - 700;
+        let paintTimedOut = false;
+        await Promise.race([
+          new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          wait(1000).then(() => { paintTimedOut = true; }),
+        ]);
         const quietCatchUpMs = performance.now() - quietStarted - 700;
+        clearInterval(heartbeat);
         globalThis.gc?.();
         await wait(20);
         const heapAfter = v8.getHeapStatistics().used_heap_size;
@@ -173,10 +250,17 @@ if (!process.versions.electron) {
           callbackP50Ms: percentile(0.5),
           callbackP95Ms: percentile(0.95),
           callbackP99Ms: percentile(0.99),
+          maxHeartbeatMs: Math.max(0, ...heartbeatLatencies),
           quietCatchUpMs,
+          quietWorkMs,
+          quietDelayMs,
+          settleWaitMs,
+          paintTimedOut,
           rendersDuringStream: rendersAtStreamEnd,
+          rendersDuringSettle: renders - rendersBeforeSettle,
           heapDeltaMiB: (heapAfter - heapBefore) / 1024 / 1024,
           rebuildCount: highlighter?.rebuildCount ?? 0,
+          rebuildTimings: highlighter?.lastRebuildTimings ?? {},
         };
         renderDisposable.dispose();
         highlighter?.dispose();
@@ -198,6 +282,11 @@ if (!process.versions.electron) {
     const newStreamMs = median(byKind("new").map(round => round.streamMs));
     const oldP99Ms = median(byKind("old").map(round => round.callbackP99Ms));
     const newP99Ms = median(byKind("new").map(round => round.callbackP99Ms));
+    const oldHeartbeatMs = median(byKind("old").map(round => round.maxHeartbeatMs));
+    const newHeartbeatMs = median(byKind("new").map(round => round.maxHeartbeatMs));
+    const newQuietCatchUpMs = median(byKind("new").map(round => round.quietCatchUpMs));
+    const rawStreamMs = median(byKind("raw").map(round => round.streamMs));
+    const rawP99Ms = median(byKind("raw").map(round => round.callbackP99Ms));
     assert.ok(
       newStreamMs <= oldStreamMs * 1.1,
       `new sustained throughput regressed more than 10%: ${JSON.stringify(result)}`,
@@ -206,10 +295,31 @@ if (!process.versions.electron) {
       newP99Ms <= oldP99Ms * 1.15,
       `new p99 write latency regressed more than 15%: ${JSON.stringify(result)}`,
     );
+    assert.ok(
+      newHeartbeatMs <= Math.max(75, oldHeartbeatMs * 3),
+      `new event-loop stall regressed: ${JSON.stringify(result)}`,
+    );
+    assert.ok(
+      newStreamMs <= rawStreamMs * 1.15,
+      `new sustained throughput regressed more than 15% versus raw xterm: ${JSON.stringify(result)}`,
+    );
+    assert.ok(
+      newP99Ms <= Math.max(10, rawP99Ms * 1.25),
+      `new p99 write latency regressed versus raw xterm: ${JSON.stringify(result)}`,
+    );
+    assert.ok(
+      newQuietCatchUpMs <= 5000,
+      `quiet-period catch-up took over 5 seconds: ${JSON.stringify(result)}`,
+    );
     assert.equal(
       byKind("new").every(round => round.rebuildCount === 1),
       true,
       `bulk output must catch up exactly once after becoming quiet: ${JSON.stringify(result)}`,
+    );
+    assert.equal(
+      byKind("new").every(round => !round.paintTimedOut && round.rendersDuringSettle <= 1),
+      true,
+      `quiet catch-up must repaint atomically: ${JSON.stringify(result)}`,
     );
     process.stdout.write(`XTERM_KEYWORD_HIGHLIGHT_THROUGHPUT ${JSON.stringify(result)}\n`);
     cleanup(0);

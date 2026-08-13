@@ -16,6 +16,7 @@ import {
 } from "./keywordHighlight.ts";
 import {
   clearTerminalViewport,
+  installEraseInDisplayHandlers,
   registerTerminalViewportScrollMirror,
 } from "./clearTerminalViewport.ts";
 
@@ -486,6 +487,30 @@ test("rule changes during bulk output wait for one quiet catch-up", async () => 
   term.dispose();
 });
 
+test("disabling rules during bulk output removes existing colors after quiet", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  let bypass = false;
+  const highlighter = new KeywordHighlighter(term, {
+    shouldBypassHighlight: () => bypass,
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "old ERROR");
+  assert.match(visibleSerializer.serialize(), /38;2;248;113;113m/);
+
+  bypass = true;
+  await write(term, "\r\nbulk plain");
+  highlighter.setRules(rule(), false);
+  bypass = false;
+  await highlighter.whenSettled();
+
+  assert.equal(highlighter.rebuildCount, 1);
+  assert.doesNotMatch(visibleSerializer.serialize(), /38;2;248;113;113m/);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("bare carriage-return rewrites are corrected after output becomes quiet", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();
@@ -566,6 +591,39 @@ test("local viewport clear mirrors its pre-scroll into pristine history", async 
   term.dispose();
 });
 
+test("shell clear preservation is mirrored into pristine history", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  const mirror = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => highlighter.mirrorViewportScroll(lines),
+  );
+  const eraseHandlers = installEraseInDisplayHandlers(term, {
+    getClearWipesScrollback: () => false,
+    isInDec2026SyncBlock: () => false,
+    scheduleMicrotask: (callback) => callback(),
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "one ERROR\r\ntwo ERROR\r\nthree ERROR");
+
+  await write(term, "\x1b[2J\x1b[Hnew plain");
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const pristine = highlighter.serializeAddon.serialize();
+  const visible = visibleSerializer.serialize();
+  for (const text of ["one ERROR", "two ERROR", "three ERROR", "new plain"]) {
+    assert.match(pristine, new RegExp(text));
+    assert.match(visible.replace(new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, "g"), ""), new RegExp(text));
+  }
+  eraseHandlers.dispose();
+  mirror.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("lowering scrollback is reflected before immediate serialization", async () => {
   const term = new XTerm({ cols: 80, rows: 3, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);
@@ -573,6 +631,7 @@ test("lowering scrollback is reflected before immediate serialization", async ()
   await write(term, Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\r\n"));
 
   term.options.scrollback = 2;
+  highlighter.syncScrollback();
   const pristine = highlighter.serializeAddon.serialize();
 
   assert.doesNotMatch(pristine, /line-0/);
@@ -630,6 +689,26 @@ test("terminal reset wins over an in-flight rule rebuild", async () => {
   await highlighter.whenSettled();
 
   assert.equal(visibleSerializer.serialize(), "fresh plain");
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("terminal reset wins after a sliced rebuild starts writing", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 1000 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, Array.from({ length: 800 }, () => "old ERROR").join("\r\n"));
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  term.reset();
+  await write(term, "fresh plain");
+  await highlighter.whenSettled();
+
+  assert.equal(visibleSerializer.serialize(), "fresh plain");
+  assert.equal(highlighter.serializeAddon.serialize(), "fresh plain");
   highlighter.dispose();
   term.dispose();
 });

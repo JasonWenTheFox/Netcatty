@@ -118,6 +118,8 @@ export const preserveTerminalViewportInScrollback = (term: XTerm): void => {
     return;
   }
 
+  viewportScrollMirrors.get(term)?.(rowsToPreserve);
+
   const scrollRegion = getInternalScrollRegion(term);
   const previousScrollTop = scrollRegion?.scrollTop;
   const previousScrollBottom = scrollRegion?.scrollBottom;
@@ -302,6 +304,10 @@ export const installEraseInDisplayHandlers = (
         inDec2026SyncBlock,
         wipeAllowed,
       );
+      if (useNativeScrollPreservation) {
+        const rowsToPreserve = getVisibleContentRowCount(term);
+        if (rowsToPreserve > 0) viewportScrollMirrors.get(term)?.(rowsToPreserve);
+      }
       setScrollOnEraseInDisplayOnce(useNativeScrollPreservation);
       if (
         !useNativeScrollPreservation
