@@ -2053,7 +2053,11 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     const snapshot = await serializeTerminalForHibernate(
       term,
       serializeAddon,
-      { preferWasm: resolveHibernatePreferWasmSerialize(terminalSettingsRef.current) },
+      {
+        preferWasm: resolveHibernatePreferWasmSerialize(terminalSettingsRef.current),
+        prepare: () => xtermRuntimeRef.current?.keywordHighlighter.prepareForSerialization()
+          ?? Promise.resolve(),
+      },
     );
 
     if (!canFinishHibernate()) return false;

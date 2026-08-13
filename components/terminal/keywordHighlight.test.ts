@@ -427,6 +427,8 @@ test("application reset clears pristine history together with the visible termin
 
 test("history rebuild waits while a non-text terminal resource blocks reset", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
   let blocked = true;
   const highlighter = new KeywordHighlighter(term, { canRebuild: () => !blocked });
   highlighter.setRules(rule(), true);
@@ -435,6 +437,9 @@ test("history rebuild waits while a non-text terminal resource blocks reset", as
   highlighter.setRules(rule("#60A5FA"), true);
   await highlighter.whenSettled();
   assert.equal(highlighter.rebuildCount, 0);
+
+  await write(term, "\r\nfresh ERROR");
+  assert.match(visibleSerializer.serialize(), /38;2;96;165;250m/);
 
   blocked = false;
   await write(term, "");
@@ -460,6 +465,26 @@ test("bulk output skipped on the hot path is highlighted after output becomes qu
   await new Promise((resolve) => setTimeout(resolve, 650));
   await highlighter.whenSettled();
   assert.match(visibleSerializer.serialize(), /38;2;248;113;113m/);
+
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("deferred pristine history applies high and low water backpressure", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term, { shouldBypassHighlight: () => true });
+  highlighter.setRules(rule(), true);
+  const payload = "x".repeat(1024 * 1024);
+  let callbacks = 0;
+  for (let index = 0; index < 10; index += 1) {
+    term.write(payload, () => { callbacks += 1; });
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(highlighter.pendingPristineBytes <= 12 * 1024 * 1024, true);
+  await highlighter.waitForPristineBackpressure();
+  assert.equal(highlighter.pendingPristineBytes <= 4 * 1024 * 1024, true);
+  assert.equal(callbacks, 10, "visible writes must not wait for pristine catch-up");
 
   highlighter.dispose();
   term.dispose();
@@ -521,6 +546,24 @@ test("bare carriage-return rewrites are corrected after output becomes quiet", a
   await write(term, "ERROR\rOK");
   await new Promise((resolve) => setTimeout(resolve, 650));
   await highlighter.whenSettled();
+
+  assert.doesNotMatch(visibleSerializer.serialize(), /38;2;248;113;113m/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("backspace and cursor rewrites are corrected after output becomes quiet", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+
+  for (const payload of ["ERROR\bOK", "\r\nERROR\x1b[5DOK"] as const) {
+    await write(term, payload);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    await highlighter.whenSettled();
+  }
 
   assert.doesNotMatch(visibleSerializer.serialize(), /38;2;248;113;113m/);
   highlighter.dispose();
@@ -750,7 +793,40 @@ test("history rebuild keeps OSC 8 links clickable via the pristine buffer", asyn
     after?.map((link) => link.text),
     ["https://example.com"],
   );
+  assert.deepEqual(after?.[0]?.range, {
+    start: { x: 1, y: 1 },
+    end: { x: 5, y: 1 },
+  });
 
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("large wrapped history keeps every row across rebuild", async () => {
+  const term = new XTerm({ cols: 40, rows: 5, scrollback: 3000 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  const lines = Array.from(
+    { length: 1200 },
+    (_, index) => `L${index.toString().padStart(4, "0")}-${"x".repeat((index % 70) + 1)} ERROR`,
+  );
+  await write(term, lines.join("\r\n"));
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  const visible = visibleSerializer.serialize();
+  const replay = new XTerm({ cols: 40, rows: 5, scrollback: 3000 });
+  await write(replay, visible);
+  const replayedText = Array.from({ length: replay.buffer.normal.length }, (_, index) =>
+    replay.buffer.normal.getLine(index)?.translateToString(true) ?? "").join("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const marker = `L${index.toString().padStart(4, "0")}-`;
+    assert.equal(replayedText.split(marker).length - 1, 1, `${marker} must survive once`);
+  }
+
+  replay.dispose();
   highlighter.dispose();
   term.dispose();
 });

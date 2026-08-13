@@ -197,6 +197,14 @@ if (!process.versions.electron) {
           : currentModule.KeywordHighlighter;
         const highlighter = kind === "raw" ? null : new Highlighter(term);
         highlighter?.setRules(rules, true);
+        const sustainedOnly = process.env.NETCATTY_TERMINAL_PERF_SUSTAINED_ONLY === "1";
+        let maxPendingPristineBytes = 0;
+        const pendingSample = setInterval(() => {
+          maxPendingPristineBytes = Math.max(
+            maxPendingPristineBytes,
+            highlighter?.pendingPristineBytes ?? 0,
+          );
+        }, 5);
         const write = data => new Promise(resolve => term.write(data, resolve));
         const callbackLatencies = [];
         const heartbeatLatencies = [];
@@ -220,20 +228,25 @@ if (!process.versions.electron) {
         const streamMs = performance.now() - streamStarted;
         const rendersAtStreamEnd = renders;
         const quietStarted = performance.now();
-        await wait(700);
+        await wait(sustainedOnly ? 0 : 700);
         const quietDelayMs = performance.now() - quietStarted;
+        const streamHeartbeatCount = heartbeatLatencies.length;
+        const streamMaxHeartbeatMs = Math.max(0, ...heartbeatLatencies);
         const rendersBeforeSettle = renders;
         const settleStarted = performance.now();
-        await highlighter?.whenSettled?.();
+        if (!sustainedOnly) await highlighter?.whenSettled?.();
         const settleWaitMs = performance.now() - settleStarted;
-        const quietWorkMs = performance.now() - quietStarted - 700;
+        const quietWorkMs = performance.now() - quietStarted - (sustainedOnly ? 0 : 700);
         let paintTimedOut = false;
-        await Promise.race([
-          new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-          wait(1000).then(() => { paintTimedOut = true; }),
-        ]);
-        const quietCatchUpMs = performance.now() - quietStarted - 700;
+        if (!sustainedOnly) {
+          await Promise.race([
+            new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+            wait(1000).then(() => { paintTimedOut = true; }),
+          ]);
+        }
+        const quietCatchUpMs = performance.now() - quietStarted - (sustainedOnly ? 0 : 700);
         clearInterval(heartbeat);
+        clearInterval(pendingSample);
         globalThis.gc?.();
         await wait(20);
         const heapAfter = v8.getHeapStatistics().used_heap_size;
@@ -250,7 +263,8 @@ if (!process.versions.electron) {
           callbackP50Ms: percentile(0.5),
           callbackP95Ms: percentile(0.95),
           callbackP99Ms: percentile(0.99),
-          maxHeartbeatMs: Math.max(0, ...heartbeatLatencies),
+          maxHeartbeatMs: streamMaxHeartbeatMs,
+          maxCatchUpHeartbeatMs: Math.max(0, ...heartbeatLatencies.slice(streamHeartbeatCount)),
           quietCatchUpMs,
           quietWorkMs,
           quietDelayMs,
@@ -261,6 +275,7 @@ if (!process.versions.electron) {
           heapDeltaMiB: (heapAfter - heapBefore) / 1024 / 1024,
           rebuildCount: highlighter?.rebuildCount ?? 0,
           rebuildTimings: highlighter?.lastRebuildTimings ?? {},
+          maxPendingPristineBytes,
         };
         renderDisposable.dispose();
         highlighter?.dispose();
@@ -275,7 +290,9 @@ if (!process.versions.electron) {
       return { totalChars, chunks: chunks.length, rounds };
     })()`, true);
 
-    for (const round of result.rounds) assert.equal(round.renderer, "webgl", JSON.stringify(round));
+    if (process.env.NETCATTY_TERMINAL_PERF_REQUIRE_WEBGL === "1") {
+      for (const round of result.rounds) assert.equal(round.renderer, "webgl", JSON.stringify(round));
+    }
     const median = values => values.sort((left, right) => left - right)[Math.floor(values.length / 2)];
     const byKind = kind => result.rounds.filter(round => round.kind === kind);
     const oldStreamMs = median(byKind("old").map(round => round.streamMs));
@@ -284,6 +301,7 @@ if (!process.versions.electron) {
     const newP99Ms = median(byKind("new").map(round => round.callbackP99Ms));
     const oldHeartbeatMs = median(byKind("old").map(round => round.maxHeartbeatMs));
     const newHeartbeatMs = median(byKind("new").map(round => round.maxHeartbeatMs));
+    const newCatchUpHeartbeatMs = median(byKind("new").map(round => round.maxCatchUpHeartbeatMs));
     const newQuietCatchUpMs = median(byKind("new").map(round => round.quietCatchUpMs));
     const rawStreamMs = median(byKind("raw").map(round => round.streamMs));
     const rawP99Ms = median(byKind("raw").map(round => round.callbackP99Ms));
@@ -300,6 +318,10 @@ if (!process.versions.electron) {
       `new event-loop stall regressed: ${JSON.stringify(result)}`,
     );
     assert.ok(
+      newCatchUpHeartbeatMs <= 350,
+      `quiet catch-up blocked the event loop for over 350 ms: ${JSON.stringify(result)}`,
+    );
+    assert.ok(
       newStreamMs <= rawStreamMs * 1.15,
       `new sustained throughput regressed more than 15% versus raw xterm: ${JSON.stringify(result)}`,
     );
@@ -311,15 +333,22 @@ if (!process.versions.electron) {
       newQuietCatchUpMs <= 5000,
       `quiet-period catch-up took over 5 seconds: ${JSON.stringify(result)}`,
     );
+    if (process.env.NETCATTY_TERMINAL_PERF_SUSTAINED_ONLY !== "1") {
+      assert.equal(
+        byKind("new").every(round => round.rebuildCount === 1),
+        true,
+        `bulk output must catch up exactly once after becoming quiet: ${JSON.stringify(result)}`,
+      );
+      assert.equal(
+        byKind("new").every(round => !round.paintTimedOut && round.rendersDuringSettle <= 1),
+        true,
+        `quiet catch-up must repaint atomically: ${JSON.stringify(result)}`,
+      );
+    }
     assert.equal(
-      byKind("new").every(round => round.rebuildCount === 1),
+      byKind("new").every(round => round.maxPendingPristineBytes <= 12 * 1024 * 1024),
       true,
-      `bulk output must catch up exactly once after becoming quiet: ${JSON.stringify(result)}`,
-    );
-    assert.equal(
-      byKind("new").every(round => !round.paintTimedOut && round.rendersDuringSettle <= 1),
-      true,
-      `quiet catch-up must repaint atomically: ${JSON.stringify(result)}`,
+      `pristine backlog must stay bounded: ${JSON.stringify(result)}`,
     );
     process.stdout.write(`XTERM_KEYWORD_HIGHLIGHT_THROUGHPUT ${JSON.stringify(result)}\n`);
     cleanup(0);

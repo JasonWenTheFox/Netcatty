@@ -101,9 +101,10 @@ const MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS = 4_096;
 const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
 const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
 const MAX_DEFERRED_PRISTINE_BYTES = 8 * 1024 * 1024;
+const RESUME_DEFERRED_PRISTINE_BYTES = 4 * 1024 * 1024;
 const PRISTINE_WRITE_SLICE_BYTES = 32 * 1024;
-const REBUILD_SERIALIZE_SLICE_LINES = 512;
 const REBUILD_TRANSFORM_SLICE_LINES = 512;
+const BACKPRESSURE_FLUSH_SLICE_BYTES = 256 * 1024;
 const MAX_LINE_PREFIX_CHARS = 4_096;
 
 const DEFAULT_FOREGROUND: ForegroundState = Object.freeze({ kind: "default" });
@@ -219,8 +220,8 @@ const collectPristineOscLinksForLine = (
     const data = service.getLinkData(currentId);
     if (!data?.uri) return;
     const range = {
-      start: { x: startX, y: bufferLineNumber },
-      end: { x: Math.max(startX, endX - 1), y: bufferLineNumber },
+      start: { x: startX + 1, y: bufferLineNumber },
+      end: { x: Math.max(startX + 1, endX), y: bufferLineNumber },
     };
     const handler = visible.options.linkHandler;
     links.push({
@@ -668,6 +669,18 @@ export class KeywordHighlighter implements IDisposable {
   private deferredPristineBytes = 0;
   private transformerNeedsRebuild = false;
   private visibleRendererWasPaused = false;
+  private activePristineBytesRemaining = 0;
+  private pristineBackpressureSettled: Promise<void> | null = null;
+  private resolvePristineBackpressure: (() => void) | null = null;
+  private nextBackpressureFlushBytes = MAX_DEFERRED_PRISTINE_BYTES;
+
+  get pendingPristineBytes(): number {
+    return this.deferredPristineBytes + this.activePristineBytesRemaining;
+  }
+
+  get isPristineBackpressured(): boolean {
+    return this.pristineBackpressureSettled !== null;
+  }
 
   constructor(
     private readonly term: XTerm,
@@ -698,6 +711,8 @@ export class KeywordHighlighter implements IDisposable {
     this.originalWrite = term.write.bind(term);
     this.originalReset = term.reset.bind(term);
     this.originalClear = term.clear.bind(term);
+    (term as XTerm & { __netcattyKeywordHighlighter?: KeywordHighlighter })
+      .__netcattyKeywordHighlighter = this;
     term.write = this.write;
     term.reset = this.reset;
     term.clear = this.clear;
@@ -752,6 +767,15 @@ export class KeywordHighlighter implements IDisposable {
     }
   }
 
+  async prepareForSerialization(): Promise<void> {
+    await this.flushDeferredPristine();
+    await this.pristineSettled;
+  }
+
+  async waitForPristineBackpressure(): Promise<void> {
+    await (this.pristineBackpressureSettled ?? Promise.resolve());
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -759,9 +783,16 @@ export class KeywordHighlighter implements IDisposable {
     this.term.reset = this.originalReset;
     this.term.clear = this.originalClear;
     this.serializeAddon.serialize = this.originalSerialize;
+    const patchedTerm = this.term as XTerm & { __netcattyKeywordHighlighter?: KeywordHighlighter };
+    if (patchedTerm.__netcattyKeywordHighlighter === this) {
+      delete patchedTerm.__netcattyKeywordHighlighter;
+    }
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     this.resolveCatchUp?.();
     this.resolveCatchUp = null;
+    this.resolvePristineBackpressure?.();
+    this.resolvePristineBackpressure = null;
+    this.pristineBackpressureSettled = null;
     for (const disposable of this.disposables) disposable.dispose();
     for (const write of this.queuedWrites.splice(0)) write.callback?.();
     this.pristineTerm.dispose();
@@ -776,9 +807,14 @@ export class KeywordHighlighter implements IDisposable {
       this.transformerNeedsRebuild = true;
       this.deferPristine(data);
       const visible = this.writeVisible(data);
+      this.startPristineBackpressureIfNeeded();
       void visible.then(() => callback?.());
       this.scheduleBulkCatchUp();
       if (this.pendingRulesChanged) this.scheduleRebuild();
+      if (this.options.canRebuild?.() === false) {
+        this.transformer.resetParserState();
+        this.transformerNeedsRebuild = false;
+      }
       return;
     }
     const bypass = this.options.shouldBypassHighlight?.()
@@ -792,27 +828,36 @@ export class KeywordHighlighter implements IDisposable {
     );
     const pristine = shouldDeferPristine || hasEraseInDisplay ? null : this.writePristine(data);
     if (shouldDeferPristine) this.deferPristine(data);
+    this.startPristineBackpressureIfNeeded();
     const skipHotPathTransform = bypass || this.transformerNeedsRebuild;
     if (bypass) this.transformerNeedsRebuild = true;
     const transformed = skipHotPathTransform ? data : this.transformer.transform(data);
     const visible = this.writeVisible(transformed);
-    const settled = hasEraseInDisplay && !shouldDeferPristine
+    const writeSettled = hasEraseInDisplay && !shouldDeferPristine
       ? visible.then(() => this.writePristine(data))
       : pristine
         ? Promise.all([pristine, visible]).then(() => undefined)
         : visible;
-    void settled.then(() => callback?.());
+    void writeSettled.then(() => callback?.());
     const hasBareCarriageReturn = data.includes("\r") && /\r(?!\n)/.test(data);
+    // eslint-disable-next-line no-control-regex -- terminal protocol bytes are intentional.
+    const hasCursorRewriteControl = /\x08|\x1b[DEM78]|(?:\x1b\[|\x9b)[?\d:;<=>]*[ -/]*[ABCDEFGHJKSTX`abcdefsu]/.test(data);
+    const mayRewriteExistingCells = hasBareCarriageReturn || hasCursorRewriteControl;
     if (skipHotPathTransform) {
       // Even with coloring disabled, drain the bounded pristine backlog after
       // bulk output becomes quiet so it cannot grow until serialization.
       this.scheduleBulkCatchUp();
     } else if (
-      (hasBareCarriageReturn || this.transformer.takeMissedBoundaryMatch()) && this.enabled
+      (mayRewriteExistingCells || this.transformer.takeMissedBoundaryMatch()) && this.enabled
     ) {
+      this.transformerNeedsRebuild = true;
       this.scheduleBulkCatchUp();
     }
     if (this.pendingRulesChanged) this.scheduleRebuild();
+    if (skipHotPathTransform && this.options.canRebuild?.() === false) {
+      this.transformer.resetParserState();
+      this.transformerNeedsRebuild = false;
+    }
   };
 
   private readonly reset: XTerm["reset"] = () => {
@@ -826,6 +871,9 @@ export class KeywordHighlighter implements IDisposable {
     }
     this.resolveCatchUp?.();
     this.resolveCatchUp = null;
+    this.resolvePristineBackpressure?.();
+    this.resolvePristineBackpressure = null;
+    this.pristineBackpressureSettled = null;
     this.transformer.resetParserState();
     this.transformerNeedsRebuild = false;
     this.resetGeneration += 1;
@@ -867,8 +915,36 @@ export class KeywordHighlighter implements IDisposable {
     const stableData = typeof data === "string" ? data : data.slice();
     this.deferredPristineWrites.push(stableData);
     this.deferredPristineBytes += stableData.length;
-    if (this.deferredPristineBytes >= MAX_DEFERRED_PRISTINE_BYTES) {
+    if (this.deferredPristineBytes >= this.nextBackpressureFlushBytes) {
+      this.nextBackpressureFlushBytes = this.deferredPristineBytes + BACKPRESSURE_FLUSH_SLICE_BYTES;
       void this.flushDeferredPristine(true);
+    }
+  }
+
+  private startPristineBackpressureIfNeeded(): void {
+    if (
+      this.pristineBackpressureSettled === null
+      && this.pendingPristineBytes >= MAX_DEFERRED_PRISTINE_BYTES
+    ) {
+      this.pristineBackpressureSettled = new Promise<void>((resolve) => {
+        this.resolvePristineBackpressure = resolve;
+      });
+      this.nextBackpressureFlushBytes = BACKPRESSURE_FLUSH_SLICE_BYTES;
+      if (this.deferredPristineBytes > 0 && this.pristineFlushPromise === null) {
+        void this.flushDeferredPristine(true);
+      }
+    }
+  }
+
+  private resolvePristineBackpressureIfReady(): void {
+    if (
+      this.pristineBackpressureSettled !== null
+      && this.pendingPristineBytes <= RESUME_DEFERRED_PRISTINE_BYTES
+    ) {
+      this.resolvePristineBackpressure?.();
+      this.resolvePristineBackpressure = null;
+      this.pristineBackpressureSettled = null;
+      this.nextBackpressureFlushBytes = MAX_DEFERRED_PRISTINE_BYTES;
     }
   }
 
@@ -877,7 +953,11 @@ export class KeywordHighlighter implements IDisposable {
     const queued = this.deferredPristineWrites;
     this.deferredPristineWrites = [];
     this.deferredPristineBytes = 0;
-    if (queued.length === 0) return this.pristineSettled;
+    this.nextBackpressureFlushBytes = MAX_DEFERRED_PRISTINE_BYTES;
+    if (queued.length === 0) {
+      this.resolvePristineBackpressureIfReady();
+      return this.pristineSettled;
+    }
     this.syncPristineOptions();
     const shouldSlice = sliced && this.catchUpTimer !== null;
     this.pristineFlushPromise = (async () => {
@@ -927,19 +1007,33 @@ export class KeywordHighlighter implements IDisposable {
       flushStringBatch();
       const state: PristineFlushState = { chunks, generation: 0, nextIndex: 0 };
       this.activePristineFlush = state;
+      this.activePristineBytesRemaining = chunks.reduce((total, chunk) => total + chunk.length, 0);
       while (state.nextIndex < state.chunks.length) {
         const generation = state.generation;
         const chunk = state.chunks[state.nextIndex];
         state.nextIndex += 1;
         await new Promise<void>((resolve) => this.pristineTerm.write(chunk, resolve));
+        this.activePristineBytesRemaining -= chunk.length;
+        this.resolvePristineBackpressureIfReady();
         if (generation !== state.generation) return;
         await yieldToTerminalRenderer();
         if (generation !== state.generation) return;
       }
     })().finally(() => {
       this.activePristineFlush = null;
+      this.activePristineBytesRemaining = 0;
       this.pristineFlushPromise = null;
-      if (this.deferredPristineWrites.length > 0) void this.flushDeferredPristine(true);
+      this.resolvePristineBackpressureIfReady();
+      if (
+        this.deferredPristineWrites.length > 0
+        && (
+          this.isPristineBackpressured
+          || this.deferredPristineBytes >= this.nextBackpressureFlushBytes
+        )
+      ) {
+        this.nextBackpressureFlushBytes = this.deferredPristineBytes + BACKPRESSURE_FLUSH_SLICE_BYTES;
+        void this.flushDeferredPristine(true);
+      }
     });
     this.pristineSettled = this.pristineFlushPromise;
     return this.pristineSettled;
@@ -950,10 +1044,13 @@ export class KeywordHighlighter implements IDisposable {
     if (active) {
       active.generation += 1;
       while (active.nextIndex < active.chunks.length) {
-        this.pristineTerm.write(active.chunks[active.nextIndex]);
+        const chunk = active.chunks[active.nextIndex];
+        this.pristineTerm.write(chunk);
+        this.activePristineBytesRemaining -= chunk.length;
         active.nextIndex += 1;
       }
       this.activePristineFlush = null;
+      this.activePristineBytesRemaining = 0;
     }
     const queued = this.deferredPristineWrites;
     this.deferredPristineWrites = [];
@@ -965,6 +1062,7 @@ export class KeywordHighlighter implements IDisposable {
       }
     )._core?._writeBuffer;
     writeBuffer?.flushSync();
+    this.resolvePristineBackpressureIfReady();
   }
 
   private setVisibleRenderPaused(paused: boolean): void {
@@ -1005,6 +1103,10 @@ export class KeywordHighlighter implements IDisposable {
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     this.catchUpTimer = setTimeout(async () => {
       this.catchUpTimer = null;
+      if (this.pristineFlushPromise !== null || this.isPristineBackpressured) {
+        this.scheduleBulkCatchUp();
+        return;
+      }
       if (!this.disposed) {
         await this.flushDeferredPristine();
         if (this.enabled || this.pendingRulesChanged) {
@@ -1019,6 +1121,13 @@ export class KeywordHighlighter implements IDisposable {
   }
 
   private scheduleRebuild(): void {
+    if (this.options.canRebuild?.() === false) {
+      // Inline images cannot survive a text replay. Leave the missed historical
+      // colors pending, but resume inline coloring for subsequent ordinary text.
+      this.transformer.resetParserState();
+      this.transformerNeedsRebuild = false;
+      return;
+    }
     if (
       this.rebuilding
       || this.term.buffer.active.type === "alternate"
@@ -1044,28 +1153,6 @@ export class KeywordHighlighter implements IDisposable {
     this.settleVersion += 1;
   }
 
-  private async serializePristineSnapshotSliced(generation: number): Promise<string | null> {
-    const bufferLength = this.pristineTerm.buffer.normal.length;
-    const retainedLines = Math.max(
-      this.pristineTerm.rows,
-      this.term.options.scrollback + this.pristineTerm.rows,
-    );
-    const startLine = Math.max(0, bufferLength - retainedLines);
-    const chunks: string[] = [];
-    for (let start = startLine; start < bufferLength; start += REBUILD_SERIALIZE_SLICE_LINES) {
-      if (generation !== this.resetGeneration || this.disposed) return null;
-      const end = Math.min(bufferLength - 1, start + REBUILD_SERIALIZE_SLICE_LINES - 1);
-      chunks.push(this.originalSerialize({
-        range: { start, end },
-        excludeAltBuffer: true,
-        excludeModes: end < bufferLength - 1,
-      }));
-      await yieldToTerminalRenderer();
-      if (generation !== this.resetGeneration || this.disposed) return null;
-    }
-    return chunks.join("");
-  }
-
   private async rebuild(): Promise<void> {
     const rebuildStarted = performance.now();
     await this.flushDeferredPristine();
@@ -1073,9 +1160,13 @@ export class KeywordHighlighter implements IDisposable {
     await Promise.all([this.pristineSettled, this.visibleSettled]);
     const generation = this.resetGeneration;
     this.syncPristineOptions();
-    const snapshot = await this.serializePristineSnapshotSliced(generation);
+    const snapshot = this.originalSerialize({
+      scrollback: this.term.options.scrollback,
+      excludeAltBuffer: true,
+      excludeModes: false,
+    });
     const serializedAt = performance.now();
-    if (snapshot === null || generation !== this.resetGeneration || this.disposed) return;
+    if (generation !== this.resetGeneration || this.disposed) return;
     const viewportOffset = Math.max(0, this.term.buffer.normal.baseY - this.term.buffer.normal.viewportY);
     const selection = this.term.getSelectionPosition();
     const selectionLength = selection

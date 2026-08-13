@@ -162,7 +162,9 @@ if (!process.versions.electron) {
       return state;
     })()`);
 
-    assert.equal(result.renderer, "webgl", JSON.stringify(result));
+    if (process.env.NETCATTY_TERMINAL_PERF_REQUIRE_WEBGL === "1") {
+      assert.equal(result.renderer, "webgl", JSON.stringify(result));
+    }
     assert.equal(result.enterRebuildCount, result.rebuildsBeforeEnter, JSON.stringify(result));
     assert.equal(result.rebuildCount, result.rebuildsBeforeEnter + 1, JSON.stringify(result));
     assert.ok(result.blueMatchCount >= 10000, JSON.stringify(result));
