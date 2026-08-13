@@ -1073,7 +1073,6 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
     if (terminalSettings) {
       applyUserCursorPreference(termRef.current, terminalSettings);
       termRef.current.options.scrollback = resolveXTermScrollback(terminalSettings.scrollback);
-      xtermRuntimeRef.current?.keywordHighlighter.syncScrollback();
       termRef.current.options.fontWeight = effectiveFontWeight as
         | 100
         | 200

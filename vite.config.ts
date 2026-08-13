@@ -80,7 +80,6 @@ export default defineConfig(() => {
                 '@xterm/addon-serialize',
                 '@xterm/addon-web-links',
                 '@xterm/addon-webgl',
-                '@xterm/headless',
               ],
               'vendor-ai': [
                 'ai',
@@ -97,12 +96,6 @@ export default defineConfig(() => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
-          // @xterm/headless beta.292 points `module` at a missing file. Its
-          // CommonJS build matches the package's Node-facing default export.
-          '@xterm/headless': path.resolve(
-            __dirname,
-            'node_modules/@xterm/headless/lib-headless/xterm-headless.js',
-          ),
         }
       }
     };

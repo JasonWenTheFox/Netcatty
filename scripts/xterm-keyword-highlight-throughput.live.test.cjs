@@ -43,12 +43,6 @@ if (!process.versions.electron) {
 
   const buildModule = (source, resolveDir, plugins = []) => esbuild.buildSync({
     stdin: { contents: source, loader: "ts", resolveDir },
-    alias: {
-      "@xterm/headless": path.join(
-        appRoot,
-        "node_modules/@xterm/headless/lib-headless/xterm-headless.js",
-      ),
-    },
     bundle: true,
     format: "cjs",
     platform: "browser",
@@ -106,12 +100,6 @@ if (!process.versions.electron) {
     };
     return (await esbuild.build({
       entryPoints: [entryPath],
-      alias: {
-        "@xterm/headless": path.join(
-          appRoot,
-          "node_modules/@xterm/headless/lib-headless/xterm-headless.js",
-        ),
-      },
       bundle: true,
       format: "cjs",
       platform: "browser",

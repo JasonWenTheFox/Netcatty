@@ -540,14 +540,6 @@ const writeSessionDataImmediate = (
   ingressBytes: number = data.length,
   writeOptions: TerminalSessionWriteOptions = {},
 ) => {
-  const keywordHighlighter = (
-    term as XTerm & {
-      __netcattyKeywordHighlighter?: {
-        isPristineBackpressured: boolean;
-        waitForPristineBackpressure(): Promise<void>;
-      };
-    }
-  ).__netcattyKeywordHighlighter;
   const flow = getFlowController(ctx, term);
   // Tabby-like: under bulk pressure, force a yield after sizable shards so the
   // event loop can paint/input between xterm parses (serial queue otherwise
@@ -677,7 +669,7 @@ const writeSessionDataImmediate = (
       const lineTimestampPerf = shouldMeasurePerf ? createLineTimestampPerfTotals() : null;
       const writeStartedAt = shouldMeasurePerf ? performance.now() : 0;
       let completed = false;
-    const finishWrite = () => {
+      const finishWrite = () => {
         if (completed) return;
         completed = true;
         if (shouldMeasurePerf && lineTimestampPerf) {
@@ -694,11 +686,7 @@ const writeSessionDataImmediate = (
             bulkPlainPath,
           });
         }
-        if (keywordHighlighter?.isPristineBackpressured) {
-          void keywordHighlighter.waitForPristineBackpressure().then(callback);
-        } else {
-          callback();
-        }
+        callback();
       };
       // Per-second ledger always records (record/render split); true flood still
       // skips via shouldSkipTerminalLineTimestamps. Sparse reflow anchors ≤1/s.
@@ -723,10 +711,7 @@ const writeSessionDataImmediate = (
         finishQueueItem();
         flow.written(ingressBytes);
         const deferredTotal = accumulateDeferredTerminalWriteAck(term, ingressBytes);
-      if (
-        deferredTotal >= XTERM_WRITE_CALLBACK_BATCH_BYTES
-        && keywordHighlighter?.isPristineBackpressured !== true
-      ) {
+        if (deferredTotal >= XTERM_WRITE_CALLBACK_BATCH_BYTES) {
           flushDeferredIpcAck();
         } else {
           scheduleDeferredTerminalWriteAckFlush(term, flushIpcAck);

@@ -28,7 +28,6 @@ type InternalTerminal = XTerm & {
 
 type ClearTerminalViewportOptions = {
   wipeScrollback?: boolean;
-  onComplete?: () => void;
 };
 
 type ClearTerminalViewportAndSyncPtyOptions = ClearTerminalViewportOptions & {
@@ -50,27 +49,6 @@ type EraseInDisplayHandlerOptions = {
   getClearWipesScrollback: () => boolean;
   isInDec2026SyncBlock: () => boolean;
   scheduleMicrotask?: (callback: () => void) => void;
-};
-
-type TerminalHistoryMirror = {
-  scroll(lines: number): void;
-  wipe(): void;
-};
-
-const historyMirrors = new WeakMap<XTerm, TerminalHistoryMirror>();
-
-export const registerTerminalViewportScrollMirror = (
-  term: XTerm,
-  mirror: (lines: number) => void,
-  wipe: () => void = () => {},
-): IDisposable => {
-  const registered = { scroll: mirror, wipe };
-  historyMirrors.set(term, registered);
-  return {
-    dispose: () => {
-      if (historyMirrors.get(term) === registered) historyMirrors.delete(term);
-    },
-  };
 };
 
 const getVisibleContentRowCount = (term: XTerm): number => {
@@ -126,8 +104,6 @@ export const preserveTerminalViewportInScrollback = (term: XTerm): void => {
     return;
   }
 
-  historyMirrors.get(term)?.scroll(rowsToPreserve);
-
   const scrollRegion = getInternalScrollRegion(term);
   const previousScrollTop = scrollRegion?.scrollTop;
   const previousScrollBottom = scrollRegion?.scrollBottom;
@@ -157,15 +133,6 @@ export const clearTerminalViewport = (
   term: XTerm,
   options: ClearTerminalViewportOptions = {},
 ): boolean => {
-  const highlighter = (term as XTerm & {
-    __netcattyKeywordHighlighter?: {
-      deferMutationDuringRebuild(run: () => Promise<void> | void): boolean;
-    };
-  }).__netcattyKeywordHighlighter;
-  if (highlighter?.deferMutationDuringRebuild(() => new Promise<void>((resolve) => {
-    if (!clearTerminalViewport(term, { ...options, onComplete: resolve })) resolve();
-  }))) return true;
-
   const buffer = term.buffer.active;
   if (buffer.type !== "normal") return false;
 
@@ -180,7 +147,6 @@ export const clearTerminalViewport = (
 
   if (typeof scroll !== "function" || eraseAttr === undefined) return false;
 
-  historyMirrors.get(term)?.scroll(cursorY);
   // Push lines above cursor into scrollback so they are preserved.
   // After cursorY scrolls the prompt line shifts to active-screen row 0.
   for (let i = 0; i < cursorY; i++) {
@@ -193,7 +159,6 @@ export const clearTerminalViewport = (
   const eraseScrollback = options.wipeScrollback ? "\x1b[3J" : "";
   term.write(`\x1b[2;1H\x1b[J${eraseScrollback}\x1b[1;${col}H`, () => {
     term.scrollToBottom();
-    options.onComplete?.();
   });
   return true;
 };
@@ -282,7 +247,6 @@ const wipeTerminalScrollback = (term: XTerm): void => {
   buffer.ybase = Math.max((buffer.ybase ?? 0) - scrollBackSize, 0);
   buffer.ydisp = Math.max((buffer.ydisp ?? 0) - scrollBackSize, 0);
   internal._core?._inputHandler?._onScroll?.fire?.(0);
-  historyMirrors.get(term)?.wipe();
 };
 
 export const shouldWipeScrollbackAfterFullErase = (
@@ -323,10 +287,6 @@ export const installEraseInDisplayHandlers = (
         inDec2026SyncBlock,
         wipeAllowed,
       );
-      if (useNativeScrollPreservation) {
-        const rowsToPreserve = getVisibleContentRowCount(term);
-        if (rowsToPreserve > 0) historyMirrors.get(term)?.scroll(rowsToPreserve);
-      }
       setScrollOnEraseInDisplayOnce(useNativeScrollPreservation);
       if (
         !useNativeScrollPreservation

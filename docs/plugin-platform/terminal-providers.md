@@ -185,14 +185,13 @@ application Provider adapters as plugins:
 - decoration results are capped again after Provider fan-out at 16 active
   rules and 32 total patterns. Plugin matching examines at most the first 4096
   characters of each incoming text segment and retains at most 256 plugin
-  matches per terminal write. Highlight colors are added to the incoming text;
-  ordinary input and output do not rescan existing rows. When decoration rules
-  change, the host rebuilds the normal-buffer history once from an unmodified
-  copy so enabled, disabled, added, removed, and recolored rules also update
-  existing content. Heavy output may skip matching until one quiet-window
-  rebuild. Patterns that can match an empty string are rejected because they
-  cannot produce a visible highlight. Normal boot and hibernate wake share the
-  same CWD-triggered decoration refresh path;
+  matches per terminal write. Highlight colors are applied to already-parsed
+  cells; ordinary input and output only rematch dirty rows. When rules change,
+  the host restores original cell colors and recolors the visible viewport
+  immediately, then finishes scrollback in idle slices. Heavy output may skip
+  matching until one quiet-window catch-up. Patterns that can match an empty
+  string are rejected because they cannot produce a visible highlight. Normal
+  boot and hibernate wake share the same CWD-triggered decoration refresh path;
 - link and hover Providers receive one bounded physical xterm line and return
   exact zero-based ranges. Links are restricted to credential-free HTTP(S)
   URLs, reuse the host link-modifier policy, and render hover text with host

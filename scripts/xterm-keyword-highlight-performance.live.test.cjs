@@ -66,12 +66,6 @@ if (!process.versions.electron) {
         loader: "ts",
         resolveDir: appRoot,
       },
-      alias: {
-        "@xterm/headless": path.join(
-          appRoot,
-          "node_modules/@xterm/headless/lib-headless/xterm-headless.js",
-        ),
-      },
       bundle: true,
       format: "cjs",
       platform: "browser",

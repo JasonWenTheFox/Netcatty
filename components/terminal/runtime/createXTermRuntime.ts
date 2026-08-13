@@ -49,7 +49,6 @@ import { netcattyBridge } from "../../../infrastructure/services/netcattyBridge"
 import {
   clearTerminalViewportAndSyncPty,
   installEraseInDisplayHandlers,
-  registerTerminalViewportScrollMirror,
 } from "../clearTerminalViewport";
 import { getTerminalSelectionForClipboard } from "../normalizeTerminalSelection";
 import {
@@ -602,6 +601,9 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+
+  const serializeAddon = new SerializeAddon();
+  term.loadAddon(serializeAddon);
 
   const searchAddon = new SearchAddon();
   term.loadAddon(searchAddon);
@@ -2032,13 +2034,6 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     },
   );
 
-  let keywordHighlighter: KeywordHighlighter | null = null;
-  const viewportScrollMirrorDisposable = registerTerminalViewportScrollMirror(
-    term,
-    (lines) => keywordHighlighter?.mirrorViewportScroll(lines),
-    () => keywordHighlighter?.mirrorScrollbackWipe(),
-  );
-
   const eraseScrollbackDisposable = installEraseInDisplayHandlers(term, {
     getClearWipesScrollback: () => ctx.terminalSettingsRef.current?.clearWipesScrollback ?? true,
     isInDec2026SyncBlock: () => inDec2026SyncBlock,
@@ -2223,13 +2218,8 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     resizeScheduler.schedule({ sessionId: id, cols, rows });
   });
 
-  keywordHighlighter = new KeywordHighlighter(term, {
-    canRebuild: () => !hasInlineImages(),
-    shouldPreserveScrollback: () => !(ctx.terminalSettingsRef.current?.clearWipesScrollback ?? true),
-    onRestoringSelectionChange: (restoring) => {
-      if (ctx.isRestoringSelectionRef) ctx.isRestoringSelectionRef.current = restoring;
-    },
-    onDidRebuild: () => pluginProviderHost?.terminalRebuilt(),
+  const keywordHighlighter = new KeywordHighlighter(term, {
+    serializeAddon,
   });
   keywordHighlighter.setRules(keywordHighlightRules, keywordHighlightEnabled);
 
@@ -2242,7 +2232,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   return {
     term,
     fitAddon,
-    serializeAddon: keywordHighlighter.serializeAddon,
+    serializeAddon,
     searchAddon,
     keywordHighlighter,
     cursorLineHighlighter,
@@ -2283,7 +2273,6 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
       hideHistoryPreview();
       historyPreviewBufferChangeDisposable.dispose();
       stopDprWatch();
-      viewportScrollMirrorDisposable.dispose();
       keywordHighlighter.dispose();
       cursorLineHighlighter.dispose();
       pluginLinkProviderHost?.dispose();
@@ -2326,6 +2315,11 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
         fitAddon.dispose();
       } catch (err) {
         logger.warn("[XTerm] fitAddon dispose failed", err);
+      }
+      try {
+        serializeAddon.dispose();
+      } catch (err) {
+        logger.warn("[XTerm] serializeAddon dispose failed", err);
       }
       try {
         searchAddon.dispose();
