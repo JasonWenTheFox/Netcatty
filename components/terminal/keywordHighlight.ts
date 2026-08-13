@@ -587,7 +587,6 @@ export class KeywordHighlighter implements IDisposable {
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
           this.replaceCatchUpMarker(null);
-          this.recolorVisible();
           break;
         }
         const sliceEnd = Math.min(buffer.length - 1, nextY + RECOLOR_SLICE_LINES - 1);
@@ -599,7 +598,6 @@ export class KeywordHighlighter implements IDisposable {
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
           this.replaceCatchUpMarker(null);
-          this.recolorVisible();
           break;
         }
         this.catchUpFrom = nextY;
