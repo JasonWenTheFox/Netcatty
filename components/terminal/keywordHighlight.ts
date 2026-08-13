@@ -352,26 +352,34 @@ export class KeywordHighlighter implements IDisposable {
 
   private readonly write: XTerm["write"] = (data, callback) => {
     if (this.disposed) return this.originalWrite(data, callback);
-    const buffer = this.term.buffer.active;
-    if (buffer.type !== "normal") {
+    const startedOnNormal = this.term.buffer.active.type === "normal";
+    if (!startedOnNormal && this.compiledPatterns.length === 0 && !this.hasPendingCatchUp()) {
       return this.originalWrite(data, callback);
     }
-    this.hasOutput = true;
-    if (this.compiledPatterns.length === 0 && !this.hasPendingCatchUp()) {
+    this.hasOutput = startedOnNormal || this.hasOutput;
+    if (this.compiledPatterns.length === 0 && !this.hasPendingCatchUp() && startedOnNormal) {
       return this.originalWrite(data, callback);
     }
-    const startY = buffer.baseY + buffer.cursorY;
-    const bypass = this.shouldBypassWrite(data);
+    const startY = this.term.buffer.active.baseY + this.term.buffer.active.cursorY;
+    const bypass = !startedOnNormal || this.shouldBypassWrite(data);
     if (bypass) {
-      if (this.enabled || this.compiledPatterns.length > 0 || this.hasPendingCatchUp()) {
+      if (startedOnNormal && (this.enabled || this.compiledPatterns.length > 0 || this.hasPendingCatchUp())) {
         if (this.resolveCatchUpY() === null) this.markCatchUp(startY);
         this.scheduleCatchUp();
       }
-      return this.originalWrite(data, callback);
+      return this.originalWrite(data, () => {
+        if (this.term.buffer.active.type === "normal" && !startedOnNormal) {
+          if (this.enabled || this.compiledPatterns.length > 0) {
+            this.markCatchUp(0);
+            this.scheduleCatchUp();
+          }
+        }
+        callback?.();
+      });
     }
-    // In-place CR / backspace / EL rewrite the current row. `\r\n` is a line
-    // advance and must not restore/repaint the previous prompt.
-    const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*K/.test(data); // eslint-disable-line no-control-regex
+    // In-place CR / backspace / EL / ICH / DCH rewrite the current row.
+    // `\r\n` is a line advance and must not restore/repaint the previous prompt.
+    const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*[K@PML]/.test(data); // eslint-disable-line no-control-regex
     const rewritesCurrentLine = typeof data === "string"
       && (/\r(?!\n)/.test(data) || data.includes("\x08") || eraseInLine);
     const startsWithLineAdvance = typeof data === "string" && /^(?:\r\n|\n)/.test(data);
@@ -399,6 +407,9 @@ export class KeywordHighlighter implements IDisposable {
             this.recolorRange(fromY, endY, true, true);
           }
         }
+      } else if (startedOnNormal && (this.enabled || this.compiledPatterns.length > 0)) {
+        this.markCatchUp(writeMarker && !writeMarker.isDisposed ? writeMarker.line : 0);
+        this.scheduleCatchUp();
       }
       writeMarker?.dispose();
       callback?.();
@@ -413,6 +424,7 @@ export class KeywordHighlighter implements IDisposable {
   };
 
   private readonly clear: XTerm["clear"] = () => {
+    this.restoreBuffer();
     this.clearStoredOriginals();
     this.cancelCatchUp();
     return this.originalClear();
@@ -559,9 +571,10 @@ export class KeywordHighlighter implements IDisposable {
         }
         this.catchUpFrom = nextY;
         if (performance.now() - turnStarted >= RECOLOR_SLICE_BUDGET_MS) {
+          this.replaceCatchUpMarker(nextY);
           await yieldToRenderer();
           turnStarted = performance.now();
-          nextY = Math.max(nextY, this.resolveCatchUpY() ?? nextY);
+          nextY = Math.max(0, this.resolveCatchUpY() ?? nextY);
         }
       }
     } finally {
@@ -672,8 +685,16 @@ export class KeywordHighlighter implements IDisposable {
   private logicalLineIsCurrent(startY: number, endY: number): boolean {
     const buffer = this.term.buffer.active;
     for (let y = startY; y <= endY; y += 1) {
-      const internal = getInternalLine(buffer.getLine(y));
+      const publicLine = buffer.getLine(y);
+      const internal = getInternalLine(publicLine);
       if (!internal || this.coloredGeneration.get(internal) !== this.ruleGeneration) {
+        return false;
+      }
+      const originals = this.originals.get(internal);
+      if (
+        originals?.fingerprint
+        && originals.fingerprint !== (publicLine?.translateToString(false) ?? "")
+      ) {
         return false;
       }
     }
@@ -708,18 +729,13 @@ export class KeywordHighlighter implements IDisposable {
     if (publicLine) originals.fingerprint = publicLine.translateToString(false);
   }
 
-  private restorePhysicalLine(y: number): void {
-    const publicLine = this.term.buffer.active.getLine(y);
+  private restorePhysicalLine(y: number, buffer = this.term.buffer.active): void {
+    const publicLine = buffer.getLine(y);
     const internal = getInternalLine(publicLine);
     if (!internal) return;
     const originals = this.originals.get(internal);
     if (!originals) return;
     this.coloredGeneration.delete(internal);
-    const fingerprint = publicLine?.translateToString(false) ?? "";
-    if (originals.fingerprint && originals.fingerprint !== fingerprint) {
-      this.originals.delete(internal);
-      return;
-    }
     for (let x = 0; x < internal.length; x += 1) {
       if (!originals.mask[x]) continue;
       const dataIndex = x * CELL_INDICES;
@@ -734,9 +750,8 @@ export class KeywordHighlighter implements IDisposable {
   }
 
   private restoreBuffer(): void {
-    const buffer = this.term.buffer.active;
-    if (buffer.type !== "normal") return;
-    for (let y = 0; y < buffer.length; y += 1) this.restorePhysicalLine(y);
+    const buffer = this.term.buffer.normal;
+    for (let y = 0; y < buffer.length; y += 1) this.restorePhysicalLine(y, buffer);
   }
 
   private ensureOriginals(line: InternalBufferLine): LineOriginals {

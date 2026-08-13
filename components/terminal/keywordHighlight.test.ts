@@ -300,6 +300,36 @@ test("rule changes preserve existing line timestamps", async () => {
   term.dispose();
 });
 
+test("same-line appends still restore original colors when rules are disabled", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "ERROR");
+  await write(term, " more");
+  assert.equal(cellRgb(term, 0, "ERROR"), RED);
+  highlighter.setRules(rule(), false);
+  await highlighter.whenSettled();
+  assert.notEqual(cellRgb(term, 0, "ERROR"), RED);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("clear restores highlighted retained cells before dropping originals", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "ERROR stays");
+  term.clear();
+  highlighter.setRules(rule(), false);
+  await highlighter.whenSettled();
+  const line = term.buffer.active.getLine(0)?.translateToString(true) ?? "";
+  if (line.includes("ERROR")) {
+    assert.notEqual(cellRgb(term, 0, "ERROR"), RED);
+  }
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("application reset clears highlight state with the visible terminal", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);
