@@ -367,7 +367,7 @@ export class KeywordHighlighter implements IDisposable {
     const bypass = !startedOnNormal || this.shouldBypassWrite(data);
     if (bypass) {
       if (startedOnNormal && (this.enabled || this.compiledPatterns.length > 0 || this.hasPendingCatchUp())) {
-        if (this.resolveCatchUpY() === null) this.markCatchUp(startY);
+        this.markCatchUp(startY);
         this.scheduleCatchUp();
       }
       return this.originalWrite(data, () => {
@@ -570,6 +570,7 @@ export class KeywordHighlighter implements IDisposable {
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
           this.replaceCatchUpMarker(null);
+          this.recolorVisible();
           break;
         }
         const sliceEnd = Math.min(buffer.length - 1, nextY + RECOLOR_SLICE_LINES - 1);
@@ -581,6 +582,7 @@ export class KeywordHighlighter implements IDisposable {
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
           this.replaceCatchUpMarker(null);
+          this.recolorVisible();
           break;
         }
         this.catchUpFrom = nextY;
@@ -716,15 +718,11 @@ export class KeywordHighlighter implements IDisposable {
         return false;
       }
       const originals = this.originals.get(internal);
-      if (
-        originals?.fingerprint
-        && originals.fingerprint !== (publicLine?.translateToString(false) ?? "")
-      ) {
-        return false;
-      }
-      if (originals && !this.lineStillHasAppliedHighlights(internal, originals)) {
-        return false;
-      }
+      const fingerprint = publicLine?.translateToString(false) ?? "";
+      // An empty/no-match stamp must not survive when the row is later filled
+      // or recycled with the same BufferLine identity (yes/log floods).
+      if (!originals || originals.fingerprint !== fingerprint) return false;
+      if (!this.lineStillHasAppliedHighlights(internal, originals)) return false;
     }
     return true;
   }
@@ -733,20 +731,21 @@ export class KeywordHighlighter implements IDisposable {
     line: InternalBufferLine,
     originals: LineOriginals,
   ): boolean {
-    let sawMaskedCell = false;
     for (let x = 0; x < line.length; x += 1) {
       if (!originals.mask[x]) continue;
-      sawMaskedCell = true;
-      if (line._data[x * CELL_INDICES + CELL_FG] !== originals.fg[x]) return true;
+      if (line._data[x * CELL_INDICES + CELL_FG] === originals.fg[x]) return false;
     }
-    return !sawMaskedCell;
+    return true;
   }
 
   private stampLogicalLine(startY: number, endY: number): void {
     const buffer = this.term.buffer.active;
     for (let y = startY; y <= endY; y += 1) {
-      const internal = getInternalLine(buffer.getLine(y));
-      if (internal) this.coloredGeneration.set(internal, this.ruleGeneration);
+      const publicLine = buffer.getLine(y);
+      const internal = getInternalLine(publicLine);
+      if (!internal) continue;
+      this.coloredGeneration.set(internal, this.ruleGeneration);
+      this.ensureOriginals(internal).fingerprint = publicLine?.translateToString(false) ?? "";
     }
   }
 

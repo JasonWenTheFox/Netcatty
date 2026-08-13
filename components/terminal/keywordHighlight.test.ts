@@ -40,6 +40,18 @@ const cellRgb = (term: XTermType, y: number, text: string): number | undefined =
   return line?.getCell(index)?.getFgColor();
 };
 
+const uncoloredKeywordLines = (term: XTermType, text: string, rgb: number): number[] => {
+  const missed: number[] = [];
+  for (let y = 0; y < term.buffer.active.length; y += 1) {
+    const line = term.buffer.active.getLine(y);
+    const raw = line?.translateToString(true) ?? "";
+    const index = raw.indexOf(text);
+    if (index < 0) continue;
+    if (line?.getCell(index)?.getFgColor() !== rgb) missed.push(y);
+  }
+  return missed;
+};
+
 const firstRgbMatch = (term: XTermType, rgb: number): number => {
   let count = 0;
   for (let y = 0; y < term.buffer.active.length; y += 1) {
@@ -462,6 +474,42 @@ test("wrapped matches stay on the same logical line", async () => {
   highlighter.setRules(rule(), true);
   await write(term, "xx ERROR");
   assert.equal(cellRgb(term, 0, "ER") === RED || cellRgb(term, 1, "ROR") === RED, true);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("identical flood lines are all colored after quiet catch-up", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 12, scrollback: 40 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  const line = "2026-08-13 INFO worker=1 WARN ERROR failed from 10.2.0.1 payload=xxxxxxxx";
+  for (let index = 0; index < 6; index += 1) {
+    noteTerminalOutputPressureData(term, `${line}\r\n`);
+    await write(term, `${line}\r\n`);
+  }
+  const flood = Array.from({ length: 48 }, () => line).join("\r\n");
+  noteTerminalOutputPressureData(term, flood);
+  await write(term, flood);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await highlighter.whenSettled();
+  assert.deepEqual(uncoloredKeywordLines(term, "ERROR", RED), []);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("recycled identical flood rows are recolored on catch-up", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 8, scrollback: 12 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  const line = "2026-08-13 INFO worker=1 WARN ERROR failed from 10.2.0.1";
+  const flood = Array.from({ length: 40 }, () => line).join("\r\n");
+  noteTerminalOutputPressureData(term, flood);
+  await write(term, flood);
+  noteTerminalOutputPressureData(term, flood);
+  await write(term, flood);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await highlighter.whenSettled();
+  assert.deepEqual(uncoloredKeywordLines(term, "ERROR", RED), []);
   highlighter.dispose();
   term.dispose();
 });
