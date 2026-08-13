@@ -485,7 +485,13 @@ export class KeywordHighlighter implements IDisposable {
 
   private resolveCatchUpY(): number | null {
     if (this.catchUpStartMarker) {
-      return this.catchUpStartMarker.isDisposed ? 0 : Math.max(0, this.catchUpStartMarker.line);
+      if (!this.catchUpStartMarker.isDisposed) {
+        return Math.max(0, this.catchUpStartMarker.line);
+      }
+      // Trimmed away: the pending range is the whole remaining buffer.
+      this.catchUpStartMarker = null;
+      this.catchUpFrom = 0;
+      return 0;
     }
     return this.catchUpFrom;
   }
@@ -504,9 +510,9 @@ export class KeywordHighlighter implements IDisposable {
     const current = this.resolveCatchUpY();
     const next = current === null ? fromY : Math.min(current, fromY);
     this.catchUpFrom = next;
-    if (current !== null && current <= fromY && this.catchUpStartMarker && !this.catchUpStartMarker.isDisposed) {
-      return;
-    }
+    // Already covers this write. After trim, numeric 0 is enough — do not
+    // registerMarker on every subsequent flood chunk.
+    if (current !== null && current <= fromY) return;
     this.replaceCatchUpMarker(next);
   }
 
