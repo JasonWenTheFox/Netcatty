@@ -580,12 +580,12 @@ function startPtyJob(ptyStream, command, options) {
   // line containing __NCMCP_, which would otherwise leave concatenated text
   // on screen after typedInput echo).
   //
-  // Only SIGINT (Ctrl+C) when expectedPrompt confirms an idle editable prompt.
-  // Otherwise line-kill alone still clears half-typed primary-line input
-  // without interrupting a user-started foreground process.
-  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind, {
-    allowInterrupt: Boolean(expectedPrompt),
-  });
+  // Never prefix with Ctrl+C here. expectedPrompt means the live tail already
+  // ends at an idle prompt, so ETX is unnecessary — and on POSIX ptys VINTR
+  // can flush the next write. The PowerShell wrapper starts with `$`, so a
+  // dropped first byte prevents the start marker from arriving. Without a
+  // fresh prompt, ETX would also SIGINT a user-started foreground process.
+  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind);
   if (clearPrefix) {
     ptyStream.write(clearPrefix);
   }
@@ -631,7 +631,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {number} [options.timeoutMs=60000] - Command timeout in milliseconds
  * @param {string} [options.chatSessionId] - Chat session ID for scoped cancellation
  * @param {AbortSignal} [options.abortSignal] - AbortSignal to cancel execution
- * @param {string} [options.expectedPrompt] - Last observed idle prompt for exact fallback matching; also gates Ctrl+C in the pending-input clear prefix (only interrupt when this confirms an editable idle prompt)
+ * @param {string} [options.expectedPrompt] - Last observed idle prompt for exact fallback matching. Not used to inject Ctrl+C — VINTR races with the wrapper write on POSIX ptys.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo
  */

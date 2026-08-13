@@ -117,29 +117,37 @@ test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt 
   assert.equal(writes[1].includes("\x03"), false);
 });
 
-test("execViaPty sends Ctrl+C only when expectedPrompt confirms an editable idle prompt", async () => {
-  const writes = [];
-  class CapturePty extends EventEmitter {
-    write(data) {
-      writes.push(String(data));
-      const marker = markerFromWrite(data);
-      if (!marker) return;
-      queueMicrotask(() => {
-        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
-      });
+test("execViaPty never queues Ctrl+C before the wrapper, even on a confirmed idle prompt", async () => {
+  async function captureWrites(shellKind, command, expectedPrompt) {
+    const writes = [];
+    class CapturePty extends EventEmitter {
+      write(data) {
+        writes.push(String(data));
+        const marker = markerFromWrite(data);
+        if (!marker) return;
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+        });
+      }
     }
+    const result = await execViaPty(new CapturePty(), command, {
+      shellKind,
+      timeoutMs: 1000,
+      expectedPrompt,
+    });
+    assert.equal(result.ok, true);
+    return writes;
   }
 
-  const result = await execViaPty(new CapturePty(), "uname -a", {
-    shellKind: "posix",
-    timeoutMs: 1000,
-    expectedPrompt: "user@host:~$",
-  });
+  const posixWrites = await captureWrites("posix", "uname -a", "user@host:~$");
+  assert.equal(posixWrites[0], "i\x15\x0b");
+  assert.equal(posixWrites.join("").includes("\x03"), false);
 
-  assert.equal(result.ok, true);
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x03i\x15\x0b", "expected Ctrl+C, vi-insert restore, then line-clear");
-  assert.match(writes[1], /uname -a/);
+  // Unix pwsh + VINTR: a flushed `$` would drop the marker assignment.
+  const psWrites = await captureWrites("powershell", "Get-Host", "PS /home/alice>");
+  assert.equal(psWrites[0], "i\x15\x0b\x1b\x1bi\x08");
+  assert.equal(psWrites.join("").includes("\x03"), false);
+  assert.match(psWrites[1], /^\$/);
 });
 
 test("execViaPty clears unfinished PowerShell input without a leading Escape (#2962)", async () => {
