@@ -477,8 +477,13 @@ export class KeywordHighlighter implements IDisposable {
     const buffer = this.term.buffer.active;
     const viewportY = buffer.viewportY;
     const baseY = buffer.baseY;
-    const followedOutput = baseY !== this.lastBaseY
-      && viewportY - this.lastViewportY === baseY - this.lastBaseY;
+    // Full scrollback keeps baseY/viewportY pinned while rows recycle. That is
+    // still output-driven and must not rematch the visible area on every write.
+    const pinnedToBottom = viewportY === baseY;
+    const followedOutput = pinnedToBottom || (
+      baseY !== this.lastBaseY
+      && viewportY - this.lastViewportY === baseY - this.lastBaseY
+    );
     this.lastViewportY = viewportY;
     this.lastBaseY = baseY;
     return followedOutput;

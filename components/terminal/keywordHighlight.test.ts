@@ -511,6 +511,24 @@ test("identical flood lines are all colored after quiet catch-up", async () => {
   term.dispose();
 });
 
+test("saturated flood does not rematch the pinned viewport on each write", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 6, scrollback: 8 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  const line = "2026-08-13 INFO worker=1 WARN ERROR failed from 10.2.0.1";
+  const chunk = Array.from({ length: 16 }, () => line).join("\r\n");
+  for (let index = 0; index < 4; index += 1) {
+    noteTerminalOutputPressureData(term, chunk);
+    await write(term, chunk);
+  }
+  assert.equal(highlighter.rebuildCount, 0);
+  const viewportY = term.buffer.active.viewportY;
+  assert.notEqual(cellRgb(term, viewportY, "ERROR"), RED);
+  assert.notEqual(cellRgb(term, viewportY + 2, "ERROR"), RED);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("recycled identical flood rows are recolored on catch-up", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 8, scrollback: 12 });
   const highlighter = new KeywordHighlighter(term);
