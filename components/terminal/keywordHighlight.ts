@@ -207,6 +207,10 @@ export class KeywordHighlighter implements IDisposable {
   private catchUpCounted = false;
   private catchUpRunning = false;
   private catchUpGeneration = 0;
+  private ruleGeneration = 0;
+  private readonly coloredGeneration = new WeakMap<InternalBufferLine, number>();
+  private lastViewportY = 0;
+  private lastBaseY = 0;
   private hasOutput = false;
 
   get pendingPristineBytes(): number {
@@ -250,9 +254,16 @@ export class KeywordHighlighter implements IDisposable {
     term.reset = this.reset;
     term.clear = this.clear;
     term.resize = this.resize;
+    this.lastViewportY = term.buffer.active.viewportY;
+    this.lastBaseY = term.buffer.active.baseY;
     this.disposables.push(
       term.onScroll(() => {
-        if (this.hasPendingCatchUp()) this.recolorVisible();
+        if (!this.hasPendingCatchUp()) {
+          this.rememberScrollPosition();
+          return;
+        }
+        if (this.isOutputDrivenScroll()) return;
+        this.recolorVisible();
       }),
       term.buffer.onBufferChange(() => {
         if (this.term.buffer.active.type !== "normal") return;
@@ -276,6 +287,7 @@ export class KeywordHighlighter implements IDisposable {
       this.catchUpTimer = null;
     }
     this.catchUpGeneration += 1;
+    this.ruleGeneration += 1;
     this.catchUpCounted = true;
     this.rebuildCount += 1;
     const started = performance.now();
@@ -344,20 +356,29 @@ export class KeywordHighlighter implements IDisposable {
     if (buffer.type !== "normal") {
       return this.originalWrite(data, callback);
     }
-    const startY = buffer.baseY + buffer.cursorY;
     this.hasOutput = true;
-    const newlineCount = typeof data === "string" ? (data.match(/\r\n|\n/g)?.length ?? 0) : 0;
-    const bypass = this.shouldBypass(data) || newlineCount >= BULK_WRITE_LINE_BREAKS;
+    if (this.compiledPatterns.length === 0 && !this.hasPendingCatchUp()) {
+      return this.originalWrite(data, callback);
+    }
+    const startY = buffer.baseY + buffer.cursorY;
+    const bypass = this.shouldBypassWrite(data);
+    if (bypass) {
+      if (this.enabled || this.compiledPatterns.length > 0 || this.hasPendingCatchUp()) {
+        if (this.resolveCatchUpY() === null) this.markCatchUp(startY);
+        this.scheduleCatchUp();
+      }
+      return this.originalWrite(data, callback);
+    }
     // In-place CR / backspace / EL rewrite the current row. `\r\n` is a line
     // advance and must not restore/repaint the previous prompt.
     const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*K/.test(data); // eslint-disable-line no-control-regex
     const rewritesCurrentLine = typeof data === "string"
       && (/\r(?!\n)/.test(data) || data.includes("\x08") || eraseInLine);
     const startsWithLineAdvance = typeof data === "string" && /^(?:\r\n|\n)/.test(data);
-    const writeMarker = this.term.registerMarker(0);
-    if (!bypass && this.compiledPatterns.length > 0 && rewritesCurrentLine) {
+    if (this.compiledPatterns.length > 0 && rewritesCurrentLine) {
       this.restorePhysicalLine(startY);
     }
+    const writeMarker = this.term.registerMarker(0);
     return this.originalWrite(data, () => {
       const active = this.term.buffer.active;
       if (active.type === "normal") {
@@ -369,13 +390,13 @@ export class KeywordHighlighter implements IDisposable {
           }
         } else {
           const fromY = startsWithLineAdvance ? Math.min(endY, writeMarker.line + 1) : writeMarker.line;
-          if (bypass || this.compiledPatterns.length === 0) {
-            if (this.enabled || this.hasStoredOriginalsInRange(fromY, endY)) {
+          if (this.compiledPatterns.length === 0) {
+            if (this.hasStoredOriginalsInRange(fromY, endY)) {
               this.markCatchUp(fromY);
               this.scheduleCatchUp();
             }
           } else {
-            this.recolorRange(fromY, endY, true);
+            this.recolorRange(fromY, endY, true, true);
           }
         }
       }
@@ -400,6 +421,7 @@ export class KeywordHighlighter implements IDisposable {
   private readonly resize: XTerm["resize"] = (cols, rows) => {
     this.restoreBuffer();
     const result = this.originalResize(cols, rows);
+    this.ruleGeneration += 1;
     if (this.compiledPatterns.length > 0) {
       this.recolorVisible();
       this.markCatchUp(0);
@@ -408,10 +430,37 @@ export class KeywordHighlighter implements IDisposable {
     return result;
   };
 
-  private shouldBypass(data: string | Uint8Array): boolean {
+  private shouldBypassWrite(data: string | Uint8Array): boolean {
     if (this.options.shouldBypassHighlight?.()) return true;
     if (typeof data !== "string") return true;
-    return shouldDegradeTerminalKeywordHighlight(this.term, data);
+    if (shouldDegradeTerminalKeywordHighlight(this.term, data)) return true;
+    return this.countNewlines(data) >= BULK_WRITE_LINE_BREAKS;
+  }
+
+  private countNewlines(data: string): number {
+    let count = 0;
+    for (let index = 0; index < data.length; index += 1) {
+      if (data.charCodeAt(index) !== 10) continue;
+      count += 1;
+    }
+    return count;
+  }
+
+  private rememberScrollPosition(): void {
+    const buffer = this.term.buffer.active;
+    this.lastViewportY = buffer.viewportY;
+    this.lastBaseY = buffer.baseY;
+  }
+
+  private isOutputDrivenScroll(): boolean {
+    const buffer = this.term.buffer.active;
+    const viewportY = buffer.viewportY;
+    const baseY = buffer.baseY;
+    const followedOutput = baseY !== this.lastBaseY
+      && viewportY - this.lastViewportY === baseY - this.lastBaseY;
+    this.lastViewportY = viewportY;
+    this.lastBaseY = baseY;
+    return followedOutput;
   }
 
   private hasPendingCatchUp(): boolean {
@@ -501,7 +550,7 @@ export class KeywordHighlighter implements IDisposable {
         const viewportStart = buffer.viewportY;
         const viewportEnd = viewportStart + this.term.rows - 1;
         const refresh = sliceEnd >= viewportStart && nextY <= viewportEnd;
-        this.recolorRange(nextY, sliceEnd, refresh);
+        this.recolorRange(nextY, sliceEnd, refresh, false);
         nextY = sliceEnd + 1;
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
@@ -509,7 +558,6 @@ export class KeywordHighlighter implements IDisposable {
           break;
         }
         this.catchUpFrom = nextY;
-        this.replaceCatchUpMarker(nextY);
         if (performance.now() - turnStarted >= RECOLOR_SLICE_BUDGET_MS) {
           await yieldToRenderer();
           turnStarted = performance.now();
@@ -542,10 +590,10 @@ export class KeywordHighlighter implements IDisposable {
     if (buffer.type !== "normal") return;
     const start = buffer.viewportY;
     const end = Math.min(buffer.length - 1, start + this.term.rows - 1);
-    this.recolorRange(start, end, true);
+    this.recolorRange(start, end, true, false);
   }
 
-  private recolorRange(startY: number, endY: number, refresh: boolean): void {
+  private recolorRange(startY: number, endY: number, refresh: boolean, force: boolean): void {
     const buffer = this.term.buffer.active;
     if (buffer.type !== "normal") return;
     const first = Math.max(0, Math.min(startY, endY));
@@ -561,7 +609,7 @@ export class KeywordHighlighter implements IDisposable {
         y += 1;
         continue;
       }
-      this.recolorLogicalBounds(bounds.startY, bounds.endY);
+      this.recolorLogicalBounds(bounds.startY, bounds.endY, force);
       paintedStart = Math.min(paintedStart, bounds.startY);
       paintedEnd = Math.max(paintedEnd, bounds.endY);
       y = bounds.endY + 1;
@@ -588,10 +636,15 @@ export class KeywordHighlighter implements IDisposable {
     return text;
   }
 
-  private recolorLogicalBounds(startY: number, endY: number): void {
+  private recolorLogicalBounds(startY: number, endY: number, force: boolean): void {
+    if (!force && this.logicalLineIsCurrent(startY, endY)) return;
     for (let y = startY; y <= endY; y += 1) this.restorePhysicalLine(y);
-    if (this.compiledPatterns.length === 0) return;
+    if (this.compiledPatterns.length === 0) {
+      this.stampLogicalLine(startY, endY);
+      return;
+    }
     if (collectMatches(this.readLogicalLineText(startY, endY), this.compiledPatterns).length === 0) {
+      this.stampLogicalLine(startY, endY);
       return;
     }
     const logical = this.readLogicalLine(startY);
@@ -612,6 +665,26 @@ export class KeywordHighlighter implements IDisposable {
         if (line) this.colorPhysicalRange(y, 0, line.length, match.rgb);
       }
       this.colorPhysicalRange(endCell.y, 0, endCell.x, match.rgb);
+    }
+    this.stampLogicalLine(startY, endY);
+  }
+
+  private logicalLineIsCurrent(startY: number, endY: number): boolean {
+    const buffer = this.term.buffer.active;
+    for (let y = startY; y <= endY; y += 1) {
+      const internal = getInternalLine(buffer.getLine(y));
+      if (!internal || this.coloredGeneration.get(internal) !== this.ruleGeneration) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private stampLogicalLine(startY: number, endY: number): void {
+    const buffer = this.term.buffer.active;
+    for (let y = startY; y <= endY; y += 1) {
+      const internal = getInternalLine(buffer.getLine(y));
+      if (internal) this.coloredGeneration.set(internal, this.ruleGeneration);
     }
   }
 
@@ -641,6 +714,7 @@ export class KeywordHighlighter implements IDisposable {
     if (!internal) return;
     const originals = this.originals.get(internal);
     if (!originals) return;
+    this.coloredGeneration.delete(internal);
     const fingerprint = publicLine?.translateToString(false) ?? "";
     if (originals.fingerprint && originals.fingerprint !== fingerprint) {
       this.originals.delete(internal);
