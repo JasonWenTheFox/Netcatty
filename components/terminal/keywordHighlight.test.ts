@@ -755,6 +755,52 @@ test("rule changes preserve existing line timestamps", async () => {
   term.dispose();
 });
 
+test("long sliced rule rebuild preserves line timestamps", async () => {
+  const term = new XTerm({ cols: 40, rows: 5, scrollback: 1500, allowProposedApi: true });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await new Promise<void>((resolve) => {
+    writeTerminalDataWithLineTimestamps(
+      term,
+      Array.from({ length: 700 }, (_, index) => `line-${index} ERROR`).join("\r\n"),
+      resolve,
+      { timestampDate: new Date(2026, 7, 13, 12, 34, 56) },
+    );
+  });
+  assert.equal(getVisibleTerminalLineTimestampRows(term)[0]?.label, "12:34:56");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  assert.equal(getVisibleTerminalLineTimestampRows(term)[0]?.label, "12:34:56");
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("resize waits for deferred pristine output to keep parser order", async () => {
+  const term = new XTerm({ cols: 10, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  let bypass = true;
+  const highlighter = new KeywordHighlighter(term, { shouldBypassHighlight: () => bypass });
+  highlighter.setRules(rule(), true);
+  await write(term, "abc\x1b[20CZZ ERROR");
+
+  term.resize(20, 5);
+  bypass = false;
+  await highlighter.whenSettled();
+
+  // eslint-disable-next-line no-control-regex -- terminal protocol bytes are intentional.
+  const stripControls = (value: string) => value.replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "");
+  assert.equal(
+    stripControls(highlighter.serializeAddon.serialize()),
+    stripControls(visibleSerializer.serialize()),
+  );
+  assert.equal(term.cols, 20);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("terminal reset wins over an in-flight rule rebuild", async () => {
   const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();

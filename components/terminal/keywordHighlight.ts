@@ -12,7 +12,10 @@ import { isSafePluginDecorationPattern } from "../../domain/pluginTerminalProvid
 import { checkRegexSafetyPattern } from "../../lib/regexSafety";
 import type { KeywordHighlightRule } from "../../types";
 import { compileRe2RangeMatcher, forEachNonEmptyRegexMatch } from "./keywordHighlightRegex";
-import { restoreTerminalLineTimestampAnchors } from "./runtime/terminalLineTimestamps";
+import {
+  restoreTerminalLineTimestampLedger,
+  snapshotTerminalLineTimestampLedger,
+} from "./runtime/terminalLineTimestamps";
 import { shouldDegradeTerminalKeywordHighlight } from "./runtime/terminalOutputPressure";
 
 type OscLinkData = { readonly id?: string; readonly uri: string };
@@ -70,6 +73,7 @@ type InternalScrollTerminal = {
   _core?: {
     scroll?: (eraseAttr: unknown, isWrapped: boolean) => void;
     _inputHandler?: { _eraseAttrData?: () => unknown };
+    buffer?: { scrollTop?: number; scrollBottom?: number };
   };
 };
 
@@ -669,6 +673,7 @@ export class KeywordHighlighter implements IDisposable {
   private deferredPristineBytes = 0;
   private transformerNeedsRebuild = false;
   private visibleRendererWasPaused = false;
+  private deferredResize: { cols: number; rows: number } | null = null;
   private activePristineBytesRemaining = 0;
   private pristineBackpressureSettled: Promise<void> | null = null;
   private resolvePristineBackpressure: (() => void) | null = null;
@@ -717,7 +722,16 @@ export class KeywordHighlighter implements IDisposable {
     term.reset = this.reset;
     term.clear = this.clear;
     this.disposables.push(
-      term.onResize(({ cols, rows }) => this.pristineTerm.resize(cols, rows)),
+      term.onResize(({ cols, rows }) => {
+        if (
+          this.deferredPristineWrites.length > 0
+          || this.pristineFlushPromise !== null
+        ) {
+          this.deferredResize = { cols, rows };
+          return;
+        }
+        this.pristineTerm.resize(cols, rows);
+      }),
       term.buffer.onBufferChange(() => {
         if (term.buffer.active.type === "normal" && this.pendingRulesChanged) {
           this.scheduleRebuild();
@@ -906,7 +920,24 @@ export class KeywordHighlighter implements IDisposable {
     const scroll = internal._core?.scroll;
     const eraseAttr = internal._core?._inputHandler?._eraseAttrData?.();
     if (typeof scroll !== "function" || eraseAttr === undefined) return;
-    for (let index = 0; index < lines; index += 1) scroll.call(internal._core, eraseAttr, false);
+    const buffer = internal._core?.buffer as {
+      scrollTop?: number;
+      scrollBottom?: number;
+    } | undefined;
+    const previousScrollTop = buffer?.scrollTop;
+    const previousScrollBottom = buffer?.scrollBottom;
+    try {
+      if (buffer) {
+        buffer.scrollTop = 0;
+        buffer.scrollBottom = this.pristineTerm.rows - 1;
+      }
+      for (let index = 0; index < lines; index += 1) scroll.call(internal._core, eraseAttr, false);
+    } finally {
+      if (buffer && previousScrollTop !== undefined && previousScrollBottom !== undefined) {
+        buffer.scrollTop = previousScrollTop;
+        buffer.scrollBottom = previousScrollBottom;
+      }
+    }
   }
 
   mirrorScrollbackWipe(): void {
@@ -1044,6 +1075,11 @@ export class KeywordHighlighter implements IDisposable {
       this.activePristineBytesRemaining = 0;
       this.pristineFlushPromise = null;
       this.resolvePristineBackpressureIfReady();
+      if (this.deferredPristineWrites.length === 0 && this.deferredResize) {
+        const { cols, rows } = this.deferredResize;
+        this.deferredResize = null;
+        this.pristineTerm.resize(cols, rows);
+      }
       if (
         this.deferredPristineWrites.length > 0
         && (
@@ -1193,6 +1229,7 @@ export class KeywordHighlighter implements IDisposable {
       ? (selection.end.y - selection.start.y) * this.term.cols
         + (selection.end.x - selection.start.x)
       : 0;
+    const timestampLedger = snapshotTerminalLineTimestampLedger(this.term);
     this.rebuildCount += 1;
     this.transformer.resetParserState();
     this.transformerNeedsRebuild = false;
@@ -1234,7 +1271,7 @@ export class KeywordHighlighter implements IDisposable {
     } finally {
       this.setVisibleRenderPaused(false);
     }
-    restoreTerminalLineTimestampAnchors(this.term);
+    restoreTerminalLineTimestampLedger(this.term, timestampLedger);
     if (viewportOffset > 0) {
       this.term.scrollToLine(Math.max(0, this.term.buffer.normal.baseY - viewportOffset));
     }

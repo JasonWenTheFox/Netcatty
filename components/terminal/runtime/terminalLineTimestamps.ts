@@ -806,6 +806,26 @@ export const restoreTerminalLineTimestampAnchors = (term: XTerm): void => {
   notifyTimestampStore(store);
 };
 
+export const snapshotTerminalLineTimestampLedger = (term: XTerm): Array<{
+  label: string;
+  secondKey: number;
+  line: number;
+}> => getTimestampStore(term).ledger.map((entry) => ({
+  label: entry.label,
+  secondKey: entry.secondKey,
+  line: entry.marker && !entry.marker.isDisposed ? entry.marker.line : entry.line,
+}));
+
+export const restoreTerminalLineTimestampLedger = (
+  term: XTerm,
+  snapshot: readonly { label: string; secondKey: number; line: number }[],
+): void => {
+  const store = getTimestampStore(term);
+  store.ledger = snapshot.map((entry) => ({ ...entry }));
+  store.lastStampSecondKey = store.ledger.at(-1)?.secondKey ?? null;
+  restoreTerminalLineTimestampAnchors(term);
+};
+
 /**
  * Refresh ledger.line from live sparse anchors. Drops entries whose markers
  * were disposed by scrollback trim. Bare (unanchored) lines keep their values
