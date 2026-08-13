@@ -191,6 +191,8 @@ export class KeywordHighlighter implements IDisposable {
   lastRebuildTimings: Record<string, number> = {};
 
   private readonly originals = new WeakMap<InternalBufferLine, LineOriginals>();
+  /** No-match rows only need a fingerprint; do not allocate cell snapshots. */
+  private readonly fingerprints = new WeakMap<InternalBufferLine, string>();
   private readonly originalWrite: XTerm["write"];
   private readonly originalReset: XTerm["reset"];
   private readonly originalClear: XTerm["clear"];
@@ -729,10 +731,11 @@ export class KeywordHighlighter implements IDisposable {
       }
       const originals = this.originals.get(internal);
       const fingerprint = publicLine?.translateToString(false) ?? "";
+      const stamped = originals ? originals.fingerprint : this.fingerprints.get(internal);
       // An empty/no-match stamp must not survive when the row is later filled
       // or recycled with the same BufferLine identity (yes/log floods).
-      if (!originals || originals.fingerprint !== fingerprint) return false;
-      if (!this.lineStillHasAppliedHighlights(internal, originals)) return false;
+      if (stamped === undefined || stamped !== fingerprint) return false;
+      if (originals && !this.lineStillHasAppliedHighlights(internal, originals)) return false;
     }
     return true;
   }
@@ -755,7 +758,10 @@ export class KeywordHighlighter implements IDisposable {
       const internal = getInternalLine(publicLine);
       if (!internal) continue;
       this.coloredGeneration.set(internal, this.ruleGeneration);
-      this.ensureOriginals(internal).fingerprint = publicLine?.translateToString(false) ?? "";
+      const fingerprint = publicLine?.translateToString(false) ?? "";
+      const originals = this.originals.get(internal);
+      if (originals) originals.fingerprint = fingerprint;
+      else this.fingerprints.set(internal, fingerprint);
     }
   }
 
@@ -811,9 +817,10 @@ export class KeywordHighlighter implements IDisposable {
         fg: new Uint32Array(line.length),
         content: new Uint32Array(line.length),
         mask: new Uint8Array(line.length),
-        fingerprint: "",
+        fingerprint: this.fingerprints.get(line) ?? originals?.fingerprint ?? "",
       };
       this.originals.set(line, originals);
+      this.fingerprints.delete(line);
     }
     return originals;
   }
@@ -832,7 +839,10 @@ export class KeywordHighlighter implements IDisposable {
     const buffer = this.term.buffer.normal;
     for (let y = 0; y < buffer.length; y += 1) {
       const internal = getInternalLine(buffer.getLine(y));
-      if (internal) this.originals.delete(internal);
+      if (internal) {
+        this.originals.delete(internal);
+        this.fingerprints.delete(internal);
+      }
     }
   }
 
