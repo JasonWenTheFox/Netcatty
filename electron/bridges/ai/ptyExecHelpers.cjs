@@ -155,9 +155,11 @@ function buildPosixWrapperBody(command, marker) {
  * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
  * concatenated with the wrapped agent command (#2962).
  *
- * - readline / fish: Ctrl+U + Ctrl+K clear residual text on the primary line
- *   (Ctrl+U kills to start of line; Ctrl+K kills after the cursor). Fish
- *   treats Ctrl+U as kill-whole-line; the trailing Ctrl+K is a no-op.
+ * - readline / fish: send `i` first so bash/zsh/fish vi-mode command state
+ *   returns to insert. Emacs and vi-insert treat `i` as a literal, which the
+ *   following line-kills immediately discard. Then Ctrl+U + Ctrl+K clear
+ *   residual text on both sides of the cursor. Fish treats Ctrl+U as
+ *   kill-whole-line; the trailing Ctrl+K is a no-op.
  * - PowerShell: Escape is RevertLine in Windows-mode PSReadLine (the Windows
  *   default). Ctrl+U/Ctrl+K only bind in Emacs/Vi, so they cannot be the
  *   PowerShell-only sequence. Escape is followed by the emacs/vi kills so
@@ -182,7 +184,9 @@ function buildPendingInputClearPrefix(shellKind, options = {}) {
   // not Ctrl+U/Ctrl+K. Keep the emacs/vi kills after Escape so Unix pwsh
   // still clears the edit buffer.
   if (shellKind === "powershell") return allowInterrupt ? "\x03\x1b\x15\x0b" : "\x1b\x15\x0b";
-  return allowInterrupt ? "\x03\x15\x0b" : "\x15\x0b";
+  // `i` before the line-kills restores readline/fish vi insert mode. Do not
+  // put `i` after the kills — that would prefix the wrapper with a literal i.
+  return allowInterrupt ? "\x03i\x15\x0b" : "i\x15\x0b";
 }
 
 function buildWrappedCommand(command, shellKind, marker) {

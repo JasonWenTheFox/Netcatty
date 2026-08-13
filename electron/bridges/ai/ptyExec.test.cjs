@@ -26,6 +26,8 @@ class ShellBackedPty extends EventEmitter {
     let script = String(data);
     if (
       script === "\x03" ||
+      script === "\x03i\x15\x0b" ||
+      script === "i\x15\x0b" ||
       script === "\x03\x15\x0b" ||
       script === "\x15\x0b" ||
       script === "\x03\x1b\x15\x0b" ||
@@ -36,7 +38,8 @@ class ShellBackedPty extends EventEmitter {
       return;
     }
     if (script.startsWith("\x03")) script = script.slice(1);
-    if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
+    if (script.startsWith("i\x15\x0b")) script = script.slice(3);
+    else if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
     else if (script.startsWith("\x15\x0b")) script = script.slice(2);
     else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
       script = script.slice(1);
@@ -53,22 +56,29 @@ function markerFromWrite(data) {
 }
 
 test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
-  assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix"), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("fish"), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("unknown"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix(""), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("unknown"), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix(""), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
 test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03\x1b\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
   assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "\x1b\x15\x0b");
+});
+
+test("posix/fish clear prefix restores vi insert mode before line-kills", () => {
+  const prefix = buildPendingInputClearPrefix("posix");
+  assert.equal(prefix.startsWith("i"), true, "vi command mode needs `i` before the wrapper is typed");
+  assert.equal(prefix.endsWith("\x15\x0b"), true);
+  assert.equal(prefix.indexOf("i"), 0, "`i` must come before Ctrl+U/Ctrl+K so a literal i is discarded");
 });
 
 test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
@@ -91,7 +101,7 @@ test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt 
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x15\x0b", "expected Ctrl+U/Ctrl+K clear without Ctrl+C when prompt is unconfirmed");
+  assert.equal(writes[0], "i\x15\x0b", "expected vi-insert restore then Ctrl+U/Ctrl+K without Ctrl+C");
   assert.match(writes[1], /uname -a/);
   assert.equal(writes[0].includes("\x03"), false);
   assert.equal(writes[1].includes("\x03"), false);
@@ -118,7 +128,7 @@ test("execViaPty sends Ctrl+C only when expectedPrompt confirms an editable idle
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x03\x15\x0b", "expected Ctrl+C then line-clear once idle prompt is confirmed");
+  assert.equal(writes[0], "\x03i\x15\x0b", "expected Ctrl+C, vi-insert restore, then line-clear");
   assert.match(writes[1], /uname -a/);
 });
 
@@ -198,9 +208,9 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   assert.equal(result.ok, true);
   assert.equal(echoes.length, 1);
   assert.equal(echoes[0].cmd, "uname -a");
-  assert.deepEqual(echoes[0].writesSoFar, ["\x15\x0b"]);
+  assert.deepEqual(echoes[0].writesSoFar, ["i\x15\x0b"]);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x15\x0b");
+  assert.equal(writes[0], "i\x15\x0b");
   assert.match(writes[1], /uname -a/);
 });
 
