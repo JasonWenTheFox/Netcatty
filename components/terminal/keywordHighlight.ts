@@ -841,7 +841,7 @@ export class KeywordHighlighter implements IDisposable {
     void writeSettled.then(() => callback?.());
     const hasBareCarriageReturn = data.includes("\r") && /\r(?!\n)/.test(data);
     // eslint-disable-next-line no-control-regex -- terminal protocol bytes are intentional.
-    const hasCursorRewriteControl = /\x08|\x1b[DEM78]|(?:\x1b\[|\x9b)[?\d:;<=>]*[ -/]*[ABCDEFGHJKSTX`abcdefsu]/.test(data);
+    const hasCursorRewriteControl = /\x08|\x1b[DEM78]|(?:\x1b\[|\x9b)[?\d:;<=>]*[ -/]*[ABCDEFGHJKSTXZ`abcdefsu]/.test(data);
     const mayRewriteExistingCells = hasBareCarriageReturn || hasCursorRewriteControl;
     if (skipHotPathTransform) {
       // Even with coloring disabled, drain the bounded pristine backlog after
@@ -907,6 +907,26 @@ export class KeywordHighlighter implements IDisposable {
     const eraseAttr = internal._core?._inputHandler?._eraseAttrData?.();
     if (typeof scroll !== "function" || eraseAttr === undefined) return;
     for (let index = 0; index < lines; index += 1) scroll.call(internal._core, eraseAttr, false);
+  }
+
+  mirrorScrollbackWipe(): void {
+    this.flushDeferredPristineSync();
+    const internal = this.pristineTerm as unknown as InternalScrollTerminal & {
+      _core?: {
+        buffer?: {
+          lines?: { length: number; trimStart?(count: number): void };
+          ybase?: number;
+          ydisp?: number;
+        };
+      };
+    };
+    const buffer = internal._core?.buffer;
+    const lines = buffer?.lines;
+    const scrollbackSize = (lines?.length ?? 0) - this.pristineTerm.rows;
+    if (!buffer || !lines?.trimStart || scrollbackSize <= 0) return;
+    lines.trimStart(scrollbackSize);
+    buffer.ybase = Math.max((buffer.ybase ?? 0) - scrollbackSize, 0);
+    buffer.ydisp = Math.max((buffer.ydisp ?? 0) - scrollbackSize, 0);
   }
 
   private deferPristine(data: string | Uint8Array): void {

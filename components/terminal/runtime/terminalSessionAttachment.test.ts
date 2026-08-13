@@ -315,6 +315,51 @@ test("writeSessionData clears renderer backlog while deferring IPC ack", () => {
   clearDeferredTerminalWriteAck(term);
 });
 
+test("writeSessionData holds upstream flow while pristine history is backpressured", async () => {
+  clearTerminalSessionFlowAck("session-1");
+  let releaseBackpressure: (() => void) | undefined;
+  const backpressureSettled = new Promise<void>((resolve) => {
+    releaseBackpressure = resolve;
+  });
+  const highlighter = {
+    isPristineBackpressured: true,
+    waitForPristineBackpressure: () => backpressureSettled,
+  };
+  const term = {
+    __netcattyKeywordHighlighter: highlighter,
+    buffer: { active: { type: "normal" } },
+    write(_data: string, callback?: () => void) { callback?.(); },
+    scrollToBottom() {},
+  } as unknown as XTerm;
+  let acked = 0;
+  const ctx = {
+    ...createContext(false),
+    sessionRef: { current: "session-1" },
+    terminalBackend: {
+      ackSessionFlow: (_sessionId: string, bytes: number) => { acked += bytes; },
+    },
+  };
+
+  writeSessionData(ctx as never, term, "x".repeat(FLOW_HIGH_WATER_MARK));
+  flushTerminalWriteCoalescer(term);
+  for (let guard = 0; guard < 1000; guard += 1) {
+    if (!flushTerminalWriteQueueBypassingTimers(term)) break;
+  }
+  flushTerminalSessionFlowAck("session-1");
+  assert.equal(acked, 0);
+
+  highlighter.isPristineBackpressured = false;
+  releaseBackpressure?.();
+  for (let guard = 0; guard < 1000 && acked < FLOW_HIGH_WATER_MARK; guard += 1) {
+    const flushed = flushTerminalWriteQueueBypassingTimers(term);
+    assert.equal(typeof flushed, "boolean");
+    flushTerminalSessionFlowAck("session-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(acked, FLOW_HIGH_WATER_MARK);
+  clearTerminalSessionFlowAck("session-1");
+});
+
 test("writeSessionData keeps hidden-page xterm parsing asynchronous", () => {
   clearTerminalSessionFlowAck("session-1");
   const payload = "x".repeat(FLOW_CHAR_COUNT_ACK_SIZE + 1);

@@ -1513,6 +1513,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
                 return;
               }
             }
+            await xtermRuntimeRef.current?.keywordHighlighter.prepareForSerialization();
             snapshot = serializeAddonRef.current.serialize() || "";
           } else if (hibernatedRef.current || softHiddenRef.current) {
             // Hibernate path: live xterm is torn down; use retained snapshot.
@@ -1696,6 +1697,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         }
         let serializedSnapshot: unknown;
         try {
+          await xtermRuntimeRef.current?.keywordHighlighter.prepareForSerialization();
           serializedSnapshot = serializeAddonRef.current?.serialize?.();
         } catch (err) {
           logger.warn("Failed to serialize terminal snapshot for attach popup", err);

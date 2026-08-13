@@ -2036,6 +2036,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   const viewportScrollMirrorDisposable = registerTerminalViewportScrollMirror(
     term,
     (lines) => keywordHighlighter?.mirrorViewportScroll(lines),
+    () => keywordHighlighter?.mirrorScrollbackWipe(),
   );
 
   const eraseScrollbackDisposable = installEraseInDisplayHandlers(term, {

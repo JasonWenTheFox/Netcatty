@@ -559,7 +559,12 @@ test("backspace and cursor rewrites are corrected after output becomes quiet", a
   const highlighter = new KeywordHighlighter(term);
   highlighter.setRules(rule(), true);
 
-  for (const payload of ["ERROR\bOK", "\r\nERROR\x1b[5DOK"] as const) {
+  for (const payload of [
+    "ERROR\bOK",
+    "\r\nERROR\x1b[5DOK",
+    "\r\nERROR\x1b[2ZOK",
+    "\r\nERROR\x9b2ZOK",
+  ] as const) {
     await write(term, payload);
     await new Promise((resolve) => setTimeout(resolve, 650));
     await highlighter.whenSettled();
@@ -660,6 +665,38 @@ test("shell clear preservation is mirrored into pristine history", async () => {
   for (const text of ["one ERROR", "two ERROR", "three ERROR", "new plain"]) {
     assert.match(pristine, new RegExp(text));
     assert.match(visible.replace(new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, "g"), ""), new RegExp(text));
+  }
+  eraseHandlers.dispose();
+  mirror.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("shell erase-below wipe is mirrored into pristine history", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  const mirror = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => highlighter.mirrorViewportScroll(lines),
+    () => highlighter.mirrorScrollbackWipe(),
+  );
+  const eraseHandlers = installEraseInDisplayHandlers(term, {
+    getClearWipesScrollback: () => true,
+    isInDec2026SyncBlock: () => false,
+    scheduleMicrotask: (callback) => callback(),
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "old1 ERROR\r\nold2 ERROR\r\nold3 ERROR\r\nold4 ERROR");
+
+  await write(term, "\x1b[H\x1b[Jnew plain");
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  for (const snapshot of [visibleSerializer.serialize(), highlighter.serializeAddon.serialize()]) {
+    assert.doesNotMatch(snapshot, /old[1-4]/);
+    assert.match(snapshot, /new plain/);
   }
   eraseHandlers.dispose();
   mirror.dispose();

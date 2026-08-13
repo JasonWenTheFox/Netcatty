@@ -51,16 +51,23 @@ type EraseInDisplayHandlerOptions = {
   scheduleMicrotask?: (callback: () => void) => void;
 };
 
-const viewportScrollMirrors = new WeakMap<XTerm, (lines: number) => void>();
+type TerminalHistoryMirror = {
+  scroll(lines: number): void;
+  wipe(): void;
+};
+
+const historyMirrors = new WeakMap<XTerm, TerminalHistoryMirror>();
 
 export const registerTerminalViewportScrollMirror = (
   term: XTerm,
   mirror: (lines: number) => void,
+  wipe: () => void = () => {},
 ): IDisposable => {
-  viewportScrollMirrors.set(term, mirror);
+  const registered = { scroll: mirror, wipe };
+  historyMirrors.set(term, registered);
   return {
     dispose: () => {
-      if (viewportScrollMirrors.get(term) === mirror) viewportScrollMirrors.delete(term);
+      if (historyMirrors.get(term) === registered) historyMirrors.delete(term);
     },
   };
 };
@@ -118,7 +125,7 @@ export const preserveTerminalViewportInScrollback = (term: XTerm): void => {
     return;
   }
 
-  viewportScrollMirrors.get(term)?.(rowsToPreserve);
+  historyMirrors.get(term)?.scroll(rowsToPreserve);
 
   const scrollRegion = getInternalScrollRegion(term);
   const previousScrollTop = scrollRegion?.scrollTop;
@@ -163,7 +170,7 @@ export const clearTerminalViewport = (
 
   if (typeof scroll !== "function" || eraseAttr === undefined) return false;
 
-  viewportScrollMirrors.get(term)?.(cursorY);
+  historyMirrors.get(term)?.scroll(cursorY);
   // Push lines above cursor into scrollback so they are preserved.
   // After cursorY scrolls the prompt line shifts to active-screen row 0.
   for (let i = 0; i < cursorY; i++) {
@@ -264,6 +271,7 @@ const wipeTerminalScrollback = (term: XTerm): void => {
   buffer.ybase = Math.max((buffer.ybase ?? 0) - scrollBackSize, 0);
   buffer.ydisp = Math.max((buffer.ydisp ?? 0) - scrollBackSize, 0);
   internal._core?._inputHandler?._onScroll?.fire?.(0);
+  historyMirrors.get(term)?.wipe();
 };
 
 export const shouldWipeScrollbackAfterFullErase = (
@@ -306,7 +314,7 @@ export const installEraseInDisplayHandlers = (
       );
       if (useNativeScrollPreservation) {
         const rowsToPreserve = getVisibleContentRowCount(term);
-        if (rowsToPreserve > 0) viewportScrollMirrors.get(term)?.(rowsToPreserve);
+        if (rowsToPreserve > 0) historyMirrors.get(term)?.scroll(rowsToPreserve);
       }
       setScrollOnEraseInDisplayOnce(useNativeScrollPreservation);
       if (
