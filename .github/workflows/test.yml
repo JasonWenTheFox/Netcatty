@@ -58,6 +58,7 @@ jobs:
 
       - name: Test terminal keyword highlight throughput
         env:
+          NETCATTY_TERMINAL_PERF_MAIN_REF: ${{ github.event.pull_request.base.sha || 'HEAD^' }}
           NETCATTY_TERMINAL_PERF_ROUNDS: "3"
           NETCATTY_TERMINAL_PERF_SHOW_WINDOW: "1"
         run: xvfb-run -a ./node_modules/.bin/electron --no-sandbox scripts/xterm-keyword-highlight-throughput.live.test.cjs

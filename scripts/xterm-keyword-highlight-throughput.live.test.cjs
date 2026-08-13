@@ -17,6 +17,7 @@ if (!process.versions.electron) {
   const tempDirBridge = require("../electron/bridges/tempDirBridge.cjs");
 
   const appRoot = path.resolve(__dirname, "..");
+  const mainRef = process.env.NETCATTY_TERMINAL_PERF_MAIN_REF ?? "origin/main";
   const chunkCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_CHUNKS ?? "1600", 10);
   const roundCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_ROUNDS ?? "3", 10);
   const userData = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("xterm-highlight-throughput")}-`);
@@ -66,16 +67,16 @@ if (!process.versions.electron) {
         if (candidate === entryPath) return candidate;
         const exists = childProcess.spawnSync(
           "git",
-          ["cat-file", "-e", `origin/main:${candidate}`],
+          ["cat-file", "-e", `${mainRef}:${candidate}`],
           { cwd: appRoot, stdio: "ignore" },
         ).status === 0;
         if (exists) return candidate;
       }
-      throw new Error(`Unable to resolve origin/main source: ${repoPath}`);
+      throw new Error(`Unable to resolve ${mainRef} source: ${repoPath}`);
     };
     const readMainFile = (repoPath) => repoPath === entryPath
       ? entrySource
-      : childProcess.execFileSync("git", ["show", `origin/main:${repoPath}`], {
+      : childProcess.execFileSync("git", ["show", `${mainRef}:${repoPath}`], {
         cwd: appRoot,
         encoding: "utf8",
       });
