@@ -329,6 +329,70 @@ test("plugin scans stay within the bounded match budget", async () => {
   term.dispose();
 });
 
+test("Enter does not refresh already highlighted history rows", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "existing ERROR");
+  const refreshed: Array<[number, number]> = [];
+  const originalRefresh = term.refresh.bind(term);
+  term.refresh = (start, end) => {
+    refreshed.push([start, end]);
+    originalRefresh(start, end);
+  };
+  await write(term, "\r\nplain prompt # ");
+  assert.equal(cellRgb(term, 0, "ERROR"), RED);
+  assert.ok(refreshed.every(([start]) => start >= 1), JSON.stringify(refreshed));
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("a keyword written on a saturated scrollback is still colored", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 20, rows: 3, scrollback: 2 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, Array.from({ length: 8 }, (_, index) => `pad-${index}`).join("\r\n"));
+  await write(term, "\r\nline ERROR");
+  assert.equal(cellRgb(term, term.buffer.active.baseY + term.buffer.active.cursorY, "ERROR")
+    ?? cellRgb(term, term.buffer.active.length - 1, "ERROR")
+    ?? cellRgb(term, term.buffer.active.length - 2, "ERROR"), RED);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("scrolling during a rule change catch-up recolors newly visible rows", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 40, rows: 4, scrollback: 80 });
+  let bypass = true;
+  const highlighter = new KeywordHighlighter(term, {
+    shouldBypassHighlight: () => bypass,
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, Array.from({ length: 30 }, (_, index) => `line-${index} ERROR`).join("\r\n"));
+  bypass = false;
+  highlighter.setRules(rule("#60A5FA"), true);
+  term.scrollToLine(0);
+  assert.equal(cellRgb(term, 0, "ERROR"), BLUE);
+  await highlighter.whenSettled();
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("catch-up does not hang when the terminal enters the alternate screen", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term, {
+    shouldBypassHighlight: () => true,
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "queued ERROR");
+  await write(term, "\x1b[?1049hTUI");
+  await Promise.race([
+    highlighter.whenSettled(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("whenSettled hung")), 200)),
+  ]);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("wrapped matches stay on the same logical line", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 8, rows: 6, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);

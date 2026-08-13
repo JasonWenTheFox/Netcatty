@@ -1,5 +1,5 @@
 import { SerializeAddon } from "@xterm/addon-serialize";
-import type { IBufferLine, IDisposable, Terminal as XTerm } from "@xterm/xterm";
+import type { IBufferLine, IDisposable, IMarker, Terminal as XTerm } from "@xterm/xterm";
 
 import { isSafePluginDecorationPattern } from "../../domain/pluginTerminalProviders";
 import { checkRegexSafetyPattern } from "../../lib/regexSafety";
@@ -31,14 +31,11 @@ type InternalBufferLine = {
   _data: Uint32Array;
 };
 
-type InternalRenderService = {
-  _isPaused?: boolean;
-};
-
 type LineOriginals = {
   fg: Uint32Array;
   content: Uint32Array;
   mask: Uint8Array;
+  fingerprint: string;
 };
 
 type LogicalLine = {
@@ -64,8 +61,9 @@ const STYLE_MASK = 0xfc000000;
 const CM_RGB = 0x3000000;
 const MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS = 4_096;
 const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
-const RECOLOR_SLICE_LINES = 256;
+const RECOLOR_SLICE_LINES = 32;
 const RECOLOR_SLICE_BUDGET_MS = 4;
+const BULK_WRITE_LINE_BREAKS = 8;
 
 const withRgbFg = (originalFg: number, rgb: number): number => (
   (originalFg & STYLE_MASK) | CM_RGB | (rgb & 0xffffff)
@@ -202,13 +200,13 @@ export class KeywordHighlighter implements IDisposable {
   private compiledPatterns: CompiledPattern[] = [];
   private disposed = false;
   private catchUpFrom: number | null = null;
+  private catchUpStartMarker: IMarker | null = null;
   private catchUpTimer: ReturnType<typeof setTimeout> | null = null;
   private catchUpPromise: Promise<void> = Promise.resolve();
   private resolveCatchUp: (() => void) | null = null;
   private catchUpCounted = false;
   private catchUpRunning = false;
   private catchUpGeneration = 0;
-  private pauseDepth = 0;
   private hasOutput = false;
 
   get pendingPristineBytes(): number {
@@ -236,10 +234,9 @@ export class KeywordHighlighter implements IDisposable {
         return this.originalSerialize(serializeOptions);
       } finally {
         if (!this.disposed && this.compiledPatterns.length > 0) {
-          const buffer = this.term.buffer.active;
-          if (buffer.type === "normal" && buffer.length > 0) {
-            this.recolorRange(0, buffer.length - 1, true);
-          }
+          this.recolorVisible();
+          this.markCatchUp(0);
+          this.scheduleCatchUp();
         }
       }
     };
@@ -254,9 +251,12 @@ export class KeywordHighlighter implements IDisposable {
     term.clear = this.clear;
     term.resize = this.resize;
     this.disposables.push(
+      term.onScroll(() => {
+        if (this.hasPendingCatchUp()) this.recolorVisible();
+      }),
       term.buffer.onBufferChange(() => {
         if (this.term.buffer.active.type !== "normal") return;
-        if (this.catchUpFrom !== null) this.scheduleCatchUp();
+        if (this.hasPendingCatchUp()) this.scheduleCatchUp();
       }),
     );
   }
@@ -292,15 +292,17 @@ export class KeywordHighlighter implements IDisposable {
 
   async whenSettled(): Promise<void> {
     while (!this.disposed) {
+      if (this.term.buffer.active.type !== "normal") return;
       const catchUp = this.catchUpPromise;
       await catchUp;
       if (this.catchUpTimer === null && !this.catchUpRunning) return;
+      if (this.term.buffer.active.type !== "normal") return;
       await yieldToRenderer();
     }
   }
 
   async prepareForSerialization(): Promise<void> {
-    await this.whenSettled();
+    // serialize() restores originals itself. Do not wait for flood catch-up.
   }
 
   async waitForPristineBackpressure(): Promise<void> {}
@@ -331,7 +333,8 @@ export class KeywordHighlighter implements IDisposable {
     this.catchUpTimer = null;
     this.resolveCatchUp?.();
     this.resolveCatchUp = null;
-    this.setRendererPaused(false, true);
+    this.catchUpStartMarker?.dispose();
+    this.catchUpStartMarker = null;
     for (const disposable of this.disposables) disposable.dispose();
   }
 
@@ -343,27 +346,40 @@ export class KeywordHighlighter implements IDisposable {
     }
     const startY = buffer.baseY + buffer.cursorY;
     this.hasOutput = true;
-    const bypass = this.shouldBypass(data);
-    // eslint-disable-next-line no-control-regex -- terminal rewrite / erase bytes are intentional.
-    const rewritesCurrentLine = typeof data === "string" && /[\r\x08]|\x1b\[[\d;]*K/.test(data);
-    if (!bypass && this.compiledPatterns.length > 0) {
-      if (rewritesCurrentLine) this.restorePhysicalLine(startY);
-      this.setRendererPaused(true);
+    const newlineCount = typeof data === "string" ? (data.match(/\r\n|\n/g)?.length ?? 0) : 0;
+    const bypass = this.shouldBypass(data) || newlineCount >= BULK_WRITE_LINE_BREAKS;
+    // In-place CR / backspace / EL rewrite the current row. `\r\n` is a line
+    // advance and must not restore/repaint the previous prompt.
+    const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*K/.test(data); // eslint-disable-line no-control-regex
+    const rewritesCurrentLine = typeof data === "string"
+      && (/\r(?!\n)/.test(data) || data.includes("\x08") || eraseInLine);
+    const startsWithLineAdvance = typeof data === "string" && /^(?:\r\n|\n)/.test(data);
+    const writeMarker = this.term.registerMarker(0);
+    if (!bypass && this.compiledPatterns.length > 0 && rewritesCurrentLine) {
+      this.restorePhysicalLine(startY);
     }
     return this.originalWrite(data, () => {
       const active = this.term.buffer.active;
       if (active.type === "normal") {
         const endY = active.baseY + active.cursorY;
-        if (bypass || this.compiledPatterns.length === 0) {
-          if (this.enabled || this.hasStoredOriginalsInRange(startY, endY)) {
-            this.markCatchUp(startY);
+        if (!writeMarker || writeMarker.isDisposed) {
+          if (this.enabled || this.compiledPatterns.length > 0) {
+            this.markCatchUp(0);
             this.scheduleCatchUp();
           }
         } else {
-          this.recolorRange(startY, endY, true);
+          const fromY = startsWithLineAdvance ? Math.min(endY, writeMarker.line + 1) : writeMarker.line;
+          if (bypass || this.compiledPatterns.length === 0) {
+            if (this.enabled || this.hasStoredOriginalsInRange(fromY, endY)) {
+              this.markCatchUp(fromY);
+              this.scheduleCatchUp();
+            }
+          } else {
+            this.recolorRange(fromY, endY, true);
+          }
         }
       }
-      if (!bypass) this.setRendererPaused(false);
+      writeMarker?.dispose();
       callback?.();
     });
   };
@@ -398,12 +414,40 @@ export class KeywordHighlighter implements IDisposable {
     return shouldDegradeTerminalKeywordHighlight(this.term, data);
   }
 
+  private hasPendingCatchUp(): boolean {
+    return this.catchUpFrom !== null || this.catchUpStartMarker !== null
+      || this.catchUpTimer !== null || this.catchUpRunning;
+  }
+
+  private resolveCatchUpY(): number | null {
+    if (this.catchUpStartMarker) {
+      return this.catchUpStartMarker.isDisposed ? 0 : Math.max(0, this.catchUpStartMarker.line);
+    }
+    return this.catchUpFrom;
+  }
+
+  private replaceCatchUpMarker(absoluteY: number | null): void {
+    this.catchUpStartMarker?.dispose();
+    this.catchUpStartMarker = null;
+    if (absoluteY === null) return;
+    const buffer = this.term.buffer.active;
+    if (buffer.type !== "normal") return;
+    const cursor = buffer.baseY + buffer.cursorY;
+    this.catchUpStartMarker = this.term.registerMarker(absoluteY - cursor);
+  }
+
   private markCatchUp(fromY: number): void {
-    this.catchUpFrom = this.catchUpFrom === null ? fromY : Math.min(this.catchUpFrom, fromY);
+    const current = this.resolveCatchUpY();
+    const next = current === null ? fromY : Math.min(current, fromY);
+    this.catchUpFrom = next;
+    if (current !== null && current <= fromY && this.catchUpStartMarker && !this.catchUpStartMarker.isDisposed) {
+      return;
+    }
+    this.replaceCatchUpMarker(next);
   }
 
   private scheduleCatchUp(): void {
-    if (this.disposed || this.catchUpFrom === null) return;
+    if (this.disposed || this.resolveCatchUpY() === null) return;
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     if (!this.resolveCatchUp) {
       this.catchUpPromise = new Promise((resolve) => {
@@ -421,6 +465,8 @@ export class KeywordHighlighter implements IDisposable {
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     this.catchUpTimer = null;
     this.catchUpFrom = null;
+    this.catchUpStartMarker?.dispose();
+    this.catchUpStartMarker = null;
     this.catchUpCounted = false;
     this.catchUpGeneration += 1;
     this.resolveCatchUp?.();
@@ -428,7 +474,7 @@ export class KeywordHighlighter implements IDisposable {
   }
 
   private async runCatchUp(): Promise<void> {
-    if (this.disposed || this.catchUpFrom === null || this.catchUpRunning) return;
+    if (this.disposed || this.resolveCatchUpY() === null || this.catchUpRunning) return;
     const generation = this.catchUpGeneration;
     this.catchUpRunning = true;
     if (!this.catchUpCounted) {
@@ -436,23 +482,38 @@ export class KeywordHighlighter implements IDisposable {
       this.catchUpCounted = true;
     }
     const started = performance.now();
+    let pausedOnAlternate = false;
     try {
-      let nextY = Math.max(0, this.catchUpFrom);
+      let nextY = Math.max(0, this.resolveCatchUpY() ?? 0);
+      let turnStarted = performance.now();
       while (!this.disposed && generation === this.catchUpGeneration) {
         const buffer = this.term.buffer.active;
-        if (buffer.type !== "normal") break;
+        if (buffer.type !== "normal") {
+          pausedOnAlternate = true;
+          break;
+        }
         if (nextY >= buffer.length) {
           this.catchUpFrom = null;
+          this.replaceCatchUpMarker(null);
           break;
         }
         const sliceEnd = Math.min(buffer.length - 1, nextY + RECOLOR_SLICE_LINES - 1);
-        const sliceStarted = performance.now();
-        this.recolorRange(nextY, sliceEnd, false);
+        const viewportStart = buffer.viewportY;
+        const viewportEnd = viewportStart + this.term.rows - 1;
+        const refresh = sliceEnd >= viewportStart && nextY <= viewportEnd;
+        this.recolorRange(nextY, sliceEnd, refresh);
         nextY = sliceEnd + 1;
-        this.catchUpFrom = nextY >= buffer.length ? null : nextY;
-        if (this.catchUpFrom === null) break;
-        if (performance.now() - sliceStarted >= RECOLOR_SLICE_BUDGET_MS) {
+        if (nextY >= buffer.length) {
+          this.catchUpFrom = null;
+          this.replaceCatchUpMarker(null);
+          break;
+        }
+        this.catchUpFrom = nextY;
+        this.replaceCatchUpMarker(nextY);
+        if (performance.now() - turnStarted >= RECOLOR_SLICE_BUDGET_MS) {
           await yieldToRenderer();
+          turnStarted = performance.now();
+          nextY = Math.max(nextY, this.resolveCatchUpY() ?? nextY);
         }
       }
     } finally {
@@ -461,8 +522,11 @@ export class KeywordHighlighter implements IDisposable {
       if (this.disposed) {
         this.resolveCatchUp?.();
         this.resolveCatchUp = null;
-      } else if (this.catchUpFrom === null) {
+      } else if (this.resolveCatchUpY() === null) {
         this.catchUpCounted = false;
+        this.resolveCatchUp?.();
+        this.resolveCatchUp = null;
+      } else if (pausedOnAlternate) {
         this.resolveCatchUp?.();
         this.resolveCatchUp = null;
       } else if (generation === this.catchUpGeneration) {
@@ -492,22 +556,46 @@ export class KeywordHighlighter implements IDisposable {
     let paintedStart = Number.POSITIVE_INFINITY;
     let paintedEnd = -1;
     while (y <= last) {
-      const logical = this.readLogicalLine(y);
-      if (!logical) {
+      const bounds = this.logicalLineBounds(y);
+      if (!bounds) {
         y += 1;
         continue;
       }
-      this.recolorLogicalLine(logical);
-      paintedStart = Math.min(paintedStart, logical.startY);
-      paintedEnd = Math.max(paintedEnd, logical.endY);
-      y = logical.endY + 1;
+      this.recolorLogicalBounds(bounds.startY, bounds.endY);
+      paintedStart = Math.min(paintedStart, bounds.startY);
+      paintedEnd = Math.max(paintedEnd, bounds.endY);
+      y = bounds.endY + 1;
     }
     if (refresh && paintedEnd >= paintedStart) this.refreshAbsolute(paintedStart, paintedEnd);
   }
 
-  private recolorLogicalLine(logical: LogicalLine): void {
-    this.restoreLogicalLine(logical);
+  private logicalLineBounds(startY: number): { startY: number; endY: number } | null {
+    const buffer = this.term.buffer.active;
+    if (!buffer.getLine(startY)) return null;
+    let first = startY;
+    while (first > 0 && buffer.getLine(first)?.isWrapped) first -= 1;
+    let last = first;
+    while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) last += 1;
+    return { startY: first, endY: last };
+  }
+
+  private readLogicalLineText(startY: number, endY: number): string {
+    const buffer = this.term.buffer.active;
+    let text = "";
+    for (let y = startY; y <= endY; y += 1) {
+      text += buffer.getLine(y)?.translateToString(y === endY) ?? "";
+    }
+    return text;
+  }
+
+  private recolorLogicalBounds(startY: number, endY: number): void {
+    for (let y = startY; y <= endY; y += 1) this.restorePhysicalLine(y);
     if (this.compiledPatterns.length === 0) return;
+    if (collectMatches(this.readLogicalLineText(startY, endY), this.compiledPatterns).length === 0) {
+      return;
+    }
+    const logical = this.readLogicalLine(startY);
+    if (!logical) return;
     const matches = collectMatches(logical.text, this.compiledPatterns);
     for (const match of matches) {
       const startCell = logical.cellAtStringOffset[match.start];
@@ -543,17 +631,21 @@ export class KeywordHighlighter implements IDisposable {
       }
       internal._data[dataIndex + CELL_FG] = withRgbFg(originals.fg[x], rgb);
     }
-  }
-
-  private restoreLogicalLine(logical: LogicalLine): void {
-    for (let y = logical.startY; y <= logical.endY; y += 1) this.restorePhysicalLine(y);
+    const publicLine = this.term.buffer.active.getLine(y);
+    if (publicLine) originals.fingerprint = publicLine.translateToString(false);
   }
 
   private restorePhysicalLine(y: number): void {
-    const internal = getInternalLine(this.term.buffer.active.getLine(y));
+    const publicLine = this.term.buffer.active.getLine(y);
+    const internal = getInternalLine(publicLine);
     if (!internal) return;
     const originals = this.originals.get(internal);
     if (!originals) return;
+    const fingerprint = publicLine?.translateToString(false) ?? "";
+    if (originals.fingerprint && originals.fingerprint !== fingerprint) {
+      this.originals.delete(internal);
+      return;
+    }
     for (let x = 0; x < internal.length; x += 1) {
       if (!originals.mask[x]) continue;
       const dataIndex = x * CELL_INDICES;
@@ -580,6 +672,7 @@ export class KeywordHighlighter implements IDisposable {
         fg: new Uint32Array(line.length),
         content: new Uint32Array(line.length),
         mask: new Uint8Array(line.length),
+        fingerprint: "",
       };
       this.originals.set(line, originals);
     }
@@ -635,24 +728,5 @@ export class KeywordHighlighter implements IDisposable {
     const startRow = Math.max(0, startY - viewportY);
     const endRow = Math.min(this.term.rows - 1, endY - viewportY);
     if (startRow <= endRow) this.term.refresh(startRow, endRow);
-  }
-
-  private setRendererPaused(paused: boolean, force = false): void {
-    const renderService = (
-      this.term as unknown as { _core?: { _renderService?: InternalRenderService } }
-    )._core?._renderService;
-    if (!renderService) return;
-    if (force) {
-      this.pauseDepth = 0;
-      renderService._isPaused = false;
-      return;
-    }
-    if (paused) {
-      if (this.pauseDepth === 0) renderService._isPaused = true;
-      this.pauseDepth += 1;
-      return;
-    }
-    this.pauseDepth = Math.max(0, this.pauseDepth - 1);
-    if (this.pauseDepth === 0) renderService._isPaused = false;
   }
 }
