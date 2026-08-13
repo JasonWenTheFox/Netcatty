@@ -18,6 +18,7 @@ const {
   subscribeToPtyData,
   hasExpectedPromptSuffix,
   resolveEffectiveShellKind,
+  buildPendingInputClearPrefix,
   buildWrappedCommand,
   findEndMarker,
   normalizePtyOutput,
@@ -581,7 +582,10 @@ function startPtyJob(ptyStream, command, options) {
     }
   }
 
-  ptyStream.write(buildWrappedCommand(command, resolvedShellKind, marker));
+  // Clear any unfinished user input on the prompt line first so the wrapped
+  // command is not concatenated (e.g. typed `ls` + agent `uname` → `lsuname`).
+  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind);
+  ptyStream.write(`${clearPrefix}${buildWrappedCommand(command, resolvedShellKind, marker)}`);
 
   return {
     marker,
@@ -1010,8 +1014,9 @@ function execViaRawPty(serialPort, command, options) {
       cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
     }
 
-    // Send the raw command followed by CR (network devices expect \r).
-    safeWrite(command + "\r");
+    // Clear unfinished prompt input first (same risk as shell PTY exec, #2962).
+    // Ctrl+U is widely supported on network device line editors (e.g. Cisco IOS).
+    safeWrite(`${buildPendingInputClearPrefix("raw")}${command}\r`);
 
     // Start a "no-response" fallback timer. If the device produces no output at
     // all (e.g. silent mode-changing commands like "enable", "configure terminal",

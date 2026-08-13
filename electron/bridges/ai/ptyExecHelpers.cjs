@@ -150,6 +150,19 @@ function buildPosixWrapperBody(command, marker) {
   );
 }
 
+/**
+ * Bytes to discard unfinished prompt-line input before an AI/MCP PTY write.
+ * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
+ * concatenated with the wrapped agent command (#2962).
+ *
+ * - readline / fish / PSReadLine: Ctrl+U
+ * - cmd.exe: Escape clears the current input line
+ */
+function buildPendingInputClearPrefix(shellKind) {
+  if (shellKind === "cmd") return "\x1b";
+  return "\x15";
+}
+
 function buildWrappedCommand(command, shellKind, marker) {
   switch (shellKind) {
     case "powershell": {
@@ -391,6 +404,7 @@ module.exports = {
   subscribeToPtyData,
   hasExpectedPromptSuffix,
   resolveEffectiveShellKind,
+  buildPendingInputClearPrefix,
   buildWrappedCommand,
   findEndMarker,
   normalizePtyOutput,
