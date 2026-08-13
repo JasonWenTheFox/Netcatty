@@ -49,17 +49,24 @@ function markerFromWrite(data) {
   return String(data).match(/(__NCMCP_[a-z0-9]+_[0-9a-f]+__)/i)?.[1] || null;
 }
 
-test("buildPendingInputClearPrefix cancels continuation then clears the editable line", () => {
-  assert.equal(buildPendingInputClearPrefix("posix"), "\x03\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("fish"), "\x03\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x03\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("unknown"), "\x03\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix(""), "\x03\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("cmd"), "\x03\x1b");
+test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
+  assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("unknown"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix(""), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
-test("execViaPty clears unfinished prompt input before typing the wrapped command (#2962)", async () => {
+test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
+  assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "\x15\x0b");
+});
+
+test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -79,12 +86,38 @@ test("execViaPty clears unfinished prompt input before typing the wrapped comman
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x03\x15\x0b", "expected Ctrl+C then Ctrl+U/Ctrl+K clear before wrapper");
+  assert.equal(writes[0], "\x15\x0b", "expected Ctrl+U/Ctrl+K clear without Ctrl+C when prompt is unconfirmed");
   assert.match(writes[1], /uname -a/);
+  assert.equal(writes[0].includes("\x03"), false);
   assert.equal(writes[1].includes("\x03"), false);
 });
 
-test("execViaPty clears unfinished cmd.exe input with Ctrl+C and Escape before the wrapper (#2962)", async () => {
+test("execViaPty sends Ctrl+C only when expectedPrompt confirms an editable idle prompt", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      const marker = markerFromWrite(data);
+      if (!marker) return;
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+      });
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "uname -a", {
+    shellKind: "posix",
+    timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0], "\x03\x15\x0b", "expected Ctrl+C then line-clear once idle prompt is confirmed");
+  assert.match(writes[1], /uname -a/);
+});
+
+test("execViaPty clears unfinished cmd.exe input with Escape and without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -104,7 +137,7 @@ test("execViaPty clears unfinished cmd.exe input with Ctrl+C and Escape before t
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x03\x1b", "expected Ctrl+C then Escape clear for cmd.exe");
+  assert.equal(writes[0], "\x1b", "expected Escape clear without Ctrl+C when prompt is unconfirmed");
   assert.match(writes[1], /\bver\b/);
 });
 
@@ -134,9 +167,9 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   assert.equal(result.ok, true);
   assert.equal(echoes.length, 1);
   assert.equal(echoes[0].cmd, "uname -a");
-  assert.deepEqual(echoes[0].writesSoFar, ["\x03\x15\x0b"]);
+  assert.deepEqual(echoes[0].writesSoFar, ["\x15\x0b"]);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x03\x15\x0b");
+  assert.equal(writes[0], "\x15\x0b");
   assert.match(writes[1], /uname -a/);
 });
 
@@ -204,7 +237,7 @@ test("foreground PTY capture preserves UTF-8 and markers split across chunks", a
       if (!marker) return;
       queueMicrotask(() => {
         const start = Buffer.from(`${marker}_S\n`);
-        const content = Buffer.from("中文回复", "utf8");
+        const content = Buffer.from("中文回夝", "utf8");
         const end = Buffer.from(`\n${marker}_E:0\n`);
         this.emit("data", start.subarray(0, 7));
         this.emit("data", start.subarray(7));
@@ -221,7 +254,7 @@ test("foreground PTY capture preserves UTF-8 and markers split across chunks", a
     timeoutMs: 1_000,
   });
   assert.equal(result.ok, true);
-  assert.equal(result.stdout, "中文回复");
+  assert.equal(result.stdout, "中文回夝");
 });
 
 test("foreground PTY timeout returns only a bounded tail", async () => {

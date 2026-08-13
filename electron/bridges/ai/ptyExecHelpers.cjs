@@ -155,20 +155,27 @@ function buildPosixWrapperBody(command, marker) {
  * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
  * concatenated with the wrapped agent command (#2962).
  *
- * - readline / PSReadLine / fish: Ctrl+C first aborts PS2 / multiline parser
- *   state (Ctrl+U/Ctrl+K only clear the current editable continuation line).
- *   Then Ctrl+U + Ctrl+K clear residual text on the fresh primary line
- *   (Ctrl+U kills to start of line; Ctrl+K kills after the cursor). Fish
- *   treats Ctrl+U as kill-whole-line; the trailing Ctrl+K is a no-op.
- * - cmd.exe: Ctrl+C cancels a `More?` continuation, then Escape clears the
- *   current input line
+ * - readline / PSReadLine / fish: Ctrl+U + Ctrl+K clear residual text on the
+ *   primary line (Ctrl+U kills to start of line; Ctrl+K kills after the
+ *   cursor). Fish treats Ctrl+U as kill-whole-line; the trailing Ctrl+K is a
+ *   no-op.
+ * - cmd.exe: Escape clears the current input line
  * - raw (serial / vendor CLI): no clear — Ctrl+U/Ctrl+C are not universal and
  *   would prepend control bytes on devices that lack line-erase
+ *
+ * Ctrl+C (ETX) is optional via `allowInterrupt`. Callers must only set it when
+ * the shell is known to be accepting editable prompt input (e.g. a fresh idle
+ * prompt). Unconditional ETX would SIGINT user-started foreground processes
+ * that `activeSessionExecutions` does not track.
+ *
+ * @param {string} shellKind
+ * @param {{ allowInterrupt?: boolean }} [options]
  */
-function buildPendingInputClearPrefix(shellKind) {
+function buildPendingInputClearPrefix(shellKind, options = {}) {
   if (shellKind === "raw") return "";
-  if (shellKind === "cmd") return "\x03\x1b";
-  return "\x03\x15\x0b";
+  const allowInterrupt = options.allowInterrupt === true;
+  if (shellKind === "cmd") return allowInterrupt ? "\x03\x1b" : "\x1b";
+  return allowInterrupt ? "\x03\x15\x0b" : "\x15\x0b";
 }
 
 function buildWrappedCommand(command, shellKind, marker) {

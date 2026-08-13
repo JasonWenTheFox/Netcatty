@@ -574,12 +574,18 @@ function startPtyJob(ptyStream, command, options) {
     cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
   }
 
-  // Clear unfinished / continuation input before the synthetic echo and the
+  // Clear unfinished prompt-line input before the synthetic echo and the
   // wrapper. Write the clear prefix alone so readline erase/redraw bytes do
   // not share a line with the marker-bearing wrapper echo (preload drops any
   // line containing __NCMCP_, which would otherwise leave concatenated text
   // on screen after typedInput echo).
-  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind);
+  //
+  // Only SIGINT (Ctrl+C) when expectedPrompt confirms an idle editable prompt.
+  // Otherwise line-kill alone still clears half-typed primary-line input
+  // without interrupting a user-started foreground process.
+  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind, {
+    allowInterrupt: Boolean(expectedPrompt),
+  });
   if (clearPrefix) {
     ptyStream.write(clearPrefix);
   }
@@ -625,7 +631,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {number} [options.timeoutMs=60000] - Command timeout in milliseconds
  * @param {string} [options.chatSessionId] - Chat session ID for scoped cancellation
  * @param {AbortSignal} [options.abortSignal] - AbortSignal to cancel execution
- * @param {string} [options.expectedPrompt] - Last observed idle prompt for exact fallback matching
+ * @param {string} [options.expectedPrompt] - Last observed idle prompt for exact fallback matching; also gates Ctrl+C in the pending-input clear prefix (only interrupt when this confirms an editable idle prompt)
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo
  */
