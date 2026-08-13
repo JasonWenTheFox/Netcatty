@@ -51,6 +51,20 @@ type EraseInDisplayHandlerOptions = {
   scheduleMicrotask?: (callback: () => void) => void;
 };
 
+const viewportScrollMirrors = new WeakMap<XTerm, (lines: number) => void>();
+
+export const registerTerminalViewportScrollMirror = (
+  term: XTerm,
+  mirror: (lines: number) => void,
+): IDisposable => {
+  viewportScrollMirrors.set(term, mirror);
+  return {
+    dispose: () => {
+      if (viewportScrollMirrors.get(term) === mirror) viewportScrollMirrors.delete(term);
+    },
+  };
+};
+
 const getVisibleContentRowCount = (term: XTerm): number => {
   const buffer = term.buffer.active;
   if (buffer.type !== "normal") {
@@ -147,6 +161,7 @@ export const clearTerminalViewport = (
 
   if (typeof scroll !== "function" || eraseAttr === undefined) return false;
 
+  viewportScrollMirrors.get(term)?.(cursorY);
   // Push lines above cursor into scrollback so they are preserved.
   // After cursorY scrolls the prompt line shifts to active-screen row 0.
   for (let i = 0; i < cursorY; i++) {

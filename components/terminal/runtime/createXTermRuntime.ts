@@ -49,6 +49,7 @@ import { netcattyBridge } from "../../../infrastructure/services/netcattyBridge"
 import {
   clearTerminalViewportAndSyncPty,
   installEraseInDisplayHandlers,
+  registerTerminalViewportScrollMirror,
 } from "../clearTerminalViewport";
 import { getTerminalSelectionForClipboard } from "../normalizeTerminalSelection";
 import {
@@ -2218,6 +2219,10 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
   const keywordHighlighter = new KeywordHighlighter(term, {
     canRebuild: () => !hasInlineImages(),
   });
+  const viewportScrollMirrorDisposable = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => keywordHighlighter.mirrorViewportScroll(lines),
+  );
   keywordHighlighter.setRules(keywordHighlightRules, keywordHighlightEnabled);
 
   const cursorLineHighlighter = new CursorLineHighlighter(term);
@@ -2270,6 +2275,7 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
       hideHistoryPreview();
       historyPreviewBufferChangeDisposable.dispose();
       stopDprWatch();
+      viewportScrollMirrorDisposable.dispose();
       keywordHighlighter.dispose();
       cursorLineHighlighter.dispose();
       pluginLinkProviderHost?.dispose();

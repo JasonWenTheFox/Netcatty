@@ -14,6 +14,10 @@ import {
   KeywordHighlighter,
   KeywordHighlightTransformer,
 } from "./keywordHighlight.ts";
+import {
+  clearTerminalViewport,
+  registerTerminalViewportScrollMirror,
+} from "./clearTerminalViewport.ts";
 
 const require = createRequire(import.meta.url);
 const { SerializeAddon } = require("@xterm/addon-serialize") as {
@@ -61,6 +65,26 @@ test("terminal control payloads are never searched and split controls stay intac
     `1m${RED}ERROR\x1b[31m`,
     "the original foreground must be restored after a match",
   );
+});
+
+test("string terminators split across writes resume highlighting", () => {
+  for (const start of ["\x1b]0;title\x1b", "\x1bPpayload\x1b"]) {
+    const transformer = new KeywordHighlightTransformer();
+    transformer.setRules(rule(), true);
+
+    assert.equal(transformer.transform(start), start);
+    assert.equal(transformer.transform("\\"), "\\");
+    assert.equal(transformer.transform("ERROR"), `${RED}ERROR\x1b[39m`);
+  }
+});
+
+test("repeated ESC at a split string boundary stays inside the control payload", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules(rule(), true);
+
+  assert.equal(transformer.transform("\x1b]0;title\x1b"), "\x1b]0;title\x1b");
+  assert.equal(transformer.transform("\x1b\\"), "\x1b\\");
+  assert.equal(transformer.transform("ERROR"), `${RED}ERROR\x1b[39m`);
 });
 
 test("alternate-screen programs pass through without keyword coloring", () => {
@@ -436,6 +460,124 @@ test("bulk output skipped on the hot path is highlighted after output becomes qu
   await highlighter.whenSettled();
   assert.match(visibleSerializer.serialize(), /38;2;248;113;113m/);
 
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("rule changes during bulk output wait for one quiet catch-up", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  let bypass = true;
+  const highlighter = new KeywordHighlighter(term, {
+    shouldBypassHighlight: () => bypass,
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "bulk ERROR");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  assert.equal(highlighter.rebuildCount, 0);
+  bypass = false;
+  await highlighter.whenSettled();
+
+  assert.equal(highlighter.rebuildCount, 1);
+  assert.match(visibleSerializer.serialize(), /38;2;96;165;250m/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("bare carriage-return rewrites are corrected after output becomes quiet", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+
+  await write(term, "ERROR\rOK");
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await highlighter.whenSettled();
+
+  assert.doesNotMatch(visibleSerializer.serialize(), /38;2;248;113;113m/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("plugin scans reserve their bounded budget for newly written text", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "plugin-error",
+    label: "Plugin error",
+    patterns: ["ERROR"],
+    color: "#F87171",
+    enabled: true,
+    providerId: "test-plugin",
+  }], true);
+
+  transformer.transform("x".repeat(4096));
+  assert.equal(transformer.transform("ERROR"), `${RED}ERROR\x1b[39m`);
+});
+
+test("clear keeps pristine history aligned with the visible terminal", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "old ERROR\r\nold two\r\nold three");
+
+  term.clear();
+  await write(term, "new plain");
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const visible = visibleSerializer.serialize();
+  assert.doesNotMatch(visible, /old ERROR|old two/);
+  assert.match(visible, /new plain/);
+  assert.equal(highlighter.serializeAddon.serialize(), "old threenew plain");
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("local viewport clear mirrors its pre-scroll into pristine history", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  const mirror = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => highlighter.mirrorViewportScroll(lines),
+  );
+  highlighter.setRules(rule(), true);
+  await write(term, "one ERROR\r\ntwo ERROR\r\nthree ERROR");
+
+  assert.equal(clearTerminalViewport(term), true);
+  await new Promise((resolve) => term.write("", resolve));
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const pristine = highlighter.serializeAddon.serialize();
+  const visible = visibleSerializer.serialize();
+  assert.match(pristine, /one ERROR/);
+  assert.match(pristine, /three ERROR/);
+  const csiPattern = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*[A-Za-z]`, "g");
+  assert.equal(pristine.replace(csiPattern, ""), visible.replace(csiPattern, ""));
+  mirror.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("lowering scrollback is reflected before immediate serialization", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\r\n"));
+
+  term.options.scrollback = 2;
+  const pristine = highlighter.serializeAddon.serialize();
+
+  assert.doesNotMatch(pristine, /line-0/);
+  assert.match(pristine, /line-19/);
+  assert.equal(highlighter.serializeAddon.serialize().split("\n").length <= 5, true);
   highlighter.dispose();
   term.dispose();
 });

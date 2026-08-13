@@ -58,11 +58,19 @@ type ParserState = {
   linePrefixTruncated: boolean;
   pending: string;
   pendingKind: "escape" | "csi" | "osc" | "string" | null;
+  pendingStringEscape: boolean;
 };
 
 export type KeywordHighlighterOptions = {
   shouldBypassHighlight?: () => boolean;
   canRebuild?: () => boolean;
+};
+
+type InternalScrollTerminal = {
+  _core?: {
+    scroll?: (eraseAttr: unknown, isWrapped: boolean) => void;
+    _inputHandler?: { _eraseAttrData?: () => unknown };
+  };
 };
 
 const ESC = "\x1b";
@@ -77,6 +85,7 @@ const C1_ST = "\x9c";
 const MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS = 4_096;
 const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
 const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
+const MAX_DEFERRED_PRISTINE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PREFIX_CHARS = 4_096;
 
 const DEFAULT_FOREGROUND: ForegroundState = Object.freeze({ kind: "default" });
@@ -88,6 +97,7 @@ const createParserState = (): ParserState => ({
   linePrefixTruncated: false,
   pending: "",
   pendingKind: null,
+  pendingStringEscape: false,
 });
 
 const isCsiFinal = (code: number): boolean => code >= 0x40 && code <= 0x7e;
@@ -317,7 +327,7 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
             plugin: true,
             endSensitive: isEndSensitivePattern(pattern),
             visit(text, onMatch) {
-              matcher(text.slice(0, MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS), onMatch);
+              matcher(text, onMatch);
             },
           });
         } catch {
@@ -386,7 +396,18 @@ export class KeywordHighlightTransformer {
         const matches: HighlightMatch[] = [];
         for (const pattern of this.compiledPatterns) {
           if (pattern.plugin && pluginMatchCount >= MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE) continue;
-          pattern.visit(searchable, (start, length) => {
+          // Plugin scans are bounded, but prior-line context must never consume
+          // the budget intended for the newly arrived text.
+          const currentScanLength = Math.min(line.length, MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS);
+          const prefixScanLength = pattern.plugin
+            ? Math.min(prefix.length, MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS - currentScanLength)
+            : prefix.length;
+          const scanStart = pattern.plugin ? prefix.length - prefixScanLength : 0;
+          const scanText = pattern.plugin
+            ? prefix.slice(-prefixScanLength) + line.slice(0, currentScanLength)
+            : searchable;
+          pattern.visit(scanText, (relativeStart, length) => {
+            const start = relativeStart + scanStart;
             if (length <= 0) return;
             if (start < offset) {
               // Match begins in a prior write's already-emitted text; schedule catch-up.
@@ -469,6 +490,7 @@ export class KeywordHighlightTransformer {
       const kind = this.state.pendingKind;
       this.state.pending = "";
       this.state.pendingKind = null;
+      this.state.pendingStringEscape = false;
       if (kind === "csi") {
         this.state.foreground = updateForeground(this.state.foreground, sequence);
         this.state.alternateScreen = parseAlternateScreen(sequence, this.state.alternateScreen);
@@ -484,6 +506,20 @@ export class KeywordHighlightTransformer {
       const char = input[index];
       const next = input[index + 1];
       if (this.state.pendingKind === "osc" || this.state.pendingKind === "string") {
+        if (this.state.pendingStringEscape) {
+          output += char;
+          this.state.pendingStringEscape = false;
+          if (char === "\\") {
+            completeSequence();
+          } else if (char === ESC && next === "\\") {
+            output += next;
+            index += 1;
+            completeSequence();
+          } else if (char === ESC && next === undefined) {
+            this.state.pendingStringEscape = true;
+          }
+          continue;
+        }
         output += char;
         if (
           (this.state.pendingKind === "osc" && char === BEL)
@@ -495,6 +531,8 @@ export class KeywordHighlightTransformer {
             index += 1;
           }
           completeSequence();
+        } else if (char === ESC && next === undefined) {
+          this.state.pendingStringEscape = true;
         }
         continue;
       }
@@ -566,6 +604,8 @@ export class KeywordHighlighter implements IDisposable {
   private readonly transformer = new KeywordHighlightTransformer();
   private readonly originalWrite: XTerm["write"];
   private readonly originalReset: XTerm["reset"];
+  private readonly originalClear: XTerm["clear"];
+  private readonly originalSerialize: SerializeAddon["serialize"];
   private readonly disposables: IDisposable[] = [];
   private rules: readonly RuntimeKeywordHighlightRule[] = [];
   private enabled = false;
@@ -578,7 +618,12 @@ export class KeywordHighlighter implements IDisposable {
   private queuedWrites: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
   private hasPristineContent = false;
   private catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+  private catchUpSettled: Promise<void> = Promise.resolve();
+  private resolveCatchUp: (() => void) | null = null;
   private resetGeneration = 0;
+  private deferredPristineWrites: Array<string | Uint8Array> = [];
+  private deferredPristineBytes = 0;
+  private transformerNeedsRebuild = false;
 
   constructor(
     private readonly term: XTerm,
@@ -600,10 +645,18 @@ export class KeywordHighlighter implements IDisposable {
     this.pristineTerm.loadAddon(pristineUnicodeGraphemes);
     this.pristineTerm.unicode.activeVersion = "15-graphemes";
     this.pristineTerm.loadAddon(this.serializeAddon);
+    this.originalSerialize = this.serializeAddon.serialize.bind(this.serializeAddon);
+    this.serializeAddon.serialize = (options) => {
+      this.flushDeferredPristineSync();
+      this.syncPristineOptions();
+      return this.originalSerialize(options);
+    };
     this.originalWrite = term.write.bind(term);
     this.originalReset = term.reset.bind(term);
+    this.originalClear = term.clear.bind(term);
     term.write = this.write;
     term.reset = this.reset;
+    term.clear = this.clear;
     this.disposables.push(
       term.onResize(({ cols, rows }) => this.pristineTerm.resize(cols, rows)),
       term.buffer.onBufferChange(() => {
@@ -633,11 +686,20 @@ export class KeywordHighlighter implements IDisposable {
       return;
     }
     this.pendingRulesChanged = true;
-    this.scheduleRebuild();
+    if (this.catchUpTimer !== null || this.deferredPristineWrites.length > 0) {
+      this.scheduleBulkCatchUp();
+    } else {
+      this.scheduleRebuild();
+    }
   }
 
-  whenSettled(): Promise<void> {
-    return this.settlePromise;
+  async whenSettled(): Promise<void> {
+    while (!this.disposed) {
+      const catchUp = this.catchUpSettled;
+      const rebuild = this.settlePromise;
+      await Promise.all([catchUp, rebuild]);
+      if (catchUp === this.catchUpSettled && rebuild === this.settlePromise) return;
+    }
   }
 
   dispose(): void {
@@ -645,7 +707,11 @@ export class KeywordHighlighter implements IDisposable {
     this.disposed = true;
     this.term.write = this.originalWrite;
     this.term.reset = this.originalReset;
+    this.term.clear = this.originalClear;
+    this.serializeAddon.serialize = this.originalSerialize;
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
+    this.resolveCatchUp?.();
+    this.resolveCatchUp = null;
     for (const disposable of this.disposables) disposable.dispose();
     for (const write of this.queuedWrites.splice(0)) write.callback?.();
     this.pristineTerm.dispose();
@@ -657,28 +723,39 @@ export class KeywordHighlighter implements IDisposable {
       return;
     }
     if (typeof data !== "string") {
-      const pristine = this.writePristine(data);
+      this.transformerNeedsRebuild = true;
+      this.deferPristine(data);
       const visible = this.writeVisible(data);
-      void Promise.all([pristine, visible]).then(() => callback?.());
-      if (this.enabled) this.scheduleBulkCatchUp();
+      void visible.then(() => callback?.());
+      this.scheduleBulkCatchUp();
       if (this.pendingRulesChanged) this.scheduleRebuild();
       return;
     }
-    const pristine = this.writePristine(data);
     const bypass = this.options.shouldBypassHighlight?.()
       ?? shouldDegradeTerminalKeywordHighlight(this.term, data);
-    const transformed = this.transformer.transform(data, {
-      bypass,
-    });
+    const shouldDeferPristine = bypass || this.deferredPristineWrites.length > 0;
+    const pristine = shouldDeferPristine ? null : this.writePristine(data);
+    if (shouldDeferPristine) this.deferPristine(data);
+    const skipHotPathTransform = bypass || this.transformerNeedsRebuild;
+    if (bypass) this.transformerNeedsRebuild = true;
+    const transformed = skipHotPathTransform ? data : this.transformer.transform(data);
     const visible = this.writeVisible(transformed);
-    void Promise.all([pristine, visible]).then(() => callback?.());
-    if ((bypass || this.transformer.takeMissedBoundaryMatch()) && this.enabled) {
+    void (pristine ? Promise.all([pristine, visible]) : visible).then(() => callback?.());
+    const hasBareCarriageReturn = data.includes("\r") && /\r(?!\n)/.test(data);
+    if (skipHotPathTransform) {
+      // Even with coloring disabled, drain the bounded pristine backlog after
+      // bulk output becomes quiet so it cannot grow until serialization.
+      this.scheduleBulkCatchUp();
+    } else if (
+      (hasBareCarriageReturn || this.transformer.takeMissedBoundaryMatch()) && this.enabled
+    ) {
       this.scheduleBulkCatchUp();
     }
     if (this.pendingRulesChanged) this.scheduleRebuild();
   };
 
   private readonly reset: XTerm["reset"] = () => {
+    this.flushDeferredPristineSync();
     this.pendingRulesChanged = false;
     for (const write of this.queuedWrites.splice(0)) write.callback?.();
     this.hasPristineContent = false;
@@ -686,15 +763,82 @@ export class KeywordHighlighter implements IDisposable {
       clearTimeout(this.catchUpTimer);
       this.catchUpTimer = null;
     }
+    this.resolveCatchUp?.();
+    this.resolveCatchUp = null;
     this.transformer.resetParserState();
+    this.transformerNeedsRebuild = false;
     this.resetGeneration += 1;
     this.pristineTerm.reset();
     this.originalReset();
   };
 
+  private readonly clear: XTerm["clear"] = () => {
+    this.flushDeferredPristineSync();
+    this.pristineTerm.clear();
+    this.originalClear();
+    this.transformer.resetParserState();
+    this.transformerNeedsRebuild = false;
+  };
+
+  private syncPristineOptions(): void {
+    this.pristineTerm.options.scrollback = this.term.options.scrollback;
+  }
+
+  /** Mirror Netcatty's local clear pre-scroll, which mutates xterm outside write(). */
+  mirrorViewportScroll(lines: number): void {
+    if (lines <= 0) return;
+    this.flushDeferredPristineSync();
+    const internal = this.pristineTerm as unknown as InternalScrollTerminal;
+    const scroll = internal._core?.scroll;
+    const eraseAttr = internal._core?._inputHandler?._eraseAttrData?.();
+    if (typeof scroll !== "function" || eraseAttr === undefined) return;
+    for (let index = 0; index < lines; index += 1) scroll.call(internal._core, eraseAttr, false);
+  }
+
+  private deferPristine(data: string | Uint8Array): void {
+    if (data.length === 0) return;
+    this.hasPristineContent = true;
+    const stableData = typeof data === "string" ? data : data.slice();
+    this.deferredPristineWrites.push(stableData);
+    this.deferredPristineBytes += stableData.length;
+    if (this.deferredPristineBytes >= MAX_DEFERRED_PRISTINE_BYTES) {
+      void this.flushDeferredPristine();
+    }
+  }
+
+  private flushDeferredPristine(): Promise<void> {
+    const queued = this.deferredPristineWrites.splice(0);
+    this.deferredPristineBytes = 0;
+    if (queued.length === 0) return this.pristineSettled;
+    this.syncPristineOptions();
+    const combined = queued.every((data) => typeof data === "string")
+      ? (queued as string[]).join("")
+      : null;
+    this.pristineSettled = new Promise<void>((resolve) => {
+      if (combined !== null) {
+        this.pristineTerm.write(combined, resolve);
+        return;
+      }
+      queued.forEach((data, index) => {
+        this.pristineTerm.write(data, index === queued.length - 1 ? resolve : undefined);
+      });
+    });
+    return this.pristineSettled;
+  }
+
+  private flushDeferredPristineSync(): void {
+    void this.flushDeferredPristine();
+    const writeBuffer = (
+      this.pristineTerm as unknown as {
+        _core?: { _writeBuffer?: { flushSync(): void } };
+      }
+    )._core?._writeBuffer;
+    writeBuffer?.flushSync();
+  }
+
   private writePristine(data: string | Uint8Array): Promise<void> {
     this.hasPristineContent = this.hasPristineContent || data.length > 0;
-    this.pristineTerm.options.scrollback = this.term.options.scrollback;
+    this.syncPristineOptions();
     this.pristineSettled = new Promise<void>((resolve) => {
       this.pristineTerm.write(data, resolve);
     });
@@ -709,9 +853,17 @@ export class KeywordHighlighter implements IDisposable {
   }
 
   private scheduleBulkCatchUp(): void {
+    if (this.resolveCatchUp === null) {
+      this.catchUpSettled = new Promise<void>((resolve) => {
+        this.resolveCatchUp = resolve;
+      });
+    }
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
-    this.catchUpTimer = setTimeout(() => {
+    this.catchUpTimer = setTimeout(async () => {
       this.catchUpTimer = null;
+      if (!this.disposed) await this.flushDeferredPristine();
+      this.resolveCatchUp?.();
+      this.resolveCatchUp = null;
       if (this.disposed || !this.enabled) return;
       this.pendingRulesChanged = true;
       this.scheduleRebuild();
@@ -743,9 +895,10 @@ export class KeywordHighlighter implements IDisposable {
   }
 
   private async rebuild(): Promise<void> {
+    await this.flushDeferredPristine();
     await Promise.all([this.pristineSettled, this.visibleSettled]);
     const generation = this.resetGeneration;
-    this.pristineTerm.options.scrollback = this.term.options.scrollback;
+    this.syncPristineOptions();
     const snapshot = this.serializeAddon.serialize({
       scrollback: this.term.options.scrollback,
       excludeAltBuffer: true,
@@ -759,6 +912,7 @@ export class KeywordHighlighter implements IDisposable {
       : 0;
     this.rebuildCount += 1;
     this.transformer.resetParserState();
+    this.transformerNeedsRebuild = false;
     // Snapshot lines are already committed buffer rows; treat trailing text as complete
     // so end-sensitive rules (`\b`, `$`, …) still color the final row.
     const highlighted = this.transformer.transform(snapshot, { linesComplete: true });
