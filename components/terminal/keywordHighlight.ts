@@ -73,7 +73,8 @@ const withRgbFg = (originalFg: number, rgb: number): number => (
 const parseRgb = (color: string): number | null => {
   const normalized = color.trim();
   const short = /^#([\da-f])([\da-f])([\da-f])$/i.exec(normalized);
-  const full = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(normalized);
+  // Plugin decorations accept #RRGGBBAA; cell fg is 24-bit, so drop alpha.
+  const full = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})(?:[\da-f]{2})?$/i.exec(normalized);
   const components = full
     ? full.slice(1)
     : short

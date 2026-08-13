@@ -342,6 +342,23 @@ test("application reset clears highlight state with the visible terminal", async
   term.dispose();
 });
 
+test("8-digit plugin hex colors keep RGB and ignore alpha", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules([{
+    id: "plugin-alpha",
+    label: "Error",
+    patterns: ["ERROR"],
+    color: "#F8717180",
+    enabled: true,
+    providerId: "plugin.demo",
+  }], true);
+  await write(term, "plain ERROR text");
+  assert.equal(cellRgb(term, 0, "ERROR"), RED);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("plugin scans stay within the bounded match budget", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);
