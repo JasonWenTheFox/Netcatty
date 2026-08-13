@@ -913,19 +913,38 @@ test("large wrapped history keeps every row across rebuild", async () => {
     (_, index) => `L${index.toString().padStart(4, "0")}-${"x".repeat((index % 70) + 1)} ERROR`,
   );
   await write(term, lines.join("\r\n"));
-  const beforeLines = Array.from({ length: term.buffer.normal.length }, (_, index) => ({
-    text: term.buffer.normal.getLine(index)?.translateToString(true) ?? "",
-    wrapped: term.buffer.normal.getLine(index)?.isWrapped ?? false,
-  }));
+  const snapshotCells = () => Array.from({ length: term.buffer.normal.length }, (_, index) => {
+    const line = term.buffer.normal.getLine(index);
+    return {
+      wrapped: line?.isWrapped ?? false,
+      cells: Array.from({ length: term.cols }, (_, cellIndex) => {
+        const cell = line?.getCell(cellIndex);
+        return cell ? {
+          chars: cell.getChars(),
+          width: cell.getWidth(),
+          fg: cell.getFgColor(),
+          bg: cell.getBgColor(),
+          bold: cell.isBold(),
+          italic: cell.isItalic(),
+          underline: cell.isUnderline(),
+          inverse: cell.isInverse(),
+        } : null;
+      }),
+    };
+  });
+  const beforeLines = snapshotCells();
 
   highlighter.setRules(rule("#60A5FA"), true);
   await highlighter.whenSettled();
   const visible = visibleSerializer.serialize();
-  const afterLines = Array.from({ length: term.buffer.normal.length }, (_, index) => ({
-    text: term.buffer.normal.getLine(index)?.translateToString(true) ?? "",
-    wrapped: term.buffer.normal.getLine(index)?.isWrapped ?? false,
+  const afterLines = snapshotCells();
+  const stripHighlightColors = (rows: ReturnType<typeof snapshotCells>) => rows.map((row) => ({
+    ...row,
+    cells: row.cells.map((cell) => (
+      cell?.fg === 0x60a5fa ? { ...cell, fg: 0xf87171 } : cell
+    )),
   }));
-  assert.deepEqual(afterLines, beforeLines);
+  assert.deepEqual(stripHighlightColors(afterLines), beforeLines);
   const replay = new XTerm({ cols: 40, rows: 5, scrollback: 3000 });
   await write(replay, visible);
   const replayedText = Array.from({ length: replay.buffer.normal.length }, (_, index) =>
@@ -952,6 +971,61 @@ test("history rebuild preserves custom tab stops", async () => {
 
   assert.equal(term.buffer.active.cursorX, 6);
   assert.match(term.buffer.active.getLine(term.buffer.active.baseY + 1)?.translateToString(), /^ {5}Y/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves saved cursor state", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[31m\x1b[2;6H\x1b7\x1b[4;1Hseed ERROR");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  await write(term, "\x1b8Z");
+
+  assert.equal(term.buffer.active.cursorX, 6);
+  assert.equal(term.buffer.active.cursorY, 1);
+  const restoredCell = term.buffer.active.getLine(term.buffer.active.baseY + 1)?.getCell(5);
+  assert.equal(restoredCell?.getChars(), "Z");
+  assert.equal(restoredCell?.getFgColor(), 1);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves the active character set", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b(0q\x1b(B seed ERROR\x1b(0");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  await write(term, "q");
+
+  assert.match(term.buffer.active.getLine(term.buffer.active.baseY)?.translateToString(true) ?? "", /─$/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("sliced history rebuild does not leak cursor style across slice boundaries", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 1000 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, [
+    ...Array.from({ length: 511 }, (_, index) => `plain-${index}`),
+    "\x1b[41mboundary\x1b[0m",
+    "tail",
+  ].join("\r\n"));
+  await write(term, "\x1b[44m");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const tailLine = Array.from({ length: term.buffer.normal.length }, (_, index) =>
+    term.buffer.normal.getLine(index)).find((line) => line?.translateToString(true) === "tail");
+  assert.equal(tailLine?.getCell(0)?.isBgDefault(), true);
   highlighter.dispose();
   term.dispose();
 });

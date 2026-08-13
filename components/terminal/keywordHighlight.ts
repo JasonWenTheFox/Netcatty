@@ -79,12 +79,50 @@ type InternalScrollTerminal = {
 
 type InternalBrowserTerminal = {
   _core?: {
-    _bufferService?: { buffer?: { tabs?: Record<string, boolean> } };
+    _bufferService?: { buffer?: InternalBrowserBuffer };
+    _charsetService?: {
+      glevel: number;
+      _charsets: unknown[];
+      setgCharset(index: number, charset: unknown): void;
+      setgLevel(level: number): void;
+    };
     _renderService?: {
       _isPaused?: boolean;
       refreshRows(start: number, end: number): void;
     };
   };
+};
+
+type InternalBrowserBuffer = {
+  tabs?: Record<string, boolean>;
+  savedX?: number;
+  savedY?: number;
+  savedCurAttrData?: { clone?(): unknown };
+  savedCharset?: unknown;
+  savedCharsets?: unknown[];
+  savedGlevel?: number;
+  savedOriginMode?: boolean;
+  savedWraparoundMode?: boolean;
+};
+
+const snapshotSavedCursorState = (buffer: InternalBrowserBuffer | undefined) => buffer ? {
+  savedX: buffer.savedX,
+  savedY: buffer.savedY,
+  savedCurAttrData: buffer.savedCurAttrData?.clone?.() ?? buffer.savedCurAttrData,
+  savedCharset: buffer.savedCharset,
+  savedCharsets: buffer.savedCharsets ? [...buffer.savedCharsets] : undefined,
+  savedGlevel: buffer.savedGlevel,
+  savedOriginMode: buffer.savedOriginMode,
+  savedWraparoundMode: buffer.savedWraparoundMode,
+} : null;
+
+const restoreSavedCursorState = (
+  buffer: InternalBrowserBuffer,
+  state: NonNullable<ReturnType<typeof snapshotSavedCursorState>>,
+): void => {
+  for (const [key, value] of Object.entries(state)) {
+    if (value !== undefined) (buffer as Record<string, unknown>)[key] = value;
+  }
 };
 
 type PristineFlushState = {
@@ -1251,6 +1289,7 @@ export class KeywordHighlighter implements IDisposable {
     for (let start = startLine; start < bufferLength; start += REBUILD_SERIALIZE_SLICE_LINES) {
       if (generation !== this.resetGeneration || this.disposed) return null;
       const end = Math.min(bufferLength - 1, start + REBUILD_SERIALIZE_SLICE_LINES - 1);
+      if (chunks.length > 0) chunks.push("\x1b[0m");
       chunks.push(this.originalSerialize({
         range: { start, end },
         excludeAltBuffer: true,
@@ -1286,6 +1325,12 @@ export class KeywordHighlighter implements IDisposable {
     const visibleBuffer = (this.term as unknown as InternalBrowserTerminal)
       ._core?._bufferService?.buffer;
     const tabStops = visibleBuffer?.tabs ? { ...visibleBuffer.tabs } : null;
+    const savedCursorState = snapshotSavedCursorState(visibleBuffer);
+    const charsetService = (this.term as unknown as InternalBrowserTerminal)._core?._charsetService;
+    const charsetState = charsetService ? {
+      glevel: charsetService.glevel,
+      charsets: [...charsetService._charsets],
+    } : null;
     this.rebuildCount += 1;
     this.transformer.resetParserState();
     this.transformerNeedsRebuild = false;
@@ -1318,6 +1363,17 @@ export class KeywordHighlighter implements IDisposable {
       const rebuiltVisibleBuffer = (this.term as unknown as InternalBrowserTerminal)
         ._core?._bufferService?.buffer;
       if (tabStops && rebuiltVisibleBuffer) rebuiltVisibleBuffer.tabs = { ...tabStops };
+      if (savedCursorState && rebuiltVisibleBuffer) {
+        restoreSavedCursorState(rebuiltVisibleBuffer, savedCursorState);
+      }
+      const rebuiltCharsetService = (this.term as unknown as InternalBrowserTerminal)
+        ._core?._charsetService;
+      if (charsetState && rebuiltCharsetService) {
+        charsetState.charsets.forEach((charset, index) => {
+          rebuiltCharsetService.setgCharset(index, charset);
+        });
+        rebuiltCharsetService.setgLevel(charsetState.glevel);
+      }
       this.lastRebuildTimings = {
         pristine: pristineFlushedAt - rebuildStarted,
         serialize: serializedAt - pristineFlushedAt,
