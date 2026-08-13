@@ -68,13 +68,19 @@ test("resolveExecShellPath prefers probed login path over remote-shell placehold
   await ensureSessionShellKind(session, {
     execProbe: async () => `${PROBE_OUTPUT_MARKER}/bin/dash\n`,
   });
-  assert.equal(resolveExecShellPath(session), "/bin/dash");
-  assert.equal(
+  assert.deepEqual(resolveExecShellPath(session), {
+    shellPath: "/bin/dash",
+    resolveLocalSymlinks: false,
+  });
+  assert.deepEqual(
     resolveExecShellPath({ shellExecutable: "/bin/zsh" }),
-    "/bin/zsh",
+    { shellPath: "/bin/zsh", resolveLocalSymlinks: true },
   );
-  assert.equal(resolveExecShellPath({ shellExecutable: "remote-shell" }), "remote-shell");
-  assert.equal(resolveExecShellPath({}), undefined);
+  assert.deepEqual(
+    resolveExecShellPath({ shellExecutable: "remote-shell" }),
+    { shellPath: "remote-shell", resolveLocalSymlinks: true },
+  );
+  assert.deepEqual(resolveExecShellPath({}), {});
 });
 
 test("probe command is fish-parseable and forces POSIX sh", () => {
@@ -84,6 +90,9 @@ test("probe command is fish-parseable and forces POSIX sh", () => {
   assert.match(command, /^exec sh -c '/);
   assert.match(command, /getent passwd/);
   assert.match(command, new RegExp(PROBE_OUTPUT_MARKER));
+  // Resolve remote /bin/sh on the host so the client never uses local realpath.
+  assert.match(command, /readlink -f/);
+  assert.match(command, /realpath/);
   // ${SHELL:-} lives inside the single-quoted sh script body, not as an
   // outer-shell expansion — fish must not see it unquoted.
   assert.match(command, /\$\{SHELL:-\}/);

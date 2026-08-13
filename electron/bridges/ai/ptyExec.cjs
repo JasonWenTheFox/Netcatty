@@ -44,6 +44,7 @@ function startPtyJob(ptyStream, command, options) {
     shellKind,
     loginShellHint,
     shellPath,
+    resolveLocalSymlinks,
     chatSessionId,
     abortSignal,
     expectedPrompt,
@@ -586,7 +587,10 @@ function startPtyJob(ptyStream, command, options) {
   // can flush the next write. The PowerShell wrapper starts with `$`, so a
   // dropped first byte prevents the start marker from arriving. Without a
   // fresh prompt, ETX would also SIGINT a user-started foreground process.
-  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind, { shellPath });
+  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind, {
+    shellPath,
+    resolveLocalSymlinks,
+  });
   if (clearPrefix) {
     ptyStream.write(clearPrefix);
   }

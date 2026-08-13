@@ -24,18 +24,26 @@ function shellExecutableBaseName(shellPath) {
  * True when the interactive shell clears lines with canonical VKILL rather
  * than readline (Ctrl+U left + Ctrl+K right).
  *
- * Local `sh` symlinks are resolved when the path exists on this host. Remote
- * probe paths that are merely named `sh` are treated as canonical: sending
- * Ctrl+K breaks dash-backed /bin/sh (Debian/Ubuntu), while omitting it on
- * rarer bash-as-sh remotes only matters when the cursor is mid-line.
+ * Local `sh` symlinks may be resolved with realpathSync when
+ * `resolveLocalSymlinks` is true (default). Remote probe paths must pass
+ * `resolveLocalSymlinks: false` — the same path on the client (e.g. Debian
+ * `/bin/sh` → dash) is unrelated to the remote editor. Ambiguous remote `sh`
+ * is treated as canonical: Ctrl+K breaks dash-backed /bin/sh, while omitting
+ * it on rarer bash-as-sh remotes only matters when the cursor is mid-line
+ * (remote probes also try to resolve the symlink on the host).
  *
  * @param {string} [shellPath]
+ * @param {{ resolveLocalSymlinks?: boolean }} [options]
  */
-function isCanonicalPosixLineEditor(shellPath) {
+function isCanonicalPosixLineEditor(shellPath, options = {}) {
   let base = shellExecutableBaseName(shellPath);
   if (!base) return false;
   if (CANONICAL_POSIX_LINE_EDITORS.has(base)) return true;
   if (base !== "sh") return false;
+
+  if (options.resolveLocalSymlinks === false) {
+    return true;
+  }
 
   const trimmed = String(shellPath || "").trim();
   try {
@@ -224,7 +232,7 @@ function buildPosixWrapperBody(command, marker) {
  * that `activeSessionExecutions` does not track.
  *
  * @param {string} shellKind
- * @param {{ allowInterrupt?: boolean, shellPath?: string }} [options]
+ * @param {{ allowInterrupt?: boolean, shellPath?: string, resolveLocalSymlinks?: boolean }} [options]
  */
 function buildPendingInputClearPrefix(shellKind, options = {}) {
   if (shellKind === "raw") return "";
@@ -239,7 +247,9 @@ function buildPendingInputClearPrefix(shellKind, options = {}) {
   // `i` before the line-kills restores readline/fish vi insert mode. Do not
   // put `i` after the kills — that would prefix the wrapper with a literal i.
   // Fish keeps trailing Ctrl+K (no-op). Canonical posix omits it.
-  const omitCtrlK = shellKind !== "fish" && isCanonicalPosixLineEditor(options.shellPath);
+  const omitCtrlK = shellKind !== "fish" && isCanonicalPosixLineEditor(options.shellPath, {
+    resolveLocalSymlinks: options.resolveLocalSymlinks,
+  });
   const lineClear = omitCtrlK ? "i\x15" : "i\x15\x0b";
   return allowInterrupt ? `\x03${lineClear}` : lineClear;
 }

@@ -109,6 +109,29 @@ test("canonical posix shells omit Ctrl+K so dash does not see a literal 0x0b", (
   assert.equal(buildPendingInputClearPrefix("fish", { shellPath: "/bin/dash" }), "i\x15\x0b");
 });
 
+test("remote /bin/sh is not classified via client realpathSync", () => {
+  // Ambiguous remote `sh` must ignore the client symlink target (dash vs bash).
+  assert.equal(
+    isCanonicalPosixLineEditor("/bin/sh", { resolveLocalSymlinks: false }),
+    true,
+  );
+  assert.equal(
+    buildPendingInputClearPrefix("posix", {
+      shellPath: "/bin/sh",
+      resolveLocalSymlinks: false,
+    }),
+    "i\x15",
+  );
+  // Resolved remote bash must still keep Ctrl+K for mid-line readline clears.
+  assert.equal(
+    buildPendingInputClearPrefix("posix", {
+      shellPath: "/bin/bash",
+      resolveLocalSymlinks: false,
+    }),
+    "i\x15\x0b",
+  );
+});
+
 test("execViaPty omits Ctrl+K for dash-backed local shells", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {

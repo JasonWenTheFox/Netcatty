@@ -60,14 +60,22 @@ function classifyShellKindFromRemotePath(shellPath) {
 /**
  * Silent remote probe: force POSIX sh so fish/zsh login shells can still run it
  * when sshd invokes the command through the user's login shell (`$SHELL -c`).
- * Prints a single line: absolute login-shell path (or empty).
+ * Prints a single line: absolute login-shell path (or empty). Symlinks are
+ * resolved on the remote host when readlink -f / realpath is available so the
+ * client never classifies a remote `/bin/sh` via local realpathSync.
  */
 function buildRemoteLoginShellProbeCommand() {
   const script = [
     'SH="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)"',
     '[ -n "$SH" ] || SH="${SHELL:-}"',
+    'if [ -n "$SH" ]; then',
+    '  R=""',
+    '  if command -v readlink >/dev/null 2>&1; then R=$(readlink -f "$SH" 2>/dev/null || true); fi',
+    '  if [ -z "$R" ] && command -v realpath >/dev/null 2>&1; then R=$(realpath "$SH" 2>/dev/null || true); fi',
+    '  [ -n "$R" ] && SH="$R"',
+    'fi',
     `printf "${PROBE_OUTPUT_MARKER}%s\\n" "$SH"`,
-  ].join("; ");
+  ].join("\n");
   return `exec sh -c ${quoteShellArg(script)}`;
 }
 
@@ -183,20 +191,26 @@ function isShellKindProbeSettled(session) {
 }
 
 /**
- * Path for line-editor selection (canonical dash/ash omit Ctrl+K).
+ * Options for line-editor selection (canonical dash/ash omit Ctrl+K).
  *
  * Prefer the probed login-shell path over constructor placeholders such as
  * Mosh/ET `shellExecutable: "remote-shell"`, which would otherwise win a
  * truthy `||` and hide `/bin/dash` from `isCanonicalPosixLineEditor`.
  *
+ * Probed remote paths set `resolveLocalSymlinks: false` so a client
+ * `/bin/sh` → dash/bash never decides the remote line editor.
+ *
  * @param {object} [session]
- * @returns {string|undefined}
+ * @returns {{ shellPath?: string, resolveLocalSymlinks?: boolean }}
  */
 function resolveExecShellPath(session) {
   const probed = String(session?._loginShellPath || "").trim();
-  if (probed) return probed;
+  if (probed) {
+    return { shellPath: probed, resolveLocalSymlinks: false };
+  }
   const executable = String(session?.shellExecutable || "").trim();
-  return executable || undefined;
+  if (!executable) return {};
+  return { shellPath: executable, resolveLocalSymlinks: true };
 }
 
 /**
