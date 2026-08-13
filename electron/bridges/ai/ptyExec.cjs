@@ -574,6 +574,16 @@ function startPtyJob(ptyStream, command, options) {
     cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
   }
 
+  // Clear unfinished / continuation input before the synthetic echo and the
+  // wrapper. Write the clear prefix alone so readline erase/redraw bytes do
+  // not share a line with the marker-bearing wrapper echo (preload drops any
+  // line containing __NCMCP_, which would otherwise leave concatenated text
+  // on screen after typedInput echo).
+  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind);
+  if (clearPrefix) {
+    ptyStream.write(clearPrefix);
+  }
+
   if (typedInput && typeof echoCommand === "function") {
     try {
       echoCommand(command);
@@ -582,10 +592,7 @@ function startPtyJob(ptyStream, command, options) {
     }
   }
 
-  // Clear any unfinished user input on the prompt line first so the wrapped
-  // command is not concatenated (e.g. typed `ls` + agent `uname` → `lsuname`).
-  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind);
-  ptyStream.write(`${clearPrefix}${buildWrappedCommand(command, resolvedShellKind, marker)}`);
+  ptyStream.write(buildWrappedCommand(command, resolvedShellKind, marker));
 
   return {
     marker,

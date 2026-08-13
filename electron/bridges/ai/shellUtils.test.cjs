@@ -28,12 +28,12 @@ const path = require("node:path");
 test("formatSyntheticEcho normalizes multi-line commands to CRLF so xterm doesn't staircase", () => {
   assert.equal(
     formatSyntheticEcho("set -e\ncd /tmp\necho done"),
-    "set -e\r\ncd /tmp\r\necho done\r\n",
+    "\r\x1b[2Kset -e\r\ncd /tmp\r\necho done\r\n",
   );
   // Already-CRLF input is not doubled.
-  assert.equal(formatSyntheticEcho("a\r\nb"), "a\r\nb\r\n");
-  // Single-line commands keep the original shape.
-  assert.equal(formatSyntheticEcho("npm test"), "npm test\r\n");
+  assert.equal(formatSyntheticEcho("a\r\nb"), "\r\x1b[2Ka\r\nb\r\n");
+  // Single-line commands keep the original shape, with a line erase first.
+  assert.equal(formatSyntheticEcho("npm test"), "\r\x1b[2Knpm test\r\n");
 });
 
 test("extracts a trailing PowerShell idle prompt", () => {

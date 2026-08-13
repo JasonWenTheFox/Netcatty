@@ -45,8 +45,12 @@ function stripAnsi(input) {
 // for the user to see. xterm.js treats a bare \n as "move down, keep
 // column", which renders multi-line commands as a staircase. Normalize
 // every line break to \r\n so each line starts at column 0.
+//
+// Leading CR + CSI 2 K erases the current display line first so unfinished
+// user input is not concatenated onto the synthetic agent command when the
+// PTY clear/redraw is delayed or filtered with the wrapper marker line.
 function formatSyntheticEcho(command) {
-  return `${String(command ?? "").replace(/\r?\n/g, "\r\n")}\r\n`;
+  return `\r\x1b[2K${String(command ?? "").replace(/\r?\n/g, "\r\n")}\r\n`;
 }
 
 // Default PowerShell prompt (e.g. `PS C:\Users\alice>`, `PS>`,
