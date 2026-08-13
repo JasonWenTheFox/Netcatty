@@ -2134,7 +2134,7 @@ test("attachSessionToTerminal clears the backend id before reporting exit", () =
   assert.equal(sessionIdSeenByConsumer, null);
 });
 
-test("attachSessionToTerminal drains hidden final output before exit capture", () => {
+test("attachSessionToTerminal drains hidden final output before exit capture", async () => {
   const { term, writes } = createFakeTerm();
   let onData: ((data: string) => void) | null = null;
   let onExit: ((evt: { reason?: string }) => void) | null = null;
@@ -2175,6 +2175,7 @@ test("attachSessionToTerminal drains hidden final output before exit capture", (
   assert.deepEqual(writes, []);
 
   onExit?.({ reason: "closed" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const expected = "final output\r\n\r\n[session closed]\r\n";
   assert.equal(writes.join(""), expected);

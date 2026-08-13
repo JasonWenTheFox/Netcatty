@@ -2181,6 +2181,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
     termRef,
     fitAddonRef,
     serializeAddonRef,
+    prepareKeywordHighlightSerialization: () => xtermRuntimeRef.current
+      ?.keywordHighlighter.prepareForSerialization() ?? Promise.resolve(),
     searchAddonRef,
     hasRuntimeRef,
   }), []);
