@@ -202,6 +202,7 @@ export class KeywordHighlighter implements IDisposable {
   private catchUpFrom: number | null = null;
   private catchUpStartMarker: IMarker | null = null;
   private catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+  private catchUpDueAt = 0;
   private catchUpPromise: Promise<void> = Promise.resolve();
   private resolveCatchUp: (() => void) | null = null;
   private catchUpCounted = false;
@@ -509,22 +510,33 @@ export class KeywordHighlighter implements IDisposable {
 
   private scheduleCatchUp(): void {
     if (this.disposed || this.resolveCatchUpY() === null) return;
-    if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     if (!this.resolveCatchUp) {
       this.catchUpPromise = new Promise((resolve) => {
         this.resolveCatchUp = resolve;
       });
     }
     const quietMs = XTERM_PERFORMANCE_CONFIG.highlighting.largeOutputQuietMs ?? 480;
-    this.catchUpTimer = setTimeout(() => {
-      this.catchUpTimer = null;
-      void this.runCatchUp();
-    }, quietMs);
+    this.catchUpDueAt = performance.now() + quietMs;
+    if (this.catchUpTimer !== null) return;
+    const arm = (): void => {
+      const wait = Math.max(1, this.catchUpDueAt - performance.now());
+      this.catchUpTimer = setTimeout(() => {
+        this.catchUpTimer = null;
+        if (this.disposed) return;
+        if (performance.now() < this.catchUpDueAt) {
+          arm();
+          return;
+        }
+        void this.runCatchUp();
+      }, wait);
+    };
+    arm();
   }
 
   private cancelCatchUp(): void {
     if (this.catchUpTimer !== null) clearTimeout(this.catchUpTimer);
     this.catchUpTimer = null;
+    this.catchUpDueAt = 0;
     this.catchUpFrom = null;
     this.catchUpStartMarker?.dispose();
     this.catchUpStartMarker = null;
