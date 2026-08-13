@@ -183,6 +183,23 @@ function isShellKindProbeSettled(session) {
 }
 
 /**
+ * Path for line-editor selection (canonical dash/ash omit Ctrl+K).
+ *
+ * Prefer the probed login-shell path over constructor placeholders such as
+ * Mosh/ET `shellExecutable: "remote-shell"`, which would otherwise win a
+ * truthy `||` and hide `/bin/dash` from `isCanonicalPosixLineEditor`.
+ *
+ * @param {object} [session]
+ * @returns {string|undefined}
+ */
+function resolveExecShellPath(session) {
+  const probed = String(session?._loginShellPath || "").trim();
+  if (probed) return probed;
+  const executable = String(session?.shellExecutable || "").trim();
+  return executable || undefined;
+}
+
+/**
  * Ensure session.shellKind is set when we can detect it. Safe to call on every
  * AI exec — confirmed kinds short-circuit; concurrent callers share one probe.
  *
@@ -324,6 +341,7 @@ module.exports = {
   createSshConnExecProbe,
   createSessionExecProbe,
   applyProbedShellKind,
+  resolveExecShellPath,
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
 };

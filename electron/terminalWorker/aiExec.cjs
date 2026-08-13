@@ -11,6 +11,7 @@ const { getFreshIdlePrompt, formatSyntheticEcho } = require("../bridges/ai/shell
 const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
+  resolveExecShellPath,
 } = require("../bridges/ai/sessionShellKind.cjs");
 
 const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 60 * 60 * 1000;
@@ -277,7 +278,7 @@ function createWorkerAiExecHandler({
         timeoutMs,
         shellKind: session.shellKind,
         loginShellHint: session._loginShellKind,
-        shellPath: session.shellExecutable || session._loginShellPath,
+        shellPath: resolveExecShellPath(session),
         chatSessionId,
         expectedPrompt: getFreshIdlePrompt(session),
         typedInput: true,
@@ -445,7 +446,7 @@ function createWorkerAiJobStartHandler({
         timeoutMs,
         shellKind: session.shellKind,
         loginShellHint: session._loginShellKind,
-        shellPath: session.shellExecutable || session._loginShellPath,
+        shellPath: resolveExecShellPath(session),
         chatSessionId,
         expectedPrompt: getFreshIdlePrompt(session),
         typedInput: true,

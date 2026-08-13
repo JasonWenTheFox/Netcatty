@@ -13,6 +13,7 @@ const {
   createSessionExecProbe,
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
+  resolveExecShellPath,
 } = require("./sessionShellKind.cjs");
 
 const {
@@ -57,6 +58,23 @@ test("posix login shell probe stores path for canonical line-editor selection", 
   assert.equal(session._loginShellKind, "posix");
   assert.equal(session._loginShellPath, "/bin/dash");
   assert.equal(session.shellKind, undefined);
+});
+
+test("resolveExecShellPath prefers probed login path over remote-shell placeholder", async () => {
+  const session = {
+    protocol: "mosh",
+    shellExecutable: "remote-shell",
+  };
+  await ensureSessionShellKind(session, {
+    execProbe: async () => `${PROBE_OUTPUT_MARKER}/bin/dash\n`,
+  });
+  assert.equal(resolveExecShellPath(session), "/bin/dash");
+  assert.equal(
+    resolveExecShellPath({ shellExecutable: "/bin/zsh" }),
+    "/bin/zsh",
+  );
+  assert.equal(resolveExecShellPath({ shellExecutable: "remote-shell" }), "remote-shell");
+  assert.equal(resolveExecShellPath({}), undefined);
 });
 
 test("probe command is fish-parseable and forces POSIX sh", () => {
