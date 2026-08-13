@@ -17,6 +17,7 @@ const {
 const {
   buildWrappedCommand,
   buildPendingInputClearPrefix,
+  isCanonicalPosixLineEditor,
 } = require("./ptyExecHelpers.cjs");
 
 class ShellBackedPty extends EventEmitter {
@@ -27,7 +28,9 @@ class ShellBackedPty extends EventEmitter {
     if (
       script === "\x03" ||
       script === "\x03i\x15\x0b" ||
+      script === "\x03i\x15" ||
       script === "i\x15\x0b" ||
+      script === "i\x15" ||
       script === "\x03\x15\x0b" ||
       script === "\x15\x0b" ||
       script === "\x03i\x15\x0b\x1b\x1bi\x08" ||
@@ -42,6 +45,7 @@ class ShellBackedPty extends EventEmitter {
     if (script.startsWith("\x03")) script = script.slice(1);
     if (script.startsWith("i\x15\x0b\x1b\x1bi\x08")) script = script.slice(7);
     else if (script.startsWith("i\x15\x0b")) script = script.slice(3);
+    else if (script.startsWith("i\x15")) script = script.slice(2);
     else if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
     else if (script.startsWith("\x15\x0b")) script = script.slice(2);
     else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
@@ -89,6 +93,45 @@ test("posix/fish clear prefix restores vi insert mode before line-kills", () => 
   assert.equal(prefix.startsWith("i"), true, "vi command mode needs `i` before the wrapper is typed");
   assert.equal(prefix.endsWith("\x15\x0b"), true);
   assert.equal(prefix.indexOf("i"), 0, "`i` must come before Ctrl+U/Ctrl+K so a literal i is discarded");
+});
+
+test("canonical posix shells omit Ctrl+K so dash does not see a literal 0x0b", () => {
+  assert.equal(isCanonicalPosixLineEditor("/bin/dash"), true);
+  assert.equal(isCanonicalPosixLineEditor("/usr/bin/ash"), true);
+  assert.equal(isCanonicalPosixLineEditor("/bin/bash"), false);
+  assert.equal(isCanonicalPosixLineEditor("/bin/zsh"), false);
+  assert.equal(isCanonicalPosixLineEditor(""), false);
+
+  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash" }), "i\x15");
+  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash", allowInterrupt: true }), "\x03i\x15");
+  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }), "i\x15\x0b");
+  // Fish keeps Ctrl+K (no-op) even if the path looks like dash.
+  assert.equal(buildPendingInputClearPrefix("fish", { shellPath: "/bin/dash" }), "i\x15\x0b");
+});
+
+test("execViaPty omits Ctrl+K for dash-backed local shells", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      const marker = markerFromWrite(data);
+      if (!marker) return;
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+      });
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "echo GOOD", {
+    shellKind: "posix",
+    shellPath: "/bin/dash",
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes[0], "i\x15");
+  assert.equal(writes[0].includes("\x0b"), false);
+  assert.match(writes[1], /echo GOOD/);
 });
 
 test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {

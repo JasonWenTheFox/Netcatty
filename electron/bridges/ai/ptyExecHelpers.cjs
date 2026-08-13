@@ -1,9 +1,53 @@
 "use strict";
 
+const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
 const iconv = require("iconv-lite");
 const { stripAnsi, isDefaultPowerShellPromptLine } = require("./shellUtils.cjs");
 const { classifyLocalShellType } = require("../../../lib/localShell.cjs");
+
+// dash / ash / busybox use canonical (ICANON) line editing: VKILL (Ctrl+U)
+// clears the whole pending line, but Ctrl+K is not bound and arrives as a
+// literal 0x0b that prefixes the wrapper (`\x0becho: not found`) and prevents
+// the start marker from ever arriving. bash/zsh readline needs Ctrl+K to
+// clear text to the right of the cursor.
+const CANONICAL_POSIX_LINE_EDITORS = new Set(["dash", "ash", "busybox"]);
+
+function shellExecutableBaseName(shellPath) {
+  const normalized = String(shellPath || "").trim().replace(/\\/g, "/");
+  if (!normalized) return "";
+  const base = normalized.split("/").pop() || "";
+  return base.toLowerCase();
+}
+
+/**
+ * True when the interactive shell clears lines with canonical VKILL rather
+ * than readline (Ctrl+U left + Ctrl+K right).
+ *
+ * Local `sh` symlinks are resolved when the path exists on this host. Remote
+ * probe paths that are merely named `sh` are treated as canonical: sending
+ * Ctrl+K breaks dash-backed /bin/sh (Debian/Ubuntu), while omitting it on
+ * rarer bash-as-sh remotes only matters when the cursor is mid-line.
+ *
+ * @param {string} [shellPath]
+ */
+function isCanonicalPosixLineEditor(shellPath) {
+  let base = shellExecutableBaseName(shellPath);
+  if (!base) return false;
+  if (CANONICAL_POSIX_LINE_EDITORS.has(base)) return true;
+  if (base !== "sh") return false;
+
+  const trimmed = String(shellPath || "").trim();
+  try {
+    if (trimmed && fs.existsSync(trimmed)) {
+      base = shellExecutableBaseName(fs.realpathSync(trimmed));
+      return CANONICAL_POSIX_LINE_EDITORS.has(base);
+    }
+  } catch {
+    // Fall through to the ambiguous-`sh` default below.
+  }
+  return true;
+}
 
 // Build a stateful decoder for a full exec call. Serial data events can
 // split multi-byte characters across chunks (very common on GBK/GB18030
@@ -160,6 +204,9 @@ function buildPosixWrapperBody(command, marker) {
  *   following line-kills immediately discard. Then Ctrl+U + Ctrl+K clear
  *   residual text on both sides of the cursor. Fish treats Ctrl+U as
  *   kill-whole-line; the trailing Ctrl+K is a no-op.
+ * - canonical posix (dash / ash / busybox / unresolved `sh`): Ctrl+U alone
+ *   (VKILL) clears the whole pending line. Ctrl+K must be omitted — it is a
+ *   literal 0x0b and the wrapper is parsed as `\x0b…` (no start marker).
  * - PowerShell: one sequence has to survive Windows, Emacs, and Vi PSReadLine.
  *   Leading Escape is Windows-only RevertLine; on Unix pwsh it starts an
  *   Emacs chord or drops Vi into command mode, so it cannot come first.
@@ -177,7 +224,7 @@ function buildPosixWrapperBody(command, marker) {
  * that `activeSessionExecutions` does not track.
  *
  * @param {string} shellKind
- * @param {{ allowInterrupt?: boolean }} [options]
+ * @param {{ allowInterrupt?: boolean, shellPath?: string }} [options]
  */
 function buildPendingInputClearPrefix(shellKind, options = {}) {
   if (shellKind === "raw") return "";
@@ -191,7 +238,10 @@ function buildPendingInputClearPrefix(shellKind, options = {}) {
   }
   // `i` before the line-kills restores readline/fish vi insert mode. Do not
   // put `i` after the kills — that would prefix the wrapper with a literal i.
-  return allowInterrupt ? "\x03i\x15\x0b" : "i\x15\x0b";
+  // Fish keeps trailing Ctrl+K (no-op). Canonical posix omits it.
+  const omitCtrlK = shellKind !== "fish" && isCanonicalPosixLineEditor(options.shellPath);
+  const lineClear = omitCtrlK ? "i\x15" : "i\x15\x0b";
+  return allowInterrupt ? `\x03${lineClear}` : lineClear;
 }
 
 function buildWrappedCommand(command, shellKind, marker) {
@@ -435,6 +485,7 @@ module.exports = {
   subscribeToPtyData,
   hasExpectedPromptSuffix,
   resolveEffectiveShellKind,
+  isCanonicalPosixLineEditor,
   buildPendingInputClearPrefix,
   buildWrappedCommand,
   findEndMarker,

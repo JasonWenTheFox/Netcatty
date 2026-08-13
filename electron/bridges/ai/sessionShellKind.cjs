@@ -71,7 +71,10 @@ function buildRemoteLoginShellProbeCommand() {
   return `exec sh -c ${quoteShellArg(script)}`;
 }
 
-function parseRemoteLoginShellProbeOutput(stdout) {
+/**
+ * @returns {{ kind: string, shellPath: string } | null}
+ */
+function parseRemoteLoginShellProbe(stdout) {
   const lines = String(stdout || "")
     .replace(/\r/g, "")
     .split("\n")
@@ -80,10 +83,15 @@ function parseRemoteLoginShellProbeOutput(stdout) {
 
   for (const line of lines) {
     if (!line.startsWith(PROBE_OUTPUT_MARKER)) continue;
-    const kind = classifyShellKindFromRemotePath(line.slice(PROBE_OUTPUT_MARKER.length));
-    if (kind) return kind;
+    const shellPath = line.slice(PROBE_OUTPUT_MARKER.length).trim();
+    const kind = classifyShellKindFromRemotePath(shellPath);
+    if (kind) return { kind, shellPath };
   }
   return null;
+}
+
+function parseRemoteLoginShellProbeOutput(stdout) {
+  return parseRemoteLoginShellProbe(stdout)?.kind ?? null;
 }
 
 /**
@@ -151,10 +159,16 @@ function withProbeTimeout(promise, timeoutMs) {
  *
  * Always mark the probe settled so we do not re-probe every AI exec.
  */
-function applyProbedShellKind(session, kind) {
+function applyProbedShellKind(session, kind, shellPath) {
   if (!kind) return session.shellKind;
   session._shellKindProbeSettled = true;
   session._loginShellKind = kind;
+  const trimmedPath = String(shellPath || "").trim();
+  if (trimmedPath) {
+    // Kept for line-editor selection (dash/ash omit Ctrl+K) without pinning
+    // session.shellKind for fish/posix login shells.
+    session._loginShellPath = trimmedPath;
+  }
   if (kind === "powershell" || kind === "cmd") {
     session.shellKind = kind;
     return session.shellKind;
@@ -224,8 +238,8 @@ async function ensureSessionShellKind(session, options = {}) {
         ),
         timeoutMs,
       );
-      const kind = parseRemoteLoginShellProbeOutput(stdout);
-      return applyProbedShellKind(session, kind);
+      const probed = parseRemoteLoginShellProbe(stdout);
+      return applyProbedShellKind(session, probed?.kind, probed?.shellPath);
     } catch {
       return session.shellKind;
     } finally {
@@ -305,6 +319,7 @@ module.exports = {
   isConfirmedShellKind,
   classifyShellKindFromRemotePath,
   buildRemoteLoginShellProbeCommand,
+  parseRemoteLoginShellProbe,
   parseRemoteLoginShellProbeOutput,
   createSshConnExecProbe,
   createSessionExecProbe,

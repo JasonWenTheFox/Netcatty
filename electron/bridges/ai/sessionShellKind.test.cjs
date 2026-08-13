@@ -49,6 +49,16 @@ test("parseRemoteLoginShellProbeOutput reads classifiable probe output lines", (
   assert.equal(parseRemoteLoginShellProbeOutput("   \n"), null);
 });
 
+test("posix login shell probe stores path for canonical line-editor selection", async () => {
+  const session = { protocol: "ssh" };
+  await ensureSessionShellKind(session, {
+    execProbe: async () => `${PROBE_OUTPUT_MARKER}/bin/dash\n`,
+  });
+  assert.equal(session._loginShellKind, "posix");
+  assert.equal(session._loginShellPath, "/bin/dash");
+  assert.equal(session.shellKind, undefined);
+});
+
 test("probe command is fish-parseable and forces POSIX sh", () => {
   const command = buildRemoteLoginShellProbeCommand();
   // Outer form: fish and bash both accept `exec sh -c '...'` when sshd

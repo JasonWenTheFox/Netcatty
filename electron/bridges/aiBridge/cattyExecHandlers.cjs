@@ -174,6 +174,7 @@ function registerCattyExecHandlers(ctx) {
             timeoutMs,
             shellKind: session.shellKind,
             loginShellHint: session._loginShellKind,
+            shellPath: session.shellExecutable || session._loginShellPath,
             chatSessionId,
             expectedPrompt: getFreshIdlePrompt(session),
             typedInput: true,
