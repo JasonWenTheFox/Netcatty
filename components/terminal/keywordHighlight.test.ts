@@ -178,6 +178,68 @@ test("broad user rules do not insert SGR between surrogate halves", () => {
   );
 });
 
+test("broad user rules do not insert SGR into a surrogate pair split across writes", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  const emoji = "😀";
+  assert.equal(transformer.transform(emoji[0]), emoji[0]);
+  assert.equal(transformer.transform(emoji[1]), emoji[1]);
+  assert.equal(transformer.takeMissedBoundaryMatch(), true);
+});
+
+test("a surrogate pair split across terminal writes remains one glyph after catch-up", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+  const emoji = "😀";
+
+  await write(term, emoji[0]);
+  await write(term, emoji[1]);
+  await highlighter.whenSettled();
+
+  assert.equal(term.buffer.active.getLine(0)?.translateToString(true), emoji);
+  const serialized = visibleSerializer.serialize();
+  assert.equal(serialized.includes(emoji), true);
+  assert.equal(serialized.includes(emoji[0] + RED + emoji[1]), false);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("leaving the alternate screen restores the normal-screen foreground", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules(rule(), true);
+
+  assert.equal(
+    transformer.transform("\x1b[31mnormal\x1b[?1049h\x1b[34malt\x1b[?1049lERROR"),
+    `\x1b[31mnormal\x1b[?1049h\x1b[34malt\x1b[?1049l${RED}ERROR\x1b[31m`,
+  );
+});
+
+test("soft terminal reset restores the default foreground", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules(rule(), true);
+
+  assert.equal(
+    transformer.transform("\x1b[34mblue\x1b[!pERROR"),
+    `\x1b[34mblue\x1b[!p${RED}ERROR\x1b[39m`,
+  );
+});
+
 test("end-sensitive rules wait for a complete line before coloring", () => {
   const transformer = new KeywordHighlightTransformer();
   transformer.setRules([{
@@ -1005,6 +1067,64 @@ test("history rebuild preserves the active character set", async () => {
   await write(term, "q");
 
   assert.match(term.buffer.active.getLine(term.buffer.active.baseY)?.translateToString(true) ?? "", /─$/);
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves mouse tracking and extended coordinates", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[?1000h\x1b[?1006hseed ERROR");
+  const mouseState = () => (term as unknown as {
+    _core: { mouseStateService: { activeProtocol: string; activeEncoding: string } };
+  })._core.mouseStateService;
+  assert.equal(mouseState().activeProtocol, "VT200");
+  assert.equal(mouseState().activeEncoding, "SGR");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  assert.equal(mouseState().activeProtocol, "VT200");
+  assert.equal(mouseState().activeEncoding, "SGR");
+
+  await write(term, "\x1b[?1016h");
+  highlighter.setRules(rule("#34D399"), true);
+  await highlighter.whenSettled();
+  assert.equal(mouseState().activeEncoding, "SGR_PIXELS");
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves private terminal modes", async () => {
+  const term = new XTerm({
+    cols: 20,
+    rows: 5,
+    scrollback: 100,
+    vtExtensions: { win32InputMode: true },
+  });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[5 q\x1b[?2031h\x1b[?9001hseed ERROR");
+  const privateModes = () => (term as unknown as {
+    _core: {
+      coreService: {
+        decPrivateModes: Record<string, unknown>;
+      };
+    };
+  })._core.coreService.decPrivateModes;
+  assert.equal(privateModes().cursorStyle, "bar");
+  assert.equal(privateModes().cursorBlink, true);
+  assert.equal(privateModes().colorSchemeUpdates, true);
+  assert.equal(privateModes().win32InputMode, true);
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  assert.equal(privateModes().cursorStyle, "bar");
+  assert.equal(privateModes().cursorBlink, true);
+  assert.equal(privateModes().colorSchemeUpdates, true);
+  assert.equal(privateModes().win32InputMode, true);
   highlighter.dispose();
   term.dispose();
 });

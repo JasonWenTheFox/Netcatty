@@ -20,6 +20,10 @@ if (!process.versions.electron) {
   const mainRef = process.env.NETCATTY_TERMINAL_PERF_MAIN_REF ?? "origin/main";
   const chunkCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_CHUNKS ?? "1600", 10);
   const roundCount = Number.parseInt(process.env.NETCATTY_TERMINAL_PERF_ROUNDS ?? "3", 10);
+  const scrollback = Number.parseInt(
+    process.env.NETCATTY_TERMINAL_PERF_SCROLLBACK ?? "50000",
+    10,
+  );
   const userData = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("xterm-highlight-throughput")}-`);
   electron.app.setPath("userData", userData);
   electron.app.commandLine.appendSwitch("js-flags", "--expose-gc");
@@ -184,7 +188,7 @@ if (!process.versions.electron) {
           cols: 120,
           cursorBlink: false,
           rows: 40,
-          scrollback: 10000,
+          scrollback: ${scrollback},
         });
         term.open(document.getElementById("terminal"));
         let renderer = "dom";

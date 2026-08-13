@@ -57,6 +57,8 @@ type HighlightMatch = {
 type ParserState = {
   alternateScreen: boolean;
   foreground: ForegroundState;
+  normalScreenForeground: ForegroundState | null;
+  previousWriteEndedWithHighSurrogate: boolean;
   linePrefix: string;
   linePrefixTruncated: boolean;
   pending: string;
@@ -89,6 +91,15 @@ type InternalBrowserTerminal = {
     _renderService?: {
       _isPaused?: boolean;
       refreshRows(start: number, end: number): void;
+    };
+    coreService?: {
+      modes?: Record<string, unknown>;
+      decPrivateModes?: Record<string, unknown>;
+      kittyKeyboard?: Record<string, unknown>;
+    };
+    mouseStateService?: {
+      activeProtocol: string;
+      activeEncoding: string;
     };
   };
 };
@@ -125,6 +136,43 @@ const restoreSavedCursorState = (
   }
 };
 
+const cloneTerminalProtocolState = (term: XTerm) => {
+  const core = (term as unknown as InternalBrowserTerminal)._core;
+  const coreService = core?.coreService;
+  const mouseStateService = core?.mouseStateService;
+  return {
+    modes: coreService?.modes ? { ...coreService.modes } : null,
+    decPrivateModes: coreService?.decPrivateModes ? { ...coreService.decPrivateModes } : null,
+    kittyKeyboard: coreService?.kittyKeyboard
+      ? structuredClone(coreService.kittyKeyboard)
+      : null,
+    mouseProtocol: mouseStateService?.activeProtocol,
+    mouseEncoding: mouseStateService?.activeEncoding,
+  };
+};
+
+const restoreTerminalProtocolState = (
+  term: XTerm,
+  state: ReturnType<typeof cloneTerminalProtocolState>,
+): void => {
+  const core = (term as unknown as InternalBrowserTerminal)._core;
+  const coreService = core?.coreService;
+  if (state.modes && coreService?.modes) Object.assign(coreService.modes, state.modes);
+  if (state.decPrivateModes && coreService?.decPrivateModes) {
+    Object.assign(coreService.decPrivateModes, state.decPrivateModes);
+  }
+  if (state.kittyKeyboard && coreService?.kittyKeyboard) {
+    Object.assign(coreService.kittyKeyboard, structuredClone(state.kittyKeyboard));
+  }
+  const mouseStateService = core?.mouseStateService;
+  if (mouseStateService && state.mouseProtocol !== undefined) {
+    mouseStateService.activeProtocol = state.mouseProtocol;
+  }
+  if (mouseStateService && state.mouseEncoding !== undefined) {
+    mouseStateService.activeEncoding = state.mouseEncoding;
+  }
+};
+
 type PristineFlushState = {
   chunks: Array<string | Uint8Array>;
   generation: number;
@@ -146,8 +194,8 @@ const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
 const MAX_DEFERRED_PRISTINE_BYTES = 8 * 1024 * 1024;
 const RESUME_DEFERRED_PRISTINE_BYTES = 4 * 1024 * 1024;
 const PRISTINE_WRITE_SLICE_BYTES = 32 * 1024;
-const REBUILD_SERIALIZE_SLICE_LINES = 512;
-const REBUILD_TRANSFORM_SLICE_LINES = 512;
+const REBUILD_SERIALIZE_SLICE_LINES = 2_048;
+const REBUILD_TRANSFORM_SLICE_LINES = 2_048;
 const BACKPRESSURE_FLUSH_SLICE_BYTES = 256 * 1024;
 const MAX_LINE_PREFIX_CHARS = 4_096;
 
@@ -156,6 +204,8 @@ const DEFAULT_FOREGROUND: ForegroundState = Object.freeze({ kind: "default" });
 const createParserState = (): ParserState => ({
   alternateScreen: false,
   foreground: DEFAULT_FOREGROUND,
+  normalScreenForeground: null,
+  previousWriteEndedWithHighSurrogate: false,
   linePrefix: "",
   linePrefixTruncated: false,
   pending: "",
@@ -407,6 +457,19 @@ const parseAlternateScreen = (sequence: string, current: boolean): boolean => {
   return sequence.endsWith("h");
 };
 
+const isPrivateModeChange = (sequence: string, mode: string, set: boolean): boolean => {
+  if (!sequence.endsWith(set ? "h" : "l")) return false;
+  const introducerLength = sequence.startsWith(C1_CSI) ? 1 : 2;
+  const body = sequence.slice(introducerLength, -1);
+  return body.startsWith("?") && body.slice(1).split(";").includes(mode);
+};
+
+const isSoftReset = (sequence: string): boolean => {
+  if (!sequence.endsWith("p")) return false;
+  const introducerLength = sequence.startsWith(C1_CSI) ? 1 : 2;
+  return sequence.slice(introducerLength, -1) === "!";
+};
+
 const toRgbSequence = (color: string): string | null => {
   const normalized = color.trim();
   const short = /^#([\da-f])([\da-f])([\da-f])$/i.exec(normalized);
@@ -491,6 +554,15 @@ export class KeywordHighlightTransformer {
 
   transform(input: string, options: { bypass?: boolean; linesComplete?: boolean } = {}): string {
     if (!input) return input;
+    const startsWithSplitLowSurrogate = (
+      this.state.previousWriteEndedWithHighSurrogate
+      && input.charCodeAt(0) >= 0xdc00
+      && input.charCodeAt(0) <= 0xdfff
+    );
+    const finalCodeUnit = input.charCodeAt(input.length - 1);
+    this.state.previousWriteEndedWithHighSurrogate = (
+      finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff
+    );
     this.missedBoundaryMatch = false;
     let output = "";
     let plain = "";
@@ -536,7 +608,15 @@ export class KeywordHighlightTransformer {
               this.missedBoundaryMatch = true;
               return;
             }
-            const snapped = snapRangeToCodePoints(line, start - offset, start + length - offset);
+            const currentStart = start - offset;
+            if (startsWithSplitLowSurrogate && currentStart === 0) {
+              // xterm joins this low surrogate to a high surrogate buffered by
+              // its decoder from the prior write. Inserting SGR here would
+              // split the pair, so let the quiet catch-up color it atomically.
+              this.missedBoundaryMatch = true;
+              return;
+            }
+            const snapped = snapRangeToCodePoints(line, currentStart, start + length - offset);
             if (!snapped) return;
             matches.push({
               start: snapped.start,
@@ -605,10 +685,28 @@ export class KeywordHighlightTransformer {
       this.state.pendingStringEscape = false;
       if (kind === "csi") {
         this.state.foreground = updateForeground(this.state.foreground, sequence);
-        this.state.alternateScreen = parseAlternateScreen(sequence, this.state.alternateScreen);
+        if (isSoftReset(sequence)) {
+          this.state.foreground = DEFAULT_FOREGROUND;
+          if (!this.state.alternateScreen) this.state.normalScreenForeground = null;
+        }
+        const wasAlternate = this.state.alternateScreen;
+        const nextAlternate = parseAlternateScreen(sequence, wasAlternate);
+        if (!wasAlternate && nextAlternate && isPrivateModeChange(sequence, "1049", true)) {
+          this.state.normalScreenForeground = this.state.foreground;
+        } else if (wasAlternate && !nextAlternate) {
+          if (
+            isPrivateModeChange(sequence, "1049", false)
+            && this.state.normalScreenForeground
+          ) {
+            this.state.foreground = this.state.normalScreenForeground;
+          }
+          this.state.normalScreenForeground = null;
+        }
+        this.state.alternateScreen = nextAlternate;
       } else if (kind === "escape" && sequence === `${ESC}c`) {
         this.state.foreground = DEFAULT_FOREGROUND;
         this.state.alternateScreen = false;
+        this.state.normalScreenForeground = null;
         this.state.linePrefix = "";
         this.state.linePrefixTruncated = false;
       }
@@ -1331,6 +1429,7 @@ export class KeywordHighlighter implements IDisposable {
       glevel: charsetService.glevel,
       charsets: [...charsetService._charsets],
     } : null;
+    const protocolState = cloneTerminalProtocolState(this.term);
     this.rebuildCount += 1;
     this.transformer.resetParserState();
     this.transformerNeedsRebuild = false;
@@ -1374,6 +1473,7 @@ export class KeywordHighlighter implements IDisposable {
         });
         rebuiltCharsetService.setgLevel(charsetState.glevel);
       }
+      restoreTerminalProtocolState(this.term, protocolState);
       this.lastRebuildTimings = {
         pristine: pristineFlushedAt - rebuildStarted,
         serialize: serializedAt - pristineFlushedAt,
