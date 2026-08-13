@@ -1014,8 +1014,8 @@ function execViaRawPty(serialPort, command, options) {
       cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
     }
 
-    // Clear unfinished prompt input first (same risk as shell PTY exec, #2962).
-    // Ctrl+U is widely supported on network device line editors (e.g. Cisco IOS).
+    // Raw serial / vendor CLIs do not share a portable line-erase binding, so
+    // buildPendingInputClearPrefix("raw") is empty — send the command as-is.
     safeWrite(`${buildPendingInputClearPrefix("raw")}${command}\r`);
 
     // Start a "no-response" fallback timer. If the device produces no output at

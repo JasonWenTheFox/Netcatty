@@ -8,6 +8,7 @@ const { join } = require("node:path");
 
 const {
   execViaPty,
+  execViaRawPty,
   startPtyJob,
   DEFAULT_FOREGROUND_PTY_CAPTURE_CHARS,
   resolveEffectiveShellKind,
@@ -24,7 +25,8 @@ class ShellBackedPty extends EventEmitter {
     // Interactive shells clear unfinished prompt input before the wrapper;
     // this non-interactive mock only executes the wrapper body.
     let script = String(data);
-    if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
+    if (script.startsWith("\x15\x0b")) script = script.slice(2);
+    else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
       script = script.slice(1);
     }
     const result = spawnSync("sh", ["-c", script], { encoding: "utf8" });
@@ -38,13 +40,14 @@ function markerFromWrite(data) {
   return String(data).match(/(__NCMCP_[a-z0-9]+_[0-9a-f]+__)/i)?.[1] || null;
 }
 
-test("buildPendingInputClearPrefix uses Ctrl+U for readline shells and Escape for cmd", () => {
-  assert.equal(buildPendingInputClearPrefix("posix"), "\x15");
-  assert.equal(buildPendingInputClearPrefix("fish"), "\x15");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x15");
-  assert.equal(buildPendingInputClearPrefix("unknown"), "\x15");
-  assert.equal(buildPendingInputClearPrefix(""), "\x15");
+test("buildPendingInputClearPrefix clears both sides of the cursor for readline shells", () => {
+  assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("unknown"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix(""), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
+  assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
 test("execViaPty clears unfinished prompt input before typing the wrapped command (#2962)", async () => {
@@ -67,7 +70,7 @@ test("execViaPty clears unfinished prompt input before typing the wrapped comman
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 1);
-  assert.ok(writes[0].startsWith("\x15"), "expected Ctrl+U clear prefix before wrapper");
+  assert.ok(writes[0].startsWith("\x15\x0b"), "expected Ctrl+U/Ctrl+K clear prefix before wrapper");
   assert.match(writes[0], /uname -a/);
 });
 
@@ -93,6 +96,28 @@ test("execViaPty clears unfinished cmd.exe input with Escape before the wrapper 
   assert.equal(writes.length, 1);
   assert.ok(writes[0].startsWith("\x1b"), "expected Escape clear prefix for cmd.exe");
   assert.match(writes[0], /\bver\b/);
+});
+
+test("execViaRawPty does not prepend Ctrl+U before device commands", async () => {
+  const writes = [];
+  class CaptureRawPort extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from("ok\r\nRouter#"));
+      });
+    }
+  }
+
+  const result = await execViaRawPty(new CaptureRawPort(), "show version", {
+    timeoutMs: 1000,
+    idleMs: 20,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0], "show version\r");
+  assert.equal(writes[0].includes("\x15"), false);
 });
 
 test("execViaPty completes when command output has no trailing newline", async () => {

@@ -155,12 +155,17 @@ function buildPosixWrapperBody(command, marker) {
  * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
  * concatenated with the wrapped agent command (#2962).
  *
- * - readline / fish / PSReadLine: Ctrl+U
+ * - readline / PSReadLine: Ctrl+U only kills to the start of the line, so
+ *   also send Ctrl+K to clear text after the cursor when it sits mid-line.
+ *   Fish treats Ctrl+U as kill-whole-line; the trailing Ctrl+K is a no-op.
  * - cmd.exe: Escape clears the current input line
+ * - raw (serial / vendor CLI): no clear — Ctrl+U is not universal and would
+ *   prepend 0x15 to every command on devices that lack line-erase
  */
 function buildPendingInputClearPrefix(shellKind) {
   if (shellKind === "cmd") return "\x1b";
-  return "\x15";
+  if (shellKind === "raw") return "";
+  return "\x15\x0b";
 }
 
 function buildWrappedCommand(command, shellKind, marker) {
