@@ -686,19 +686,23 @@ export class KeywordHighlighter implements IDisposable {
     const matches = collectMatches(logical.text, this.compiledPatterns);
     for (const match of matches) {
       const startCell = logical.cellAtStringOffset[match.start];
-      const endCell = logical.cellAtStringOffset[match.end];
-      if (!startCell || !endCell) continue;
-      if (startCell.y === endCell.y) {
-        this.colorPhysicalRange(startCell.y, startCell.x, endCell.x, match.rgb);
+      const lastCell = match.end > match.start
+        ? logical.cellAtStringOffset[match.end - 1]
+        : startCell;
+      if (!startCell || !lastCell) continue;
+      // Exclusive string ends can land mid-grapheme and map to the same cell.
+      // Color that cell instead of building an empty [x, x) range.
+      if (startCell.y === lastCell.y) {
+        this.colorPhysicalRange(startCell.y, startCell.x, lastCell.x + 1, match.rgb);
         continue;
       }
       const startLine = this.term.buffer.active.getLine(startCell.y);
-      this.colorPhysicalRange(startCell.y, startCell.x, startLine?.length ?? startCell.x, match.rgb);
-      for (let y = startCell.y + 1; y < endCell.y; y += 1) {
+      this.colorPhysicalRange(startCell.y, startCell.x, startLine?.length ?? startCell.x + 1, match.rgb);
+      for (let y = startCell.y + 1; y < lastCell.y; y += 1) {
         const line = this.term.buffer.active.getLine(y);
         if (line) this.colorPhysicalRange(y, 0, line.length, match.rgb);
       }
-      this.colorPhysicalRange(endCell.y, 0, endCell.x, match.rgb);
+      this.colorPhysicalRange(lastCell.y, 0, lastCell.x + 1, match.rgb);
     }
     this.stampLogicalLine(startY, endY);
   }

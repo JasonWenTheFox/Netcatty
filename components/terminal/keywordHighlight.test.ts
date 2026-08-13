@@ -440,6 +440,22 @@ test("catch-up does not hang when the terminal enters the alternate screen", asy
   term.dispose();
 });
 
+test("partial grapheme matches still color the whole cell", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules([{
+    id: "letter-e",
+    label: "E",
+    patterns: ["e"],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+  await write(term, "e\u0301");
+  assert.equal(term.buffer.active.getLine(0)?.getCell(0)?.getFgColor(), RED);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("wrapped matches stay on the same logical line", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 8, rows: 6, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);
