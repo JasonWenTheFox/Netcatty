@@ -913,10 +913,19 @@ test("large wrapped history keeps every row across rebuild", async () => {
     (_, index) => `L${index.toString().padStart(4, "0")}-${"x".repeat((index % 70) + 1)} ERROR`,
   );
   await write(term, lines.join("\r\n"));
+  const beforeLines = Array.from({ length: term.buffer.normal.length }, (_, index) => ({
+    text: term.buffer.normal.getLine(index)?.translateToString(true) ?? "",
+    wrapped: term.buffer.normal.getLine(index)?.isWrapped ?? false,
+  }));
 
   highlighter.setRules(rule("#60A5FA"), true);
   await highlighter.whenSettled();
   const visible = visibleSerializer.serialize();
+  const afterLines = Array.from({ length: term.buffer.normal.length }, (_, index) => ({
+    text: term.buffer.normal.getLine(index)?.translateToString(true) ?? "",
+    wrapped: term.buffer.normal.getLine(index)?.isWrapped ?? false,
+  }));
+  assert.deepEqual(afterLines, beforeLines);
   const replay = new XTerm({ cols: 40, rows: 5, scrollback: 3000 });
   await write(replay, visible);
   const replayedText = Array.from({ length: replay.buffer.normal.length }, (_, index) =>
@@ -927,6 +936,22 @@ test("large wrapped history keeps every row across rebuild", async () => {
   }
 
   replay.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
+test("history rebuild preserves custom tab stops", async () => {
+  const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b[3g\x1b[6G\x1bHseed ERROR");
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  await write(term, "\r\n\tY");
+
+  assert.equal(term.buffer.active.cursorX, 6);
+  assert.match(term.buffer.active.getLine(term.buffer.active.baseY + 1)?.translateToString(), /^ {5}Y/);
   highlighter.dispose();
   term.dispose();
 });

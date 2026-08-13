@@ -79,6 +79,7 @@ type InternalScrollTerminal = {
 
 type InternalBrowserTerminal = {
   _core?: {
+    _bufferService?: { buffer?: { tabs?: Record<string, boolean> } };
     _renderService?: {
       _isPaused?: boolean;
       refreshRows(start: number, end: number): void;
@@ -107,6 +108,7 @@ const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
 const MAX_DEFERRED_PRISTINE_BYTES = 8 * 1024 * 1024;
 const RESUME_DEFERRED_PRISTINE_BYTES = 4 * 1024 * 1024;
 const PRISTINE_WRITE_SLICE_BYTES = 32 * 1024;
+const REBUILD_SERIALIZE_SLICE_LINES = 512;
 const REBUILD_TRANSFORM_SLICE_LINES = 512;
 const BACKPRESSURE_FLUSH_SLICE_BYTES = 256 * 1024;
 const MAX_LINE_PREFIX_CHARS = 4_096;
@@ -142,6 +144,34 @@ const splitStringByLineCount = (value: string, maxLines: number): string[] => {
   }
   if (start < value.length) chunks.push(value.slice(start));
   return chunks;
+};
+
+const serializeTerminalModes = (term: HeadlessTerminalType): string => {
+  const modes = term.modes;
+  let result = "";
+  if (modes.applicationCursorKeysMode) result += "\x1b[?1h";
+  if (modes.applicationKeypadMode) result += "\x1b[?66h";
+  if (modes.bracketedPasteMode) result += "\x1b[?2004h";
+  if (modes.insertMode) result += "\x1b[4h";
+  if (modes.originMode) result += "\x1b[?6h";
+  if (modes.reverseWraparoundMode) result += "\x1b[?45h";
+  if (modes.sendFocusMode) result += "\x1b[?1004h";
+  if (!modes.wraparoundMode) result += "\x1b[?7l";
+  if (!modes.showCursor) result += "\x1b[?25l";
+  switch (modes.mouseTrackingMode) {
+    case "x10": result += "\x1b[?9h"; break;
+    case "vt200": result += "\x1b[?1000h"; break;
+    case "drag": result += "\x1b[?1002h"; break;
+    case "any": result += "\x1b[?1003h"; break;
+    default: break;
+  }
+  const internal = term as unknown as InternalScrollTerminal;
+  const scrollTop = internal._core?.buffer?.scrollTop ?? 0;
+  const scrollBottom = internal._core?.buffer?.scrollBottom ?? term.rows - 1;
+  if (scrollTop !== 0 || scrollBottom !== term.rows - 1) {
+    result += `\x1b[${scrollTop + 1};${scrollBottom + 1}r`;
+  }
+  return result;
 };
 
 const isCsiFinal = (code: number): boolean => code >= 0x40 && code <= 0x7e;
@@ -1210,6 +1240,32 @@ export class KeywordHighlighter implements IDisposable {
     this.settleVersion += 1;
   }
 
+  private async serializePristineSnapshotSliced(generation: number): Promise<string | null> {
+    const bufferLength = this.pristineTerm.buffer.normal.length;
+    const retainedLines = Math.max(
+      this.pristineTerm.rows,
+      this.term.options.scrollback + this.pristineTerm.rows,
+    );
+    const startLine = Math.max(0, bufferLength - retainedLines);
+    const chunks: string[] = [];
+    for (let start = startLine; start < bufferLength; start += REBUILD_SERIALIZE_SLICE_LINES) {
+      if (generation !== this.resetGeneration || this.disposed) return null;
+      const end = Math.min(bufferLength - 1, start + REBUILD_SERIALIZE_SLICE_LINES - 1);
+      chunks.push(this.originalSerialize({
+        range: { start, end },
+        excludeAltBuffer: true,
+        excludeModes: true,
+      }));
+      if (end < bufferLength - 1) {
+        const nextLine = this.pristineTerm.buffer.normal.getLine(end + 1);
+        if (!nextLine?.isWrapped) chunks.push("\r\n");
+      }
+      await yieldToTerminalRenderer();
+    }
+    chunks.push(serializeTerminalModes(this.pristineTerm));
+    return chunks.join("");
+  }
+
   private async rebuild(): Promise<void> {
     const rebuildStarted = performance.now();
     await this.flushDeferredPristine();
@@ -1217,13 +1273,9 @@ export class KeywordHighlighter implements IDisposable {
     await Promise.all([this.pristineSettled, this.visibleSettled]);
     const generation = this.resetGeneration;
     this.syncPristineOptions();
-    const snapshot = this.originalSerialize({
-      scrollback: this.term.options.scrollback,
-      excludeAltBuffer: true,
-      excludeModes: false,
-    });
+    const snapshot = await this.serializePristineSnapshotSliced(generation);
     const serializedAt = performance.now();
-    if (generation !== this.resetGeneration || this.disposed) return;
+    if (snapshot === null || generation !== this.resetGeneration || this.disposed) return;
     const viewportOffset = Math.max(0, this.term.buffer.normal.baseY - this.term.buffer.normal.viewportY);
     const selection = this.term.getSelectionPosition();
     const selectionLength = selection
@@ -1231,6 +1283,9 @@ export class KeywordHighlighter implements IDisposable {
         + (selection.end.x - selection.start.x)
       : 0;
     const timestampLedger = snapshotTerminalLineTimestampLedger(this.term);
+    const visibleBuffer = (this.term as unknown as InternalBrowserTerminal)
+      ._core?._bufferService?.buffer;
+    const tabStops = visibleBuffer?.tabs ? { ...visibleBuffer.tabs } : null;
     this.rebuildCount += 1;
     this.transformer.resetParserState();
     this.transformerNeedsRebuild = false;
@@ -1260,6 +1315,9 @@ export class KeywordHighlighter implements IDisposable {
         this.pendingRulesChanged = this.hasPristineContent;
         return;
       }
+      const rebuiltVisibleBuffer = (this.term as unknown as InternalBrowserTerminal)
+        ._core?._bufferService?.buffer;
+      if (tabStops && rebuiltVisibleBuffer) rebuiltVisibleBuffer.tabs = { ...tabStops };
       this.lastRebuildTimings = {
         pristine: pristineFlushedAt - rebuildStarted,
         serialize: serializedAt - pristineFlushedAt,
