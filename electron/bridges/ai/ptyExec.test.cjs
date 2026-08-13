@@ -30,6 +30,8 @@ class ShellBackedPty extends EventEmitter {
       script === "i\x15\x0b" ||
       script === "\x03\x15\x0b" ||
       script === "\x15\x0b" ||
+      script === "\x03i\x15\x0b\x1b\x1bi\x08" ||
+      script === "i\x15\x0b\x1b\x1bi\x08" ||
       script === "\x03\x1b\x15\x0b" ||
       script === "\x1b\x15\x0b" ||
       script === "\x03\x1b" ||
@@ -38,7 +40,8 @@ class ShellBackedPty extends EventEmitter {
       return;
     }
     if (script.startsWith("\x03")) script = script.slice(1);
-    if (script.startsWith("i\x15\x0b")) script = script.slice(3);
+    if (script.startsWith("i\x15\x0b\x1b\x1bi\x08")) script = script.slice(7);
+    else if (script.startsWith("i\x15\x0b")) script = script.slice(3);
     else if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
     else if (script.startsWith("\x15\x0b")) script = script.slice(2);
     else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
@@ -58,7 +61,7 @@ function markerFromWrite(data) {
 test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "i\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "i\x15\x0b\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("unknown"), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix(""), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
@@ -67,11 +70,18 @@ test("buildPendingInputClearPrefix clears the editable line without SIGINT by de
 
 test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
   assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03i\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03\x1b\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03i\x15\x0b\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
   assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
   assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "i\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "\x1b\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "i\x15\x0b\x1b\x1bi\x08");
+});
+
+test("PowerShell clear prefix does not start with Escape and restores insert after RevertLine", () => {
+  const prefix = buildPendingInputClearPrefix("powershell");
+  assert.equal(prefix.startsWith("\x1b"), false, "leading Escape starts an Emacs chord / Vi command mode on Unix pwsh");
+  assert.equal(prefix.startsWith("i\x15\x0b"), true, "Emacs/Vi must clear before Windows RevertLine");
+  assert.match(prefix, /\x1b\x1bi\x08$/, "ESC ESC is Windows/Emacs RevertLine; i+BS returns Vi to insert");
 });
 
 test("posix/fish clear prefix restores vi insert mode before line-kills", () => {
@@ -132,7 +142,7 @@ test("execViaPty sends Ctrl+C only when expectedPrompt confirms an editable idle
   assert.match(writes[1], /uname -a/);
 });
 
-test("execViaPty clears unfinished PowerShell input with Escape before emacs/vi line-kills (#2962)", async () => {
+test("execViaPty clears unfinished PowerShell input without a leading Escape (#2962)", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -152,8 +162,8 @@ test("execViaPty clears unfinished PowerShell input with Escape before emacs/vi 
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x1b\x15\x0b", "expected Escape then Ctrl+U/Ctrl+K for Windows-mode PSReadLine");
-  assert.equal(writes[0].startsWith("\x1b"), true);
+  assert.equal(writes[0], "i\x15\x0b\x1b\x1bi\x08");
+  assert.equal(writes[0].startsWith("\x1b"), false);
   assert.match(writes[1], /Get-Host/);
   assert.equal(writes[0].includes("\x03"), false);
 });

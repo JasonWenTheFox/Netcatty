@@ -160,10 +160,13 @@ function buildPosixWrapperBody(command, marker) {
  *   following line-kills immediately discard. Then Ctrl+U + Ctrl+K clear
  *   residual text on both sides of the cursor. Fish treats Ctrl+U as
  *   kill-whole-line; the trailing Ctrl+K is a no-op.
- * - PowerShell: Escape is RevertLine in Windows-mode PSReadLine (the Windows
- *   default). Ctrl+U/Ctrl+K only bind in Emacs/Vi, so they cannot be the
- *   PowerShell-only sequence. Escape is followed by the emacs/vi kills so
- *   Unix pwsh still clears after a cancelled meta prefix.
+ * - PowerShell: one sequence has to survive Windows, Emacs, and Vi PSReadLine.
+ *   Leading Escape is Windows-only RevertLine; on Unix pwsh it starts an
+ *   Emacs chord or drops Vi into command mode, so it cannot come first.
+ *   `i` + Ctrl+U/Ctrl+K clears Emacs/Vi-insert (and `i` restores Vi-command
+ *   insert). ESC ESC is RevertLine in Windows and Emacs. A final `i` +
+ *   Backspace returns Vi to insert and discards the literal `i` that
+ *   Windows/Emacs just typed.
  * - cmd.exe: Escape clears the current input line
  * - raw (serial / vendor CLI): no clear — Ctrl+U/Ctrl+C are not universal and
  *   would prepend control bytes on devices that lack line-erase
@@ -180,10 +183,12 @@ function buildPendingInputClearPrefix(shellKind, options = {}) {
   if (shellKind === "raw") return "";
   const allowInterrupt = options.allowInterrupt === true;
   if (shellKind === "cmd") return allowInterrupt ? "\x03\x1b" : "\x1b";
-  // Windows-mode PSReadLine (the Windows default) binds RevertLine to Escape,
-  // not Ctrl+U/Ctrl+K. Keep the emacs/vi kills after Escape so Unix pwsh
-  // still clears the edit buffer.
-  if (shellKind === "powershell") return allowInterrupt ? "\x03\x1b\x15\x0b" : "\x1b\x15\x0b";
+  // Do not start with Escape: Unix Emacs pwsh treats it as a chord prefix and
+  // Vi-insert treats it as command-mode. See the doc comment above.
+  if (shellKind === "powershell") {
+    const lineClear = "i\x15\x0b\x1b\x1bi\x08";
+    return allowInterrupt ? `\x03${lineClear}` : lineClear;
+  }
   // `i` before the line-kills restores readline/fish vi insert mode. Do not
   // put `i` after the kills — that would prefix the wrapper with a literal i.
   return allowInterrupt ? "\x03i\x15\x0b" : "i\x15\x0b";
