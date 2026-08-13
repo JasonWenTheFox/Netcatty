@@ -2225,6 +2225,11 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
 
   keywordHighlighter = new KeywordHighlighter(term, {
     canRebuild: () => !hasInlineImages(),
+    shouldPreserveScrollback: () => !(ctx.terminalSettingsRef.current?.clearWipesScrollback ?? true),
+    onRestoringSelectionChange: (restoring) => {
+      if (ctx.isRestoringSelectionRef) ctx.isRestoringSelectionRef.current = restoring;
+    },
+    onDidRebuild: () => pluginProviderHost?.terminalRebuilt(),
   });
   keywordHighlighter.setRules(keywordHighlightRules, keywordHighlightEnabled);
 

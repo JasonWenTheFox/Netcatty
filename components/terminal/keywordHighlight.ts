@@ -59,6 +59,8 @@ type ParserState = {
   foreground: ForegroundState;
   normalScreenForeground: ForegroundState | null;
   previousWriteEndedWithHighSurrogate: boolean;
+  normalSavedForeground: ForegroundState;
+  alternateSavedForeground: ForegroundState;
   linePrefix: string;
   linePrefixTruncated: boolean;
   pending: string;
@@ -69,6 +71,9 @@ type ParserState = {
 export type KeywordHighlighterOptions = {
   shouldBypassHighlight?: () => boolean;
   canRebuild?: () => boolean;
+  shouldPreserveScrollback?: () => boolean;
+  onRestoringSelectionChange?: (restoring: boolean) => void;
+  onDidRebuild?: () => void;
 };
 
 type InternalScrollTerminal = {
@@ -117,6 +122,7 @@ type InternalSelectionService = {
   };
   reset?(): void;
   refresh?(isLinuxMouseSelection?: boolean): void;
+  _onSelectionChange?: { fire(): void };
 };
 
 type InternalBrowserBuffer = {
@@ -232,6 +238,7 @@ const restoreSelectionState = (
   model.selectionEnd = state.end ? [...state.end] : undefined;
   model.selectionStartLength = state.startLength;
   service.refresh?.();
+  service._onSelectionChange?.fire();
 };
 
 type PristineFlushState = {
@@ -267,6 +274,8 @@ const createParserState = (): ParserState => ({
   foreground: DEFAULT_FOREGROUND,
   normalScreenForeground: null,
   previousWriteEndedWithHighSurrogate: false,
+  normalSavedForeground: DEFAULT_FOREGROUND,
+  alternateSavedForeground: DEFAULT_FOREGROUND,
   linePrefix: "",
   linePrefixTruncated: false,
   pending: "",
@@ -328,27 +337,64 @@ const isCsiFinal = (code: number): boolean => code >= 0x40 && code <= 0x7e;
 /** ESC intermediates are 0x20-0x2F; the final byte is 0x30-0x7E (ECMA-48). */
 const isEscIntermediate = (code: number): boolean => code >= 0x20 && code <= 0x2f;
 
-const snapRangeToCodePoints = (
-  text: string,
-  start: number,
-  end: number,
-): { start: number; end: number } | null => {
-  let from = start;
-  let to = end;
-  if (from < 0 || to > text.length || from >= to) return null;
-  if (from > 0) {
-    const code = text.charCodeAt(from);
-    if (code >= 0xdc00 && code <= 0xdfff) from -= 1;
+const graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
+
+const createGraphemeRangeSnapper = (text: string) => {
+  const trailingCodeUnit = text.charCodeAt(text.length - 1);
+  const hasIncompleteTrailingSurrogate = trailingCodeUnit >= 0xd800 && trailingCodeUnit <= 0xdbff;
+  // ASCII boundaries are always grapheme boundaries. Keep the common log path
+  // allocation-free and segment a non-ASCII logical line only once.
+  let asciiOnly = true;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) <= 0x7f) continue;
+    asciiOnly = false;
+    break;
   }
-  if (to > 0 && to <= text.length) {
-    const prev = text.charCodeAt(to - 1);
-    if (prev >= 0xd800 && prev <= 0xdbff) {
-      if (to >= text.length) return null;
-      to += 1;
+  if (asciiOnly) {
+    return (start: number, end: number) => (
+      start >= 0 && end <= text.length && start < end ? { start, end } : null
+    );
+  }
+  if (graphemeSegmenter) {
+    const boundaries = Array.from(
+      graphemeSegmenter.segment(text),
+      (segment) => [segment.index, segment.index + segment.segment.length] as const,
+    );
+    return (start: number, end: number): { start: number; end: number } | null => {
+      if (start < 0 || end > text.length || start >= end) return null;
+      if (hasIncompleteTrailingSurrogate && end === text.length) return null;
+      let from = start;
+      let to = end;
+      for (const [segmentStart, segmentEnd] of boundaries) {
+        if (from >= segmentStart && from < segmentEnd) from = segmentStart;
+        if (to > segmentStart && to <= segmentEnd) {
+          to = segmentEnd;
+          break;
+        }
+      }
+      return from < to ? { start: from, end: to } : null;
+    };
+  }
+  return (start: number, end: number): { start: number; end: number } | null => {
+    let from = start;
+    let to = end;
+    if (from < 0 || to > text.length || from >= to) return null;
+    if (hasIncompleteTrailingSurrogate && to === text.length) return null;
+    if (from > 0) {
+      const code = text.charCodeAt(from);
+      if (code >= 0xdc00 && code <= 0xdfff) from -= 1;
     }
-  }
-  if (from >= to) return null;
-  return { start: from, end: to };
+    if (to > 0 && to <= text.length) {
+      const prev = text.charCodeAt(to - 1);
+      if (prev >= 0xd800 && prev <= 0xdbff) {
+        if (to >= text.length) return null;
+        to += 1;
+      }
+    }
+    return from < to ? { start: from, end: to } : null;
+  };
 };
 
 const getOscLinkService = (term: HeadlessTerminalType | XTerm): OscLinkServiceLike | null => {
@@ -385,6 +431,7 @@ const collectPristineOscLinksForLine = (
   visible: XTerm,
   bufferLineNumber: number,
 ): ILink[] | undefined => {
+  if (visible.buffer.active.type !== "normal") return undefined;
   const lineIndex = bufferLineNumber - 1;
   if (lineIndex < 0) return undefined;
   const cols = visible.cols;
@@ -531,6 +578,26 @@ const isSoftReset = (sequence: string): boolean => {
   return sequence.slice(introducerLength, -1) === "!";
 };
 
+const isCursorSave = (sequence: string, kind: ParserState["pendingKind"]): boolean => (
+  (kind === "escape" && sequence === `${ESC}7`)
+  || (kind === "csi" && (
+    sequence === `${ESC}[s`
+    || sequence === `${C1_CSI}s`
+    || isPrivateModeChange(sequence, "1048", true)
+    || isPrivateModeChange(sequence, "1049", true)
+  ))
+);
+
+const isCursorRestore = (sequence: string, kind: ParserState["pendingKind"]): boolean => (
+  (kind === "escape" && sequence === `${ESC}8`)
+  || (kind === "csi" && (
+    sequence === `${ESC}[u`
+    || sequence === `${C1_CSI}u`
+    || isPrivateModeChange(sequence, "1048", false)
+    || isPrivateModeChange(sequence, "1049", false)
+  ))
+);
+
 const toRgbSequence = (color: string): string | null => {
   const normalized = color.trim();
   const short = /^#([\da-f])([\da-f])([\da-f])$/i.exec(normalized);
@@ -572,8 +639,7 @@ const compilePatterns = (rules: readonly RuntimeKeywordHighlightRule[], enabled:
         continue;
       }
       try {
-        // Match settings editors (`gi`). Surrogate-safe ranges come from
-        // snapRangeToCodePoints when matches are applied.
+        // Match settings editors (`gi`). Grapheme-safe ranges are applied below.
         const regex = new RegExp(pattern, "gi");
         compiled.push({
           priority,
@@ -638,6 +704,7 @@ export class KeywordHighlightTransformer {
         }
         const searchable = prefix + line;
         const offset = prefix.length;
+        const snapRange = createGraphemeRangeSnapper(searchable);
         const matches: HighlightMatch[] = [];
         for (const pattern of this.compiledPatterns) {
           if (pattern.plugin && pluginMatchCount >= MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE) continue;
@@ -654,9 +721,12 @@ export class KeywordHighlightTransformer {
           pattern.visit(scanText, (relativeStart, length) => {
             const start = relativeStart + scanStart;
             if (length <= 0) return;
-            if (start < offset) {
-              // Match begins in a prior write's already-emitted text; schedule catch-up.
-              if (start + length > offset) this.missedBoundaryMatch = true;
+            const snapped = snapRange(start, start + length);
+            if (!snapped) return;
+            if (snapped.start < offset) {
+              // The full match or grapheme begins in already-emitted text. SGR
+              // cannot be inserted there without splitting a displayed glyph.
+              if (snapped.end > offset) this.missedBoundaryMatch = true;
               return;
             }
             // End anchors / word boundaries / lookarounds treat the write chunk as
@@ -664,12 +734,12 @@ export class KeywordHighlightTransformer {
             if (
               !lineComplete
               && pattern.endSensitive
-              && start + length >= searchable.length
+              && snapped.end >= searchable.length
             ) {
               this.missedBoundaryMatch = true;
               return;
             }
-            const currentStart = start - offset;
+            const currentStart = snapped.start - offset;
             if (startsWithSplitLowSurrogate && currentStart === 0) {
               // xterm joins this low surrogate to a high surrogate buffered by
               // its decoder from the prior write. Inserting SGR here would
@@ -677,11 +747,9 @@ export class KeywordHighlightTransformer {
               this.missedBoundaryMatch = true;
               return;
             }
-            const snapped = snapRangeToCodePoints(line, currentStart, start + length - offset);
-            if (!snapped) return;
             matches.push({
-              start: snapped.start,
-              end: snapped.end,
+              start: currentStart,
+              end: snapped.end - offset,
               priority: pattern.priority,
               colorSequence: pattern.colorSequence,
             });
@@ -744,10 +812,22 @@ export class KeywordHighlightTransformer {
       this.state.pending = "";
       this.state.pendingKind = null;
       this.state.pendingStringEscape = false;
+      if (isCursorSave(sequence, kind)) {
+        if (this.state.alternateScreen) {
+          this.state.alternateSavedForeground = this.state.foreground;
+        } else {
+          this.state.normalSavedForeground = this.state.foreground;
+        }
+      }
       if (kind === "csi") {
         this.state.foreground = updateForeground(this.state.foreground, sequence);
         if (isSoftReset(sequence)) {
           this.state.foreground = DEFAULT_FOREGROUND;
+          if (this.state.alternateScreen) {
+            this.state.alternateSavedForeground = DEFAULT_FOREGROUND;
+          } else {
+            this.state.normalSavedForeground = DEFAULT_FOREGROUND;
+          }
           if (!this.state.alternateScreen) this.state.normalScreenForeground = null;
         }
         const wasAlternate = this.state.alternateScreen;
@@ -768,8 +848,15 @@ export class KeywordHighlightTransformer {
         this.state.foreground = DEFAULT_FOREGROUND;
         this.state.alternateScreen = false;
         this.state.normalScreenForeground = null;
+        this.state.normalSavedForeground = DEFAULT_FOREGROUND;
+        this.state.alternateSavedForeground = DEFAULT_FOREGROUND;
         this.state.linePrefix = "";
         this.state.linePrefixTruncated = false;
+      }
+      if (isCursorRestore(sequence, kind)) {
+        this.state.foreground = this.state.alternateScreen
+          ? this.state.alternateSavedForeground
+          : this.state.normalSavedForeground;
       }
     };
 
@@ -934,6 +1021,11 @@ export class KeywordHighlighter implements IDisposable {
     this.pristineTerm.loadAddon(pristineUnicodeGraphemes);
     this.pristineTerm.unicode.activeVersion = "15-graphemes";
     this.pristineTerm.loadAddon(this.serializeAddon);
+    this.pristineTerm.parser.registerCsiHandler({ final: "J" }, (params) => (
+      this.options.shouldPreserveScrollback?.() === true
+      && params.length > 0
+      && params[0] === 3
+    ));
     this.originalSerialize = this.serializeAddon.serialize.bind(this.serializeAddon);
     this.serializeAddon.serialize = (options) => {
       this.flushDeferredPristineSync();
@@ -1431,6 +1523,10 @@ export class KeywordHighlighter implements IDisposable {
     const priorSettle = this.settlePromise;
     this.settlePromise = priorSettle.then(async () => {
       while (!this.disposed && this.pendingRulesChanged) {
+        // write() returns before xterm's parser has necessarily consumed the
+        // queued bytes. Re-check after that queue settles so a rule change can
+        // never reset the terminal halfway through CSI/OSC/DCS parsing.
+        await Promise.all([this.visibleSettled, this.pristineSettled]);
         if (
           this.term.buffer.active.type === "alternate"
           || !isTerminalParserGrounded(this.term)
@@ -1561,8 +1657,14 @@ export class KeywordHighlighter implements IDisposable {
       this.term.scrollToLine(Math.max(0, this.term.buffer.normal.baseY - viewportOffset));
     }
     if (selectionState && selectionState.start[1] < this.term.buffer.normal.length) {
-      restoreSelectionState(this.term, selectionState);
+      this.options.onRestoringSelectionChange?.(true);
+      try {
+        restoreSelectionState(this.term, selectionState);
+      } finally {
+        this.options.onRestoringSelectionChange?.(false);
+      }
     }
+    this.options.onDidRebuild?.();
   }
 
   private flushQueuedWrites(): void {

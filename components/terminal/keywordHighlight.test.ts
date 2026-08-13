@@ -178,6 +178,39 @@ test("broad user rules do not insert SGR between surrogate halves", () => {
   );
 });
 
+test("broad user rules color combining and ZWJ graphemes atomically", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  for (const grapheme of ["e\u0301", "👨‍👩‍👧‍👦"]) {
+    assert.equal(
+      transformer.transform(`${grapheme}\n`),
+      `${RED}${grapheme}\x1b[39m\n`,
+    );
+  }
+});
+
+test("a grapheme joined across writes is deferred for atomic catch-up", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules([{
+    id: "dot",
+    label: "Dot",
+    patterns: ["."],
+    color: "#F87171",
+    enabled: true,
+  }], true);
+
+  assert.equal(transformer.transform("e"), `${RED}e\x1b[39m`);
+  assert.equal(transformer.transform("\u0301"), "\u0301");
+  assert.equal(transformer.takeMissedBoundaryMatch(), true);
+});
+
 test("broad user rules do not insert SGR into a surrogate pair split across writes", () => {
   const transformer = new KeywordHighlightTransformer();
   transformer.setRules([{
@@ -227,6 +260,35 @@ test("leaving the alternate screen restores the normal-screen foreground", () =>
   assert.equal(
     transformer.transform("\x1b[31mnormal\x1b[?1049h\x1b[34malt\x1b[?1049lERROR"),
     `\x1b[31mnormal\x1b[?1049h\x1b[34malt\x1b[?1049l${RED}ERROR\x1b[31m`,
+  );
+});
+
+test("cursor save and restore controls also restore the foreground", () => {
+  for (const [save, restore] of [
+    ["\x1b7", "\x1b8"],
+    ["\x1b[s", "\x1b[u"],
+    ["\x1b[?1048h", "\x1b[?1048l"],
+    ["\x1b[?1049h", "\x1b[?1049l"],
+  ]) {
+    const transformer = new KeywordHighlightTransformer();
+    transformer.setRules(rule(), true);
+    assert.equal(
+      transformer.transform(`\x1b[31m${save}\x1b[34m${restore}ERROR`),
+      `\x1b[31m${save}\x1b[34m${restore}${RED}ERROR\x1b[31m`,
+    );
+  }
+});
+
+test("normal and alternate screens keep independent saved foregrounds", () => {
+  const transformer = new KeywordHighlightTransformer();
+  transformer.setRules(rule(), true);
+
+  assert.equal(
+    transformer.transform(
+      "\x1b[31m\x1b7\x1b[?1049h\x1b[34m\x1b7\x1b[32m\x1b8alt\x1b[?1049lERROR",
+    ),
+    "\x1b[31m\x1b7\x1b[?1049h\x1b[34m\x1b7\x1b[32m\x1b8alt\x1b[?1049l"
+      + `${RED}ERROR\x1b[31m`,
   );
 });
 
@@ -318,6 +380,32 @@ test("BEL inside DCS payload does not resume highlighting", () => {
     transformer.transform("\x1bPbinary\x07ERROR\x1b\\ERROR"),
     `\x1bPbinary\x07ERROR\x1b\\${RED}ERROR\x1b[39m`,
   );
+});
+
+test("a rule change does not rebuild while an already queued control is incomplete", async () => {
+  for (const [start, finish] of [
+    ["seed ERROR\x1b[", "31mX"],
+    ["seed ERROR\x1b]0;title", "\x07X"],
+    ["seed ERROR\x1bPpayload", "\x1b\\X"],
+  ]) {
+    const term = new XTerm({ cols: 80, rows: 5, scrollback: 100 });
+    const highlighter = new KeywordHighlighter(term);
+    highlighter.setRules(rule(), true);
+    term.write(start);
+    highlighter.setRules(rule("#60A5FA"), true);
+    await highlighter.whenSettled();
+    assert.equal(highlighter.rebuildCount, 0);
+
+    await write(term, finish);
+    await highlighter.whenSettled();
+    assert.equal(highlighter.rebuildCount, 1);
+    assert.doesNotMatch(
+      term.buffer.active.getLine(0)?.translateToString(true) ?? "",
+      /(?:31m|title|payload)/,
+    );
+    highlighter.dispose();
+    term.dispose();
+  }
 });
 
 test("changing or disabling rules rebuilds existing history from pristine output", async () => {
@@ -833,6 +921,33 @@ test("shell clear preservation is mirrored into pristine history", async () => {
   term.dispose();
 });
 
+test("preserved CSI 3J leaves visible and pristine history intact", async () => {
+  const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term, { shouldPreserveScrollback: () => true });
+  const eraseHandlers = installEraseInDisplayHandlers(term, {
+    getClearWipesScrollback: () => false,
+    isInDec2026SyncBlock: () => false,
+  });
+  highlighter.setRules(rule(), true);
+  await write(term, "one ERROR\r\ntwo ERROR\r\nthree ERROR\r\nfour ERROR");
+
+  await write(term, "\x1b[3Jnew plain");
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+
+  const sgrPattern = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, "g");
+  const stripSgr = (snapshot: string) => snapshot.replace(sgrPattern, "");
+  for (const snapshot of [visibleSerializer.serialize(), highlighter.serializeAddon.serialize()]) {
+    assert.match(stripSgr(snapshot), /one ERROR/);
+    assert.match(stripSgr(snapshot), /four ERRORnew plain/);
+  }
+  eraseHandlers.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("shell erase-below wipe is mirrored into pristine history", async () => {
   const term = new XTerm({ cols: 80, rows: 3, scrollback: 100 });
   const visibleSerializer = new SerializeAddon();
@@ -1046,6 +1161,35 @@ test("history rebuild keeps OSC 8 links clickable via the pristine buffer", asyn
   term.dispose();
 });
 
+test("alternate screen never reuses normal-screen OSC 8 fallback links", async () => {
+  type LinkProvider = {
+    provideLinks(
+      bufferLineNumber: number,
+      callback: (links: Array<{ text: string }> | undefined) => void,
+    ): void;
+  };
+  const providers: LinkProvider[] = [];
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 100, allowProposedApi: true });
+  const originalRegister = term.registerLinkProvider.bind(term);
+  term.registerLinkProvider = ((provider: LinkProvider) => {
+    providers.push(provider);
+    return originalRegister(provider);
+  }) as typeof term.registerLinkProvider;
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "\x1b]8;;https://example.com\x07normal\x1b]8;;\x07 ERROR");
+  highlighter.setRules(rule("#60A5FA"), true);
+  await highlighter.whenSettled();
+  await write(term, "\x1b[?1049halt");
+
+  const links = await new Promise<Array<{ text: string }> | undefined>((resolve) => {
+    providers.at(-1)?.provideLinks(1, resolve);
+  });
+  assert.equal(links, undefined);
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("large wrapped history keeps every row across rebuild", async () => {
   const term = new XTerm({ cols: 40, rows: 5, scrollback: 3000 });
   const visibleSerializer = new SerializeAddon();
@@ -1172,7 +1316,11 @@ test("history rebuild preserves cursor position inside an origin-mode scroll reg
 
 test("history rebuild preserves rectangular selections", async () => {
   const term = new XTerm({ cols: 20, rows: 5, scrollback: 100 });
-  const highlighter = new KeywordHighlighter(term);
+  const selectionEvents: boolean[] = [];
+  const restoringEvents: boolean[] = [];
+  const highlighter = new KeywordHighlighter(term, {
+    onRestoringSelectionChange(restoring) { restoringEvents.push(restoring); },
+  });
   highlighter.setRules(rule(), true);
   await write(term, "one ERROR\r\ntwo ERROR\r\nthree ERROR");
   const selectionService = {
@@ -1190,8 +1338,12 @@ test("history rebuild preserves rectangular selections", async () => {
       this._activeSelectionMode = 0;
       this._model.selectionStart = undefined;
       this._model.selectionEnd = undefined;
+      this._onSelectionChange.fire();
     },
     refresh() {},
+    _onSelectionChange: {
+      fire() { selectionEvents.push(selectionService._model.selectionStart !== undefined); },
+    },
   };
   Object.assign((term as unknown as { _core: Record<string, unknown> })._core, {
     _selectionService: selectionService,
@@ -1203,6 +1355,8 @@ test("history rebuild preserves rectangular selections", async () => {
   assert.equal(selectionService._activeSelectionMode, 3);
   assert.deepEqual(selectionService._model.selectionStart, [1, 0]);
   assert.deepEqual(selectionService._model.selectionEnd, [4, 2]);
+  assert.deepEqual(selectionEvents, [false, true]);
+  assert.deepEqual(restoringEvents, [true, false]);
   highlighter.dispose();
   term.dispose();
 });
