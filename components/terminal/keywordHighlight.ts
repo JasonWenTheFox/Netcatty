@@ -430,7 +430,11 @@ export class KeywordHighlighter implements IDisposable {
     this.restoreBuffer();
     this.clearStoredOriginals();
     this.cancelCatchUp();
-    return this.originalClear();
+    const result = this.originalClear();
+    if (this.compiledPatterns.length > 0) {
+      this.recolorVisible();
+    }
+    return result;
   };
 
   private readonly resize: XTerm["resize"] = (cols, rows) => {

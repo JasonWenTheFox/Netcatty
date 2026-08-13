@@ -326,6 +326,20 @@ test("same-line appends still restore original colors when rules are disabled", 
   term.dispose();
 });
 
+test("clear recolors the retained cursor row when rules stay enabled", async () => {
+  const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
+  const highlighter = new KeywordHighlighter(term);
+  highlighter.setRules(rule(), true);
+  await write(term, "keep ERROR");
+  term.clear();
+  const line = term.buffer.active.getLine(0)?.translateToString(true) ?? "";
+  if (line.includes("ERROR")) {
+    assert.equal(cellRgb(term, 0, "ERROR"), RED);
+  }
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("clear restores highlighted retained cells before dropping originals", async () => {
   const term = new XTerm({ allowProposedApi: true, cols: 80, rows: 5, scrollback: 20 });
   const highlighter = new KeywordHighlighter(term);
