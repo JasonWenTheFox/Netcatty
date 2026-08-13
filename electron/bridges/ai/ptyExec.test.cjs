@@ -28,13 +28,16 @@ class ShellBackedPty extends EventEmitter {
       script === "\x03" ||
       script === "\x03\x15\x0b" ||
       script === "\x15\x0b" ||
+      script === "\x03\x1b\x15\x0b" ||
+      script === "\x1b\x15\x0b" ||
       script === "\x03\x1b" ||
       script === "\x1b"
     ) {
       return;
     }
     if (script.startsWith("\x03")) script = script.slice(1);
-    if (script.startsWith("\x15\x0b")) script = script.slice(2);
+    if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
+    else if (script.startsWith("\x15\x0b")) script = script.slice(2);
     else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
       script = script.slice(1);
     }
@@ -52,7 +55,7 @@ function markerFromWrite(data) {
 test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("unknown"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix(""), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
@@ -61,9 +64,11 @@ test("buildPendingInputClearPrefix clears the editable line without SIGINT by de
 
 test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
   assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03\x1b\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
   assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
   assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "\x1b\x15\x0b");
 });
 
 test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
@@ -115,6 +120,32 @@ test("execViaPty sends Ctrl+C only when expectedPrompt confirms an editable idle
   assert.equal(writes.length, 2);
   assert.equal(writes[0], "\x03\x15\x0b", "expected Ctrl+C then line-clear once idle prompt is confirmed");
   assert.match(writes[1], /uname -a/);
+});
+
+test("execViaPty clears unfinished PowerShell input with Escape before emacs/vi line-kills (#2962)", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      const marker = markerFromWrite(data);
+      if (!marker) return;
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+      });
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "Get-Host", {
+    shellKind: "powershell",
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0], "\x1b\x15\x0b", "expected Escape then Ctrl+U/Ctrl+K for Windows-mode PSReadLine");
+  assert.equal(writes[0].startsWith("\x1b"), true);
+  assert.match(writes[1], /Get-Host/);
+  assert.equal(writes[0].includes("\x03"), false);
 });
 
 test("execViaPty clears unfinished cmd.exe input with Escape and without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
