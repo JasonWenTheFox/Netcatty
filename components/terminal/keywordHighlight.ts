@@ -64,6 +64,7 @@ const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
 const RECOLOR_SLICE_LINES = 32;
 const RECOLOR_SLICE_BUDGET_MS = 4;
 const BULK_WRITE_LINE_BREAKS = 8;
+const MAX_LOGICAL_LINE_ROWS = 128;
 
 const withRgbFg = (originalFg: number, rgb: number): number => (
   (originalFg & STYLE_MASK) | CM_RGB | (rgb & 0xffffff)
@@ -380,7 +381,7 @@ export class KeywordHighlighter implements IDisposable {
     }
     // In-place CR / backspace / EL / ICH / DCH rewrite the current row.
     // `\r\n` is a line advance and must not restore/repaint the previous prompt.
-    const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*[K@PML]/.test(data); // eslint-disable-line no-control-regex
+    const eraseInLine = typeof data === "string" && /\x1b\[[\d;]*[K@PMLGHf]/.test(data); // eslint-disable-line no-control-regex
     const rewritesCurrentLine = typeof data === "string"
       && (/\r(?!\n)/.test(data) || data.includes("\x08") || eraseInLine);
     const startsWithLineAdvance = typeof data === "string" && /^(?:\r\n|\n)/.test(data);
@@ -625,7 +626,9 @@ export class KeywordHighlighter implements IDisposable {
     const last = Math.min(buffer.length - 1, Math.max(startY, endY));
     if (last < first) return;
     let y = first;
-    while (y > 0 && buffer.getLine(y)?.isWrapped) y -= 1;
+    for (let walked = 0; y > 0 && buffer.getLine(y)?.isWrapped && walked < MAX_LOGICAL_LINE_ROWS; walked += 1) {
+      y -= 1;
+    }
     let paintedStart = Number.POSITIVE_INFINITY;
     let paintedEnd = -1;
     while (y <= last) {
@@ -646,9 +649,14 @@ export class KeywordHighlighter implements IDisposable {
     const buffer = this.term.buffer.active;
     if (!buffer.getLine(startY)) return null;
     let first = startY;
-    while (first > 0 && buffer.getLine(first)?.isWrapped) first -= 1;
-    let last = first;
-    while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) last += 1;
+    let last = startY;
+    while (
+      last + 1 < buffer.length
+      && buffer.getLine(last + 1)?.isWrapped
+      && last - first + 1 < MAX_LOGICAL_LINE_ROWS
+    ) {
+      last += 1;
+    }
     return { startY: first, endY: last };
   }
 
@@ -672,7 +680,7 @@ export class KeywordHighlighter implements IDisposable {
       this.stampLogicalLine(startY, endY);
       return;
     }
-    const logical = this.readLogicalLine(startY);
+    const logical = this.readLogicalLine(startY, endY);
     if (!logical) return;
     const matches = collectMatches(logical.text, this.compiledPatterns);
     for (const match of matches) {
@@ -709,8 +717,24 @@ export class KeywordHighlighter implements IDisposable {
       ) {
         return false;
       }
+      if (originals && !this.lineStillHasAppliedHighlights(internal, originals)) {
+        return false;
+      }
     }
     return true;
+  }
+
+  private lineStillHasAppliedHighlights(
+    line: InternalBufferLine,
+    originals: LineOriginals,
+  ): boolean {
+    let sawMaskedCell = false;
+    for (let x = 0; x < line.length; x += 1) {
+      if (!originals.mask[x]) continue;
+      sawMaskedCell = true;
+      if (line._data[x * CELL_INDICES + CELL_FG] !== originals.fg[x]) return true;
+    }
+    return !sawMaskedCell;
   }
 
   private stampLogicalLine(startY: number, endY: number): void {
@@ -798,13 +822,11 @@ export class KeywordHighlighter implements IDisposable {
     }
   }
 
-  private readLogicalLine(startY: number): LogicalLine | null {
+  private readLogicalLine(startY: number, endY = startY): LogicalLine | null {
     const buffer = this.term.buffer.active;
     if (!buffer.getLine(startY)) return null;
-    let first = startY;
-    while (first > 0 && buffer.getLine(first)?.isWrapped) first -= 1;
-    let last = first;
-    while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped) last += 1;
+    const first = startY;
+    const last = endY;
     let text = "";
     const cellAtStringOffset: Array<{ y: number; x: number }> = [];
     for (let y = first; y <= last; y += 1) {
