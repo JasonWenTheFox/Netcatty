@@ -382,6 +382,19 @@ test("BEL inside DCS payload does not resume highlighting", () => {
   );
 });
 
+test("CAN and SUB cancel pending string controls", () => {
+  for (const start of ["\x1b]0;title", "\x1bPpayload", "\x1b_apc", "\x1b^pm", "\x1bXsos"]) {
+    for (const cancel of ["\x18", "\x1a"]) {
+      const transformer = new KeywordHighlightTransformer();
+      transformer.setRules(rule(), true);
+      assert.equal(
+        transformer.transform(`${start}${cancel}ERROR`),
+        `${start}${cancel}${RED}ERROR\x1b[39m`,
+      );
+    }
+  }
+});
+
 test("a rule change does not rebuild while an already queued control is incomplete", async () => {
   for (const [start, finish] of [
     ["seed ERROR\x1b[", "31mX"],
@@ -1115,6 +1128,36 @@ test("terminal reset wins after a sliced rebuild starts writing", async () => {
   term.dispose();
 });
 
+test("clear remains ordered with output queued during a sliced rebuild", async () => {
+  const term = new XTerm({ cols: 80, rows: 5, scrollback: 1500 });
+  const visibleSerializer = new SerializeAddon();
+  term.loadAddon(visibleSerializer);
+  const highlighter = new KeywordHighlighter(term);
+  const mirror = registerTerminalViewportScrollMirror(
+    term,
+    (lines) => highlighter.mirrorViewportScroll(lines),
+  );
+  highlighter.setRules(rule(), true);
+  await write(term, Array.from({ length: 800 }, (_, index) => `old-${index} ERROR`).join("\r\n"));
+
+  highlighter.setRules(rule("#60A5FA"), true);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  term.write("\r\nbefore-clear ERROR");
+  assert.equal(clearTerminalViewport(term), true);
+  term.write("after-clear plain");
+  await highlighter.whenSettled();
+
+  // eslint-disable-next-line no-control-regex -- terminal protocol bytes are intentional.
+  const stripControls = (value: string) => value.replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "");
+  const visible = stripControls(visibleSerializer.serialize());
+  const pristine = stripControls(highlighter.serializeAddon.serialize());
+  assert.equal(pristine, visible);
+  assert.match(visible, /before-clear ERRORafter-clear plain/);
+  mirror.dispose();
+  highlighter.dispose();
+  term.dispose();
+});
+
 test("history rebuild keeps OSC 8 links clickable via the pristine buffer", async () => {
   type LinkProvider = {
     provideLinks(
@@ -1302,6 +1345,26 @@ test("history rebuild keeps saved foreground restoration aligned", async () => {
     const errorStart = text.lastIndexOf("ERROR tail");
     assert.equal(line?.getCell(errorStart)?.getFgColor(), 0x60a5fa);
     assert.equal(line?.getCell(errorStart + "ERROR ".length)?.getFgColor(), 1);
+    highlighter.dispose();
+    term.dispose();
+  }
+});
+
+test("history rebuild preserves inactive alternate-buffer saved state", async () => {
+  for (const mode of ["47", "1047"]) {
+    const term = new XTerm({ cols: 40, rows: 5, scrollback: 100 });
+    const highlighter = new KeywordHighlighter(term);
+    highlighter.setRules(rule(), true);
+    await write(term, `normal seed ERROR\x1b[?${mode}h\x1b[34m\x1b7\x1b[32malt\x1b[?${mode}l`);
+
+    highlighter.setRules(rule("#60A5FA"), true);
+    await highlighter.whenSettled();
+    await write(term, `\x1b[?${mode}h\x1b8plain`);
+
+    const line = term.buffer.active.getLine(term.buffer.active.cursorY);
+    const text = line?.translateToString(true) ?? "";
+    const plainStart = text.indexOf("plain");
+    assert.equal(line?.getCell(plainStart)?.getFgColor(), 4);
     highlighter.dispose();
     term.dispose();
   }

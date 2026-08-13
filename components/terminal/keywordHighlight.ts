@@ -170,6 +170,7 @@ const foregroundFromAttribute = (attribute: unknown): ForegroundState => {
 const snapshotSavedCursorState = (buffer: InternalBrowserBuffer | undefined) => buffer ? {
   x: buffer.x,
   y: buffer.y,
+  tabs: buffer.tabs ? { ...buffer.tabs } : undefined,
   savedX: buffer.savedX,
   savedY: buffer.savedY,
   savedCurAttrData: buffer.savedCurAttrData?.clone?.() ?? buffer.savedCurAttrData,
@@ -284,6 +285,8 @@ const C1_SOS = "\x98";
 const C1_PM = "\x9e";
 const C1_APC = "\x9f";
 const C1_ST = "\x9c";
+const CAN = "\x18";
+const SUB = "\x1a";
 const MAX_PLUGIN_HIGHLIGHT_SCAN_CHARS = 4_096;
 const MAX_PLUGIN_HIGHLIGHT_MATCHES_PER_WRITE = 256;
 const BULK_HIGHLIGHT_CATCH_UP_MS = 600;
@@ -894,6 +897,11 @@ export class KeywordHighlightTransformer {
       const char = input[index];
       const next = input[index + 1];
       if (this.state.pendingKind === "osc" || this.state.pendingKind === "string") {
+        if (char === CAN || char === SUB) {
+          output += char;
+          completeSequence();
+          continue;
+        }
         if (this.state.pendingStringEscape) {
           output += char;
           this.state.pendingStringEscape = false;
@@ -1006,7 +1014,10 @@ export class KeywordHighlighter implements IDisposable {
   private pristineFlushPromise: Promise<void> | null = null;
   private activePristineFlush: PristineFlushState | null = null;
   private visibleSettled: Promise<void> = Promise.resolve();
-  private queuedWrites: Array<{ data: string | Uint8Array; callback?: () => void }> = [];
+  private queuedOperations: Array<
+    | { kind: "write"; data: string | Uint8Array; callback?: () => void }
+    | { kind: "mutation"; run: () => Promise<void> | void }
+  > = [];
   private hasPristineContent = false;
   private catchUpTimer: ReturnType<typeof setTimeout> | null = null;
   private catchUpSettled: Promise<void> = Promise.resolve();
@@ -1157,13 +1168,15 @@ export class KeywordHighlighter implements IDisposable {
     this.resolvePristineBackpressure = null;
     this.pristineBackpressureSettled = null;
     for (const disposable of this.disposables) disposable.dispose();
-    for (const write of this.queuedWrites.splice(0)) write.callback?.();
+    for (const operation of this.queuedOperations.splice(0)) {
+      if (operation.kind === "write") operation.callback?.();
+    }
     this.pristineTerm.dispose();
   }
 
   private readonly write: XTerm["write"] = (data, callback) => {
     if (this.rebuilding) {
-      this.queuedWrites.push({ data, ...(callback ? { callback } : {}) });
+      this.queuedOperations.push({ kind: "write", data, ...(callback ? { callback } : {}) });
       return;
     }
     if (typeof data !== "string") {
@@ -1232,7 +1245,9 @@ export class KeywordHighlighter implements IDisposable {
   private readonly reset: XTerm["reset"] = () => {
     this.flushDeferredPristineSync();
     this.pendingRulesChanged = false;
-    for (const write of this.queuedWrites.splice(0)) write.callback?.();
+    for (const operation of this.queuedOperations.splice(0)) {
+      if (operation.kind === "write") operation.callback?.();
+    }
     this.hasPristineContent = false;
     if (this.catchUpTimer !== null) {
       clearTimeout(this.catchUpTimer);
@@ -1266,6 +1281,13 @@ export class KeywordHighlighter implements IDisposable {
   syncScrollback(): void {
     this.flushDeferredPristineSync();
     this.syncPristineOptions();
+  }
+
+  /** Queue direct xterm mutations so they cannot be split across a history replay. */
+  deferMutationDuringRebuild(run: () => Promise<void> | void): boolean {
+    if (!this.rebuilding) return false;
+    this.queuedOperations.push({ kind: "mutation", run });
+    return true;
   }
 
   /** Mirror Netcatty's local clear pre-scroll, which mutates xterm outside write(). */
@@ -1566,10 +1588,10 @@ export class KeywordHighlighter implements IDisposable {
         await this.rebuild();
       }
       this.rebuilding = false;
-      this.flushQueuedWrites();
+      await this.flushQueuedWrites();
     }, () => {
       this.rebuilding = false;
-      this.flushQueuedWrites();
+      void this.flushQueuedWrites();
     });
     this.settleVersion += 1;
   }
@@ -1614,8 +1636,6 @@ export class KeywordHighlighter implements IDisposable {
     const viewportOffset = Math.max(0, this.term.buffer.normal.baseY - this.term.buffer.normal.viewportY);
     const selectionState = snapshotSelectionState(this.term);
     const timestampLedger = snapshotTerminalLineTimestampLedger(this.term);
-    const visibleBuffer = (this.term as unknown as InternalBrowserTerminal)
-      ._core?._bufferService?.buffer;
     const internalBuffers = (this.term as unknown as {
       _core?: { _bufferService?: { buffers?: {
         normal?: InternalBrowserBuffer;
@@ -1626,8 +1646,10 @@ export class KeywordHighlighter implements IDisposable {
       normal: foregroundFromAttribute(internalBuffers?.normal?.savedCurAttrData),
       alternate: foregroundFromAttribute(internalBuffers?.alt?.savedCurAttrData),
     };
-    const tabStops = visibleBuffer?.tabs ? { ...visibleBuffer.tabs } : null;
-    const savedCursorState = snapshotSavedCursorState(visibleBuffer);
+    const savedBufferStates = {
+      normal: snapshotSavedCursorState(internalBuffers?.normal),
+      alternate: snapshotSavedCursorState(internalBuffers?.alt),
+    };
     const parserJoinState = snapshotParserJoinState(this.term);
     const charsetService = (this.term as unknown as InternalBrowserTerminal)._core?._charsetService;
     const charsetState = charsetService ? {
@@ -1668,11 +1690,17 @@ export class KeywordHighlighter implements IDisposable {
         this.pendingRulesChanged = this.hasPristineContent;
         return;
       }
-      const rebuiltVisibleBuffer = (this.term as unknown as InternalBrowserTerminal)
-        ._core?._bufferService?.buffer;
-      if (tabStops && rebuiltVisibleBuffer) rebuiltVisibleBuffer.tabs = { ...tabStops };
-      if (savedCursorState && rebuiltVisibleBuffer) {
-        restoreSavedCursorState(rebuiltVisibleBuffer, savedCursorState);
+      const rebuiltBuffers = (this.term as unknown as {
+        _core?: { _bufferService?: { buffers?: {
+          normal?: InternalBrowserBuffer;
+          alt?: InternalBrowserBuffer;
+        } } };
+      })._core?._bufferService?.buffers;
+      if (savedBufferStates.normal && rebuiltBuffers?.normal) {
+        restoreSavedCursorState(rebuiltBuffers.normal, savedBufferStates.normal);
+      }
+      if (savedBufferStates.alternate && rebuiltBuffers?.alt) {
+        restoreSavedCursorState(rebuiltBuffers.alt, savedBufferStates.alternate);
       }
       restoreParserJoinState(this.term, parserJoinState);
       const rebuiltCharsetService = (this.term as unknown as InternalBrowserTerminal)
@@ -1711,10 +1739,19 @@ export class KeywordHighlighter implements IDisposable {
     this.options.onDidRebuild?.();
   }
 
-  private flushQueuedWrites(): void {
-    const queued = this.queuedWrites.splice(0);
-    for (const { data, callback } of queued) {
-      this.write(data, callback);
+  private async flushQueuedWrites(): Promise<void> {
+    const queued = this.queuedOperations.splice(0);
+    for (const operation of queued) {
+      if (operation.kind === "mutation") {
+        await operation.run();
+      } else {
+        await new Promise<void>((resolve) => {
+          this.write(operation.data, () => {
+            operation.callback?.();
+            resolve();
+          });
+        });
+      }
     }
     if (this.pendingRulesChanged) this.scheduleRebuild();
   }

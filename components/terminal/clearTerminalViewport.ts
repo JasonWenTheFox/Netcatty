@@ -28,6 +28,7 @@ type InternalTerminal = XTerm & {
 
 type ClearTerminalViewportOptions = {
   wipeScrollback?: boolean;
+  onComplete?: () => void;
 };
 
 type ClearTerminalViewportAndSyncPtyOptions = ClearTerminalViewportOptions & {
@@ -156,6 +157,15 @@ export const clearTerminalViewport = (
   term: XTerm,
   options: ClearTerminalViewportOptions = {},
 ): boolean => {
+  const highlighter = (term as XTerm & {
+    __netcattyKeywordHighlighter?: {
+      deferMutationDuringRebuild(run: () => Promise<void> | void): boolean;
+    };
+  }).__netcattyKeywordHighlighter;
+  if (highlighter?.deferMutationDuringRebuild(() => new Promise<void>((resolve) => {
+    if (!clearTerminalViewport(term, { ...options, onComplete: resolve })) resolve();
+  }))) return true;
+
   const buffer = term.buffer.active;
   if (buffer.type !== "normal") return false;
 
@@ -183,6 +193,7 @@ export const clearTerminalViewport = (
   const eraseScrollback = options.wipeScrollback ? "\x1b[3J" : "";
   term.write(`\x1b[2;1H\x1b[J${eraseScrollback}\x1b[1;${col}H`, () => {
     term.scrollToBottom();
+    options.onComplete?.();
   });
   return true;
 };
