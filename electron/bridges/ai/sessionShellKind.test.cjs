@@ -50,7 +50,7 @@ test("parseRemoteLoginShellProbeOutput reads classifiable probe output lines", (
   assert.equal(parseRemoteLoginShellProbeOutput("   \n"), null);
 });
 
-test("posix login shell probe stores path for canonical line-editor selection", async () => {
+test("posix login shell probe stores path without pinning shellKind", async () => {
   const session = { protocol: "ssh" };
   await ensureSessionShellKind(session, {
     execProbe: async () => `${PROBE_OUTPUT_MARKER}/bin/dash\n`,

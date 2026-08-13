@@ -207,14 +207,16 @@ function buildPosixWrapperBody(command, marker) {
  * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
  * concatenated with the wrapped agent command (#2962).
  *
- * - readline / fish: send `i` first so bash/zsh/fish vi-mode command state
- *   returns to insert. Emacs and vi-insert treat `i` as a literal, which the
- *   following line-kills immediately discard. Then Ctrl+U + Ctrl+K clear
- *   residual text on both sides of the cursor. Fish treats Ctrl+U as
+ * - fish: send `i` first so vi-mode command state returns to insert. Emacs and
+ *   vi-insert treat `i` as a literal, which the following line-kills discard.
+ *   Then Ctrl+U + Ctrl+K clear residual text. Fish treats Ctrl+U as
  *   kill-whole-line; the trailing Ctrl+K is a no-op.
- * - canonical posix (dash / ash / busybox / unresolved `sh`): Ctrl+U alone
- *   (VKILL) clears the whole pending line. Ctrl+K must be omitted — it is a
- *   literal 0x0b and the wrapper is parsed as `\x0b…` (no start marker).
+ * - posix / unknown: `i` + Ctrl+U only. Do **not** key Ctrl+K off the launch
+ *   or login-probe `shellPath` — the user may have nested `dash`/`ash` inside
+ *   bash/zsh (or the reverse). Ctrl+K on a canonical editor is a literal 0x0b
+ *   (`\x0becho: not found`) and the start marker never arrives. Omitting it on
+ *   readline only leaves a pending suffix when the cursor is mid-line (same
+ *   tradeoff already accepted for ambiguous remote `sh`).
  * - PowerShell: one sequence has to survive Windows, Emacs, and Vi PSReadLine.
  *   Leading Escape is Windows-only RevertLine; on Unix pwsh it starts an
  *   Emacs chord or drops Vi into command mode, so it cannot come first.
@@ -233,6 +235,8 @@ function buildPosixWrapperBody(command, marker) {
  *
  * @param {string} shellKind
  * @param {{ allowInterrupt?: boolean, shellPath?: string, resolveLocalSymlinks?: boolean }} [options]
+ *   `shellPath` / `resolveLocalSymlinks` are accepted for call-site compat but
+ *   ignored for Ctrl+K selection (active shell may differ from launch/probe).
  */
 function buildPendingInputClearPrefix(shellKind, options = {}) {
   if (shellKind === "raw") return "";
@@ -246,11 +250,9 @@ function buildPendingInputClearPrefix(shellKind, options = {}) {
   }
   // `i` before the line-kills restores readline/fish vi insert mode. Do not
   // put `i` after the kills — that would prefix the wrapper with a literal i.
-  // Fish keeps trailing Ctrl+K (no-op). Canonical posix omits it.
-  const omitCtrlK = shellKind !== "fish" && isCanonicalPosixLineEditor(options.shellPath, {
-    resolveLocalSymlinks: options.resolveLocalSymlinks,
-  });
-  const lineClear = omitCtrlK ? "i\x15" : "i\x15\x0b";
+  // Fish keeps trailing Ctrl+K (no-op). Other kinds omit it: launch/probe
+  // shellPath is not the active interactive editor after nesting.
+  const lineClear = shellKind === "fish" ? "i\x15\x0b" : "i\x15";
   return allowInterrupt ? `\x03${lineClear}` : lineClear;
 }
 

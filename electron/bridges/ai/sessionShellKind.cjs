@@ -173,8 +173,7 @@ function applyProbedShellKind(session, kind, shellPath) {
   session._loginShellKind = kind;
   const trimmedPath = String(shellPath || "").trim();
   if (trimmedPath) {
-    // Kept for line-editor selection (dash/ash omit Ctrl+K) without pinning
-    // session.shellKind for fish/posix login shells.
+    // Soft login-shell path hint (not the active nested interactive editor).
     session._loginShellPath = trimmedPath;
   }
   if (kind === "powershell" || kind === "cmd") {
@@ -191,14 +190,13 @@ function isShellKindProbeSettled(session) {
 }
 
 /**
- * Options for line-editor selection (canonical dash/ash omit Ctrl+K).
+ * Options previously used for line-editor selection. Kept so callers can still
+ * pass a probed/login shell path without breaking the exec options shape.
+ * `buildPendingInputClearPrefix` no longer keys Ctrl+K off this path (nested
+ * interactive shells can differ from the launch/probe executable).
  *
- * Prefer the probed login-shell path over constructor placeholders such as
- * Mosh/ET `shellExecutable: "remote-shell"`, which would otherwise win a
- * truthy `||` and hide `/bin/dash` from `isCanonicalPosixLineEditor`.
- *
- * Probed remote paths set `resolveLocalSymlinks: false` so a client
- * `/bin/sh` → dash/bash never decides the remote line editor.
+ * Probed remote paths set `resolveLocalSymlinks: false` for any future
+ * path-based classification that must not use the client's `/bin/sh` target.
  *
  * @param {object} [session]
  * @returns {{ shellPath?: string, resolveLocalSymlinks?: boolean }}

@@ -63,21 +63,21 @@ function markerFromWrite(data) {
 }
 
 test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
-  assert.equal(buildPendingInputClearPrefix("posix"), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix"), "i\x15");
   assert.equal(buildPendingInputClearPrefix("fish"), "i\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("powershell"), "i\x15\x0b\x1b\x1bi\x08");
-  assert.equal(buildPendingInputClearPrefix("unknown"), "i\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix(""), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("unknown"), "i\x15");
+  assert.equal(buildPendingInputClearPrefix(""), "i\x15");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
 test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03i\x15");
   assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03i\x15\x0b\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
   assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "i\x15");
   assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "i\x15\x0b\x1b\x1bi\x08");
 });
 
@@ -89,27 +89,34 @@ test("PowerShell clear prefix does not start with Escape and restores insert aft
 });
 
 test("posix/fish clear prefix restores vi insert mode before line-kills", () => {
-  const prefix = buildPendingInputClearPrefix("posix");
-  assert.equal(prefix.startsWith("i"), true, "vi command mode needs `i` before the wrapper is typed");
-  assert.equal(prefix.endsWith("\x15\x0b"), true);
-  assert.equal(prefix.indexOf("i"), 0, "`i` must come before Ctrl+U/Ctrl+K so a literal i is discarded");
+  const posix = buildPendingInputClearPrefix("posix");
+  assert.equal(posix.startsWith("i"), true, "vi command mode needs `i` before the wrapper is typed");
+  assert.equal(posix, "i\x15");
+  assert.equal(posix.indexOf("i"), 0, "`i` must come before Ctrl+U so a literal i is discarded");
+
+  const fish = buildPendingInputClearPrefix("fish");
+  assert.equal(fish.startsWith("i"), true);
+  assert.equal(fish.endsWith("\x15\x0b"), true);
 });
 
-test("canonical posix shells omit Ctrl+K so dash does not see a literal 0x0b", () => {
+test("posix clear prefix omits Ctrl+K regardless of launch/probe shellPath", () => {
   assert.equal(isCanonicalPosixLineEditor("/bin/dash"), true);
   assert.equal(isCanonicalPosixLineEditor("/usr/bin/ash"), true);
   assert.equal(isCanonicalPosixLineEditor("/bin/bash"), false);
   assert.equal(isCanonicalPosixLineEditor("/bin/zsh"), false);
   assert.equal(isCanonicalPosixLineEditor(""), false);
 
+  // Launch path may still be bash after the user nested into dash (or the
+  // reverse). Prefer omitting Ctrl+K over trusting shellPath.
   assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash" }), "i\x15");
   assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash", allowInterrupt: true }), "\x03i\x15");
-  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }), "i\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }), "i\x15");
+  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }).includes("\x0b"), false);
   // Fish keeps Ctrl+K (no-op) even if the path looks like dash.
   assert.equal(buildPendingInputClearPrefix("fish", { shellPath: "/bin/dash" }), "i\x15\x0b");
 });
 
-test("remote /bin/sh is not classified via client realpathSync", () => {
+test("remote /bin/sh classification ignores client realpathSync", () => {
   // Ambiguous remote `sh` must ignore the client symlink target (dash vs bash).
   assert.equal(
     isCanonicalPosixLineEditor("/bin/sh", { resolveLocalSymlinks: false }),
@@ -122,13 +129,14 @@ test("remote /bin/sh is not classified via client realpathSync", () => {
     }),
     "i\x15",
   );
-  // Resolved remote bash must still keep Ctrl+K for mid-line readline clears.
+  // Even a resolved remote bash path must not reintroduce Ctrl+K: the active
+  // interactive editor may still be a nested canonical shell.
   assert.equal(
     buildPendingInputClearPrefix("posix", {
       shellPath: "/bin/bash",
       resolveLocalSymlinks: false,
     }),
-    "i\x15\x0b",
+    "i\x15",
   );
 });
 
@@ -157,6 +165,30 @@ test("execViaPty omits Ctrl+K for dash-backed local shells", async () => {
   assert.match(writes[1], /echo GOOD/);
 });
 
+test("execViaPty omits Ctrl+K even when launch shellPath is bash", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      const marker = markerFromWrite(data);
+      if (!marker) return;
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+      });
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "echo GOOD", {
+    shellKind: "posix",
+    shellPath: "/bin/bash",
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes[0], "i\x15");
+  assert.equal(writes[0].includes("\x0b"), false);
+});
+
 test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
@@ -177,7 +209,7 @@ test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt 
 
   assert.equal(result.ok, true);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "i\x15\x0b", "expected vi-insert restore then Ctrl+U/Ctrl+K without Ctrl+C");
+  assert.equal(writes[0], "i\x15", "expected vi-insert restore then Ctrl+U without Ctrl+C");
   assert.match(writes[1], /uname -a/);
   assert.equal(writes[0].includes("\x03"), false);
   assert.equal(writes[1].includes("\x03"), false);
@@ -206,7 +238,7 @@ test("execViaPty never queues Ctrl+C before the wrapper, even on a confirmed idl
   }
 
   const posixWrites = await captureWrites("posix", "uname -a", "user@host:~$");
-  assert.equal(posixWrites[0], "i\x15\x0b");
+  assert.equal(posixWrites[0], "i\x15");
   assert.equal(posixWrites.join("").includes("\x03"), false);
 
   // Unix pwsh + VINTR: a flushed `$` would drop the marker assignment.
@@ -292,9 +324,9 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   assert.equal(result.ok, true);
   assert.equal(echoes.length, 1);
   assert.equal(echoes[0].cmd, "uname -a");
-  assert.deepEqual(echoes[0].writesSoFar, ["i\x15\x0b"]);
+  assert.deepEqual(echoes[0].writesSoFar, ["i\x15"]);
   assert.equal(writes.length, 2);
-  assert.equal(writes[0], "i\x15\x0b");
+  assert.equal(writes[0], "i\x15");
   assert.match(writes[1], /uname -a/);
 });
 
