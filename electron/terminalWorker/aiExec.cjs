@@ -12,6 +12,7 @@ const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
 } = require("../bridges/ai/sessionShellKind.cjs");
+const { verifySessionForegroundShell } = require("../bridges/ai/pendingInputSafety.cjs");
 
 const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_BACKGROUND_JOB_POLL_INTERVAL_MS = 30 * 1000;
@@ -259,6 +260,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
+        pendingUserInput: session._hasPendingUserInput === true,
       });
     }
 
@@ -269,6 +271,7 @@ function createWorkerAiExecHandler({
       const probed = await ensureSessionShellKindForExec(session, {
         trackForCancellation: activePtyExecs,
         chatSessionId,
+        verifyPendingInput: () => verifySessionForegroundShell(session),
       });
       if (!probed.ok) return probed;
       return execViaPty(ptyStream, command, {
@@ -280,6 +283,7 @@ function createWorkerAiExecHandler({
         chatSessionId,
         expectedPrompt: getEditableIdlePrompt(session),
         pendingUserInput: session._hasPendingUserInput === true,
+        pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },
@@ -317,6 +321,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: session.serialEncoding || "utf8",
+        pendingUserInput: session._hasPendingUserInput === true,
       });
     }
 
@@ -444,6 +449,15 @@ function createWorkerAiJobStartHandler({
     );
     let handle;
     try {
+      const pendingInputInterruptSafe = await verifySessionForegroundShell(session);
+      if (probeCancelRequested || job.status === "stopping") {
+        job.status = "cancelled";
+        job.error = "Cancelled";
+        job.updatedAt = Date.now();
+        job.pendingShellProbe = false;
+        if (activeSessionJobs.get(sessionId) === jobId) activeSessionJobs.delete(sessionId);
+        return { ok: false, error: "Cancelled", jobId, sessionId, status: "cancelled" };
+      }
       handle = startPtyJob(ptyStream, command, {
         timeoutMs,
         shellKind: session.shellKind,
@@ -451,6 +465,7 @@ function createWorkerAiJobStartHandler({
         chatSessionId,
         expectedPrompt: getEditableIdlePrompt(session),
         pendingUserInput: session._hasPendingUserInput === true,
+        pendingInputInterruptSafe,
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },

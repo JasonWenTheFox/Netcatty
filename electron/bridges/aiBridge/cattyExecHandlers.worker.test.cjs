@@ -84,3 +84,45 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     ["release", "ssh-1", "token-1"],
   ]);
 });
+
+test("catty raw exec refuses pending network-device input without writing", async () => {
+  const ipcMain = createFakeIpcMain();
+  const writes = [];
+  const session = {
+    protocol: "ssh",
+    stream: { write: (data) => writes.push(String(data)), on() {}, removeListener() {} },
+    _hasPendingUserInput: true,
+  };
+  const mcpServerBridge = {
+    getPermissionMode: () => "auto",
+    reserveSessionExecution: () => ({ ok: true, token: "token-1" }),
+    releaseSessionExecution() {},
+    getSessionMeta: () => ({ protocol: "ssh", deviceType: "network" }),
+    checkCommandSafety: () => ({ blocked: false }),
+    getCommandTimeoutMs: () => 1000,
+    activePtyExecs: new Map(),
+  };
+
+  registerCattyExecHandlers({
+    ipcMain,
+    validateSender: () => true,
+    sessions: new Map([["device-1", session]]),
+    terminalWorkerManager: null,
+    mcpServerBridge,
+    electronModule: {},
+    safeSend() {},
+    require(id) {
+      if (id === "./ai/ptyExec.cjs") return require("../ai/ptyExec.cjs");
+      return require(id);
+    },
+  });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(
+    { sender: { id: 7 } },
+    { sessionId: "device-1", command: "show version", chatSessionId: "chat-1" },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(writes, []);
+});

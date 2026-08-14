@@ -6,6 +6,7 @@ const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
 const { getEditableIdlePrompt } = require("../ai/shellUtils.cjs");
+const { verifySessionForegroundShell } = require("../ai/pendingInputSafety.cjs");
 
 function createExecHandlerApi(ctx) {
   with (ctx) {
@@ -131,6 +132,7 @@ function createExecHandlerApi(ctx) {
           trackForCancellation: activePtyExecs,
           chatSessionId: params?.chatSessionId,
           encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
+          pendingUserInput: session._hasPendingUserInput === true,
         }));
       }
     
@@ -143,6 +145,7 @@ function createExecHandlerApi(ctx) {
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: activePtyExecs,
             chatSessionId,
+            verifyPendingInput: () => verifySessionForegroundShell(session),
           });
           if (!probed.ok) return probed;
           return execViaPty(ptyStream, command, {
@@ -152,6 +155,7 @@ function createExecHandlerApi(ctx) {
             loginShellHint: session._loginShellKind,
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
+            pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },
@@ -197,6 +201,7 @@ function createExecHandlerApi(ctx) {
           trackForCancellation: activePtyExecs,
           chatSessionId: params?.chatSessionId,
           encoding: session.serialEncoding || "utf8",
+          pendingUserInput: session._hasPendingUserInput === true,
         }));
       }
     
@@ -272,7 +277,7 @@ function createExecHandlerApi(ctx) {
       backgroundJobs.set(jobId, job);
 
       // Probe so fish login shells are not mis-wrapped as posix (#1854).
-      return Promise.resolve(ensureSessionShellKind(session)).then(() => {
+      return Promise.resolve(ensureSessionShellKind(session)).then(async () => {
         if (probeCancelRequested || job.status === "stopping") {
           job.status = "cancelled";
           job.error = "Cancelled";
@@ -288,6 +293,15 @@ function createExecHandlerApi(ctx) {
           };
         }
 
+        const pendingInputInterruptSafe = await verifySessionForegroundShell(session);
+        if (probeCancelRequested || job.status === "stopping") {
+          job.status = "cancelled";
+          job.error = "Cancelled";
+          job.updatedAt = Date.now();
+          job.pendingShellProbe = false;
+          releaseSessionExecution(sessionId, sessionToken);
+          return { ok: false, error: "Cancelled", jobId, sessionId, status: "cancelled" };
+        }
         let handle;
         try {
           handle = startPtyJob(ptyStream, command, {
@@ -301,6 +315,7 @@ function createExecHandlerApi(ctx) {
             chatSessionId,
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
+            pendingInputInterruptSafe,
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },

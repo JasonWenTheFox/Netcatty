@@ -954,6 +954,7 @@ function execViaChannel(sshClient, command, options) {
  * @param {Map} [options.trackForCancellation] - Map for cancellation tracking
  * @param {string} [options.chatSessionId] - Chat session ID for scoped cancellation
  * @param {AbortSignal} [options.abortSignal] - AbortSignal to cancel execution
+ * @param {boolean} [options.pendingUserInput=false] - Whether unsubmitted user bytes are present
  */
 function execViaRawPty(serialPort, command, options) {
   const {
@@ -963,7 +964,18 @@ function execViaRawPty(serialPort, command, options) {
     chatSessionId,
     abortSignal,
     encoding = "utf8", // Callers should pass the session's resolved encoding
+    pendingUserInput = false,
   } = options || {};
+
+  if (pendingUserInput === true) {
+    return Promise.resolve({
+      ok: false,
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      error: "Cannot safely execute while unsubmitted terminal input is present. Clear the current line and try again.",
+    });
+  }
 
   // Simple incrementing key for the cancellation map (no markers sent to device)
   const cancelKey = `__NCRAW_${Date.now().toString(36)}_${(++execViaRawPty._seq).toString(36)}`;

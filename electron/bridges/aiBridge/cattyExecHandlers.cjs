@@ -9,6 +9,7 @@ const {
 const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
+const { verifySessionForegroundShell } = require("../ai/pendingInputSafety.cjs");
 
 function getWorkerExecutionMeta(mcpServerBridge, sessionId, chatSessionId) {
   return mcpServerBridge.getSessionMeta?.(sessionId, chatSessionId) || {};
@@ -157,6 +158,7 @@ function registerCattyExecHandlers(ctx) {
           trackForCancellation: mcpServerBridge.activePtyExecs,
           chatSessionId,
           encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
+          pendingUserInput: session._hasPendingUserInput === true,
         }));
       }
 
@@ -171,6 +173,7 @@ function registerCattyExecHandlers(ctx) {
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: mcpServerBridge.activePtyExecs,
             chatSessionId,
+            verifyPendingInput: () => verifySessionForegroundShell(session),
           });
           if (!probed.ok) return probed;
           return execViaPty(ptyStream, command, {
@@ -182,6 +185,7 @@ function registerCattyExecHandlers(ctx) {
             chatSessionId,
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
+            pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },
@@ -233,6 +237,7 @@ function registerCattyExecHandlers(ctx) {
           trackForCancellation: mcpServerBridge.activePtyExecs,
           chatSessionId,
           encoding: session.serialEncoding || "utf8",
+          pendingUserInput: session._hasPendingUserInput === true,
         }));
       }
 

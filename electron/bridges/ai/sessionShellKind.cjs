@@ -423,6 +423,7 @@ async function ensureSessionShellKindForExec(session, options = {}) {
     chatSessionId = null,
     execProbe,
     timeoutMs,
+    verifyPendingInput,
   } = options;
 
   let cancelled = false;
@@ -444,6 +445,9 @@ async function ensureSessionShellKindForExec(session, options = {}) {
 
   try {
     await ensureSessionShellKind(session, { execProbe, timeoutMs });
+    const pendingInputInterruptSafe = typeof verifyPendingInput === "function"
+      ? await verifyPendingInput()
+      : false;
     if (cancelled) {
       return {
         ok: false,
@@ -454,7 +458,7 @@ async function ensureSessionShellKindForExec(session, options = {}) {
         error: "Cancelled",
       };
     }
-    return { ok: true, shellKind: session.shellKind };
+    return { ok: true, shellKind: session.shellKind, pendingInputInterruptSafe };
   } finally {
     if (pendingMarker && trackForCancellation) {
       trackForCancellation.delete(pendingMarker);

@@ -97,6 +97,27 @@ function createDeferredShellProbeConn(stdout = `${PROBE_OUTPUT_MARKER}/usr/bin/f
   };
 }
 
+test("worker raw exec refuses pending device input without writing", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([["device-1", {
+    protocol: "ssh",
+    stream: pty,
+    _hasPendingUserInput: true,
+  }]]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(createFakeEvent(), {
+    sessionId: "device-1",
+    command: "show version",
+    sessionMeta: { protocol: "ssh", deviceType: "network" },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(pty.writes, []);
+});
+
 test("worker AI background jobs start, poll, stop, and block overlapping exec", async () => {
   const pty = new FakePty();
   const sessions = new Map([

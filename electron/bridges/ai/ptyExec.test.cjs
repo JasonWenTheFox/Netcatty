@@ -431,6 +431,21 @@ test("execViaRawPty does not prepend Ctrl+U before device commands", async () =>
   assert.equal(writes[0].includes("\x15"), false);
 });
 
+test("execViaRawPty refuses pending device input without writing any bytes", async () => {
+  const writes = [];
+  const port = new EventEmitter();
+  port.write = (data) => writes.push(String(data));
+
+  const result = await execViaRawPty(port, "show version", {
+    pendingUserInput: true,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(writes, []);
+});
+
 test("execViaPty completes when command output has no trailing newline", async () => {
   const result = await execViaPty(new ShellBackedPty(), "printf 'abc'", {
     shellKind: "posix",

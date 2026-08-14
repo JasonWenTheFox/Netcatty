@@ -8,6 +8,7 @@ const test = require("node:test");
 const { createBackgroundJobApi } = require("./mcpServerBridge/backgroundJobs.cjs");
 const { createExecHandlerApi } = require("./mcpServerBridge/execHandlers.cjs");
 const { PROBE_OUTPUT_MARKER } = require("./ai/sessionShellKind.cjs");
+const { execViaPty, execViaRawPty } = require("./ai/ptyExec.cjs");
 
 class FakePty extends EventEmitter {
   constructor() {
@@ -74,6 +75,8 @@ function createExecHandlerTestContext({ sessions, backgroundJobs }) {
     beginChatExecution() {
       return { ok: true, release() {} };
     },
+    execViaPty,
+    execViaRawPty,
     getFreshIdlePrompt() {
       return "";
     },
@@ -225,4 +228,70 @@ test("MCP terminal_start chat cancel during shellKind probe aborts before PTY wr
   assert.equal(job.status, "cancelled");
   assert.equal(job.pendingShellProbe, false);
   assert.equal(ctx.activeSessionExecutions.size, 0);
+});
+
+test("MCP raw exec refuses pending network-device input without writing", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([["device-1", {
+    protocol: "ssh",
+    stream: pty,
+    _hasPendingUserInput: true,
+  }]]);
+  const ctx = createExecHandlerTestContext({ sessions, backgroundJobs: new Map() });
+  ctx.getSessionMeta = () => ({ protocol: "ssh", deviceType: "network" });
+  const api = createExecHandlerApi(ctx);
+
+  const result = await api.handleExec({
+    sessionId: "device-1",
+    command: "show version",
+    chatSessionId: "chat-1",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(pty.writes, []);
+});
+
+test("MCP shell exec clears verified pending input before running the command", async () => {
+  const pty = new FakePty();
+  pty.write = function write(data) {
+    const text = String(data);
+    this.writes.push(text);
+    if (text === "i") {
+      queueMicrotask(() => this.emit("data", Buffer.from("i")));
+    } else if (text === "\x03") {
+      queueMicrotask(() => this.emit("data", Buffer.from("^C\r\nuser@host:~$")));
+    } else {
+      const marker = text.match(/(__NCMCP_[A-Za-z0-9_]+__)/)?.[1];
+      if (marker) {
+        queueMicrotask(() => this.emit("data", Buffer.from(`${marker}_S\r\nok\r\n${marker}_E:0\r\n`)));
+      }
+    }
+  };
+  const session = {
+    protocol: "local",
+    stream: pty,
+    shellKind: "posix",
+    lastIdlePrompt: "user@host:~$",
+    _promptTrackTail: "user@host:~$ls",
+    _hasPendingUserInput: true,
+    _pendingInputSafetyProbe: async () => true,
+  };
+  const ctx = createExecHandlerTestContext({
+    sessions: new Map([["shell-1", session]]),
+    backgroundJobs: new Map(),
+  });
+  const api = createExecHandlerApi(ctx);
+
+  const result = await api.handleExec({
+    sessionId: "shell-1",
+    command: "uname -a",
+    chatSessionId: "chat-1",
+  });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(pty.writes[0], "i");
+  assert.equal(pty.writes[1], "\x03");
+  assert.match(pty.writes[2], /uname -a/);
+  assert.equal(session._hasPendingUserInput, false);
 });
