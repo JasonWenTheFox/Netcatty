@@ -1692,7 +1692,7 @@ function writeToSession(event, payload) {
 
   const terminalReport = isTerminalReportSequence(payload.data);
   const lineDelayMs = getAutomatedLineDelayMs(payload);
-  if (payload.automated === true && !terminalReport && lineDelayMs === 0) {
+  if (payload.automated === true && !terminalReport) {
     clearPendingAutomatedWrites(session);
   }
   trackSessionPendingUserInput(session, payload.data, {
@@ -1701,7 +1701,6 @@ function writeToSession(event, payload) {
   });
   const lineChunks = lineDelayMs > 0 ? splitTerminalInputIntoLineWrites(payload.data) : [payload.data];
   if (lineDelayMs > 0 && lineChunks.length > 1) {
-    clearPendingAutomatedWrites(session);
     session.pendingAutomatedWriteTimers = [];
     const expectedSession = session;
     const batchGeneration = session._automatedWriteGeneration;

@@ -159,3 +159,26 @@ test("delayed startup lines never cross into a replacement session id", async ()
   assert.deepEqual(oldCalls, ["first\r"]);
   assert.deepEqual(newCalls, []);
 });
+
+test("a new single-line automated write invalidates an older delayed batch", async () => {
+  const calls = [];
+  const sessions = new Map([["ssh-1", {
+    stream: { write(data) { calls.push(data); } },
+  }]]);
+  initBridge(sessions);
+
+  terminalBridge.writeToSession(
+    { sender: {} },
+    { sessionId: "ssh-1", data: "old-one\nold-two\r", automated: true, lineDelayMs: 25 },
+  );
+  assert.deepEqual(calls, ["old-one\r"]);
+
+  await delay(5);
+  terminalBridge.writeToSession(
+    { sender: {} },
+    { sessionId: "ssh-1", data: "new-only\r", automated: true, lineDelayMs: 25 },
+  );
+  await delay(60);
+
+  assert.deepEqual(calls, ["old-one\r", "new-only\r"]);
+});
