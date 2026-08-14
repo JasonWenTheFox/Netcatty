@@ -118,6 +118,30 @@ test("worker raw exec refuses pending device input without writing", async () =>
   assert.deepEqual(pty.writes, []);
 });
 
+test("worker exec refuses a submitted shell continuation without writing", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([["ssh-continuation", {
+    protocol: "ssh",
+    stream: pty,
+    shellKind: "posix",
+    lastIdlePrompt: "user@host:~$",
+    _promptTrackTail: "user@host:~$printf danger && \\\r\n> ",
+    _awaitingPrimaryPromptAfterUserSubmit: true,
+    _pendingInputSafetyProbe: async () => true,
+  }]]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(createFakeEvent(), {
+    sessionId: "ssh-continuation",
+    command: "echo AGENT_MUST_NOT_RUN",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(pty.writes, []);
+});
+
 test("worker AI background jobs start, poll, stop, and block overlapping exec", async () => {
   const pty = new FakePty();
   const sessions = new Map([

@@ -141,7 +141,10 @@ function trackSessionIdlePrompt(session, chunk) {
   // prompt followed by their input. Input ending in `$`, `#`, or `>` can look
   // like a fresh prompt, so keep the proven prompt until the line is submitted
   // or interrupted.
-  if (session._hasPendingUserInput === true) return "";
+  if (
+    session._hasPendingUserInput === true
+    || session._awaitingPrimaryPromptAfterUserSubmit === true
+  ) return "";
 
   const prompt = extractTrailingIdlePrompt(nextTail);
   if (prompt) {
@@ -185,11 +188,22 @@ function getFreshIdlePrompt(session) {
 // current line and makes this check fail closed.
 function getEditableIdlePrompt(session) {
   if (!session) return "";
-  if (session._hasPendingUserInput !== true) return getFreshIdlePrompt(session);
+  const hasPendingInput = session._hasPendingUserInput === true;
+  const awaitingPrimaryPrompt = session._awaitingPrimaryPromptAfterUserSubmit === true;
+  if (!hasPendingInput && !awaitingPrimaryPrompt) return getFreshIdlePrompt(session);
 
   const cached = stripAnsi(String(session.lastIdlePrompt || "")).replace(/\r/g, "\n");
   const tail = stripAnsi(String(session._promptTrackTail || "")).replace(/\r/g, "\n");
-  if (!cached || !tail) return "";
+  if (!tail) return "";
+
+  // After Enter, only a complete recognized primary prompt is safe to use.
+  // A continuation prompt (for example bash's `> `) is deliberately rejected,
+  // while foreground-process ownership is verified separately before any
+  // interrupt is sent. This also permits a legitimate prompt changed by `cd`.
+  if (awaitingPrimaryPrompt && !hasPendingInput) {
+    return extractTrailingIdlePrompt(tail);
+  }
+  if (!cached) return "";
 
   const cachedLine = cached.split("\n").pop() || "";
   const currentLine = tail.split("\n").pop() || "";
@@ -198,8 +212,9 @@ function getEditableIdlePrompt(session) {
 
 // Track whether renderer keyboard input contains bytes that have not been
 // submitted to the terminal yet. This is deliberately conservative: cursor
-// keys and backspace keep the flag set, while Enter and Ctrl+C reset
-// it unless the same input chunk contains trailing text after that boundary.
+// keys and backspace keep the flag set. Enter moves the session into an unsafe
+// "awaiting primary prompt" state because the submitted text may have opened a
+// continuation prompt; Ctrl+C is the only unconditional reset.
 // Programmatic writes and terminal report responses do not represent user
 // command-line input and must not affect the state.
 function trackSessionPendingUserInput(session, data, options = {}) {
@@ -222,9 +237,15 @@ function trackSessionPendingUserInput(session, data, options = {}) {
   for (const boundary of ["\r", "\n", "\x03"]) {
     lastBoundary = Math.max(lastBoundary, text.lastIndexOf(boundary));
   }
-  session._hasPendingUserInput = lastBoundary === -1
-    ? true
-    : text.slice(lastBoundary + 1).length > 0;
+  if (lastBoundary === -1) {
+    session._hasPendingUserInput = true;
+    return session._hasPendingUserInput;
+  }
+
+  const trailingInput = text.slice(lastBoundary + 1).length > 0;
+  const boundary = text[lastBoundary];
+  session._hasPendingUserInput = trailingInput;
+  session._awaitingPrimaryPromptAfterUserSubmit = boundary === "\x03" ? false : true;
   return session._hasPendingUserInput;
 }
 

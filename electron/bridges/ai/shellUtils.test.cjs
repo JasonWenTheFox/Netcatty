@@ -642,8 +642,11 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
   assert.equal(trackSessionPendingUserInput(session, "\x1b[D"), true);
   assert.equal(trackSessionPendingUserInput(session, "\x04"), true);
   assert.equal(trackSessionPendingUserInput(session, "\r"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
 
   assert.equal(
     trackSessionPendingUserInput(session, "ignored", { automated: true }),
@@ -654,6 +657,20 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
     trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
     false,
   );
+});
+
+test("submitted continuation input remains unsafe until a primary prompt is proven", () => {
+  const session = {};
+  trackSessionIdlePrompt(session, "user@host:~$");
+
+  assert.equal(trackSessionPendingUserInput(session, "printf danger && \\\r"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
+
+  trackSessionIdlePrompt(session, "printf danger && \\\r\n> ");
+  assert.equal(getEditableIdlePrompt(session), "");
+
+  session._promptTrackTail += "\r\nuser@host:/tmp$";
+  assert.equal(getEditableIdlePrompt(session), "user@host:/tmp$");
 });
 
 test("trackSessionIdlePrompt does not replace a proven prompt with unfinished input", () => {

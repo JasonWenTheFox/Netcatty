@@ -266,7 +266,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
-        pendingUserInput: session._hasPendingUserInput === true,
+        pendingUserInput: pendingInputState.pending,
       });
     }
 
@@ -298,6 +298,7 @@ function createWorkerAiExecHandler({
         acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
+          session._awaitingPrimaryPromptAfterUserSubmit = false;
         },
         typedInput: true,
         echoCommand: (rawCommand) => {
@@ -333,7 +334,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: session.serialEncoding || "utf8",
-        pendingUserInput: session._hasPendingUserInput === true,
+        pendingUserInput: pendingInputState.pending,
       });
     }
 
@@ -491,6 +492,7 @@ function createWorkerAiJobStartHandler({
         acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
+          session._awaitingPrimaryPromptAfterUserSubmit = false;
         },
         typedInput: true,
         echoCommand: (rawCommand) => {

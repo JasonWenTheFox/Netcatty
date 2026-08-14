@@ -16,6 +16,12 @@ const {
   execViaChannel,
 } = require("./ptyExec.cjs");
 const { buildWrappedCommand } = require("./ptyExecHelpers.cjs");
+const {
+  getEditableIdlePrompt,
+  trackSessionIdlePrompt,
+  trackSessionPendingUserInput,
+} = require("./shellUtils.cjs");
+const { capturePendingInputState } = require("./pendingInputSafety.cjs");
 
 class ShellBackedPty extends EventEmitter {
   write(data) {
@@ -323,6 +329,58 @@ test("execViaPty does not interrupt a foreground child that prints the cached pr
     assert.doesNotMatch(output, /AGENT_MUST_NOT_RUN/);
   } finally {
     ptyProcess.kill();
+  }
+});
+
+test("real bash continuation cannot consume an agent command after Enter (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-continuation-"));
+  const agentPath = join(workDir, "agent");
+  const expectedPrompt = "user@host:~$";
+  const session = {};
+  const ptyProcess = nodePty.spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    cwd: workDir,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+  const outputTracker = ptyProcess.onData((chunk) => trackSessionIdlePrompt(session, chunk));
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    const continuation = waitForPtyText(ptyProcess, "> ");
+    const unfinished = "printf __SPLICED__ && \\\r";
+    trackSessionPendingUserInput(session, unfinished);
+    ptyProcess.write(unfinished);
+    await continuation;
+
+    const pendingInputState = capturePendingInputState(session);
+    assert.equal(pendingInputState.pending, true);
+    assert.equal(getEditableIdlePrompt(session), "");
+
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind: "posix",
+      expectedPrompt: getEditableIdlePrompt(session),
+      pendingUserInput: pendingInputState.pending,
+      pendingInputInterruptSafe: true,
+      acquireInputGate: () => () => {},
+      timeoutMs: 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /unsubmitted terminal input/i);
+    assert.equal(existsSync(agentPath), false, "agent command must not be consumed by PS2");
+
+    const primaryPrompt = waitForPtyText(ptyProcess, expectedPrompt);
+    trackSessionPendingUserInput(session, "\x03");
+    ptyProcess.write("\x03");
+    await primaryPrompt;
+    assert.equal(existsSync(agentPath), false);
+  } finally {
+    outputTracker.dispose();
+    try { ptyProcess.kill(); } catch {}
+    rmSync(workDir, { recursive: true, force: true });
   }
 });
 

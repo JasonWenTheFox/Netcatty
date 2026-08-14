@@ -12,7 +12,8 @@ function isShellName(value) {
 
 function capturePendingInputState(session) {
   return {
-    pending: session?._hasPendingUserInput === true,
+    pending: session?._hasPendingUserInput === true
+      || session?._awaitingPrimaryPromptAfterUserSubmit === true,
     revision: Number.isSafeInteger(session?._userInputRevision)
       ? session._userInputRevision
       : 0,
@@ -108,7 +109,7 @@ function buildRemoteForegroundShellProbeCommand(targetShellPid) {
 }
 
 async function verifySessionForegroundShell(session, options = {}) {
-  if (!session || session._hasPendingUserInput !== true) return false;
+  if (!session || capturePendingInputState(session).pending !== true) return false;
   if (typeof session._pendingInputSafetyProbe === "function") {
     try {
       return await session._pendingInputSafetyProbe() === true;

@@ -164,12 +164,13 @@ function createExecHandlerApi(ctx) {
             shellKind: session.shellKind,
             loginShellHint: session._loginShellKind,
             expectedPrompt: getEditableIdlePrompt(session),
-            pendingUserInput: session._hasPendingUserInput === true,
+            pendingUserInput: pendingInputState.pending,
             pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
             isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
+              session._awaitingPrimaryPromptAfterUserSubmit = false;
             },
             typedInput: true,
             echoCommand: (rawCommand) => echoCommandToSession(session, sessionId, rawCommand),
@@ -335,12 +336,13 @@ function createExecHandlerApi(ctx) {
             loginShellHint: session._loginShellKind,
             chatSessionId,
             expectedPrompt: getEditableIdlePrompt(session),
-            pendingUserInput: session._hasPendingUserInput === true,
+            pendingUserInput: pendingInputState.pending,
             pendingInputInterruptSafe,
             isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
+              session._awaitingPrimaryPromptAfterUserSubmit = false;
             },
             typedInput: true,
             echoCommand: (rawCommand) => echoCommandToSession(session, sessionId, rawCommand),
