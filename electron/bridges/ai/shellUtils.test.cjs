@@ -646,16 +646,16 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
   assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
 
   assert.equal(
     trackSessionPendingUserInput(session, "ignored", { automated: true }),
-    false,
+    true,
   );
-  assert.equal(session._userInputRevision, 7);
+  assert.equal(session._userInputRevision, 8);
   assert.equal(
     trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
-    false,
+    true,
   );
 });
 

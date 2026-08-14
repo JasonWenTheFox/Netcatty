@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const terminalBridge = require("./terminalBridge.cjs");
 const {
   acquireSessionInputGate,
+  capturePendingInputState,
 } = require("./ai/pendingInputSafety.cjs");
 const {
   FLOW_HIGH_WATER_MARK,
@@ -428,8 +429,10 @@ test("terminal input gate blocks user bytes and defers automated writes", async 
   releaseGate(true);
   await delay(5);
   assert.deepEqual(calls, ["automated\r"]);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
 
-  const abortGate = acquireSessionInputGate(session, { pending: true, revision: 0 });
+  const abortGate = acquireSessionInputGate(session, capturePendingInputState(session));
+  assert.equal(typeof abortGate, "function");
   terminalBridge.writeToSession({ sender: {} }, {
     sessionId: "ssh-1",
     data: "must-not-replay\r",

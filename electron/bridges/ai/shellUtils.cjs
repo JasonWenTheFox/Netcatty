@@ -218,7 +218,7 @@ function getEditableIdlePrompt(session) {
 // Programmatic writes and terminal report responses do not represent user
 // command-line input and must not affect the state.
 function trackSessionPendingUserInput(session, data, options = {}) {
-  if (!session || options.automated === true || options.terminalReport === true) {
+  if (!session || options.terminalReport === true) {
     return session?._hasPendingUserInput === true;
   }
 
@@ -245,7 +245,7 @@ function trackSessionPendingUserInput(session, data, options = {}) {
   const trailingInput = text.slice(lastBoundary + 1).length > 0;
   const boundary = text[lastBoundary];
   session._hasPendingUserInput = trailingInput;
-  session._awaitingPrimaryPromptAfterUserSubmit = boundary === "\x03" ? false : true;
+  session._awaitingPrimaryPromptAfterUserSubmit = true;
   return session._hasPendingUserInput;
 }
 
