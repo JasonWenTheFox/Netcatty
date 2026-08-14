@@ -4,8 +4,8 @@
 const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
-  resolveExecShellPath,
 } = require("../ai/sessionShellKind.cjs");
+const { getEditableIdlePrompt } = require("../ai/shellUtils.cjs");
 
 function createExecHandlerApi(ctx) {
   with (ctx) {
@@ -150,8 +150,11 @@ function createExecHandlerApi(ctx) {
             timeoutMs: commandTimeoutMs,
             shellKind: session.shellKind,
             loginShellHint: session._loginShellKind,
-            ...resolveExecShellPath(session),
-            expectedPrompt: getFreshIdlePrompt(session),
+            expectedPrompt: getEditableIdlePrompt(session),
+            pendingUserInput: session._hasPendingUserInput === true,
+            onPendingInputCleared: () => {
+              session._hasPendingUserInput = false;
+            },
             typedInput: true,
             echoCommand: (rawCommand) => echoCommandToSession(session, sessionId, rawCommand),
             chatSessionId,
@@ -295,9 +298,12 @@ function createExecHandlerApi(ctx) {
             timeoutMs,
             shellKind: session.shellKind,
             loginShellHint: session._loginShellKind,
-            ...resolveExecShellPath(session),
             chatSessionId,
-            expectedPrompt: getFreshIdlePrompt(session),
+            expectedPrompt: getEditableIdlePrompt(session),
+            pendingUserInput: session._hasPendingUserInput === true,
+            onPendingInputCleared: () => {
+              session._hasPendingUserInput = false;
+            },
             typedInput: true,
             echoCommand: (rawCommand) => echoCommandToSession(session, sessionId, rawCommand),
             maxBufferedChars: MAX_BACKGROUND_JOB_OUTPUT_CHARS,

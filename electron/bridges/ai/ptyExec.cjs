@@ -18,7 +18,6 @@ const {
   subscribeToPtyData,
   hasExpectedPromptSuffix,
   resolveEffectiveShellKind,
-  buildPendingInputClearPrefix,
   buildWrappedCommand,
   findEndMarker,
   normalizePtyOutput,
@@ -43,11 +42,11 @@ function startPtyJob(ptyStream, command, options) {
     timeoutMs = 60000,
     shellKind,
     loginShellHint,
-    shellPath,
-    resolveLocalSymlinks,
     chatSessionId,
     abortSignal,
     expectedPrompt,
+    pendingUserInput = false,
+    onPendingInputCleared,
     typedInput = false,
     echoCommand,
     maxBufferedChars = 0,
@@ -64,6 +63,7 @@ function startPtyJob(ptyStream, command, options) {
     : DEFAULT_FOREGROUND_PTY_CAPTURE_CHARS;
   const CANCEL_RETRY_MS = 5000;
   const CANCEL_WALL_TIMEOUT_MS = 30000;
+  const INPUT_CLEAR_TIMEOUT_MS = 5000;
 
   let output = "";
   let foundStart = false;
@@ -80,6 +80,11 @@ function startPtyJob(ptyStream, command, options) {
   let startupTimeoutId = null;
   let promptFallbackTimer = null;
   let cancelRetryTimerId = null;
+  let inputClearPrepTimerId = null;
+  let inputClearTimeoutId = null;
+  let waitingForInputClear = pendingUserInput === true;
+  let inputClearInterruptSent = false;
+  let commandStarted = false;
   // Track one-shot timers scheduled inside requestCancel so finish() can
   // clear them when the job exits early; otherwise they keep the Node
   // event loop alive after the resultPromise has already resolved.
@@ -320,6 +325,8 @@ function startPtyJob(ptyStream, command, options) {
     clearStartupTimeout();
     clearPromptFallback();
     clearCancelRetryTimer();
+    clearTimeout(inputClearPrepTimerId);
+    clearTimeout(inputClearTimeoutId);
     // Clear any pending one-shot cancel timers so they do not keep the
     // Node event loop alive after the job has resolved.
     while (cancelOneShotTimers.length) {
@@ -414,6 +421,36 @@ function startPtyJob(ptyStream, command, options) {
     }
   }
 
+  function writeWrappedCommand() {
+    if (finished || commandStarted) return;
+    commandStarted = true;
+
+    if (typedInput && typeof echoCommand === "function") {
+      try {
+        echoCommand(command);
+      } catch {
+        // Ignore synthetic echo failures.
+      }
+    }
+
+    ptyStream.write(buildWrappedCommand(command, resolvedShellKind, marker));
+  }
+
+  function sendPendingInputInterrupt() {
+    if (finished || !waitingForInputClear || inputClearInterruptSent) return;
+    inputClearInterruptSent = true;
+    clearTimeout(inputClearPrepTimerId);
+    ptyStream.write("\x03");
+    inputClearTimeoutId = setTimeout(() => {
+      if (!waitingForInputClear || finished) return;
+      finish(
+        preStartOutput,
+        -1,
+        "Terminal input could not be cleared safely. Clear the current line and try again.",
+      );
+    }, INPUT_CLEAR_TIMEOUT_MS);
+  }
+
   function onData(data) {
     const bytes = Buffer.isBuffer(data)
       ? data
@@ -423,6 +460,41 @@ function startPtyJob(ptyStream, command, options) {
     const text = outputDecoder.write(bytes);
     if (!text) return;
     armOutputTimeout();
+
+    if (waitingForInputClear) {
+      preStartOutput += text;
+      if (preStartOutput.length > captureLimitChars) {
+        preStartOutput = preStartOutput.slice(-captureLimitChars);
+      }
+      if (cancelRequested && hasExpectedPromptSuffix(preStartOutput, expectedPrompt)) {
+        waitingForInputClear = false;
+        finish(preStartOutput, 130, "Cancelled");
+        return;
+      }
+      if (!inputClearInterruptSent) {
+        // An echoed `i` / editor mode repaint proves the shell has consumed
+        // the insert-mode byte. Give the editor one short turn to commit its
+        // keymap transition before Ctrl+C (fish repaints before the transition
+        // is fully active).
+        clearTimeout(inputClearPrepTimerId);
+        inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 50);
+        return;
+      }
+      if (hasExpectedPromptSuffix(preStartOutput, expectedPrompt)) {
+        waitingForInputClear = false;
+        clearTimeout(inputClearTimeoutId);
+        try {
+          onPendingInputCleared?.();
+        } catch {
+          // Input tracking is advisory and must not block a safe execution.
+        }
+        // The prompt redraw proves the interrupt was processed. Queue the
+        // wrapper after the current PTY data callback returns so it cannot be
+        // flushed with the interrupt bytes.
+        queueMicrotask(writeWrappedCommand);
+      }
+      return;
+    }
 
     if (!foundStart) {
       preStartOutput += text;
@@ -576,34 +648,31 @@ function startPtyJob(ptyStream, command, options) {
     cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
   }
 
-  // Clear unfinished prompt-line input before the synthetic echo and the
-  // wrapper. Write the clear prefix alone so readline erase/redraw bytes do
-  // not share a line with the marker-bearing wrapper echo (preload drops any
-  // line containing __NCMCP_, which would otherwise leave concatenated text
-  // on screen after typedInput echo).
-  //
-  // Never prefix with Ctrl+C here. expectedPrompt means the live tail already
-  // ends at an idle prompt, so ETX is unnecessary — and on POSIX ptys VINTR
-  // can flush the next write. The PowerShell wrapper starts with `$`, so a
-  // dropped first byte prevents the start marker from arriving. Without a
-  // fresh prompt, ETX would also SIGINT a user-started foreground process.
-  const clearPrefix = buildPendingInputClearPrefix(resolvedShellKind, {
-    shellPath,
-    resolveLocalSymlinks,
-  });
-  if (clearPrefix) {
-    ptyStream.write(clearPrefix);
-  }
-
-  if (typedInput && typeof echoCommand === "function") {
-    try {
-      echoCommand(command);
-    } catch {
-      // Ignore synthetic echo failures.
+  if (waitingForInputClear) {
+    if (!expectedPrompt) {
+      finish(
+        "",
+        -1,
+        "Cannot safely execute while unsubmitted terminal input is present. Clear the current line and try again.",
+      );
+    } else {
+      // Enter insert mode first, then Ctrl+C. In vi command mode fish binds
+      // Ctrl+C only in its insert keymap; readline/zle/PSReadLine also accept
+      // this sequence, and the interrupt discards the temporary literal `i`.
+      // Send the bytes separately: a terminal driver may flush queued input
+      // when it sees VINTR, so one combined write can drop `i` before fish
+      // switches to its insert keymap. Prefer an echo/repaint acknowledgement;
+      // use a short fallback for editors that change mode silently. This path
+      // runs only when input tracking says the user has unsubmitted bytes and
+      // the live terminal tail proves they are still on the cached editable
+      // prompt line. Wait for the prompt redraw before writing the wrapper to
+      // avoid VINTR flushing its bytes.
+      ptyStream.write("i");
+      inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 100);
     }
+  } else {
+    writeWrappedCommand();
   }
-
-  ptyStream.write(buildWrappedCommand(command, resolvedShellKind, marker));
 
   return {
     marker,
@@ -636,7 +705,9 @@ function startPtyJob(ptyStream, command, options) {
  * @param {number} [options.timeoutMs=60000] - Command timeout in milliseconds
  * @param {string} [options.chatSessionId] - Chat session ID for scoped cancellation
  * @param {AbortSignal} [options.abortSignal] - AbortSignal to cancel execution
- * @param {string} [options.expectedPrompt] - Last observed idle prompt for exact fallback matching. Not used to inject Ctrl+C — VINTR races with the wrapper write on POSIX ptys.
+ * @param {string} [options.expectedPrompt] - Live editable prompt used for wrapper selection, prompt fallback, and safe pending-input cancellation.
+ * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
+ * @param {() => void} [options.onPendingInputCleared] - Called after Ctrl+C redraws the expected prompt.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo
  */
@@ -1032,9 +1103,8 @@ function execViaRawPty(serialPort, command, options) {
       cleanupFns.push(() => abortSignal.removeEventListener("abort", onAbort));
     }
 
-    // Raw serial / vendor CLIs do not share a portable line-erase binding, so
-    // buildPendingInputClearPrefix("raw") is empty — send the command as-is.
-    safeWrite(`${buildPendingInputClearPrefix("raw")}${command}\r`);
+    // Raw serial / vendor CLIs do not share a portable line-erase binding.
+    safeWrite(`${command}\r`);
 
     // Start a "no-response" fallback timer. If the device produces no output at
     // all (e.g. silent mode-changing commands like "enable", "configure terminal",

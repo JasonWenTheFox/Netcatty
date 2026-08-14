@@ -6,6 +6,7 @@ const {
   buildWindowsShellCommandLine,
   extractTrailingIdlePrompt,
   formatSyntheticEcho,
+  getEditableIdlePrompt,
   getFreshIdlePrompt,
   isDefaultPowerShellPromptLine,
   isDefaultCmdPromptLine,
@@ -22,6 +23,7 @@ const {
   mergeWindowsPath,
   readWindowsRegistryPath,
   trackSessionIdlePrompt,
+  trackSessionPendingUserInput,
 } = require("./shellUtils.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -617,6 +619,36 @@ test("getFreshIdlePrompt returns empty string when the session has no cached pro
   assert.equal(
     getFreshIdlePrompt({ lastIdlePrompt: "", _promptTrackTail: "anything" }),
     "",
+  );
+});
+
+test("getEditableIdlePrompt keeps a cached prompt while unfinished input is on the same line", () => {
+  const session = {
+    lastIdlePrompt: "user@host:~$",
+    _promptTrackTail: "login\r\nuser@host:~$ls\x1b[D",
+    _hasPendingUserInput: true,
+  };
+  assert.equal(getEditableIdlePrompt(session), "user@host:~$");
+
+  session._promptTrackTail = "user@host:~$ls\r\nprocess output";
+  assert.equal(getEditableIdlePrompt(session), "");
+});
+
+test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries", () => {
+  const session = {};
+  assert.equal(trackSessionPendingUserInput(session, "ls"), true);
+  assert.equal(trackSessionPendingUserInput(session, "\x1b[D"), true);
+  assert.equal(trackSessionPendingUserInput(session, "\r"), false);
+  assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
+  assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
+
+  assert.equal(
+    trackSessionPendingUserInput(session, "ignored", { automated: true }),
+    false,
+  );
+  assert.equal(
+    trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
+    false,
   );
 });
 

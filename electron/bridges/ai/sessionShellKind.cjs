@@ -265,28 +265,6 @@ function isShellKindProbeSettled(session) {
 }
 
 /**
- * Options previously used for line-editor selection. Kept so callers can still
- * pass a probed/login shell path without breaking the exec options shape.
- * `buildPendingInputClearPrefix` no longer keys Ctrl+K off this path (nested
- * interactive shells can differ from the launch/probe executable).
- *
- * Probed remote paths set `resolveLocalSymlinks: false` for any future
- * path-based classification that must not use the client's `/bin/sh` target.
- *
- * @param {object} [session]
- * @returns {{ shellPath?: string, resolveLocalSymlinks?: boolean }}
- */
-function resolveExecShellPath(session) {
-  const probed = String(session?._loginShellPath || "").trim();
-  if (probed) {
-    return { shellPath: probed, resolveLocalSymlinks: false };
-  }
-  const executable = String(session?.shellExecutable || "").trim();
-  if (!executable) return {};
-  return { shellPath: executable, resolveLocalSymlinks: true };
-}
-
-/**
  * Probe once for the remote login shell kind.
  *
  * Prefer the Windows OpenSSH DefaultShell registry probe when the banner says
@@ -500,7 +478,6 @@ module.exports = {
   createSshConnExecProbe,
   createSessionExecProbe,
   applyProbedShellKind,
-  resolveExecShellPath,
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
 };

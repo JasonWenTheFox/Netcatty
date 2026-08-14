@@ -1,6 +1,5 @@
 "use strict";
 
-const fs = require("node:fs");
 const { StringDecoder } = require("node:string_decoder");
 const iconv = require("iconv-lite");
 const {
@@ -10,57 +9,6 @@ const {
   isDefaultPosixPromptLine,
 } = require("./shellUtils.cjs");
 const { classifyLocalShellType } = require("../../../lib/localShell.cjs");
-
-// dash / ash / busybox use canonical (ICANON) line editing: VKILL (Ctrl+U)
-// clears the whole pending line, but Ctrl+K is not bound and arrives as a
-// literal 0x0b that prefixes the wrapper (`\x0becho: not found`) and prevents
-// the start marker from ever arriving. bash/zsh readline needs Ctrl+K to
-// clear text to the right of the cursor.
-const CANONICAL_POSIX_LINE_EDITORS = new Set(["dash", "ash", "busybox"]);
-
-function shellExecutableBaseName(shellPath) {
-  const normalized = String(shellPath || "").trim().replace(/\\/g, "/");
-  if (!normalized) return "";
-  const base = normalized.split("/").pop() || "";
-  return base.toLowerCase();
-}
-
-/**
- * True when the interactive shell clears lines with canonical VKILL rather
- * than readline (Ctrl+U left + Ctrl+K right).
- *
- * Local `sh` symlinks may be resolved with realpathSync when
- * `resolveLocalSymlinks` is true (default). Remote probe paths must pass
- * `resolveLocalSymlinks: false` — the same path on the client (e.g. Debian
- * `/bin/sh` → dash) is unrelated to the remote editor. Ambiguous remote `sh`
- * is treated as canonical: Ctrl+K breaks dash-backed /bin/sh, while omitting
- * it on rarer bash-as-sh remotes only matters when the cursor is mid-line
- * (remote probes also try to resolve the symlink on the host).
- *
- * @param {string} [shellPath]
- * @param {{ resolveLocalSymlinks?: boolean }} [options]
- */
-function isCanonicalPosixLineEditor(shellPath, options = {}) {
-  let base = shellExecutableBaseName(shellPath);
-  if (!base) return false;
-  if (CANONICAL_POSIX_LINE_EDITORS.has(base)) return true;
-  if (base !== "sh") return false;
-
-  if (options.resolveLocalSymlinks === false) {
-    return true;
-  }
-
-  const trimmed = String(shellPath || "").trim();
-  try {
-    if (trimmed && fs.existsSync(trimmed)) {
-      base = shellExecutableBaseName(fs.realpathSync(trimmed));
-      return CANONICAL_POSIX_LINE_EDITORS.has(base);
-    }
-  } catch {
-    // Fall through to the ambiguous-`sh` default below.
-  }
-  return true;
-}
 
 // Build a stateful decoder for a full exec call. Serial data events can
 // split multi-byte characters across chunks (very common on GBK/GB18030
@@ -239,60 +187,6 @@ function buildPosixWrapperBody(command, marker) {
   return (
     `${marker}=0; ${cmdAssign}; { printf '%s\\n' '${marker}_S'; trap ':' INT; ( ${noPager}eval "$${marker}_cmd" ); __NCMCP_rc=$?; trap - INT; printf '%s\\n' '${marker}_E:'\"$__NCMCP_rc\"; (exit $__NCMCP_rc); }`
   );
-}
-
-/**
- * Bytes to discard unfinished prompt-line input before an AI/MCP PTY write.
- * Without this, a half-typed user command (e.g. `ls` or `rm -rf * `) is
- * concatenated with the wrapped agent command (#2962).
- *
- * - fish: send `i` first so vi-mode command state returns to insert. Emacs and
- *   vi-insert treat `i` as a literal, which the following line-kills discard.
- *   Then Ctrl+U + Ctrl+K clear residual text. Fish treats Ctrl+U as
- *   kill-whole-line; the trailing Ctrl+K is a no-op.
- * - posix / unknown: `i` + Ctrl+U only. Do **not** key Ctrl+K off the launch
- *   or login-probe `shellPath` — the user may have nested `dash`/`ash` inside
- *   bash/zsh (or the reverse). Ctrl+K on a canonical editor is a literal 0x0b
- *   (`\x0becho: not found`) and the start marker never arrives. Omitting it on
- *   readline only leaves a pending suffix when the cursor is mid-line (same
- *   tradeoff already accepted for ambiguous remote `sh`).
- * - PowerShell: one sequence has to survive Windows, Emacs, and Vi PSReadLine.
- *   Leading Escape is Windows-only RevertLine; on Unix pwsh it starts an
- *   Emacs chord or drops Vi into command mode, so it cannot come first.
- *   `i` + Ctrl+U/Ctrl+K clears Emacs/Vi-insert (and `i` restores Vi-command
- *   insert). ESC ESC is RevertLine in Windows and Emacs. A final `i` +
- *   Backspace returns Vi to insert and discards the literal `i` that
- *   Windows/Emacs just typed.
- * - cmd.exe: Escape clears the current input line
- * - raw (serial / vendor CLI): no clear — Ctrl+U/Ctrl+C are not universal and
- *   would prepend control bytes on devices that lack line-erase
- *
- * Ctrl+C (ETX) is optional via `allowInterrupt`. Callers must only set it when
- * the shell is known to be accepting editable prompt input (e.g. a fresh idle
- * prompt). Unconditional ETX would SIGINT user-started foreground processes
- * that `activeSessionExecutions` does not track.
- *
- * @param {string} shellKind
- * @param {{ allowInterrupt?: boolean, shellPath?: string, resolveLocalSymlinks?: boolean }} [options]
- *   `shellPath` / `resolveLocalSymlinks` are accepted for call-site compat but
- *   ignored for Ctrl+K selection (active shell may differ from launch/probe).
- */
-function buildPendingInputClearPrefix(shellKind, options = {}) {
-  if (shellKind === "raw") return "";
-  const allowInterrupt = options.allowInterrupt === true;
-  if (shellKind === "cmd") return allowInterrupt ? "\x03\x1b" : "\x1b";
-  // Do not start with Escape: Unix Emacs pwsh treats it as a chord prefix and
-  // Vi-insert treats it as command-mode. See the doc comment above.
-  if (shellKind === "powershell") {
-    const lineClear = "i\x15\x0b\x1b\x1bi\x08";
-    return allowInterrupt ? `\x03${lineClear}` : lineClear;
-  }
-  // `i` before the line-kills restores readline/fish vi insert mode. Do not
-  // put `i` after the kills — that would prefix the wrapper with a literal i.
-  // Fish keeps trailing Ctrl+K (no-op). Other kinds omit it: launch/probe
-  // shellPath is not the active interactive editor after nesting.
-  const lineClear = shellKind === "fish" ? "i\x15\x0b" : "i\x15";
-  return allowInterrupt ? `\x03${lineClear}` : lineClear;
 }
 
 function buildWrappedCommand(command, shellKind, marker) {
@@ -536,8 +430,6 @@ module.exports = {
   subscribeToPtyData,
   hasExpectedPromptSuffix,
   resolveEffectiveShellKind,
-  isCanonicalPosixLineEditor,
-  buildPendingInputClearPrefix,
   buildWrappedCommand,
   findEndMarker,
   normalizePtyOutput,

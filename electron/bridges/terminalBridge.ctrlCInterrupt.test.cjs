@@ -375,6 +375,35 @@ test("SSH ordinary input is written without sending INT", () => {
   assert.deepEqual(calls, [["write", "cat\r"]]);
 });
 
+test("terminal writes track whether the user left unsubmitted input", () => {
+  const session = {
+    stream: {
+      write() {},
+    },
+  };
+  const sessions = new Map([["ssh-1", session]]);
+  initBridge(sessions);
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "ls" });
+  assert.equal(session._hasPendingUserInput, true);
+
+  terminalBridge.writeToSession({ sender: {} }, {
+    sessionId: "ssh-1",
+    data: "ignored",
+    automated: true,
+  });
+  assert.equal(session._hasPendingUserInput, true);
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "\r" });
+  assert.equal(session._hasPendingUserInput, false);
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "one\rnext" });
+  assert.equal(session._hasPendingUserInput, true);
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "\x03" });
+  assert.equal(session._hasPendingUserInput, false);
+});
+
 test("local Ctrl+C behavior is unchanged", () => {
   const calls = [];
   const sessions = new Map();

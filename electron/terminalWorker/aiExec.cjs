@@ -7,11 +7,10 @@ const {
   execViaChannel,
   execViaRawPty,
 } = require("../bridges/ai/ptyExec.cjs");
-const { getFreshIdlePrompt, formatSyntheticEcho } = require("../bridges/ai/shellUtils.cjs");
+const { getEditableIdlePrompt, formatSyntheticEcho } = require("../bridges/ai/shellUtils.cjs");
 const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
-  resolveExecShellPath,
 } = require("../bridges/ai/sessionShellKind.cjs");
 
 const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 60 * 60 * 1000;
@@ -278,9 +277,12 @@ function createWorkerAiExecHandler({
         timeoutMs,
         shellKind: session.shellKind,
         loginShellHint: session._loginShellKind,
-        ...resolveExecShellPath(session),
         chatSessionId,
-        expectedPrompt: getFreshIdlePrompt(session),
+        expectedPrompt: getEditableIdlePrompt(session),
+        pendingUserInput: session._hasPendingUserInput === true,
+        onPendingInputCleared: () => {
+          session._hasPendingUserInput = false;
+        },
         typedInput: true,
         echoCommand: (rawCommand) => {
           event?.sender?.send?.("netcatty:data", {
@@ -446,9 +448,12 @@ function createWorkerAiJobStartHandler({
         timeoutMs,
         shellKind: session.shellKind,
         loginShellHint: session._loginShellKind,
-        ...resolveExecShellPath(session),
         chatSessionId,
-        expectedPrompt: getFreshIdlePrompt(session),
+        expectedPrompt: getEditableIdlePrompt(session),
+        pendingUserInput: session._hasPendingUserInput === true,
+        onPendingInputCleared: () => {
+          session._hasPendingUserInput = false;
+        },
         typedInput: true,
         echoCommand: (rawCommand) => {
           event?.sender?.send?.("netcatty:data", {

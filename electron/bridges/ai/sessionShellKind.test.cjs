@@ -17,7 +17,6 @@ const {
   createSessionExecProbe,
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
-  resolveExecShellPath,
 } = require("./sessionShellKind.cjs");
 
 const {
@@ -174,29 +173,6 @@ test("BusyBox-resolved login shell falls back to its original alias and probes o
   assert.equal(session._loginShellPath, "/bin/ash");
   assert.equal(session._shellKindProbeSettled, true);
   assert.equal(probes, 1);
-});
-
-test("resolveExecShellPath prefers probed login path over remote-shell placeholder", async () => {
-  const session = {
-    protocol: "mosh",
-    shellExecutable: "remote-shell",
-  };
-  await ensureSessionShellKind(session, {
-    execProbe: async () => `${PROBE_OUTPUT_MARKER}/bin/dash\n`,
-  });
-  assert.deepEqual(resolveExecShellPath(session), {
-    shellPath: "/bin/dash",
-    resolveLocalSymlinks: false,
-  });
-  assert.deepEqual(
-    resolveExecShellPath({ shellExecutable: "/bin/zsh" }),
-    { shellPath: "/bin/zsh", resolveLocalSymlinks: true },
-  );
-  assert.deepEqual(
-    resolveExecShellPath({ shellExecutable: "remote-shell" }),
-    { shellPath: "remote-shell", resolveLocalSymlinks: true },
-  );
-  assert.deepEqual(resolveExecShellPath({}), {});
 });
 
 test("probe command is fish-parseable and forces POSIX sh", () => {

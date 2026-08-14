@@ -2,9 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const { EventEmitter } = require("node:events");
-const { mkdtempSync, rmSync, realpathSync } = require("node:fs");
+const { existsSync, mkdtempSync, rmSync, realpathSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
+const nodePty = require("node-pty");
 
 const {
   execViaPty,
@@ -14,43 +15,11 @@ const {
   resolveEffectiveShellKind,
   execViaChannel,
 } = require("./ptyExec.cjs");
-const {
-  buildWrappedCommand,
-  buildPendingInputClearPrefix,
-  isCanonicalPosixLineEditor,
-} = require("./ptyExecHelpers.cjs");
+const { buildWrappedCommand } = require("./ptyExecHelpers.cjs");
 
 class ShellBackedPty extends EventEmitter {
   write(data) {
-    // Interactive shells clear unfinished / continuation input before the
-    // wrapper; this non-interactive mock only executes the wrapper body.
-    let script = String(data);
-    if (
-      script === "\x03" ||
-      script === "\x03i\x15\x0b" ||
-      script === "\x03i\x15" ||
-      script === "i\x15\x0b" ||
-      script === "i\x15" ||
-      script === "\x03\x15\x0b" ||
-      script === "\x15\x0b" ||
-      script === "\x03i\x15\x0b\x1b\x1bi\x08" ||
-      script === "i\x15\x0b\x1b\x1bi\x08" ||
-      script === "\x03\x1b\x15\x0b" ||
-      script === "\x1b\x15\x0b" ||
-      script === "\x03\x1b" ||
-      script === "\x1b"
-    ) {
-      return;
-    }
-    if (script.startsWith("\x03")) script = script.slice(1);
-    if (script.startsWith("i\x15\x0b\x1b\x1bi\x08")) script = script.slice(7);
-    else if (script.startsWith("i\x15\x0b")) script = script.slice(3);
-    else if (script.startsWith("i\x15")) script = script.slice(2);
-    else if (script.startsWith("\x1b\x15\x0b")) script = script.slice(3);
-    else if (script.startsWith("\x15\x0b")) script = script.slice(2);
-    else if (script.charCodeAt(0) === 0x15 || script.charCodeAt(0) === 0x1b) {
-      script = script.slice(1);
-    }
+    const script = String(data);
     const result = spawnSync("sh", ["-c", script], { encoding: "utf8" });
     queueMicrotask(() => {
       this.emit("data", Buffer.from(result.stdout));
@@ -62,134 +31,7 @@ function markerFromWrite(data) {
   return String(data).match(/(__NCMCP_[a-z0-9]+_[0-9a-f]+__)/i)?.[1] || null;
 }
 
-test("buildPendingInputClearPrefix clears the editable line without SIGINT by default", () => {
-  assert.equal(buildPendingInputClearPrefix("posix"), "i\x15");
-  assert.equal(buildPendingInputClearPrefix("fish"), "i\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "i\x15\x0b\x1b\x1bi\x08");
-  assert.equal(buildPendingInputClearPrefix("unknown"), "i\x15");
-  assert.equal(buildPendingInputClearPrefix(""), "i\x15");
-  assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
-  assert.equal(buildPendingInputClearPrefix("raw"), "");
-});
-
-test("buildPendingInputClearPrefix only sends Ctrl+C when allowInterrupt confirms an idle prompt", () => {
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: true }), "\x03i\x15");
-  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: true }), "\x03i\x15\x0b\x1b\x1bi\x08");
-  assert.equal(buildPendingInputClearPrefix("cmd", { allowInterrupt: true }), "\x03\x1b");
-  assert.equal(buildPendingInputClearPrefix("raw", { allowInterrupt: true }), "");
-  assert.equal(buildPendingInputClearPrefix("posix", { allowInterrupt: false }), "i\x15");
-  assert.equal(buildPendingInputClearPrefix("powershell", { allowInterrupt: false }), "i\x15\x0b\x1b\x1bi\x08");
-});
-
-test("PowerShell clear prefix does not start with Escape and restores insert after RevertLine", () => {
-  const prefix = buildPendingInputClearPrefix("powershell");
-  assert.equal(prefix.startsWith("\x1b"), false, "leading Escape starts an Emacs chord / Vi command mode on Unix pwsh");
-  assert.equal(prefix.startsWith("i\x15\x0b"), true, "Emacs/Vi must clear before Windows RevertLine");
-  assert.match(prefix, /\x1b\x1bi\x08$/, "ESC ESC is Windows/Emacs RevertLine; i+BS returns Vi to insert");
-});
-
-test("posix/fish clear prefix restores vi insert mode before line-kills", () => {
-  const posix = buildPendingInputClearPrefix("posix");
-  assert.equal(posix.startsWith("i"), true, "vi command mode needs `i` before the wrapper is typed");
-  assert.equal(posix, "i\x15");
-  assert.equal(posix.indexOf("i"), 0, "`i` must come before Ctrl+U so a literal i is discarded");
-
-  const fish = buildPendingInputClearPrefix("fish");
-  assert.equal(fish.startsWith("i"), true);
-  assert.equal(fish.endsWith("\x15\x0b"), true);
-});
-
-test("posix clear prefix omits Ctrl+K regardless of launch/probe shellPath", () => {
-  assert.equal(isCanonicalPosixLineEditor("/bin/dash"), true);
-  assert.equal(isCanonicalPosixLineEditor("/usr/bin/ash"), true);
-  assert.equal(isCanonicalPosixLineEditor("/bin/bash"), false);
-  assert.equal(isCanonicalPosixLineEditor("/bin/zsh"), false);
-  assert.equal(isCanonicalPosixLineEditor(""), false);
-
-  // Launch path may still be bash after the user nested into dash (or the
-  // reverse). Prefer omitting Ctrl+K over trusting shellPath.
-  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash" }), "i\x15");
-  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/dash", allowInterrupt: true }), "\x03i\x15");
-  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }), "i\x15");
-  assert.equal(buildPendingInputClearPrefix("posix", { shellPath: "/bin/bash" }).includes("\x0b"), false);
-  // Fish keeps Ctrl+K (no-op) even if the path looks like dash.
-  assert.equal(buildPendingInputClearPrefix("fish", { shellPath: "/bin/dash" }), "i\x15\x0b");
-});
-
-test("remote /bin/sh classification ignores client realpathSync", () => {
-  // Ambiguous remote `sh` must ignore the client symlink target (dash vs bash).
-  assert.equal(
-    isCanonicalPosixLineEditor("/bin/sh", { resolveLocalSymlinks: false }),
-    true,
-  );
-  assert.equal(
-    buildPendingInputClearPrefix("posix", {
-      shellPath: "/bin/sh",
-      resolveLocalSymlinks: false,
-    }),
-    "i\x15",
-  );
-  // Even a resolved remote bash path must not reintroduce Ctrl+K: the active
-  // interactive editor may still be a nested canonical shell.
-  assert.equal(
-    buildPendingInputClearPrefix("posix", {
-      shellPath: "/bin/bash",
-      resolveLocalSymlinks: false,
-    }),
-    "i\x15",
-  );
-});
-
-test("execViaPty omits Ctrl+K for dash-backed local shells", async () => {
-  const writes = [];
-  class CapturePty extends EventEmitter {
-    write(data) {
-      writes.push(String(data));
-      const marker = markerFromWrite(data);
-      if (!marker) return;
-      queueMicrotask(() => {
-        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
-      });
-    }
-  }
-
-  const result = await execViaPty(new CapturePty(), "echo GOOD", {
-    shellKind: "posix",
-    shellPath: "/bin/dash",
-    timeoutMs: 1000,
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(writes[0], "i\x15");
-  assert.equal(writes[0].includes("\x0b"), false);
-  assert.match(writes[1], /echo GOOD/);
-});
-
-test("execViaPty omits Ctrl+K even when launch shellPath is bash", async () => {
-  const writes = [];
-  class CapturePty extends EventEmitter {
-    write(data) {
-      writes.push(String(data));
-      const marker = markerFromWrite(data);
-      if (!marker) return;
-      queueMicrotask(() => {
-        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
-      });
-    }
-  }
-
-  const result = await execViaPty(new CapturePty(), "echo GOOD", {
-    shellKind: "posix",
-    shellPath: "/bin/bash",
-    timeoutMs: 1000,
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(writes[0], "i\x15");
-  assert.equal(writes[0].includes("\x0b"), false);
-});
-
-test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
+test("execViaPty writes the wrapper directly when user input is already submitted", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -208,51 +50,24 @@ test("execViaPty clears unfinished prompt input without Ctrl+C when idle prompt 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0], "i\x15", "expected vi-insert restore then Ctrl+U without Ctrl+C");
-  assert.match(writes[1], /uname -a/);
-  assert.equal(writes[0].includes("\x03"), false);
-  assert.equal(writes[1].includes("\x03"), false);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0], /uname -a/);
 });
 
-test("execViaPty never queues Ctrl+C before the wrapper, even on a confirmed idle prompt", async () => {
-  async function captureWrites(shellKind, command, expectedPrompt) {
-    const writes = [];
-    class CapturePty extends EventEmitter {
-      write(data) {
-        writes.push(String(data));
-        const marker = markerFromWrite(data);
-        if (!marker) return;
-        queueMicrotask(() => {
-          this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
-        });
+test("execViaPty cancels pending input, waits for prompt redraw, then writes the wrapper (#2962)", async () => {
+  const writes = [];
+  let cleared = 0;
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      if (data === "i") {
+        queueMicrotask(() => this.emit("data", Buffer.from("i")));
+        return;
       }
-    }
-    const result = await execViaPty(new CapturePty(), command, {
-      shellKind,
-      timeoutMs: 1000,
-      expectedPrompt,
-    });
-    assert.equal(result.ok, true);
-    return writes;
-  }
-
-  const posixWrites = await captureWrites("posix", "uname -a", "user@host:~$");
-  assert.equal(posixWrites[0], "i\x15");
-  assert.equal(posixWrites.join("").includes("\x03"), false);
-
-  // Unix pwsh + VINTR: a flushed `$` would drop the marker assignment.
-  const psWrites = await captureWrites("powershell", "Get-Host", "PS /home/alice>");
-  assert.equal(psWrites[0], "i\x15\x0b\x1b\x1bi\x08");
-  assert.equal(psWrites.join("").includes("\x03"), false);
-  assert.match(psWrites[1], /^\$/);
-});
-
-test("execViaPty clears unfinished PowerShell input without a leading Escape (#2962)", async () => {
-  const writes = [];
-  class CapturePty extends EventEmitter {
-    write(data) {
-      writes.push(String(data));
+      if (data === "\x03") {
+        queueMicrotask(() => this.emit("data", Buffer.from("^C\r\nuser@host:~$")));
+        return;
+      }
       const marker = markerFromWrite(data);
       if (!marker) return;
       queueMicrotask(() => {
@@ -261,41 +76,63 @@ test("execViaPty clears unfinished PowerShell input without a leading Escape (#2
     }
   }
 
-  const result = await execViaPty(new CapturePty(), "Get-Host", {
-    shellKind: "powershell",
+  const result = await execViaPty(new CapturePty(), "uname -a", {
+    shellKind: "posix",
     timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    onPendingInputCleared: () => {
+      cleared += 1;
+    },
   });
 
   assert.equal(result.ok, true);
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0], "i\x15\x0b\x1b\x1bi\x08");
-  assert.equal(writes[0].startsWith("\x1b"), false);
-  assert.match(writes[1], /Get-Host/);
-  assert.equal(writes[0].includes("\x03"), false);
+  assert.equal(writes.length, 3);
+  assert.equal(writes[0], "i");
+  assert.equal(writes[1], "\x03");
+  assert.match(writes[2], /uname -a/);
+  assert.equal(cleared, 1);
 });
 
-test("execViaPty clears unfinished cmd.exe input with Escape and without Ctrl+C when idle prompt is unconfirmed (#2962)", async () => {
+test("execViaPty refuses pending input when no editable prompt is proven", async () => {
   const writes = [];
-  class CapturePty extends EventEmitter {
+  const result = await execViaPty({
+    on() {},
+    removeListener() {},
     write(data) {
       writes.push(String(data));
-      const marker = markerFromWrite(data);
-      if (!marker) return;
-      queueMicrotask(() => {
-        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
-      });
-    }
-  }
-
-  const result = await execViaPty(new CapturePty(), "ver", {
-    shellKind: "cmd",
+    },
+  }, "uname -a", {
+    shellKind: "posix",
     timeoutMs: 1000,
+    pendingUserInput: true,
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0], "\x1b", "expected Escape clear without Ctrl+C when prompt is unconfirmed");
-  assert.match(writes[1], /\bver\b/);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(writes, []);
+});
+
+test("cancelling during pending-input clear never writes the agent wrapper", async () => {
+  const writes = [];
+  const pty = new EventEmitter();
+  pty.write = (data) => {
+    writes.push(String(data));
+  };
+
+  const job = startPtyJob(pty, "touch should-not-run", {
+    shellKind: "posix",
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    timeoutMs: 1000,
+  });
+  job.cancel();
+  pty.emit("data", Buffer.from("^C\r\nuser@host:~$"));
+
+  const result = await job.resultPromise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Cancelled");
+  assert.equal(writes.some((write) => write.includes("should-not-run")), false);
 });
 
 test("execViaPty clears shell state before synthetic echo and wrapper write", async () => {
@@ -304,6 +141,14 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   class CapturePty extends EventEmitter {
     write(data) {
       writes.push(String(data));
+      if (data === "i") {
+        queueMicrotask(() => this.emit("data", Buffer.from("i")));
+        return;
+      }
+      if (data === "\x03") {
+        queueMicrotask(() => this.emit("data", Buffer.from("^C\r\nuser@host:~$")));
+        return;
+      }
       const marker = markerFromWrite(data);
       if (!marker) return;
       queueMicrotask(() => {
@@ -315,6 +160,8 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   const result = await execViaPty(new CapturePty(), "uname -a", {
     shellKind: "posix",
     timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
     typedInput: true,
     echoCommand: (cmd) => {
       echoes.push({ cmd, writesSoFar: writes.slice() });
@@ -324,10 +171,144 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
   assert.equal(result.ok, true);
   assert.equal(echoes.length, 1);
   assert.equal(echoes[0].cmd, "uname -a");
-  assert.deepEqual(echoes[0].writesSoFar, ["i\x15"]);
-  assert.equal(writes.length, 2);
-  assert.equal(writes[0], "i\x15");
-  assert.match(writes[1], /uname -a/);
+  assert.deepEqual(echoes[0].writesSoFar, ["i", "\x03"]);
+  assert.equal(writes.length, 3);
+  assert.equal(writes[0], "i");
+  assert.equal(writes[1], "\x03");
+  assert.match(writes[2], /uname -a/);
+});
+
+function waitForPtyText(ptyProcess, needle, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timeoutId = setTimeout(() => {
+      disposable.dispose();
+      reject(new Error(`Timed out waiting for PTY text: ${needle}\n${output}`));
+    }, timeoutMs);
+    const disposable = ptyProcess.onData((chunk) => {
+      output += chunk;
+      if (!output.includes(needle)) return;
+      clearTimeout(timeoutId);
+      disposable.dispose();
+      resolve(output);
+    });
+  });
+}
+
+async function verifyRealEditorPendingInputClear({
+  shellPath,
+  args,
+  shellKind,
+  setup,
+  initialPrompt,
+  editorMode = "vi",
+}) {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-"));
+  const splicedPath = join(workDir, "spliced");
+  const agentPath = join(workDir, "agent");
+  const expectedPrompt = "user@host:~$";
+  let ptyProcess;
+
+  try {
+    ptyProcess = nodePty.spawn(shellPath, args, {
+      cols: 120,
+      rows: 30,
+      cwd: workDir,
+      env: {
+        ...process.env,
+        PS1: expectedPrompt,
+      },
+    });
+
+    await waitForPtyText(ptyProcess, initialPrompt || expectedPrompt);
+    if (shellKind === "fish") {
+      const promptReady = waitForPtyText(ptyProcess, expectedPrompt);
+      ptyProcess.write(`function fish_prompt; echo -n '${expectedPrompt}'; end\r`);
+      await promptReady;
+    }
+    if (setup) {
+      const setupReady = waitForPtyText(ptyProcess, expectedPrompt);
+      ptyProcess.write(`${setup}\r`);
+      await setupReady;
+    }
+
+    // Reproduce the reviewer finding: leave a command suffix with the cursor
+    // at the beginning. The old key-kill prefix left the suffix executable;
+    // the new path must cancel the complete editor state.
+    ptyProcess.write(`abc; touch '${splicedPath}'`);
+    if (editorMode === "vi") {
+      ptyProcess.write("\x1b");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      ptyProcess.write("0");
+    } else {
+      ptyProcess.write("\x01");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind,
+      expectedPrompt,
+      pendingUserInput: true,
+      timeoutMs: 5000,
+    });
+
+    assert.equal(result.ok, true, `${result.error || ""}\n${JSON.stringify(result.stdout)}`);
+    assert.equal(existsSync(agentPath), true, "agent command must execute");
+    assert.equal(existsSync(splicedPath), false, "unfinished user suffix must not execute");
+  } finally {
+    try {
+      ptyProcess?.kill();
+    } catch {}
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+test("real bash vi editor cannot splice unfinished input into agent execution (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  await verifyRealEditorPendingInputClear({
+    shellPath: "/bin/bash",
+    args: ["--noprofile", "--norc", "-i"],
+    shellKind: "posix",
+    setup: "set -o vi",
+  });
+});
+
+test("real bash emacs editor cannot splice a right-side unfinished suffix (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  await verifyRealEditorPendingInputClear({
+    shellPath: "/bin/bash",
+    args: ["--noprofile", "--norc", "-i"],
+    shellKind: "posix",
+    editorMode: "emacs",
+  });
+});
+
+test("real zsh vi editor cannot splice unfinished input into agent execution (#2962)", {
+  skip: !existsSync("/bin/zsh"),
+}, async () => {
+  await verifyRealEditorPendingInputClear({
+    shellPath: "/bin/zsh",
+    args: ["-f", "-i"],
+    shellKind: "posix",
+    setup: "bindkey -v",
+  });
+});
+
+test("real fish vi editor cannot splice unfinished input into agent execution (#2962)", {
+  skip: !existsSync("/opt/homebrew/bin/fish") && !existsSync("/usr/bin/fish"),
+}, async () => {
+  const shellPath = existsSync("/opt/homebrew/bin/fish")
+    ? "/opt/homebrew/bin/fish"
+    : "/usr/bin/fish";
+  await verifyRealEditorPendingInputClear({
+    shellPath,
+    args: ["--no-config", "--interactive"],
+    shellKind: "fish",
+    setup: "fish_vi_key_bindings",
+    initialPrompt: "> ",
+  });
 });
 
 test("execViaRawPty does not prepend Ctrl+U before device commands", async () => {

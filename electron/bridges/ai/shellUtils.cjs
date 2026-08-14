@@ -176,6 +176,48 @@ function getFreshIdlePrompt(session) {
   return normalizedTail.endsWith(normalizedCached) ? cached : "";
 }
 
+// Return the cached prompt while the user is still editing the same physical
+// prompt line. Keyboard input is echoed by the PTY after the prompt, so an
+// exact suffix check stops working as soon as unfinished input exists. A
+// submitted command adds a line break, which moves the cached prompt off the
+// current line and makes this check fail closed.
+function getEditableIdlePrompt(session) {
+  if (!session) return "";
+  if (session._hasPendingUserInput !== true) return getFreshIdlePrompt(session);
+
+  const cached = stripAnsi(String(session.lastIdlePrompt || "")).replace(/\r/g, "\n");
+  const tail = stripAnsi(String(session._promptTrackTail || "")).replace(/\r/g, "\n");
+  if (!cached || !tail) return "";
+
+  const cachedLine = cached.split("\n").pop() || "";
+  const currentLine = tail.split("\n").pop() || "";
+  return cachedLine && currentLine.startsWith(cachedLine) ? session.lastIdlePrompt : "";
+}
+
+// Track whether renderer keyboard input contains bytes that have not been
+// submitted to the terminal yet. This is deliberately conservative: cursor
+// keys and backspace keep the flag set, while Enter, Ctrl+C and Ctrl+D reset
+// it unless the same input chunk contains trailing text after that boundary.
+// Programmatic writes and terminal report responses do not represent user
+// command-line input and must not affect the state.
+function trackSessionPendingUserInput(session, data, options = {}) {
+  if (!session || options.automated === true || options.terminalReport === true) {
+    return session?._hasPendingUserInput === true;
+  }
+
+  const text = String(data || "");
+  if (!text) return session._hasPendingUserInput === true;
+
+  let lastBoundary = -1;
+  for (const boundary of ["\r", "\n", "\x03", "\x04"]) {
+    lastBoundary = Math.max(lastBoundary, text.lastIndexOf(boundary));
+  }
+  session._hasPendingUserInput = lastBoundary === -1
+    ? true
+    : text.slice(lastBoundary + 1).length > 0;
+  return session._hasPendingUserInput;
+}
+
 // ── URL helpers ──
 
 function isLocalhostHostname(hostname) {
@@ -966,10 +1008,12 @@ module.exports = {
   formatSyntheticEcho,
   extractTrailingIdlePrompt,
   getFreshIdlePrompt,
+  getEditableIdlePrompt,
   isDefaultPowerShellPromptLine,
   isDefaultCmdPromptLine,
   isDefaultPosixPromptLine,
   trackSessionIdlePrompt,
+  trackSessionPendingUserInput,
   looksLikeIdleAutoLogout,
   isLocalhostHostname,
   extractFirstNonLocalhostUrl,

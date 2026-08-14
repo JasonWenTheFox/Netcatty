@@ -56,7 +56,11 @@ const ptyProcessTree = require("./ptyProcessTree.cjs");
 
 const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
 const { detectShellKind } = require("./ai/ptyExec.cjs");
-const { stripAnsi, trackSessionIdlePrompt } = require("./ai/shellUtils.cjs");
+const {
+  stripAnsi,
+  trackSessionIdlePrompt,
+  trackSessionPendingUserInput,
+} = require("./ai/shellUtils.cjs");
 const { createZmodemSentry } = require("./zmodemHelper.cjs");
 const { discoverShells } = require("./shellDiscovery.cjs");
 const moshHandshake = require("./moshHandshake.cjs");
@@ -1500,6 +1504,7 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
   }
 
   try {
+    let didWrite = false;
     if (session.type === 'telnet-native' && !payload.automated) {
       session.autoLogin?.handleUserInput();
     }
@@ -1528,6 +1533,7 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
         }, trace);
       }
       const writeResult = session.stream.write(outgoing);
+      didWrite = true;
       if (
         session.blockUntargetedCwdProbe
         && !payload.automated
@@ -1548,6 +1554,7 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
       }
     } else if (session.proc) {
       session.proc.write(outgoing);
+      didWrite = true;
     } else if (session.socket) {
       // Telnet only: any 0xFF byte going out the wire must be doubled, or
       // the peer will treat it as the start of an IAC command sequence and
@@ -1562,8 +1569,17 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
         wireData = telnetProtocol.escapeIacForWire(wireData);
       }
       session.socket.write(wireData);
+      didWrite = true;
     } else if (session.serialPort) {
       session.serialPort.write(outgoing);
+      didWrite = true;
+    }
+
+    if (didWrite) {
+      trackSessionPendingUserInput(session, data, {
+        automated: payload.automated === true,
+        terminalReport: isTerminalReportSequence(data),
+      });
     }
   } catch (err) {
     logTerminalInterruptDebug("write-session-error", {
