@@ -198,3 +198,28 @@ export function rememberSftpSidePanelSourceStatus(params: {
   }
   return params.previousStatus ?? null;
 }
+
+type CompanionConnectionHealth = {
+  isLocal?: boolean;
+  status?: string;
+} | null | undefined;
+
+/**
+ * Terminal side SFTP keeps the remote browse pane on the left. Open a local
+ * companion on the right so users can transfer without leaving the terminal.
+ * Never clobber an already-connected remote companion or an in-flight local.
+ */
+export function shouldEnsureSftpSidePanelCompanionLocal(params: {
+  remoteConnection: CompanionConnectionHealth;
+  companionConnection: CompanionConnectionHealth;
+}): boolean {
+  const remote = params.remoteConnection;
+  if (!remote || remote.isLocal || remote.status !== "connected") return false;
+
+  const companion = params.companionConnection;
+  if (!companion) return true;
+  if (companion.status === "connecting") return false;
+  if (companion.isLocal && companion.status === "connected") return false;
+  if (!companion.isLocal && companion.status === "connected") return false;
+  return true;
+}

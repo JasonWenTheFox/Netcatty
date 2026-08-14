@@ -1,0 +1,18 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const source = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "SftpSidePanel.tsx"),
+  "utf8",
+);
+
+test("terminal SFTP side panel renders remote and local panes together", () => {
+  assert.match(source, /data-sftp-side="left"/);
+  assert.match(source, /data-sftp-side="right"/);
+  assert.match(source, /shouldEnsureSftpSidePanelCompanionLocal/);
+  assert.match(source, /rightPanes\.map/);
+  assert.match(source, /min-\[420px\]:flex-row/);
+});

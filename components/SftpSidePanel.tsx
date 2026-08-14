@@ -2,7 +2,8 @@
  * SftpSidePanel - SFTP file browser rendered as a resizable side panel
  *
  * Reuses SftpView's components (SftpPaneView, SftpContextProvider, etc.)
- * to provide a unified SFTP experience. Renders a single pane (left side only).
+ * to provide a unified SFTP experience. Renders remote (left) + local (right)
+ * so transfers work beside the terminal without opening the full SFTP page.
  *
  * IMPORTANT: Does NOT use the global activeTabStore to avoid conflicts with
  * the main SftpView tab. Instead manages pane visibility internally.
@@ -91,6 +92,7 @@ import {
   resolveSftpSidePanelTrackedSourceStatusUpdate,
   shouldAcceptPendingSftpUpload,
   shouldDeferSftpSidePanelAutoConnectForSession,
+  shouldEnsureSftpSidePanelCompanionLocal,
   shouldRebindSftpSidePanelSourceSession,
   shouldSkipSftpSidePanelAutoConnect,
 } from "./sftp/sftpSidePanelAutoConnect";
@@ -331,7 +333,34 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
   const sftpRef = useRef(sftp);
   sftpRef.current = sftp;
 
-  const { getConnectionCacheKey, leftPane } = sftp;
+  const { getConnectionCacheKey, leftPane, rightPane } = sftp;
+
+  const ensureCompanionLocal = useCallback(() => {
+    const s = sftpRef.current;
+    if (
+      !shouldEnsureSftpSidePanelCompanionLocal({
+        remoteConnection: s.leftPane.connection,
+        companionConnection: s.rightPane.connection,
+      })
+    ) {
+      return;
+    }
+    const rightConn = s.rightPane.connection;
+    if (rightConn) {
+      void s.disconnect("right").then(() => {
+        if (
+          shouldEnsureSftpSidePanelCompanionLocal({
+            remoteConnection: sftpRef.current.leftPane.connection,
+            companionConnection: sftpRef.current.rightPane.connection,
+          })
+        ) {
+          sftpRef.current.connect("right", "local");
+        }
+      });
+      return;
+    }
+    s.connect("right", "local");
+  }, []);
 
   useEffect(() => {
     /** Per-task locks so resume-all can prepare multiple transfers sequentially. */
@@ -632,6 +661,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
         activeSessionId,
         activeSessionStatus,
       });
+      ensureCompanionLocal();
       return;
     }
     // Defer advancing the session cursor while interactive work blocks rebind,
@@ -691,6 +721,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
           path,
         });
       }
+      ensureCompanionLocal();
       return;
     }
 
@@ -784,7 +815,8 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
         tabConnectionKeyMapRef.current.set(tabId, connectionKey);
       },
     });
-  }, [activeHost, activeSessionId, initialLocation, interactiveWorkActive, sessions]);
+    ensureCompanionLocal();
+  }, [activeHost, activeSessionId, ensureCompanionLocal, initialLocation, interactiveWorkActive, sessions]);
 
   useEffect(() => {
     if (!activeHost || !isVisible) return;
@@ -798,6 +830,19 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
       cancelAnimationFrame(frameId);
     };
   }, [activeHost, activeSessionId, interactiveWorkActive, isVisible, runAutoConnect]);
+
+  // Remote connect() is async; open the local companion once the left pane is live.
+  useEffect(() => {
+    if (!isVisible) return;
+    ensureCompanionLocal();
+  }, [
+    ensureCompanionLocal,
+    isVisible,
+    leftPane.connection?.isLocal,
+    leftPane.connection?.status,
+    rightPane.connection?.isLocal,
+    rightPane.connection?.status,
+  ]);
 
   useEffect(() => {
     if (activeSessionId) return;
@@ -1095,6 +1140,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   const dialogActionScopeIdRef = useRef(`sftp-side-panel:${crypto.randomUUID()}`);
   const terminalBackend = useTerminalBackend();
   const [hasPaneFocus, setHasPaneFocus] = useState(false);
+  const [focusedSide, setFocusedSide] = useState<"left" | "right">("left");
   const [pendingFollowOverride, setPendingFollowOverride] = useState<{
     hostId: string;
     value: boolean;
@@ -1112,24 +1158,26 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   const getOpenerForFileRef = useRef(getOpenerForFile);
   getOpenerForFileRef.current = getOpenerForFile;
 
-  const handleToggleHiddenFiles = useCallback((paneId: string) => {
-    const pane = sftpRef.current.leftTabs.tabs.find((tab) => tab.id === paneId);
+  const handleToggleHiddenFiles = useCallback((side: "left" | "right", paneId: string) => {
+    const tabs = side === "left" ? sftpRef.current.leftTabs.tabs : sftpRef.current.rightTabs.tabs;
+    const pane = tabs.find((tab) => tab.id === paneId);
     if (!pane) return;
-    sftpRef.current.setShowHiddenFiles("left", paneId, !pane.showHiddenFiles);
+    sftpRef.current.setShowHiddenFiles(side, paneId, !pane.showHiddenFiles);
   }, [sftpRef]);
 
-  const syncFocusedSelection = useCallback((tabId: string | null) => {
+  const syncFocusedSelection = useCallback((side: "left" | "right", tabId: string | null) => {
     if (tabId) {
-      keepOnlyPaneSelections(sftpRef.current, { side: "left", tabId });
+      keepOnlyPaneSelections(sftpRef.current, { side, tabId });
       return;
     }
     keepOnlyPaneSelections(sftpRef.current, null);
   }, [sftpRef]);
 
-  const handlePaneFocus = useCallback(() => {
-    sftpFocusStore.setFocusedSide("left");
+  const handlePaneFocus = useCallback((side: "left" | "right") => {
+    sftpFocusStore.setFocusedSide(side);
+    setFocusedSide(side);
     setHasPaneFocus(true);
-    syncFocusedSelection(sftpRef.current.getActiveTabId("left"));
+    syncFocusedSelection(side, sftpRef.current.getActiveTabId(side));
   }, [sftpRef, syncFocusedSelection]);
 
   // NOTE: We intentionally do NOT sync to activeTabStore here.
@@ -1148,12 +1196,15 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       }
 
       if (panelRootRef.current?.contains(target)) {
-        sftpFocusStore.setFocusedSide("left");
+        const sideAttr = elementTarget?.closest("[data-sftp-side]")?.getAttribute("data-sftp-side");
+        const side: "left" | "right" = sideAttr === "right" ? "right" : "left";
+        sftpFocusStore.setFocusedSide(side);
+        setFocusedSide(side);
         setHasPaneFocus(true);
-        syncFocusedSelection(sftpRef.current.getActiveTabId("left"));
+        syncFocusedSelection(side, sftpRef.current.getActiveTabId(side));
       } else {
         setHasPaneFocus(false);
-        syncFocusedSelection(null);
+        syncFocusedSelection("left", null);
       }
     };
 
@@ -1203,6 +1254,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
 
   const {
     leftPanes,
+    rightPanes,
     showHostPickerLeft,
     showHostPickerRight,
     hostSearchLeft,
@@ -1693,19 +1745,37 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
 
   const MAX_VISIBLE_TRANSFERS = 5;
   const visibleTransfers = useMemo(() => {
-    const connection = sftp.leftPane.connection;
-    if (!connection) return [];
-    // Filter transfers to those relevant to the active connection's host,
+    const leftConnection = sftp.leftPane.connection;
+    const rightConnection = sftp.rightPane.connection;
+    if (!leftConnection && !rightConnection) return [];
+    // Filter transfers to those relevant to the active connections' hosts,
     // so workspace focus switches don't show transfers from other hosts.
-    const filtered = sftp.transfers.filter((t) => {
-      if (t.parentTaskId) return false; // Child tasks rendered by SftpTransferQueue
-      if (connection.isLocal) {
-        return t.sourceConnectionId === connection.id || t.targetConnectionId === connection.id;
+    const filtered = sftp.transfers.filter((task) => {
+      if (task.parentTaskId) return false; // Child tasks rendered by SftpTransferQueue
+      for (const connection of [leftConnection, rightConnection]) {
+        if (!connection) continue;
+        if (connection.isLocal) {
+          if (
+            task.sourceConnectionId === connection.id
+            || task.targetConnectionId === connection.id
+            || task.targetConnectionId === "local"
+          ) {
+            return true;
+          }
+          continue;
+        }
+        if (
+          task.targetHostId === connection.hostId
+          || task.sourceConnectionId === connection.id
+          || task.targetConnectionId === connection.id
+        ) {
+          return true;
+        }
       }
-      return t.targetHostId === connection.hostId || t.sourceConnectionId === connection.id || t.targetConnectionId === connection.id;
+      return false;
     });
     return [...filtered].reverse().slice(0, MAX_VISIBLE_TRANSFERS);
-  }, [sftp.transfers, sftp.leftPane.connection]);
+  }, [sftp.transfers, sftp.leftPane.connection, sftp.rightPane.connection]);
 
   const handleRevealTransferTarget = useCallback(
     async (task: TransferTask) => {
@@ -1776,8 +1846,9 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     [t],
   );
 
-  // Determine the active pane to render (without using global activeTabStore)
+  // Determine the active panes to render (without using global activeTabStore)
   const activeLeftPaneId = sftp.leftTabs.activeTabId;
+  const activeRightPaneId = sftp.rightTabs.activeTabId;
 
   return (
     <SftpContextProvider
@@ -1794,7 +1865,6 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         ref={panelRootRef}
         className="h-full flex flex-col bg-background overflow-hidden"
         data-section="terminal-sftp-panel"
-        onClick={handlePaneFocus}
       >
         {showWorkspaceHostHeader && displayHost && (
           <div
@@ -1827,35 +1897,68 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
             </div>
           </div>
         )}
-        {/* File browser pane - render only the active pane */}
-        <div className="relative flex-1 min-h-0">
-          {leftPanes.map((pane, idx) => {
-            // Manage visibility locally instead of via activeTabStore
-            const isActive = activeLeftPaneId
-              ? pane.id === activeLeftPaneId
-              : idx === 0;
-            if (!isActive) return null;
+        {/* Remote (left) + local (right): stack when narrow, side-by-side when wide */}
+        <div className="relative flex-1 min-h-0 flex flex-col min-[420px]:flex-row">
+          <div
+            data-sftp-side="left"
+            className="relative flex-1 min-h-0 border-b min-[420px]:border-b-0 min-[420px]:border-r border-border/70"
+            onClick={() => handlePaneFocus("left")}
+          >
+            {leftPanes.map((pane, idx) => {
+              const isActive = activeLeftPaneId
+                ? pane.id === activeLeftPaneId
+                : idx === 0;
+              if (!isActive) return null;
 
-            return (
-              <div key={pane.id} className="absolute inset-0 z-10">
-                <SftpPaneView
-                  side="left"
-                  pane={pane}
-                  dialogActionScopeId={dialogActionScopeIdRef.current}
-                  isPaneFocused={hasPaneFocus}
-                  sftpDefaultViewMode={sftpDefaultViewMode}
-                  showHeader
-                  showEmptyHeader
-                  forceActive
-                  onToggleShowHiddenFiles={() => handleToggleHiddenFiles(pane.id)}
-                  onGoToTerminalCwd={onGetTerminalCwd ? handleGoToTerminalCwd : undefined}
-                  onLocatePathInTerminal={canLocatePathInTerminal ? handleLocatePathInTerminal : undefined}
-                  followTerminalCwd={canFollowTerminalCwd ? effectiveFollowTerminalCwd : undefined}
-                  onToggleFollowTerminalCwd={canFollowTerminalCwd ? handleToggleFollowTerminalCwd : undefined}
-                />
-              </div>
-            );
-          })}
+              return (
+                <div key={pane.id} className="absolute inset-0 z-10">
+                  <SftpPaneView
+                    side="left"
+                    pane={pane}
+                    dialogActionScopeId={dialogActionScopeIdRef.current}
+                    isPaneFocused={hasPaneFocus && focusedSide === "left"}
+                    sftpDefaultViewMode={sftpDefaultViewMode}
+                    showHeader
+                    showEmptyHeader
+                    forceActive
+                    onToggleShowHiddenFiles={() => handleToggleHiddenFiles("left", pane.id)}
+                    onGoToTerminalCwd={onGetTerminalCwd ? handleGoToTerminalCwd : undefined}
+                    onLocatePathInTerminal={canLocatePathInTerminal ? handleLocatePathInTerminal : undefined}
+                    followTerminalCwd={canFollowTerminalCwd ? effectiveFollowTerminalCwd : undefined}
+                    onToggleFollowTerminalCwd={canFollowTerminalCwd ? handleToggleFollowTerminalCwd : undefined}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div
+            data-sftp-side="right"
+            className="relative flex-1 min-h-0"
+            onClick={() => handlePaneFocus("right")}
+          >
+            {rightPanes.map((pane, idx) => {
+              const isActive = activeRightPaneId
+                ? pane.id === activeRightPaneId
+                : idx === 0;
+              if (!isActive) return null;
+
+              return (
+                <div key={pane.id} className="absolute inset-0 z-10">
+                  <SftpPaneView
+                    side="right"
+                    pane={pane}
+                    dialogActionScopeId={dialogActionScopeIdRef.current}
+                    isPaneFocused={hasPaneFocus && focusedSide === "right"}
+                    sftpDefaultViewMode={sftpDefaultViewMode}
+                    showHeader
+                    showEmptyHeader
+                    forceActive
+                    onToggleShowHiddenFiles={() => handleToggleHiddenFiles("right", pane.id)}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
         <SftpTransferQueue
           sftp={sftp}

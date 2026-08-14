@@ -10,6 +10,7 @@ import {
   resolveSftpSidePanelTrackedSourceStatusUpdate,
   shouldAcceptPendingSftpUpload,
   shouldDeferSftpSidePanelAutoConnectForSession,
+  shouldEnsureSftpSidePanelCompanionLocal,
   shouldRebindSftpSidePanelSourceSession,
   shouldResetSftpSidePanelSourceSession,
   shouldSkipSftpSidePanelAutoConnect,
@@ -370,5 +371,57 @@ test("session change still requires rebind even when the endpoint key matches", 
       () => true,
     ),
     tab,
+  );
+});
+
+test("shouldEnsureSftpSidePanelCompanionLocal opens local beside a connected remote", () => {
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connected" },
+      companionConnection: null,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connected" },
+      companionConnection: { isLocal: true, status: "disconnected" },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connected" },
+      companionConnection: { isLocal: true, status: "connected" },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connected" },
+      companionConnection: { isLocal: true, status: "connecting" },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connecting" },
+      companionConnection: null,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: true, status: "connected" },
+      companionConnection: null,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEnsureSftpSidePanelCompanionLocal({
+      remoteConnection: { isLocal: false, status: "connected" },
+      companionConnection: { isLocal: false, status: "connected" },
+    }),
+    false,
   );
 });
