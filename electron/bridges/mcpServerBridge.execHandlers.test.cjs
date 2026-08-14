@@ -252,7 +252,7 @@ test("MCP raw exec refuses pending network-device input without writing", async 
   assert.deepEqual(pty.writes, []);
 });
 
-test("MCP shell exec clears verified pending input before running the command", async () => {
+test("MCP shell exec refuses verified pending input without writing", async () => {
   const pty = new FakePty();
   pty.write = function write(data) {
     const text = String(data);
@@ -289,11 +289,10 @@ test("MCP shell exec clears verified pending input before running the command", 
     chatSessionId: "chat-1",
   });
 
-  assert.equal(result.ok, true, result.error);
-  assert.equal(pty.writes[0], "i");
-  assert.equal(pty.writes[1], "\x03");
-  assert.match(pty.writes[2], /uname -a/);
-  assert.equal(session._hasPendingUserInput, false);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input may still be active/i);
+  assert.deepEqual(pty.writes, []);
+  assert.equal(session._hasPendingUserInput, true);
 });
 
 test("MCP shell exec refuses when user input changes during foreground verification", async () => {

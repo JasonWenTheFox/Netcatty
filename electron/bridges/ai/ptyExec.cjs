@@ -47,6 +47,7 @@ function startPtyJob(ptyStream, command, options) {
     expectedPrompt,
     pendingUserInput = false,
     submittedInputAwaitingPrompt = false,
+    allowPendingInputClear = false,
     pendingInputInterruptSafe = false,
     isInputRevisionCurrent,
     acquireInputGate,
@@ -696,7 +697,19 @@ function startPtyJob(ptyStream, command, options) {
   }
 
   if (waitingForInputClear) {
-    if (!expectedPrompt || pendingInputInterruptSafe !== true) {
+    if (allowPendingInputClear !== true) {
+      finish(
+        "",
+        -1,
+        "Cannot safely execute while terminal input may still be active. Clear the current line and try again.",
+      );
+    } else if (submittedInputAwaitingPrompt === true) {
+      finish(
+        "",
+        -1,
+        "Cannot safely execute while previously submitted terminal input is still active. Return to a fresh shell prompt and try again.",
+      );
+    } else if (!expectedPrompt || pendingInputInterruptSafe !== true) {
       finish(
         "",
         -1,
@@ -737,11 +750,6 @@ function startPtyJob(ptyStream, command, options) {
       // avoid VINTR flushing its bytes.
       if (!inputRevisionIsCurrent()) {
         finish("", -1, "Terminal input changed while command execution was being prepared. Try again.");
-      } else if (submittedInputAwaitingPrompt === true) {
-        // Enter has already submitted the user's line. Never type a normal
-        // character here: a shell builtin such as `read -n1` could consume it
-        // and run follow-up commands before the interrupt arrives.
-        sendPendingInputInterrupt();
       } else if (writePtySafely("i")) {
         inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 100);
       }
@@ -784,6 +792,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {string} [options.expectedPrompt] - Live editable prompt used for wrapper selection, prompt fallback, and safe pending-input cancellation.
  * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
  * @param {boolean} [options.submittedInputAwaitingPrompt=false] - Whether Enter was submitted but shell state is not yet confirmed idle.
+ * @param {boolean} [options.allowPendingInputClear=false] - Internal-only opt-in for exercising pending-input clear mechanics; product callers fail closed.
  * @param {boolean} [options.pendingInputInterruptSafe=false] - Whether the caller proved the shell owns foreground input.
  * @param {() => boolean} [options.isInputRevisionCurrent] - Confirms the user has not typed since safety verification.
  * @param {() => ((replayDeferred?: boolean) => void)|null} [options.acquireInputGate] - Atomically blocks renderer input until clearing finishes.

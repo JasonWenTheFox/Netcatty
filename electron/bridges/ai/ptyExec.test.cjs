@@ -88,6 +88,7 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
     onPendingInputCleared: () => {
       cleared += 1;
@@ -102,7 +103,7 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
   assert.equal(cleared, 1);
 });
 
-test("submitted shell state is interrupted without first typing a normal character", async () => {
+test("submitted shell state is rejected without writing any character", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -125,13 +126,13 @@ test("submitted shell state is interrupted without first typing a normal charact
     pendingUserInput: true,
     submittedInputAwaitingPrompt: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(writes[0], "\x03");
-  assert.equal(writes.includes("i"), false);
-  assert.match(writes[1], /uname -a/);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input/i);
+  assert.deepEqual(writes, []);
 });
 
 test("execViaPty refuses pending input when no editable prompt is proven", async () => {
@@ -149,7 +150,29 @@ test("execViaPty refuses pending input when no editable prompt is proven", async
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.match(result.error, /terminal input may still be active/i);
+  assert.deepEqual(writes, []);
+});
+
+test("product-default exec refuses verified pending input without writing", async () => {
+  const writes = [];
+  const result = await execViaPty({
+    on() {},
+    removeListener() {},
+    write(data) {
+      writes.push(String(data));
+    },
+  }, "uname -a", {
+    shellKind: "posix",
+    timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input may still be active/i);
   assert.deepEqual(writes, []);
 });
 
@@ -165,6 +188,7 @@ test("cancelling during pending-input clear never writes the agent wrapper", asy
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
     timeoutMs: 1000,
   });
@@ -191,6 +215,7 @@ test("a delayed pending-input interrupt write failure resolves as a stream error
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
     timeoutMs: 1000,
   });
@@ -217,6 +242,7 @@ test("pending-input clear stops before Ctrl+C when the user types during its han
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
     isInputRevisionCurrent: () => revisionCurrent,
     timeoutMs: 1000,
@@ -249,6 +275,7 @@ test("a delayed wrapper write failure resolves as a stream error", async () => {
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => (replayDeferred) => gateReleases.push(replayDeferred),
     timeoutMs: 1000,
   });
@@ -287,6 +314,7 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    allowPendingInputClear: true,
     acquireInputGate: () => () => {},
     typedInput: true,
     echoCommand: (cmd) => {
@@ -352,7 +380,7 @@ test("execViaPty does not interrupt a foreground child that prints the cached pr
     });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /unsubmitted terminal input/i);
+    assert.match(result.error, /terminal input/i);
 
     const childAlive = waitForPtyText(ptyProcess, "CHILD_ALIVE");
     ptyProcess.write("\r");
@@ -402,7 +430,7 @@ test("real bash continuation cannot consume an agent command after Enter (#2962)
     });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /unsubmitted terminal input/i);
+    assert.match(result.error, /terminal input/i);
     assert.equal(existsSync(agentPath), false, "agent command must not be consumed by PS2");
 
     const primaryPrompt = waitForPtyText(ptyProcess, expectedPrompt);
@@ -417,7 +445,7 @@ test("real bash continuation cannot consume an agent command after Enter (#2962)
   }
 });
 
-test("real bash cancels continuation even when PS2 is identical to PS1 (#2962)", {
+test("real bash refuses continuation when PS2 is identical to PS1 (#2962)", {
   skip: !existsSync("/bin/bash"),
 }, async () => {
   const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-spoofed-ps2-"));
@@ -455,9 +483,10 @@ test("real bash cancels continuation even when PS2 is identical to PS1 (#2962)",
       timeoutMs: 5000,
     });
 
-    assert.equal(result.ok, true, `${result.error || ""}\n${JSON.stringify(result.stdout)}`);
-    assert.equal(existsSync(agentPath), true, "agent command must run after cancellation");
-    assert.equal(existsSync(splicedPath), false, "unfinished PS2 command must be cancelled");
+    assert.equal(result.ok, false);
+    assert.match(result.error, /terminal input/i);
+    assert.equal(existsSync(agentPath), false, "agent command must not enter PS2");
+    assert.equal(existsSync(splicedPath), false, "unfinished PS2 command must remain unexecuted");
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}
@@ -465,7 +494,7 @@ test("real bash cancels continuation even when PS2 is identical to PS1 (#2962)",
   }
 });
 
-test("real bash read -n1 cannot consume the pending-state safety handshake (#2962)", {
+test("real bash partial read cannot consume any pending-state safety bytes (#2962)", {
   skip: !existsSync("/bin/bash"),
 }, async () => {
   const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-read-n1-"));
@@ -484,10 +513,12 @@ test("real bash read -n1 cannot consume the pending-state safety handshake (#296
   try {
     await waitForPtyText(ptyProcess, expectedPrompt);
     const readPrompt = waitForPtyText(ptyProcess, expectedPrompt);
-    const readCommand = `read -n1 -p "$PS1"; touch '${followUpPath}'\r`;
+    const readCommand = `read -n3 -p "$PS1"; touch '${followUpPath}'\r`;
     trackSessionPendingUserInput(session, readCommand);
     ptyProcess.write(readCommand);
     await readPrompt;
+    trackSessionPendingUserInput(session, "ab");
+    ptyProcess.write("ab");
 
     const pendingInputState = capturePendingInputState(session);
     const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
@@ -500,9 +531,10 @@ test("real bash read -n1 cannot consume the pending-state safety handshake (#296
       timeoutMs: 5000,
     });
 
-    assert.equal(result.ok, true, `${result.error || ""}\n${JSON.stringify(result.stdout)}`);
-    assert.equal(existsSync(agentPath), true);
-    assert.equal(existsSync(followUpPath), false, "Ctrl+C must abort the read command list");
+    assert.equal(result.ok, false);
+    assert.match(result.error, /terminal input/i);
+    assert.equal(existsSync(agentPath), false);
+    assert.equal(existsSync(followUpPath), false, "safety path must not complete the read");
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}
@@ -510,7 +542,7 @@ test("real bash read -n1 cannot consume the pending-state safety handshake (#296
   }
 });
 
-test("real bash primary prompt safely revalidates before the next agent command (#2962)", {
+test("real bash primary prompt remains fail-closed after submitted input (#2962)", {
   skip: !existsSync("/bin/bash"),
 }, async () => {
   const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-primary-prompt-"));
@@ -537,13 +569,15 @@ test("real bash primary prompt safely revalidates before the next agent command 
       shellKind: "posix",
       expectedPrompt: getEditableIdlePrompt(session),
       pendingUserInput: pendingInputState.pending,
+      submittedInputAwaitingPrompt: true,
       pendingInputInterruptSafe: true,
       acquireInputGate: () => () => {},
       timeoutMs: 5000,
     });
 
-    assert.equal(result.ok, true, result.error || "");
-    assert.equal(existsSync(agentPath), true);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /terminal input/i);
+    assert.equal(existsSync(agentPath), false);
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}
@@ -582,8 +616,54 @@ test("real bash foreground cat never receives an agent wrapper after Enter (#296
     });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /unsubmitted terminal input/i);
+    assert.match(result.error, /terminal input may still be active/i);
     assert.equal(existsSync(agentPath), false);
+  } finally {
+    outputTracker.dispose();
+    try { ptyProcess.kill(); } catch {}
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("real bash SIGINT trap cannot receive an agent wrapper (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-sigint-trap-"));
+  const agentPath = join(workDir, "agent");
+  const trapPath = join(workDir, "trap-follow-up");
+  const expectedPrompt = "user@host:~$";
+  const session = {};
+  const ptyProcess = nodePty.spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    cwd: workDir,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+  const outputTracker = ptyProcess.onData((chunk) => trackSessionIdlePrompt(session, chunk));
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    const trapReady = waitForPtyText(ptyProcess, expectedPrompt);
+    ptyProcess.write(`trap 'printf "$PS1"; read x; touch "${trapPath}"' INT\r`);
+    await trapReady;
+    trackSessionPendingUserInput(session, "UNFINISHED");
+    ptyProcess.write("UNFINISHED");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const pendingInputState = capturePendingInputState(session);
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind: "posix",
+      expectedPrompt: getEditableIdlePrompt(session),
+      pendingUserInput: pendingInputState.pending,
+      pendingInputInterruptSafe: true,
+      acquireInputGate: () => () => {},
+      timeoutMs: 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /terminal input may still be active/i);
+    assert.equal(existsSync(agentPath), false);
+    assert.equal(existsSync(trapPath), false);
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}
@@ -646,6 +726,7 @@ async function verifyRealEditorPendingInputClear({
       expectedPrompt,
       pendingUserInput: true,
       pendingInputInterruptSafe: true,
+      allowPendingInputClear: true,
       acquireInputGate: () => () => {},
       timeoutMs: 5000,
     });
@@ -742,7 +823,7 @@ test("execViaRawPty refuses pending device input without writing any bytes", asy
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.match(result.error, /terminal input/i);
   assert.deepEqual(writes, []);
 });
 

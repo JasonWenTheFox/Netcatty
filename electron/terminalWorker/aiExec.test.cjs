@@ -114,7 +114,7 @@ test("worker raw exec refuses pending device input without writing", async () =>
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.match(result.error, /terminal input/i);
   assert.deepEqual(pty.writes, []);
 });
 
@@ -138,7 +138,7 @@ test("worker exec refuses a submitted shell continuation without writing", async
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.match(result.error, /terminal input/i);
   assert.deepEqual(pty.writes, []);
 });
 
