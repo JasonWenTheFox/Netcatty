@@ -1760,15 +1760,16 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       for (const connection of panes) {
         if (!connection) continue;
         if (connection.isLocal) {
-          if (
-            task.sourceConnectionId === connection.id
-            || task.targetConnectionId === connection.id
-          ) {
+          if (task.sourceConnectionId === connection.id) {
             return true;
           }
-          // Downloads use the shared "local" sentinel; require an active remote
-          // source so another host's history does not leak after a focus switch.
-          if (task.targetConnectionId === "local" && matchesActiveRemoteSource) {
+          // Downloads may use the shared "local" sentinel or the companion local
+          // pane UUID. Require an active remote source either way so another
+          // host's history does not leak after the left pane switches hosts.
+          if (
+            (task.targetConnectionId === "local" || task.targetConnectionId === connection.id)
+            && matchesActiveRemoteSource
+          ) {
             return true;
           }
           continue;
@@ -1918,67 +1919,69 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
           </div>
         )}
         {/* Remote (left) + local (right): stack when panel is narrow, side-by-side when wide.
-            Use @container / @min-* so the breakpoint tracks this resizable panel, not the viewport. */}
-        <div className="@container relative flex-1 min-h-0 flex flex-col @min-[420px]:flex-row">
-          <div
-            data-sftp-side="left"
-            className="relative flex-1 min-h-0 border-b @min-[420px]:border-b-0 @min-[420px]:border-r border-border/70"
-            onClick={() => handlePaneFocus("left")}
-          >
-            {leftPanes.map((pane, idx) => {
-              const isActive = activeLeftPaneId
-                ? pane.id === activeLeftPaneId
-                : idx === 0;
-              if (!isActive) return null;
+            Outer establishes @container; inner uses @min-* (queries an ancestor, not self). */}
+        <div className="@container relative flex-1 min-h-0">
+          <div className="h-full min-h-0 flex flex-col @min-[420px]:flex-row">
+            <div
+              data-sftp-side="left"
+              className="relative flex-1 min-h-0 border-b @min-[420px]:border-b-0 @min-[420px]:border-r border-border/70"
+              onClick={() => handlePaneFocus("left")}
+            >
+              {leftPanes.map((pane, idx) => {
+                const isActive = activeLeftPaneId
+                  ? pane.id === activeLeftPaneId
+                  : idx === 0;
+                if (!isActive) return null;
 
-              return (
-                <div key={pane.id} className="absolute inset-0 z-10">
-                  <SftpPaneView
-                    side="left"
-                    pane={pane}
-                    dialogActionScopeId={dialogActionScopeIdRef.current}
-                    isPaneFocused={hasPaneFocus && focusedSide === "left"}
-                    sftpDefaultViewMode={sftpDefaultViewMode}
-                    showHeader
-                    showEmptyHeader
-                    forceActive
-                    onToggleShowHiddenFiles={() => handleToggleHiddenFiles("left", pane.id)}
-                    onGoToTerminalCwd={onGetTerminalCwd ? handleGoToTerminalCwd : undefined}
-                    onLocatePathInTerminal={canLocatePathInTerminal ? handleLocatePathInTerminal : undefined}
-                    followTerminalCwd={canFollowTerminalCwd ? effectiveFollowTerminalCwd : undefined}
-                    onToggleFollowTerminalCwd={canFollowTerminalCwd ? handleToggleFollowTerminalCwd : undefined}
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div
-            data-sftp-side="right"
-            className="relative flex-1 min-h-0"
-            onClick={() => handlePaneFocus("right")}
-          >
-            {rightPanes.map((pane, idx) => {
-              const isActive = activeRightPaneId
-                ? pane.id === activeRightPaneId
-                : idx === 0;
-              if (!isActive) return null;
+                return (
+                  <div key={pane.id} className="absolute inset-0 z-10">
+                    <SftpPaneView
+                      side="left"
+                      pane={pane}
+                      dialogActionScopeId={dialogActionScopeIdRef.current}
+                      isPaneFocused={hasPaneFocus && focusedSide === "left"}
+                      sftpDefaultViewMode={sftpDefaultViewMode}
+                      showHeader
+                      showEmptyHeader
+                      forceActive
+                      onToggleShowHiddenFiles={() => handleToggleHiddenFiles("left", pane.id)}
+                      onGoToTerminalCwd={onGetTerminalCwd ? handleGoToTerminalCwd : undefined}
+                      onLocatePathInTerminal={canLocatePathInTerminal ? handleLocatePathInTerminal : undefined}
+                      followTerminalCwd={canFollowTerminalCwd ? effectiveFollowTerminalCwd : undefined}
+                      onToggleFollowTerminalCwd={canFollowTerminalCwd ? handleToggleFollowTerminalCwd : undefined}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div
+              data-sftp-side="right"
+              className="relative flex-1 min-h-0"
+              onClick={() => handlePaneFocus("right")}
+            >
+              {rightPanes.map((pane, idx) => {
+                const isActive = activeRightPaneId
+                  ? pane.id === activeRightPaneId
+                  : idx === 0;
+                if (!isActive) return null;
 
-              return (
-                <div key={pane.id} className="absolute inset-0 z-10">
-                  <SftpPaneView
-                    side="right"
-                    pane={pane}
-                    dialogActionScopeId={dialogActionScopeIdRef.current}
-                    isPaneFocused={hasPaneFocus && focusedSide === "right"}
-                    sftpDefaultViewMode={sftpDefaultViewMode}
-                    showHeader
-                    showEmptyHeader
-                    forceActive
-                    onToggleShowHiddenFiles={() => handleToggleHiddenFiles("right", pane.id)}
-                  />
-                </div>
-              );
-            })}
+                return (
+                  <div key={pane.id} className="absolute inset-0 z-10">
+                    <SftpPaneView
+                      side="right"
+                      pane={pane}
+                      dialogActionScopeId={dialogActionScopeIdRef.current}
+                      isPaneFocused={hasPaneFocus && focusedSide === "right"}
+                      sftpDefaultViewMode={sftpDefaultViewMode}
+                      showHeader
+                      showEmptyHeader
+                      forceActive
+                      onToggleShowHiddenFiles={() => handleToggleHiddenFiles("right", pane.id)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
         <SftpTransferQueue
