@@ -1798,12 +1798,24 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     return null;
   }, [sftpRef]);
 
+  // Dual-pane downloads store the local pane connection UUID, not the "local" sentinel.
+  const isLocalFilesystemTransferTarget = useCallback((task: TransferTask) => {
+    if (task.targetConnectionId === "local") return true;
+    const state = sftpRef.current;
+    for (const side of ["left", "right"] as const) {
+      const tabs = side === "left" ? state.leftTabs.tabs : state.rightTabs.tabs;
+      const pane = tabs.find((tab) => tab.connection?.id === task.targetConnectionId);
+      if (pane?.connection?.isLocal) return true;
+    }
+    return false;
+  }, [sftpRef]);
+
   const handleRevealTransferTarget = useCallback(
     async (task: TransferTask) => {
       if (!isConcreteTransferTargetPath(task)) return;
       const revealPath = task.isDirectory ? task.targetPath : getParentPath(task.targetPath);
 
-      if (task.targetConnectionId === "local") {
+      if (isLocalFilesystemTransferTarget(task)) {
         try {
           const result = await openPath(revealPath);
           if (result.success) return;
@@ -1821,19 +1833,19 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         tabId: targetTab.tabId,
       });
     },
-    [findRemoteTransferTargetTab, openPath, sftpRef, t],
+    [findRemoteTransferTargetTab, isLocalFilesystemTransferTarget, openPath, sftpRef, t],
   );
 
   const canRevealTransferTarget = useCallback(
     (task: TransferTask) => {
       if (task.status !== "completed") return false;
       if (!isConcreteTransferTargetPath(task)) return false;
-      if (task.targetConnectionId === "local") {
+      if (isLocalFilesystemTransferTarget(task)) {
         return true;
       }
       return !!findRemoteTransferTargetTab(task);
     },
-    [findRemoteTransferTargetTab],
+    [findRemoteTransferTargetTab, isLocalFilesystemTransferTarget],
   );
 
   const canCopyTransferTargetPath = useCallback(
@@ -1905,11 +1917,12 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
             </div>
           </div>
         )}
-        {/* Remote (left) + local (right): stack when narrow, side-by-side when wide */}
-        <div className="relative flex-1 min-h-0 flex flex-col min-[420px]:flex-row">
+        {/* Remote (left) + local (right): stack when panel is narrow, side-by-side when wide.
+            Use @container / @min-* so the breakpoint tracks this resizable panel, not the viewport. */}
+        <div className="@container relative flex-1 min-h-0 flex flex-col @min-[420px]:flex-row">
           <div
             data-sftp-side="left"
-            className="relative flex-1 min-h-0 border-b min-[420px]:border-b-0 min-[420px]:border-r border-border/70"
+            className="relative flex-1 min-h-0 border-b @min-[420px]:border-b-0 @min-[420px]:border-r border-border/70"
             onClick={() => handlePaneFocus("left")}
           >
             {leftPanes.map((pane, idx) => {
