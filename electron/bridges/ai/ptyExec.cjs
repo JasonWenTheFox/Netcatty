@@ -46,6 +46,7 @@ function startPtyJob(ptyStream, command, options) {
     abortSignal,
     expectedPrompt,
     pendingUserInput = false,
+    pendingInputInterruptSafe = false,
     onPendingInputCleared,
     typedInput = false,
     echoCommand,
@@ -664,7 +665,7 @@ function startPtyJob(ptyStream, command, options) {
   }
 
   if (waitingForInputClear) {
-    if (!expectedPrompt) {
+    if (!expectedPrompt || pendingInputInterruptSafe !== true) {
       finish(
         "",
         -1,
@@ -723,6 +724,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {AbortSignal} [options.abortSignal] - AbortSignal to cancel execution
  * @param {string} [options.expectedPrompt] - Live editable prompt used for wrapper selection, prompt fallback, and safe pending-input cancellation.
  * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
+ * @param {boolean} [options.pendingInputInterruptSafe=false] - Whether the caller proved the shell owns foreground input.
  * @param {() => void} [options.onPendingInputCleared] - Called after Ctrl+C redraws the expected prompt.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo

@@ -81,6 +81,7 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
     timeoutMs: 1000,
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
+    pendingInputInterruptSafe: true,
     onPendingInputCleared: () => {
       cleared += 1;
     },
@@ -124,6 +125,7 @@ test("cancelling during pending-input clear never writes the agent wrapper", asy
     shellKind: "posix",
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
+    pendingInputInterruptSafe: true,
     timeoutMs: 1000,
   });
   job.cancel();
@@ -148,6 +150,7 @@ test("a delayed pending-input interrupt write failure resolves as a stream error
     shellKind: "posix",
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
+    pendingInputInterruptSafe: true,
     timeoutMs: 1000,
   });
 
@@ -176,6 +179,7 @@ test("a delayed wrapper write failure resolves as a stream error", async () => {
     shellKind: "posix",
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
+    pendingInputInterruptSafe: true,
     timeoutMs: 1000,
   });
 
@@ -211,6 +215,7 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
     timeoutMs: 1000,
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
+    pendingInputInterruptSafe: true,
     typedInput: true,
     echoCommand: (cmd) => {
       echoes.push({ cmd, writesSoFar: writes.slice() });
@@ -243,6 +248,49 @@ function waitForPtyText(ptyProcess, needle, timeoutMs = 5000) {
     });
   });
 }
+
+test("execViaPty does not interrupt a foreground child that prints the cached prompt", async (t) => {
+  const bash = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (bash.error || bash.status !== 0) {
+    t.skip("bash is unavailable");
+    return;
+  }
+
+  const expectedPrompt = "user@host:~$";
+  const ptyProcess = nodePty.spawn("bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    const childPrompt = waitForPtyText(ptyProcess, expectedPrompt);
+    ptyProcess.write(
+      `python3 -c 'print("${expectedPrompt}", flush=True); input(); print("CHILD_ALIVE", flush=True)'\r`,
+    );
+    await childPrompt;
+    ptyProcess.write("USER_DATA");
+
+    const result = await execViaPty(ptyProcess, "echo AGENT_MUST_NOT_RUN", {
+      shellKind: "posix",
+      expectedPrompt,
+      pendingUserInput: true,
+      timeoutMs: 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /unsubmitted terminal input/i);
+
+    const childAlive = waitForPtyText(ptyProcess, "CHILD_ALIVE");
+    ptyProcess.write("\r");
+    const output = await childAlive;
+    assert.match(output, /CHILD_ALIVE/);
+    assert.doesNotMatch(output, /AGENT_MUST_NOT_RUN/);
+  } finally {
+    ptyProcess.kill();
+  }
+});
 
 async function verifyRealEditorPendingInputClear({
   shellPath,
@@ -298,6 +346,7 @@ async function verifyRealEditorPendingInputClear({
       shellKind,
       expectedPrompt,
       pendingUserInput: true,
+      pendingInputInterruptSafe: true,
       timeoutMs: 5000,
     });
 
