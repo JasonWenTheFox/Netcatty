@@ -260,6 +260,12 @@ function createWorkerAiExecHandler({
 
     const ptyStream = session.stream || session.pty || session.proc || session.serialPort;
     const pendingInputState = capturePendingInputState(session);
+    if (
+      sessionProtocol === "serial"
+      && (session.ymodemActive || session.zmodemSentry?.isActive?.())
+    ) {
+      return { ok: false, error: "Serial file transfer is already in progress" };
+    }
 
     if (isNetworkDevice && ptyStream && typeof ptyStream.write === "function") {
       return execViaRawPty(ptyStream, command, {

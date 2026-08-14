@@ -168,3 +168,43 @@ test("catty raw exec refuses awaiting serial input without writing", async () =>
   assert.match(result.error, /terminal input/i);
   assert.deepEqual(writes, []);
 });
+
+test("catty serial exec refuses active file transfer without writing", async () => {
+  const ipcMain = createFakeIpcMain();
+  const writes = [];
+  const session = {
+    protocol: "serial",
+    serialPort: { write: (data) => writes.push(String(data)), on() {}, removeListener() {} },
+    ymodemActive: true,
+  };
+  const mcpServerBridge = {
+    getPermissionMode: () => "auto",
+    reserveSessionExecution: () => ({ ok: true, token: "token-1" }),
+    releaseSessionExecution() {},
+    getSessionMeta: () => ({ protocol: "serial" }),
+    checkCommandSafety: () => ({ blocked: false }),
+    getCommandTimeoutMs: () => 1000,
+    activePtyExecs: new Map(),
+  };
+  registerCattyExecHandlers({
+    ipcMain,
+    validateSender: () => true,
+    sessions: new Map([["serial-transfer", session]]),
+    terminalWorkerManager: null,
+    mcpServerBridge,
+    electronModule: {},
+    safeSend() {},
+    require(id) {
+      if (id === "./ai/ptyExec.cjs") return require("../ai/ptyExec.cjs");
+      return require(id);
+    },
+  });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(
+    { sender: { id: 7 } },
+    { sessionId: "serial-transfer", command: "show version", chatSessionId: "chat-1" },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error, /file transfer/i);
+  assert.deepEqual(writes, []);
+});

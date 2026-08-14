@@ -154,6 +154,13 @@ function registerCattyExecHandlers(ctx) {
 
       const ptyStream = session.stream || session.pty || session.proc || session.serialPort;
       const pendingInputState = capturePendingInputState(session);
+      if (
+        session.protocol === "serial"
+        && (session.ymodemActive || session.zmodemSentry?.isActive?.())
+      ) {
+        releaseLock();
+        return { ok: false, error: "Serial file transfer is already in progress" };
+      }
 
       // Network devices (switches/routers) connected via SSH: use raw execution.
       // Their vendor CLIs don't run a POSIX shell, so shell-wrapped commands fail.

@@ -130,6 +130,14 @@ function createExecHandlerApi(ctx) {
           return { ok: false, error: err?.message || String(err) };
         }
       };
+      if (
+        sessionProtocol === "serial"
+        && (session.ymodemActive || session.zmodemSentry?.isActive?.())
+      ) {
+        releaseSessionExecution(sessionId, sessionToken);
+        executionLock.release();
+        return { ok: false, error: "Serial file transfer is already in progress" };
+      }
     
       // Network devices (switches/routers) connected via SSH: use raw execution.
       // Their vendor CLIs (Huawei VRP, Cisco IOS, etc.) don't run a POSIX shell,

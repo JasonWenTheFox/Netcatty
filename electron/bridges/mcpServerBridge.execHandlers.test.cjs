@@ -274,6 +274,26 @@ test("MCP raw exec refuses awaiting serial input without writing", async () => {
   assert.deepEqual(serialPort.writes, []);
 });
 
+test("MCP serial exec refuses active file transfer without writing", async () => {
+  const serialPort = new FakePty();
+  const sessions = new Map([["serial-transfer", {
+    protocol: "serial",
+    serialPort,
+    zmodemSentry: { isActive: () => true },
+  }]]);
+  const ctx = createExecHandlerTestContext({ sessions, backgroundJobs: new Map() });
+  ctx.getSessionMeta = () => ({ protocol: "serial" });
+  const api = createExecHandlerApi(ctx);
+  const result = await api.handleExec({
+    sessionId: "serial-transfer",
+    command: "show version",
+    chatSessionId: "chat-1",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /file transfer/i);
+  assert.deepEqual(serialPort.writes, []);
+});
+
 test("MCP shell exec refuses verified pending input without writing", async () => {
   const pty = new FakePty();
   pty.write = function write(data) {

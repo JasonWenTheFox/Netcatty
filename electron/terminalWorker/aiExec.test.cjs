@@ -139,6 +139,25 @@ test("worker serial fallback refuses awaiting input without writing", async () =
   assert.deepEqual(serialPort.writes, []);
 });
 
+test("worker serial exec refuses active file transfer without writing", async () => {
+  const serialPort = new FakePty();
+  const sessions = new Map([["serial-transfer", {
+    protocol: "serial",
+    serialPort,
+    ymodemActive: true,
+  }]]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(createFakeEvent(), {
+    sessionId: "serial-transfer",
+    command: "show version",
+    sessionMeta: { protocol: "serial" },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /file transfer/i);
+  assert.deepEqual(serialPort.writes, []);
+});
+
 test("worker exec refuses a submitted shell continuation without writing", async () => {
   const pty = new FakePty();
   const sessions = new Map([["ssh-continuation", {
