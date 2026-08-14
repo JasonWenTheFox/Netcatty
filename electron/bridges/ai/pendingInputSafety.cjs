@@ -36,6 +36,13 @@ function acquireSessionInputGate(session, captured) {
   return () => {
     if (session._aiInputClearToken === token) {
       delete session._aiInputClearToken;
+      const deferred = Array.isArray(session._aiInputClearDeferredWrites)
+        ? session._aiInputClearDeferredWrites.splice(0)
+        : [];
+      delete session._aiInputClearDeferredWrites;
+      for (const replay of deferred) {
+        try { replay(); } catch {}
+      }
     }
   };
 }

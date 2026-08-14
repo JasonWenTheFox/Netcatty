@@ -3,6 +3,9 @@ const assert = require("node:assert/strict");
 
 const terminalBridge = require("./terminalBridge.cjs");
 const {
+  acquireSessionInputGate,
+} = require("./ai/pendingInputSafety.cjs");
+const {
   FLOW_HIGH_WATER_MARK,
 } = require("../../infrastructure/config/terminalFlowConstants.cjs");
 
@@ -404,12 +407,14 @@ test("terminal writes track whether the user left unsubmitted input", () => {
   assert.equal(session._hasPendingUserInput, false);
 });
 
-test("terminal input gate blocks user bytes but permits automated writes", async () => {
+test("terminal input gate blocks user bytes and defers automated writes", async () => {
   const calls = [];
   const session = {
-    _aiInputClearToken: Symbol("clear"),
+    _hasPendingUserInput: true,
     stream: { write(data) { calls.push(data); } },
   };
+  const releaseGate = acquireSessionInputGate(session, { pending: true, revision: 0 });
+  assert.equal(typeof releaseGate, "function");
   initBridge(new Map([["ssh-1", session]]));
 
   terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "\r" });
@@ -418,10 +423,11 @@ test("terminal input gate blocks user bytes but permits automated writes", async
     data: "automated\r",
     automated: true,
   });
-  await delay(5);
-
-  assert.deepEqual(calls, ["automated\r"]);
+  assert.deepEqual(calls, []);
   assert.equal(session._userInputRevision, undefined);
+  releaseGate();
+  await delay(5);
+  assert.deepEqual(calls, ["automated\r"]);
 });
 
 test("local Ctrl+C behavior is unchanged", () => {

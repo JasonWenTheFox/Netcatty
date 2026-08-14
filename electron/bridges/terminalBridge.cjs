@@ -1462,8 +1462,8 @@ function getAutomatedLineDelayMs(payload) {
   return Number.isFinite(lineDelayMs) && lineDelayMs > 0 ? Math.min(lineDelayMs, 2000) : 0;
 }
 
-function shouldBlockSessionInput(session, data, payload = {}) {
-  if (session._aiInputClearToken && payload.automated !== true) {
+function shouldBlockSessionInput(session, data) {
+  if (session._aiInputClearToken) {
     return true;
   }
   if (session.ymodemActive) {
@@ -1494,7 +1494,11 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
     }, trace);
     return;
   }
-  if (shouldBlockSessionInput(session, data, payload)) {
+  if (shouldBlockSessionInput(session, data)) {
+    if (payload.automated === true) {
+      session._aiInputClearDeferredWrites ??= [];
+      session._aiInputClearDeferredWrites.push(() => writeToSessionNow(payload, data, logRewrite));
+    }
     logTerminalInterruptDebug("write-session-blocked-by-transfer", {
       sessionId: payload.sessionId,
       dataCode: data === "\x03" ? "ETX" : undefined,
@@ -1646,6 +1650,14 @@ function writeToSession(event, payload) {
   const session = sessions.get(payload.sessionId);
   if (!session) return;
 
+  if (session._aiInputClearToken) {
+    if (payload.automated === true) {
+      session._aiInputClearDeferredWrites ??= [];
+      session._aiInputClearDeferredWrites.push(() => writeToSession(event, payload));
+    }
+    return;
+  }
+
   try {
     reportOpenedSessionActivity?.({ sessionId: payload.sessionId, phase: "touch" });
   } catch {
@@ -1655,7 +1667,7 @@ function writeToSession(event, payload) {
   if (!payload.automated && !isTerminalReportSequence(payload.data)) {
     clearPendingAutomatedWrites(session);
   }
-  if (shouldBlockSessionInput(session, payload.data, payload)) {
+  if (shouldBlockSessionInput(session, payload.data)) {
     return;
   }
 
