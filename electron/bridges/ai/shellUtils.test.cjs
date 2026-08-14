@@ -702,38 +702,6 @@ test("trackSessionIdlePrompt does not replace a proven prompt with unfinished in
   }
 });
 
-test("automated completion requires its marker and a later primary prompt", () => {
-  const marker = "__NCAUTO_0123456789abcdef0123456789abcdef__";
-  const session = {
-    _awaitingPrimaryPromptAfterUserSubmit: true,
-    _hasPendingUserInput: false,
-    _userInputRevision: 7,
-    _automatedInputCompletionMarker: marker,
-    _automatedInputCompletionRevision: 7,
-  };
-
-  trackSessionIdlePrompt(session, "echo ready\r\nprintf '%s%s' '__NCAUTO_0123' 'rest'\r\n");
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
-  trackSessionIdlePrompt(session, `${marker}\r\n`);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
-  assert.equal(trackSessionIdlePrompt(session, "user@host:~$"), "user@host:~$");
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
-  assert.equal(session._automatedInputCompletionMarker, undefined);
-});
-
-test("an old automated completion marker cannot clear newer input", () => {
-  const marker = "__NCAUTO_0123456789abcdef0123456789abcdef__";
-  const session = {
-    _awaitingPrimaryPromptAfterUserSubmit: true,
-    _hasPendingUserInput: false,
-    _userInputRevision: 8,
-    _automatedInputCompletionMarker: marker,
-    _automatedInputCompletionRevision: 7,
-  };
-  trackSessionIdlePrompt(session, `${marker}\r\nuser@host:~$`);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
-});
-
 test("getFreshIdlePrompt and trackSessionIdlePrompt round-trip through a real PTY-like flow", () => {
   // (1) Remote PowerShell prompt arrives — lastIdlePrompt is captured.
   const session = {};

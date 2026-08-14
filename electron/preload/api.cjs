@@ -341,17 +341,12 @@ function createPreloadApi(ctx) {
   },
   writeToSession: (sessionId, data, options) => {
     const lineDelayMs = Number(options?.lineDelayMs);
-    const automatedCompletionMarker = typeof options?.automatedCompletionMarker === "string"
-      && /^__NCAUTO_[A-Za-z0-9_-]{16,128}__$/.test(options.automatedCompletionMarker)
-      ? options.automatedCompletionMarker
-      : undefined;
     ipcRenderer.send("netcatty:write", {
       sessionId,
       data,
       automated: Boolean(options?.automated),
       sensitive: options?.sensitive === true,
       lineDelayMs: Number.isFinite(lineDelayMs) && lineDelayMs > 0 ? lineDelayMs : undefined,
-      automatedCompletionMarker,
       logRewrite: options?.logRewrite && typeof options.logRewrite === "object"
         ? {
             sentCommand: String(options.logRewrite.sentCommand ?? ""),

@@ -12,18 +12,6 @@ import { shouldSuppressHostStartupCommandOnReconnect } from "../restoredSessionG
 
 const noop = () => undefined;
 const ENCRYPTED_CREDENTIAL_PLACEHOLDER = "enc:v1:djEwdGVzdAAAAAAAAAAAAAAAAA==";
-const automatedCompletionCommandPattern = new RegExp(
-  String.raw`[\n\r]printf '\\n%s%s\\n' '__NCAUTO_[^']*' '[^']*'(?=\r|${String.fromCharCode(27)}\[201~)`,
-  "gu",
-);
-
-const withoutAutomatedCompletionCommands = <T extends { data: string }>(writes: T[]): T[] => (
-  writes.map((write) => ({
-    ...write,
-    data: write.data.replace(automatedCompletionCommandPattern, ""),
-  }))
-);
-
 const armSudoPrompt = (
   autofill: { armForCommand: (command: string) => void } | null,
   command = "sudo whoami",
@@ -3000,7 +2988,7 @@ test("local session runs startup command after attaching", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(attached, ["local-session"]);
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [{
+  assert.deepEqual(sessionWrites, [{
     id: "local-session",
     data: "docker logs -f --tail 200 abc123\r",
     automated: true,
@@ -3041,7 +3029,7 @@ test("local session sends multi-line startup snippets in one write by default", 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(attached, ["local-session"]);
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [{
+  assert.deepEqual(sessionWrites, [{
     id: "local-session",
     data: 'sudo apt install gconf2-common -y\necho "123456"\r',
     automated: true,
@@ -3081,7 +3069,7 @@ test("local session wraps multi-line startup paste when bracketed paste is activ
   }) as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [{
+  assert.deepEqual(sessionWrites, [{
     id: "local-session",
     data: "\x1b[200~sudo apt install gconf2-common -y\necho done\x1b[201~\r",
     automated: true,
@@ -3122,7 +3110,7 @@ test("local session respects disabled bracketed paste for startup paste", async 
   }) as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [{
+  assert.deepEqual(sessionWrites, [{
     id: "local-session",
     data: "first\nsecond\r",
     automated: true,
@@ -3130,15 +3118,15 @@ test("local session respects disabled bracketed paste for startup paste", async 
 });
 
 test("local session can send multi-line startup snippets line by line", async () => {
-  const sessionWrites: Array<{ id: string; data: string; automated?: boolean }> = [];
+  const sessionWrites: Array<{ id: string; data: string; automated?: boolean; lineDelayMs?: number }> = [];
   const terminalBackend = {
     localAvailable: () => true,
     startLocalSession: async () => "local-session",
     onSessionData: () => noop,
     onSessionExit: () => noop,
     onChainProgress: () => noop,
-    writeToSession: (id: string, data: string, options?: { automated?: boolean }) => {
-      sessionWrites.push({ id, data, automated: options?.automated });
+    writeToSession: (id: string, data: string, options?: { automated?: boolean; lineDelayMs?: number }) => {
+      sessionWrites.push({ id, data, automated: options?.automated, lineDelayMs: options?.lineDelayMs });
     },
     resizeSession: noop,
   };
@@ -3160,12 +3148,13 @@ test("local session can send multi-line startup snippets line by line", async ()
 
   await createTerminalSessionStarters(ctx as never).startLocal(createTermStub() as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(sessionWrites, [{ id: "local-session", data: "first cmd\r", automated: true }]);
+  assert.deepEqual(sessionWrites, [
+    { id: "local-session", data: "first cmd\nsecond cmd\r", automated: true, lineDelayMs: 0 },
+  ]);
 
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [
-    { id: "local-session", data: "first cmd\r", automated: true },
-    { id: "local-session", data: "second cmd\r", automated: true },
+  assert.deepEqual(sessionWrites, [
+    { id: "local-session", data: "first cmd\nsecond cmd\r", automated: true, lineDelayMs: 0 },
   ]);
 });
 
@@ -3200,7 +3189,7 @@ test("local session sends host startup commands in one write by default", async 
 
   await createTerminalSessionStarters(ctx as never).startLocal(createTermStub() as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [{
+  assert.deepEqual(sessionWrites, [{
     id: "local-session",
     data: "enter prompt\nrun command\r",
     automated: true,
@@ -3208,15 +3197,15 @@ test("local session sends host startup commands in one write by default", async 
 });
 
 test("local session can send host startup commands line by line", async () => {
-  const sessionWrites: Array<{ id: string; data: string; automated?: boolean }> = [];
+  const sessionWrites: Array<{ id: string; data: string; automated?: boolean; lineDelayMs?: number }> = [];
   const terminalBackend = {
     localAvailable: () => true,
     startLocalSession: async () => "local-session",
     onSessionData: () => noop,
     onSessionExit: () => noop,
     onChainProgress: () => noop,
-    writeToSession: (id: string, data: string, options?: { automated?: boolean }) => {
-      sessionWrites.push({ id, data, automated: options?.automated });
+    writeToSession: (id: string, data: string, options?: { automated?: boolean; lineDelayMs?: number }) => {
+      sessionWrites.push({ id, data, automated: options?.automated, lineDelayMs: options?.lineDelayMs });
     },
     resizeSession: noop,
   };
@@ -3239,13 +3228,14 @@ test("local session can send host startup commands line by line", async () => {
 
   await createTerminalSessionStarters(ctx as never).startLocal(createTermStub() as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(sessionWrites, [{ id: "local-session", data: "first host cmd\r", automated: true }]);
+  assert.deepEqual(sessionWrites, [
+    { id: "local-session", data: "first host cmd\nsecond host cmd\r", automated: true, lineDelayMs: 0 },
+  ]);
 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [
-    { id: "local-session", data: "first host cmd\r", automated: true },
-    { id: "local-session", data: "second host cmd\r", automated: true },
+  assert.deepEqual(sessionWrites, [
+    { id: "local-session", data: "first host cmd\nsecond host cmd\r", automated: true, lineDelayMs: 0 },
   ]);
 });
 
@@ -3319,7 +3309,7 @@ test("restored local reconnect runs the host startup command while automatic ret
   await createTerminalSessionStarters(ctx as never).startLocal(createTermStub() as never);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [
+  assert.deepEqual(sessionWrites, [
     { id: "local-session", data: "echo host-startup\r", automated: true },
   ]);
 
@@ -3437,7 +3427,7 @@ test("local session restores cwd before startup command after attaching", async 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(restoreCwdIntentRef.current, null);
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [
+  assert.deepEqual(sessionWrites, [
     { id: "local-session", data: "cd -- '/srv/app dir'\r", automated: true },
     { id: "local-session", data: "pwd\r", automated: true },
   ]);
@@ -3498,7 +3488,7 @@ test("ssh session restores cwd before startup command after attaching", async ()
 
   assert.equal(restoreCwdIntentRef.current, null);
   assert.deepEqual(restoredCwds, ["/srv/app dir"]);
-  assert.deepEqual(withoutAutomatedCompletionCommands(sessionWrites), [
+  assert.deepEqual(sessionWrites, [
     { id: "ssh-session", data: "cd -- '/srv/app dir'\r", automated: true },
     { id: "ssh-session", data: "pwd\r", automated: true },
   ]);

@@ -70,22 +70,6 @@ test("an unresolved input interceptor marks the session unsafe before agent capt
   assert.equal(session._userInputRevision, 1);
 });
 
-test("automated completion metadata is bound to the tracked input revision", async () => {
-  const h = createHarness();
-  const marker = "__NCAUTO_0123456789abcdef0123456789abcdef__";
-  terminalBridge.writeToSession(null, {
-    sessionId: "session-1",
-    data: "echo ready\r",
-    automated: true,
-    automatedCompletionMarker: marker,
-  });
-
-  assert.equal(h.session._awaitingPrimaryPromptAfterUserSubmit, true);
-  assert.equal(h.session._automatedInputCompletionMarker, marker);
-  assert.equal(h.session._automatedInputCompletionRevision, h.session._userInputRevision);
-  await new Promise((resolve) => setImmediate(resolve));
-});
-
 test("host-classified sensitive input bypasses interceptors and preserves original bytes", async () => {
   const h = createHarness();
   terminalBridge.writeToSession(null, {

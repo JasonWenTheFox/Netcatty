@@ -1688,18 +1688,6 @@ function writeToSession(event, payload) {
     automated: payload.automated === true,
     terminalReport,
   });
-  const completionMarker = payload.automated === true
-    && typeof payload.automatedCompletionMarker === "string"
-    && /^__NCAUTO_[A-Za-z0-9_-]{16,128}__$/.test(payload.automatedCompletionMarker)
-    ? payload.automatedCompletionMarker
-    : null;
-  if (completionMarker) {
-    session._automatedInputCompletionMarker = completionMarker;
-    session._automatedInputCompletionRevision = session._userInputRevision;
-    session._automatedInputCompletionSeen = false;
-    session._automatedInputCompletionTail = "";
-  }
-
   const lineDelayMs = getAutomatedLineDelayMs(payload);
   const lineChunks = lineDelayMs > 0 ? splitTerminalInputIntoLineWrites(payload.data) : [payload.data];
   if (lineDelayMs > 0 && lineChunks.length > 1) {

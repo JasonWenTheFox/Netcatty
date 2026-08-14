@@ -109,3 +109,29 @@ test("[GUARD] Ctrl+C between automated lines SHOULD cancel pending lines", async
 
   assert.deepEqual(calls, ["echo one\r", "\x03"], "Ctrl+C should cancel queued line writes");
 });
+
+test("manual partial input cancels later startup lines", async () => {
+  const calls = [];
+  const session = {
+    stream: { signal() {}, write(data) { calls.push(data); } },
+  };
+  const sessions = new Map([["ssh-1", session]]);
+  initBridge(sessions);
+
+  terminalBridge.writeToSession(
+    { sender: {} },
+    {
+      sessionId: "ssh-1",
+      data: "echo one\necho two\recho three\r",
+      automated: true,
+      lineDelayMs: 20,
+    },
+  );
+  assert.deepEqual(calls, ["echo one\r"]);
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "danger" });
+  await delay(80);
+
+  assert.deepEqual(calls, ["echo one\r", "danger"]);
+  assert.equal(session._hasPendingUserInput, true);
+});
