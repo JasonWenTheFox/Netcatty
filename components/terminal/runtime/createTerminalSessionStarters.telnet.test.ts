@@ -1091,6 +1091,7 @@ test("startTelnet runs a multi-line startup command in sequence when requested",
   let capturedOptions: Record<string, unknown> | null = null;
   let autoLoginComplete: ((evt: { sessionId: string }) => void) | null = null;
   let disposedAutoLoginCancelListener = false;
+  let startupWriteOptions: { automated?: boolean; lineDelayMs?: number } | undefined;
 
   const terminalBackend = {
     backendAvailable: () => true,
@@ -1119,8 +1120,13 @@ test("startTelnet runs a multi-line startup command in sequence when requested",
       disposedAutoLoginCancelListener = true;
     },
     onChainProgress: () => noop,
-    writeToSession: (_sessionId: string, data: string) => {
+    writeToSession: (
+      _sessionId: string,
+      data: string,
+      options?: { automated?: boolean; lineDelayMs?: number },
+    ) => {
       writtenCommands.push(data);
+      startupWriteOptions = options;
     },
     resizeSession: noop,
   };
@@ -1186,7 +1192,8 @@ test("startTelnet runs a multi-line startup command in sequence when requested",
   // Wait long enough for both lines (delay before first + delay between).
   await new Promise((resolve) => setTimeout(resolve, 200));
 
-  assert.deepEqual(writtenCommands, ["first cmd\r", "second cmd\r"]);
+  assert.deepEqual(writtenCommands, ["first cmd\nsecond cmd\r"]);
+  assert.deepEqual(startupWriteOptions, { automated: true, lineDelayMs: 20 });
   assert.deepEqual(executedCommands, ["first cmd", "second cmd"]);
   assert.equal(disposedAutoLoginCancelListener, true);
 });
