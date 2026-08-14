@@ -152,7 +152,8 @@ function registerCattyExecHandlers(ctx) {
         };
       }
 
-      const ptyStream = session.stream || session.pty || session.proc;
+      const ptyStream = session.stream || session.pty || session.proc || session.serialPort;
+      const pendingInputState = capturePendingInputState(session);
 
       // Network devices (switches/routers) connected via SSH: use raw execution.
       // Their vendor CLIs don't run a POSIX shell, so shell-wrapped commands fail.
@@ -164,7 +165,7 @@ function registerCattyExecHandlers(ctx) {
           trackForCancellation: mcpServerBridge.activePtyExecs,
           chatSessionId,
           encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
-          pendingUserInput: session._hasPendingUserInput === true,
+          pendingUserInput: pendingInputState.pending,
         }));
       }
 
@@ -176,7 +177,6 @@ function registerCattyExecHandlers(ctx) {
         // cancellably so Stop during the probe window does not still type
         // the command after the probe resolves (Codex P2 on #2061).
         return withLockRelease(async () => {
-          const pendingInputState = capturePendingInputState(session);
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: mcpServerBridge.activePtyExecs,
             chatSessionId,
@@ -251,7 +251,7 @@ function registerCattyExecHandlers(ctx) {
           trackForCancellation: mcpServerBridge.activePtyExecs,
           chatSessionId,
           encoding: session.serialEncoding || "utf8",
-          pendingUserInput: session._hasPendingUserInput === true,
+          pendingUserInput: pendingInputState.pending,
         }));
       }
 

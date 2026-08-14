@@ -230,12 +230,12 @@ test("MCP terminal_start chat cancel during shellKind probe aborts before PTY wr
   assert.equal(ctx.activeSessionExecutions.size, 0);
 });
 
-test("MCP raw exec refuses pending network-device input without writing", async () => {
+test("MCP raw exec refuses awaiting network-device input without writing", async () => {
   const pty = new FakePty();
   const sessions = new Map([["device-1", {
     protocol: "ssh",
     stream: pty,
-    _hasPendingUserInput: true,
+    _awaitingPrimaryPromptAfterUserSubmit: true,
   }]]);
   const ctx = createExecHandlerTestContext({ sessions, backgroundJobs: new Map() });
   ctx.getSessionMeta = () => ({ protocol: "ssh", deviceType: "network" });
@@ -250,6 +250,28 @@ test("MCP raw exec refuses pending network-device input without writing", async 
   assert.equal(result.ok, false);
   assert.match(result.error, /unsubmitted terminal input/i);
   assert.deepEqual(pty.writes, []);
+});
+
+test("MCP raw exec refuses awaiting serial input without writing", async () => {
+  const serialPort = new FakePty();
+  const sessions = new Map([["serial-1", {
+    protocol: "serial",
+    serialPort,
+    _awaitingPrimaryPromptAfterUserSubmit: true,
+  }]]);
+  const ctx = createExecHandlerTestContext({ sessions, backgroundJobs: new Map() });
+  ctx.getSessionMeta = () => ({ protocol: "serial" });
+  const api = createExecHandlerApi(ctx);
+
+  const result = await api.handleExec({
+    sessionId: "serial-1",
+    command: "show version",
+    chatSessionId: "chat-1",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input/i);
+  assert.deepEqual(serialPort.writes, []);
 });
 
 test("MCP shell exec refuses verified pending input without writing", async () => {

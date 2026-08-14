@@ -71,7 +71,8 @@ function createExecHandlerApi(ctx) {
       }
     
       const sshClient = session.conn || session.sshClient;
-      const ptyStream = session.stream || session.pty || session.proc;
+      const ptyStream = session.stream || session.pty || session.proc || session.serialPort;
+      const pendingInputState = capturePendingInputState(session);
       return {
         ok: true,
         context: {
@@ -83,6 +84,7 @@ function createExecHandlerApi(ctx) {
           isNetworkDevice,
           sshClient,
           ptyStream,
+          pendingInputState,
         },
       };
     }
@@ -99,6 +101,7 @@ function createExecHandlerApi(ctx) {
         isNetworkDevice,
         sshClient,
         ptyStream,
+        pendingInputState,
       } = resolved.context;
       const reservation = reserveSessionExecution(sessionId, "exec");
       if (!reservation.ok) return reservation;
@@ -138,7 +141,7 @@ function createExecHandlerApi(ctx) {
           trackForCancellation: activePtyExecs,
           chatSessionId: params?.chatSessionId,
           encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
-          pendingUserInput: session._hasPendingUserInput === true,
+          pendingUserInput: pendingInputState.pending,
         }));
       }
     
@@ -148,7 +151,6 @@ function createExecHandlerApi(ctx) {
         // sessions get the fish wrapper instead of the posix default (#1854).
         // Cancellable: Stop during the probe must not still type the command.
         return runExecution(async () => {
-          const pendingInputState = capturePendingInputState(session);
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: activePtyExecs,
             chatSessionId,
@@ -215,7 +217,7 @@ function createExecHandlerApi(ctx) {
           trackForCancellation: activePtyExecs,
           chatSessionId: params?.chatSessionId,
           encoding: session.serialEncoding || "utf8",
-          pendingUserInput: session._hasPendingUserInput === true,
+          pendingUserInput: pendingInputState.pending,
         }));
       }
     

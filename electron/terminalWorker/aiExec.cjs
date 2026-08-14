@@ -258,7 +258,8 @@ function createWorkerAiExecHandler({
       };
     }
 
-    const ptyStream = session.stream || session.pty || session.proc;
+    const ptyStream = session.stream || session.pty || session.proc || session.serialPort;
+    const pendingInputState = capturePendingInputState(session);
 
     if (isNetworkDevice && ptyStream && typeof ptyStream.write === "function") {
       return execViaRawPty(ptyStream, command, {
@@ -266,7 +267,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
-        pendingUserInput: session._hasPendingUserInput === true,
+        pendingUserInput: pendingInputState.pending,
       });
     }
 
@@ -274,7 +275,6 @@ function createWorkerAiExecHandler({
       // Remote sessions may not set shellKind at connect time; probe once so
       // fish login shells get the fish wrapper (issue #1854). Cancellable so
       // Stop during the probe window does not still type the command.
-      const pendingInputState = capturePendingInputState(session);
       const probed = await ensureSessionShellKindForExec(session, {
         trackForCancellation: activePtyExecs,
         chatSessionId,

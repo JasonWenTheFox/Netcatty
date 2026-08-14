@@ -85,13 +85,13 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
   ]);
 });
 
-test("catty raw exec refuses pending network-device input without writing", async () => {
+test("catty raw exec refuses awaiting network-device input without writing", async () => {
   const ipcMain = createFakeIpcMain();
   const writes = [];
   const session = {
     protocol: "ssh",
     stream: { write: (data) => writes.push(String(data)), on() {}, removeListener() {} },
-    _hasPendingUserInput: true,
+    _awaitingPrimaryPromptAfterUserSubmit: true,
   };
   const mcpServerBridge = {
     getPermissionMode: () => "auto",
@@ -124,5 +124,47 @@ test("catty raw exec refuses pending network-device input without writing", asyn
 
   assert.equal(result.ok, false);
   assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(writes, []);
+});
+
+test("catty raw exec refuses awaiting serial input without writing", async () => {
+  const ipcMain = createFakeIpcMain();
+  const writes = [];
+  const session = {
+    protocol: "serial",
+    serialPort: { write: (data) => writes.push(String(data)), on() {}, removeListener() {} },
+    _awaitingPrimaryPromptAfterUserSubmit: true,
+  };
+  const mcpServerBridge = {
+    getPermissionMode: () => "auto",
+    reserveSessionExecution: () => ({ ok: true, token: "token-1" }),
+    releaseSessionExecution() {},
+    getSessionMeta: () => ({ protocol: "serial" }),
+    checkCommandSafety: () => ({ blocked: false }),
+    getCommandTimeoutMs: () => 1000,
+    activePtyExecs: new Map(),
+  };
+
+  registerCattyExecHandlers({
+    ipcMain,
+    validateSender: () => true,
+    sessions: new Map([["serial-1", session]]),
+    terminalWorkerManager: null,
+    mcpServerBridge,
+    electronModule: {},
+    safeSend() {},
+    require(id) {
+      if (id === "./ai/ptyExec.cjs") return require("../ai/ptyExec.cjs");
+      return require(id);
+    },
+  });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(
+    { sender: { id: 7 } },
+    { sessionId: "serial-1", command: "show version", chatSessionId: "chat-1" },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input/i);
   assert.deepEqual(writes, []);
 });

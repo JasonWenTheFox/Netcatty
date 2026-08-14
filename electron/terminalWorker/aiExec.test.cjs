@@ -97,12 +97,12 @@ function createDeferredShellProbeConn(stdout = `${PROBE_OUTPUT_MARKER}/usr/bin/f
   };
 }
 
-test("worker raw exec refuses pending device input without writing", async () => {
+test("worker raw exec refuses awaiting device input without writing", async () => {
   const pty = new FakePty();
   const sessions = new Map([["device-1", {
     protocol: "ssh",
     stream: pty,
-    _hasPendingUserInput: true,
+    _awaitingPrimaryPromptAfterUserSubmit: true,
   }]]);
   const ipcMain = createFakeIpcMain();
   registerWorkerAiExecHandlers(ipcMain, { sessions });
@@ -116,6 +116,27 @@ test("worker raw exec refuses pending device input without writing", async () =>
   assert.equal(result.ok, false);
   assert.match(result.error, /terminal input/i);
   assert.deepEqual(pty.writes, []);
+});
+
+test("worker serial fallback refuses awaiting input without writing", async () => {
+  const serialPort = new FakePty();
+  const sessions = new Map([["serial-1", {
+    protocol: "serial",
+    serialPort,
+    _awaitingPrimaryPromptAfterUserSubmit: true,
+  }]]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(createFakeEvent(), {
+    sessionId: "serial-1",
+    command: "show version",
+    sessionMeta: { protocol: "serial" },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /terminal input/i);
+  assert.deepEqual(serialPort.writes, []);
 });
 
 test("worker exec refuses a submitted shell continuation without writing", async () => {
