@@ -1430,6 +1430,10 @@ function pauseSshOutputForInterrupt(session, trace) {
 }
 
 function clearPendingAutomatedWrites(session) {
+  if (!session) return;
+  session._automatedWriteGeneration = (Number.isSafeInteger(session._automatedWriteGeneration)
+    ? session._automatedWriteGeneration
+    : 0) + 1;
   const timers = session?.pendingAutomatedWriteTimers;
   if (!Array.isArray(timers) || timers.length === 0) return;
   for (const timer of timers) clearTimeout(timer);
@@ -1615,6 +1619,7 @@ function writeToSessionWithInterception(
   logRewrite = payload.logRewrite,
   expectedSession = sessions.get(payload.sessionId),
   inputStateAlreadyTracked = false,
+  writeGuard = null,
 ) {
   const bypass = payload?.sensitive === true || isTerminalReportSequence(data);
   const hasInterceptor = Boolean(
@@ -1623,12 +1628,14 @@ function writeToSessionWithInterception(
   );
   const previous = terminalInputPipelineBarriers.get(payload.sessionId);
   if (!hasInterceptor && !previous) {
+    if (typeof writeGuard === "function" && !writeGuard()) return;
     writeToSessionNow(payload, data, logRewrite, inputStateAlreadyTracked);
     return;
   }
   const writeIfCurrent = (nextData) => {
     const current = sessions.get(payload.sessionId);
     if (!current || current !== expectedSession || current.closed) return;
+    if (typeof writeGuard === "function" && !writeGuard()) return;
     writeToSessionNow(payload, nextData, logRewrite, inputStateAlreadyTracked);
   };
   const write = async () => {
@@ -1684,25 +1691,35 @@ function writeToSession(event, payload) {
   }
 
   const terminalReport = isTerminalReportSequence(payload.data);
+  const lineDelayMs = getAutomatedLineDelayMs(payload);
+  if (payload.automated === true && !terminalReport && lineDelayMs === 0) {
+    clearPendingAutomatedWrites(session);
+  }
   trackSessionPendingUserInput(session, payload.data, {
     automated: payload.automated === true,
     terminalReport,
   });
-  const lineDelayMs = getAutomatedLineDelayMs(payload);
   const lineChunks = lineDelayMs > 0 ? splitTerminalInputIntoLineWrites(payload.data) : [payload.data];
   if (lineDelayMs > 0 && lineChunks.length > 1) {
     clearPendingAutomatedWrites(session);
     session.pendingAutomatedWriteTimers = [];
+    const expectedSession = session;
+    const batchGeneration = session._automatedWriteGeneration;
+    const batchIsCurrent = () => (
+      sessions.get(payload.sessionId) === expectedSession
+      && !expectedSession.closed
+      && expectedSession._automatedWriteGeneration === batchGeneration
+    );
     lineChunks.forEach((chunk, index) => {
       const sendChunk = () => {
-        const current = sessions.get(payload.sessionId);
-        if (!current) return;
+        if (!batchIsCurrent()) return;
         writeToSessionWithInterception(
           { ...payload, lineDelayMs: undefined },
           chunk,
           index === 0 ? payload.logRewrite : undefined,
-          current,
+          expectedSession,
           true,
+          batchIsCurrent,
         );
       };
       if (index === 0) {

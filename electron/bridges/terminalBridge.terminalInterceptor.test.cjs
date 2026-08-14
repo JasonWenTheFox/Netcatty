@@ -127,6 +127,42 @@ test("input remains ordered when an interceptor is disabled during an in-flight 
   assert.deepEqual(writes, ["FIRST", "second"]);
 });
 
+test("manual interruption invalidates delayed lines already queued behind an interceptor", async () => {
+  const writes = [];
+  let releaseFirst;
+  let first = true;
+  terminalBridge.init({
+    sessions: new Map([["session-1", {
+      type: "local",
+      proc: { write(data) { writes.push(String(data)); } },
+    }]]),
+    electronModule: {},
+    terminalDataPipeline: {
+      has() { return true; },
+      interceptInput(_sessionId, data) {
+        if (first) {
+          first = false;
+          return new Promise((resolve) => { releaseFirst = resolve; });
+        }
+        return Promise.resolve(data);
+      },
+    },
+  });
+
+  terminalBridge.writeToSession(null, {
+    sessionId: "session-1",
+    data: "first\nsecond\r",
+    automated: true,
+    lineDelayMs: 5,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  terminalBridge.writeToSession(null, { sessionId: "session-1", data: "\x03" });
+  releaseFirst("first\r");
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.deepEqual(writes, ["\x03"]);
+});
+
 test("a pending input transform cannot write into a reused session id", async () => {
   const oldWrites = [];
   const newWrites = [];
