@@ -213,6 +213,9 @@ function trackSessionPendingUserInput(session, data, options = {}) {
 
   const text = String(data || "");
   if (!text) return session._hasPendingUserInput === true;
+  session._userInputRevision = (Number.isSafeInteger(session._userInputRevision)
+    ? session._userInputRevision
+    : 0) + 1;
 
   // Ctrl+D is an editing key on a non-empty readline/zle line (delete-char),
   // not an unconditional submission boundary. Preserve the prior state when

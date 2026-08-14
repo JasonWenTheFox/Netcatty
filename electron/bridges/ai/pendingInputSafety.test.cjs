@@ -82,6 +82,7 @@ test("remote foreground probe distinguishes an SSH shell from its foreground chi
   });
   const session = {
     protocol: "ssh",
+    shellPid: ptyProcess.pid,
     _loginShellKind: "posix",
     _hasPendingUserInput: true,
     _shellKindExecProbe(command) {

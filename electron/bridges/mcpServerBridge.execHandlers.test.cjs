@@ -295,3 +295,74 @@ test("MCP shell exec clears verified pending input before running the command", 
   assert.match(pty.writes[2], /uname -a/);
   assert.equal(session._hasPendingUserInput, false);
 });
+
+test("MCP shell exec refuses when user input changes during foreground verification", async () => {
+  const pty = new FakePty();
+  let releaseProbe;
+  const probe = new Promise((resolve) => { releaseProbe = resolve; });
+  const session = {
+    protocol: "local",
+    stream: pty,
+    shellKind: "posix",
+    lastIdlePrompt: "user@host:~$",
+    _promptTrackTail: "user@host:~$ls",
+    _hasPendingUserInput: true,
+    _userInputRevision: 1,
+    _pendingInputSafetyProbe: () => probe,
+  };
+  const ctx = createExecHandlerTestContext({
+    sessions: new Map([["shell-race", session]]),
+    backgroundJobs: new Map(),
+  });
+  const api = createExecHandlerApi(ctx);
+
+  const pending = api.handleExec({
+    sessionId: "shell-race",
+    command: "uname -a",
+    chatSessionId: "chat-1",
+  });
+  await nextTick();
+  session._hasPendingUserInput = false;
+  session._userInputRevision = 2;
+  releaseProbe(false);
+  const result = await pending;
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /input changed/i);
+  assert.deepEqual(pty.writes, []);
+});
+
+test("MCP terminal_start refuses when user input changes during verification", async () => {
+  const pty = new FakePty();
+  let releaseProbe;
+  const probe = new Promise((resolve) => { releaseProbe = resolve; });
+  const session = {
+    protocol: "local",
+    stream: pty,
+    shellKind: "posix",
+    _hasPendingUserInput: true,
+    _userInputRevision: 1,
+    _pendingInputSafetyProbe: () => probe,
+  };
+  const backgroundJobs = new Map();
+  const ctx = createExecHandlerTestContext({
+    sessions: new Map([["shell-race", session]]),
+    backgroundJobs,
+  });
+  const api = createExecHandlerApi(ctx);
+
+  const pending = api.handleJobStart({
+    sessionId: "shell-race",
+    command: "sleep 1",
+    chatSessionId: "chat-1",
+  });
+  await nextTick();
+  session._hasPendingUserInput = false;
+  session._userInputRevision = 2;
+  releaseProbe(false);
+  const result = await pending;
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /input changed/i);
+  assert.deepEqual(pty.writes, []);
+});

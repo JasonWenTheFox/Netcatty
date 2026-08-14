@@ -9,7 +9,11 @@ const {
 const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
-const { verifySessionForegroundShell } = require("../ai/pendingInputSafety.cjs");
+const {
+  capturePendingInputState,
+  isPendingInputStateCurrent,
+  verifySessionForegroundShell,
+} = require("../ai/pendingInputSafety.cjs");
 
 function getWorkerExecutionMeta(mcpServerBridge, sessionId, chatSessionId) {
   return mcpServerBridge.getSessionMeta?.(sessionId, chatSessionId) || {};
@@ -170,12 +174,16 @@ function registerCattyExecHandlers(ctx) {
         // cancellably so Stop during the probe window does not still type
         // the command after the probe resolves (Codex P2 on #2061).
         return withLockRelease(async () => {
+          const pendingInputState = capturePendingInputState(session);
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: mcpServerBridge.activePtyExecs,
             chatSessionId,
             verifyPendingInput: () => verifySessionForegroundShell(session),
           });
           if (!probed.ok) return probed;
+          if (!isPendingInputStateCurrent(session, pendingInputState)) {
+            return { ok: false, error: "Terminal input changed while command execution was being prepared. Try again." };
+          }
           return execViaPty(ptyStream, command, {
             stripMarkers: true,
             trackForCancellation: mcpServerBridge.activePtyExecs,

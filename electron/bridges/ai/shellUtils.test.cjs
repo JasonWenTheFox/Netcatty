@@ -637,7 +637,9 @@ test("getEditableIdlePrompt keeps a cached prompt while unfinished input is on t
 test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries", () => {
   const session = {};
   assert.equal(trackSessionPendingUserInput(session, "\x04"), false);
+  assert.equal(session._userInputRevision, 1);
   assert.equal(trackSessionPendingUserInput(session, "ls"), true);
+  assert.equal(session._userInputRevision, 2);
   assert.equal(trackSessionPendingUserInput(session, "\x1b[D"), true);
   assert.equal(trackSessionPendingUserInput(session, "\x04"), true);
   assert.equal(trackSessionPendingUserInput(session, "\r"), false);
@@ -648,6 +650,7 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
     trackSessionPendingUserInput(session, "ignored", { automated: true }),
     false,
   );
+  assert.equal(session._userInputRevision, 7);
   assert.equal(
     trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
     false,

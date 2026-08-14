@@ -6,7 +6,11 @@ const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
 const { getEditableIdlePrompt } = require("../ai/shellUtils.cjs");
-const { verifySessionForegroundShell } = require("../ai/pendingInputSafety.cjs");
+const {
+  capturePendingInputState,
+  isPendingInputStateCurrent,
+  verifySessionForegroundShell,
+} = require("../ai/pendingInputSafety.cjs");
 
 function createExecHandlerApi(ctx) {
   with (ctx) {
@@ -142,12 +146,16 @@ function createExecHandlerApi(ctx) {
         // sessions get the fish wrapper instead of the posix default (#1854).
         // Cancellable: Stop during the probe must not still type the command.
         return runExecution(async () => {
+          const pendingInputState = capturePendingInputState(session);
           const probed = await ensureSessionShellKindForExec(session, {
             trackForCancellation: activePtyExecs,
             chatSessionId,
             verifyPendingInput: () => verifySessionForegroundShell(session),
           });
           if (!probed.ok) return probed;
+          if (!isPendingInputStateCurrent(session, pendingInputState)) {
+            return { ok: false, error: "Terminal input changed while command execution was being prepared. Try again." };
+          }
           return execViaPty(ptyStream, command, {
             trackForCancellation: activePtyExecs,
             timeoutMs: commandTimeoutMs,
@@ -277,6 +285,7 @@ function createExecHandlerApi(ctx) {
       backgroundJobs.set(jobId, job);
 
       // Probe so fish login shells are not mis-wrapped as posix (#1854).
+      const pendingInputState = capturePendingInputState(session);
       return Promise.resolve(ensureSessionShellKind(session)).then(async () => {
         if (probeCancelRequested || job.status === "stopping") {
           job.status = "cancelled";
@@ -294,6 +303,14 @@ function createExecHandlerApi(ctx) {
         }
 
         const pendingInputInterruptSafe = await verifySessionForegroundShell(session);
+        if (!isPendingInputStateCurrent(session, pendingInputState)) {
+          job.status = "failed";
+          job.error = "Terminal input changed while command execution was being prepared. Try again.";
+          job.updatedAt = Date.now();
+          job.pendingShellProbe = false;
+          releaseSessionExecution(sessionId, sessionToken);
+          return { ok: false, error: job.error, jobId, sessionId, status: "failed" };
+        }
         if (probeCancelRequested || job.status === "stopping") {
           job.status = "cancelled";
           job.error = "Cancelled";

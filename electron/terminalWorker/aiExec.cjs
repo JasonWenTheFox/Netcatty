@@ -12,7 +12,11 @@ const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
 } = require("../bridges/ai/sessionShellKind.cjs");
-const { verifySessionForegroundShell } = require("../bridges/ai/pendingInputSafety.cjs");
+const {
+  capturePendingInputState,
+  isPendingInputStateCurrent,
+  verifySessionForegroundShell,
+} = require("../bridges/ai/pendingInputSafety.cjs");
 
 const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_BACKGROUND_JOB_POLL_INTERVAL_MS = 30 * 1000;
@@ -268,12 +272,16 @@ function createWorkerAiExecHandler({
       // Remote sessions may not set shellKind at connect time; probe once so
       // fish login shells get the fish wrapper (issue #1854). Cancellable so
       // Stop during the probe window does not still type the command.
+      const pendingInputState = capturePendingInputState(session);
       const probed = await ensureSessionShellKindForExec(session, {
         trackForCancellation: activePtyExecs,
         chatSessionId,
         verifyPendingInput: () => verifySessionForegroundShell(session),
       });
       if (!probed.ok) return probed;
+      if (!isPendingInputStateCurrent(session, pendingInputState)) {
+        return { ok: false, error: "Terminal input changed while command execution was being prepared. Try again." };
+      }
       return execViaPty(ptyStream, command, {
         stripMarkers: true,
         trackForCancellation: activePtyExecs,
@@ -417,6 +425,7 @@ function createWorkerAiJobStartHandler({
     // Same shellKind probe as foreground exec so background jobs on fish
     // remote shells are not wrapped as posix (issue #1854). Session is
     // reserved above so concurrent starts cannot pass the busy check.
+    const pendingInputState = capturePendingInputState(session);
     try {
       await ensureSessionShellKind(session);
     } catch (err) {
@@ -450,6 +459,14 @@ function createWorkerAiJobStartHandler({
     let handle;
     try {
       const pendingInputInterruptSafe = await verifySessionForegroundShell(session);
+      if (!isPendingInputStateCurrent(session, pendingInputState)) {
+        job.status = "failed";
+        job.error = "Terminal input changed while command execution was being prepared. Try again.";
+        job.updatedAt = Date.now();
+        job.pendingShellProbe = false;
+        if (activeSessionJobs.get(sessionId) === jobId) activeSessionJobs.delete(sessionId);
+        return { ok: false, error: job.error, jobId, sessionId, status: "failed" };
+      }
       if (probeCancelRequested || job.status === "stopping") {
         job.status = "cancelled";
         job.error = "Cancelled";

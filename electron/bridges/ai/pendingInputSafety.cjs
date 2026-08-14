@@ -10,6 +10,20 @@ function isShellName(value) {
   return SHELL_NAME.test(String(value || "").replace(/^.*\//, "").replace(/^-/, ""));
 }
 
+function capturePendingInputState(session) {
+  return {
+    pending: session?._hasPendingUserInput === true,
+    revision: Number.isSafeInteger(session?._userInputRevision)
+      ? session._userInputRevision
+      : 0,
+  };
+}
+
+function isPendingInputStateCurrent(session, captured) {
+  const current = capturePendingInputState(session);
+  return current.pending === captured?.pending && current.revision === captured?.revision;
+}
+
 function parseLocalProcessTable(stdout, rootPid) {
   const rows = [];
   const parents = new Map();
@@ -59,18 +73,21 @@ function verifyLocalForegroundShell(session) {
   });
 }
 
-function buildRemoteForegroundShellProbeCommand() {
+function buildRemoteForegroundShellProbeCommand(targetShellPid) {
   const script = [
     'SELF=$$',
+    `TARGET=${Number(targetShellPid)}`,
     '_conn=$(tr "\\0" "\\n" < /proc/$SELF/environ 2>/dev/null | sed -n "s/^SSH_CONNECTION=//p" | head -n1)',
     '[ -n "$_conn" ] || exit 0',
+    '_target_conn=$(tr "\\0" "\\n" < /proc/$TARGET/environ 2>/dev/null | sed -n "s/^SSH_CONNECTION=//p" | head -n1)',
+    '[ "$_target_conn" = "$_conn" ] || exit 0',
+    '_target_tty=$(ps -p "$TARGET" -o tty= 2>/dev/null | tr -d "[:space:]")',
+    '[ -n "$_target_tty" ] && [ "$_target_tty" != "?" ] || exit 0',
     'ps -e -o pid=,pgid=,tpgid=,tty=,comm= 2>/dev/null | while read _pid _pgid _tpgid _tty _comm; do',
-    '  [ "$_tty" != "?" ] && [ -n "$_tty" ] || continue',
+    '  [ "$_tty" = "$_target_tty" ] || continue',
     '  [ "$_pgid" = "$_tpgid" ] && [ "$_tpgid" -gt 0 ] 2>/dev/null || continue',
     '  case "$_comm" in sh|bash|zsh|fish|ksh|dash|ash|csh|tcsh|-sh|-bash|-zsh|-fish|-ksh|-dash|-ash|-csh|-tcsh) ;; *) continue ;; esac',
-    '  [ -r "/proc/$_pid/environ" ] || continue',
-    '  _conn2=$(tr "\\0" "\\n" < "/proc/$_pid/environ" 2>/dev/null | sed -n "s/^SSH_CONNECTION=//p" | head -n1)',
-    `  [ "$_conn2" = "$_conn" ] && { echo ${SAFE_MARKER}; break; }`,
+    `  echo ${SAFE_MARKER}; break`,
     'done',
   ].join("\n");
   return `exec sh -c '${script.replace(/'/g, "'\\''")}'`;
@@ -93,15 +110,22 @@ async function verifySessionForegroundShell(session, options = {}) {
 
   const kind = session.shellKind || session._loginShellKind;
   if (kind !== "posix" && kind !== "fish") return false;
+  const targetShellPid = Number(session.shellPid || 0);
+  if (!Number.isSafeInteger(targetShellPid) || targetShellPid <= 0) return false;
   const execProbe = createSessionExecProbe(session);
   if (!execProbe) return false;
-  const output = await execProbe(buildRemoteForegroundShellProbeCommand(), options.timeoutMs || 3000);
+  const output = await execProbe(
+    buildRemoteForegroundShellProbeCommand(targetShellPid),
+    options.timeoutMs || 3000,
+  );
   return String(output || "").split(/\r?\n/).some((line) => line.trim() === SAFE_MARKER);
 }
 
 module.exports = {
   SAFE_MARKER,
   buildRemoteForegroundShellProbeCommand,
+  capturePendingInputState,
+  isPendingInputStateCurrent,
   parseLocalProcessTable,
   verifySessionForegroundShell,
 };
