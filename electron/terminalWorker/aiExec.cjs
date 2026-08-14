@@ -266,7 +266,7 @@ function createWorkerAiExecHandler({
         trackForCancellation: activePtyExecs,
         chatSessionId,
         encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
-        pendingUserInput: pendingInputState.pending,
+        pendingUserInput: session._hasPendingUserInput === true,
       });
     }
 
@@ -292,7 +292,7 @@ function createWorkerAiExecHandler({
         loginShellHint: session._loginShellKind,
         chatSessionId,
         expectedPrompt: getEditableIdlePrompt(session),
-        pendingUserInput: session._hasPendingUserInput === true,
+        pendingUserInput: pendingInputState.pending,
         pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
         isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
         acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
@@ -486,7 +486,7 @@ function createWorkerAiJobStartHandler({
         loginShellHint: session._loginShellKind,
         chatSessionId,
         expectedPrompt: getEditableIdlePrompt(session),
-        pendingUserInput: session._hasPendingUserInput === true,
+        pendingUserInput: pendingInputState.pending,
         pendingInputInterruptSafe,
         isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
         acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
