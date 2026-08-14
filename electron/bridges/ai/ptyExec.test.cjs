@@ -102,6 +102,39 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
   assert.equal(cleared, 1);
 });
 
+test("execViaPty writes directly after a verified submitted command returns to the primary prompt", async () => {
+  const writes = [];
+  let cleared = 0;
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      const marker = markerFromWrite(data);
+      if (!marker) return;
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`));
+      });
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "uname -a", {
+    shellKind: "posix",
+    timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    submittedInputAwaitingPrompt: true,
+    pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
+    onPendingInputCleared: () => {
+      cleared += 1;
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0], /uname -a/);
+  assert.equal(cleared, 1);
+});
+
 test("execViaPty refuses pending input when no editable prompt is proven", async () => {
   const writes = [];
   const result = await execViaPty({
@@ -377,6 +410,48 @@ test("real bash continuation cannot consume an agent command after Enter (#2962)
     ptyProcess.write("\x03");
     await primaryPrompt;
     assert.equal(existsSync(agentPath), false);
+  } finally {
+    outputTracker.dispose();
+    try { ptyProcess.kill(); } catch {}
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("real bash primary prompt runs the next agent command without an extra interrupt (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-primary-prompt-"));
+  const agentPath = join(workDir, "agent");
+  const expectedPrompt = "user@host:~$";
+  const session = {};
+  const ptyProcess = nodePty.spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    cwd: workDir,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+  const outputTracker = ptyProcess.onData((chunk) => trackSessionIdlePrompt(session, chunk));
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    const primaryPrompt = waitForPtyText(ptyProcess, expectedPrompt);
+    trackSessionPendingUserInput(session, "true\r");
+    ptyProcess.write("true\r");
+    await primaryPrompt;
+
+    const pendingInputState = capturePendingInputState(session);
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind: "posix",
+      expectedPrompt: getEditableIdlePrompt(session),
+      pendingUserInput: pendingInputState.pending,
+      submittedInputAwaitingPrompt: true,
+      pendingInputInterruptSafe: true,
+      acquireInputGate: () => () => {},
+      timeoutMs: 5000,
+    });
+
+    assert.equal(result.ok, true, result.error || "");
+    assert.equal(existsSync(agentPath), true);
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}
