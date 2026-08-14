@@ -1463,7 +1463,7 @@ function splitTerminalInputIntoLineWrites(data) {
 function getAutomatedLineDelayMs(payload) {
   if (!payload?.automated) return 0;
   const lineDelayMs = Number(payload.lineDelayMs);
-  return Number.isFinite(lineDelayMs) && lineDelayMs > 0 ? Math.min(lineDelayMs, 2000) : 0;
+  return Number.isFinite(lineDelayMs) && lineDelayMs > 0 ? Math.min(lineDelayMs, 10000) : 0;
 }
 
 function shouldBlockSessionInput(session, data) {
@@ -1627,6 +1627,15 @@ function writeToSessionWithInterception(
     && terminalDataPipeline.has?.(payload.sessionId, "input"),
   );
   const previous = terminalInputPipelineBarriers.get(payload.sessionId);
+  const reconcileInputState = inputStateAlreadyTracked
+    && !isTerminalReportSequence(data)
+    && (hasInterceptor || Boolean(previous));
+  if (reconcileInputState && expectedSession) {
+    // The interceptor may delay or change boundaries (including Ctrl+D into
+    // ordinary bytes). Keep the session unsafe throughout the await, then
+    // track the bytes that are actually delivered.
+    expectedSession._hasPendingUserInput = true;
+  }
   if (!hasInterceptor && !previous) {
     if (typeof writeGuard === "function" && !writeGuard()) return;
     writeToSessionNow(payload, data, logRewrite, inputStateAlreadyTracked);
@@ -1636,7 +1645,12 @@ function writeToSessionWithInterception(
     const current = sessions.get(payload.sessionId);
     if (!current || current !== expectedSession || current.closed) return;
     if (typeof writeGuard === "function" && !writeGuard()) return;
-    writeToSessionNow(payload, nextData, logRewrite, inputStateAlreadyTracked);
+    writeToSessionNow(
+      payload,
+      nextData,
+      logRewrite,
+      inputStateAlreadyTracked && !reconcileInputState,
+    );
   };
   const write = async () => {
     if (!hasInterceptor) {
