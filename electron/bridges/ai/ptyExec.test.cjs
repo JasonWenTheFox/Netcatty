@@ -431,7 +431,7 @@ test("real bash cancels continuation even when PS2 is identical to PS1 (#2962)",
   }
 });
 
-test("real bash primary prompt runs the next agent command without an extra interrupt (#2962)", {
+test("real bash primary prompt safely revalidates before the next agent command (#2962)", {
   skip: !existsSync("/bin/bash"),
 }, async () => {
   const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-primary-prompt-"));
@@ -465,6 +465,46 @@ test("real bash primary prompt runs the next agent command without an extra inte
 
     assert.equal(result.ok, true, result.error || "");
     assert.equal(existsSync(agentPath), true);
+  } finally {
+    outputTracker.dispose();
+    try { ptyProcess.kill(); } catch {}
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("real bash foreground cat never receives an agent wrapper after Enter (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-foreground-cat-"));
+  const agentPath = join(workDir, "agent");
+  const expectedPrompt = "user@host:~$";
+  const session = {};
+  const ptyProcess = nodePty.spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    cwd: workDir,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+  const outputTracker = ptyProcess.onData((chunk) => trackSessionIdlePrompt(session, chunk));
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    trackSessionPendingUserInput(session, "cat\r");
+    ptyProcess.write("cat\r");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const pendingInputState = capturePendingInputState(session);
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind: "posix",
+      expectedPrompt: getEditableIdlePrompt(session),
+      pendingUserInput: pendingInputState.pending,
+      pendingInputInterruptSafe: false,
+      timeoutMs: 1000,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error, /unsubmitted terminal input/i);
+    assert.equal(existsSync(agentPath), false);
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}

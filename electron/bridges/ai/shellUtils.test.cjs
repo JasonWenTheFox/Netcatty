@@ -644,7 +644,7 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
   assert.equal(trackSessionPendingUserInput(session, "\r"), false);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
 
@@ -659,11 +659,12 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
   );
 });
 
-test("simple submitted commands clear safely while shell grammar and read stay unsafe", () => {
+test("all submitted commands remain unsafe until shell ownership is reverified", () => {
   const session = {};
   assert.equal(trackSessionPendingUserInput(session, "true\r"), false);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
 
+  trackSessionPendingUserInput(session, "\x03");
   assert.equal(trackSessionPendingUserInput(session, "read\r"), false);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
 
