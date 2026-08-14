@@ -13,6 +13,7 @@ const {
   ensureSessionShellKindForExec,
 } = require("../bridges/ai/sessionShellKind.cjs");
 const {
+  PENDING_INPUT_ERROR,
   acquireSessionInputGate,
   capturePendingInputState,
   isPendingInputStateCurrent,
@@ -277,6 +278,10 @@ function createWorkerAiExecHandler({
       });
     }
 
+    if (pendingInputState.pending) {
+      return { ok: false, error: PENDING_INPUT_ERROR };
+    }
+
     if (ptyStream && typeof ptyStream.write === "function") {
       // Remote sessions may not set shellKind at connect time; probe once so
       // fish login shells get the fish wrapper (issue #1854). Cancellable so
@@ -401,6 +406,12 @@ function createWorkerAiJobStartHandler({
       };
     }
 
+
+    const pendingInputState = capturePendingInputState(session);
+    if (pendingInputState.pending) {
+      return { ok: false, error: PENDING_INPUT_ERROR };
+    }
+
     const jobId = createWorkerBackgroundJobId();
     const startedAt = Date.now();
     activeSessionJobs.set(sessionId, jobId);
@@ -437,7 +448,6 @@ function createWorkerAiJobStartHandler({
     // Same shellKind probe as foreground exec so background jobs on fish
     // remote shells are not wrapped as posix (issue #1854). Session is
     // reserved above so concurrent starts cannot pass the busy check.
-    const pendingInputState = capturePendingInputState(session);
     try {
       await ensureSessionShellKind(session);
     } catch (err) {

@@ -10,6 +10,7 @@ const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
 const {
+  PENDING_INPUT_ERROR,
   acquireSessionInputGate,
   capturePendingInputState,
   isPendingInputStateCurrent,
@@ -174,6 +175,11 @@ function registerCattyExecHandlers(ctx) {
           encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
           pendingUserInput: pendingInputState.pending,
         }));
+      }
+
+      if (pendingInputState.pending) {
+        releaseLock();
+        return { ok: false, error: PENDING_INPUT_ERROR };
       }
 
       // Prefer PTY stream (visible in terminal)

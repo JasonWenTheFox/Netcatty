@@ -4,6 +4,7 @@ const { execFile } = require("node:child_process");
 const { createSessionExecProbe, isWindowsOpenSshRemote } = require("./sessionShellKind.cjs");
 
 const SAFE_MARKER = "__NETCATTY_FOREGROUND_SHELL__";
+const PENDING_INPUT_ERROR = "Cannot safely execute while unsubmitted terminal input is present. Clear the current line and try again.";
 const SHELL_NAME = /^(?:ba|z|fi|k|da|a|c|tc)?sh$/;
 
 function isShellName(value) {
@@ -137,6 +138,7 @@ async function verifySessionForegroundShell(session, options = {}) {
 }
 
 module.exports = {
+  PENDING_INPUT_ERROR,
   SAFE_MARKER,
   acquireSessionInputGate,
   buildRemoteForegroundShellProbeCommand,

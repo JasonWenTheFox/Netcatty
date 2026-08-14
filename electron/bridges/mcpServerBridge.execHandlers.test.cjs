@@ -322,6 +322,7 @@ test("MCP serial exec refuses active file transfer without writing", async () =>
 
 test("MCP shell exec refuses verified pending input without writing", async () => {
   const pty = new FakePty();
+  let probeCalls = 0;
   pty.write = function write(data) {
     const text = String(data);
     this.writes.push(text);
@@ -343,7 +344,10 @@ test("MCP shell exec refuses verified pending input without writing", async () =
     lastIdlePrompt: "user@host:~$",
     _promptTrackTail: "user@host:~$ls",
     _hasPendingUserInput: true,
-    _pendingInputSafetyProbe: async () => true,
+    _pendingInputSafetyProbe: async () => {
+      probeCalls += 1;
+      return true;
+    },
   };
   const ctx = createExecHandlerTestContext({
     sessions: new Map([["shell-1", session]]),
@@ -358,9 +362,10 @@ test("MCP shell exec refuses verified pending input without writing", async () =
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /terminal input may still be active/i);
+  assert.match(result.error, /unsubmitted terminal input/i);
   assert.deepEqual(pty.writes, []);
   assert.equal(session._hasPendingUserInput, true);
+  assert.equal(probeCalls, 0);
 });
 
 test("MCP shell exec refuses when user input changes during foreground verification", async () => {
@@ -368,14 +373,14 @@ test("MCP shell exec refuses when user input changes during foreground verificat
   let releaseProbe;
   const probe = new Promise((resolve) => { releaseProbe = resolve; });
   const session = {
-    protocol: "local",
+    protocol: "ssh",
     stream: pty,
-    shellKind: "posix",
+    shellKind: undefined,
     lastIdlePrompt: "user@host:~$",
-    _promptTrackTail: "user@host:~$ls",
-    _hasPendingUserInput: true,
+    _promptTrackTail: "user@host:~$",
+    _hasPendingUserInput: false,
     _userInputRevision: 1,
-    _pendingInputSafetyProbe: () => probe,
+    _shellKindExecProbe: () => probe,
   };
   const ctx = createExecHandlerTestContext({
     sessions: new Map([["shell-race", session]]),
@@ -391,7 +396,7 @@ test("MCP shell exec refuses when user input changes during foreground verificat
   await nextTick();
   session._hasPendingUserInput = false;
   session._userInputRevision = 2;
-  releaseProbe(false);
+  releaseProbe(`${PROBE_OUTPUT_MARKER}/bin/bash\n`);
   const result = await pending;
 
   assert.equal(result.ok, false);
@@ -404,12 +409,12 @@ test("MCP terminal_start refuses when user input changes during verification", a
   let releaseProbe;
   const probe = new Promise((resolve) => { releaseProbe = resolve; });
   const session = {
-    protocol: "local",
+    protocol: "ssh",
     stream: pty,
-    shellKind: "posix",
-    _hasPendingUserInput: true,
+    shellKind: undefined,
+    _hasPendingUserInput: false,
     _userInputRevision: 1,
-    _pendingInputSafetyProbe: () => probe,
+    _shellKindExecProbe: () => probe,
   };
   const backgroundJobs = new Map();
   const ctx = createExecHandlerTestContext({
@@ -426,7 +431,7 @@ test("MCP terminal_start refuses when user input changes during verification", a
   await nextTick();
   session._hasPendingUserInput = false;
   session._userInputRevision = 2;
-  releaseProbe(false);
+  releaseProbe(`${PROBE_OUTPUT_MARKER}/bin/bash\n`);
   const result = await pending;
 
   assert.equal(result.ok, false);

@@ -160,6 +160,7 @@ test("worker serial exec refuses active file transfer without writing", async ()
 
 test("worker exec refuses a submitted shell continuation without writing", async () => {
   const pty = new FakePty();
+  let probeCalls = 0;
   const sessions = new Map([["ssh-continuation", {
     protocol: "ssh",
     stream: pty,
@@ -167,7 +168,10 @@ test("worker exec refuses a submitted shell continuation without writing", async
     lastIdlePrompt: "user@host:~$",
     _promptTrackTail: "user@host:~$printf danger && \\\r\n> ",
     _awaitingPrimaryPromptAfterUserSubmit: true,
-    _pendingInputSafetyProbe: async () => true,
+    _pendingInputSafetyProbe: async () => {
+      probeCalls += 1;
+      return true;
+    },
   }]]);
   const ipcMain = createFakeIpcMain();
   registerWorkerAiExecHandlers(ipcMain, { sessions });
@@ -180,6 +184,7 @@ test("worker exec refuses a submitted shell continuation without writing", async
   assert.equal(result.ok, false);
   assert.match(result.error, /terminal input/i);
   assert.deepEqual(pty.writes, []);
+  assert.equal(probeCalls, 0);
 });
 
 test("worker AI background jobs start, poll, stop, and block overlapping exec", async () => {

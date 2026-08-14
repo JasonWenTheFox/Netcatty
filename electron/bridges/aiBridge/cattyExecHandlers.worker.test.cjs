@@ -127,6 +127,54 @@ test("catty raw exec refuses awaiting network-device input without writing", asy
   assert.deepEqual(writes, []);
 });
 
+test("catty shell exec refuses pending input before probing", async () => {
+  const ipcMain = createFakeIpcMain();
+  const writes = [];
+  let probeCalls = 0;
+  const session = {
+    protocol: "ssh",
+    stream: { write: (data) => writes.push(String(data)) },
+    shellKind: "posix",
+    _hasPendingUserInput: true,
+    _pendingInputSafetyProbe: async () => {
+      probeCalls += 1;
+      return true;
+    },
+  };
+  const mcpServerBridge = {
+    getPermissionMode: () => "auto",
+    reserveSessionExecution: () => ({ ok: true, token: "token-1" }),
+    releaseSessionExecution() {},
+    getSessionMeta: () => ({ protocol: "ssh" }),
+    checkCommandSafety: () => ({ blocked: false }),
+    getCommandTimeoutMs: () => 1000,
+    activePtyExecs: new Map(),
+  };
+
+  registerCattyExecHandlers({
+    ipcMain,
+    validateSender: () => true,
+    sessions: new Map([["shell-pending", session]]),
+    terminalWorkerManager: null,
+    mcpServerBridge,
+    electronModule: {},
+    safeSend() {},
+    execViaPty() {
+      throw new Error("pending input must be rejected before PTY execution");
+    },
+  });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(
+    { sender: { id: 7 } },
+    { sessionId: "shell-pending", command: "pwd", chatSessionId: "chat-1" },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /unsubmitted terminal input/i);
+  assert.deepEqual(writes, []);
+  assert.equal(probeCalls, 0);
+});
+
 test("catty raw exec refuses awaiting serial input without writing", async () => {
   const ipcMain = createFakeIpcMain();
   const writes = [];

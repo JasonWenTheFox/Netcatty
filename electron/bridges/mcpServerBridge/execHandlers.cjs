@@ -7,6 +7,7 @@ const {
 } = require("../ai/sessionShellKind.cjs");
 const { getEditableIdlePrompt } = require("../ai/shellUtils.cjs");
 const {
+  PENDING_INPUT_ERROR,
   acquireSessionInputGate,
   capturePendingInputState,
   isPendingInputStateCurrent,
@@ -152,7 +153,13 @@ function createExecHandlerApi(ctx) {
           pendingUserInput: pendingInputState.pending,
         }));
       }
-    
+
+      if (pendingInputState.pending) {
+        releaseSessionExecution(sessionId, sessionToken);
+        executionLock.release();
+        return { ok: false, error: PENDING_INPUT_ERROR };
+      }
+
       // Prefer the interactive PTY so the user sees command/output in-session.
       if (ptyStream && typeof ptyStream.write === "function") {
         // Probe remote login shell once when shellKind is unset so fish
@@ -245,6 +252,7 @@ function createExecHandlerApi(ctx) {
         isNetworkDevice,
         sessionProtocol,
         ptyStream,
+        pendingInputState,
       } = resolved.context;
     
       if (isNetworkDevice || sessionProtocol === "serial") {
@@ -259,6 +267,11 @@ function createExecHandlerApi(ctx) {
           ok: false,
           error: "Background execution requires a writable PTY-backed terminal session.",
         };
+      }
+
+
+      if (pendingInputState.pending) {
+        return { ok: false, error: PENDING_INPUT_ERROR };
       }
     
       const reservation = reserveSessionExecution(sessionId, "job");
@@ -301,7 +314,6 @@ function createExecHandlerApi(ctx) {
       backgroundJobs.set(jobId, job);
 
       // Probe so fish login shells are not mis-wrapped as posix (#1854).
-      const pendingInputState = capturePendingInputState(session);
       return Promise.resolve(ensureSessionShellKind(session)).then(async () => {
         if (probeCancelRequested || job.status === "stopping") {
           job.status = "cancelled";
