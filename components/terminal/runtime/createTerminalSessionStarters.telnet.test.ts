@@ -1085,7 +1085,7 @@ test("startTelnet ignores stale replacement failures", async () => {
   assert.deepEqual(statuses, []);
 });
 
-test("startTelnet runs a multi-line startup command in sequence when requested", async () => {
+test("startTelnet queues a cancellable multi-line startup command without pre-recording it", async () => {
   const writtenCommands: string[] = [];
   const executedCommands: string[] = [];
   let capturedOptions: Record<string, unknown> | null = null;
@@ -1194,7 +1194,7 @@ test("startTelnet runs a multi-line startup command in sequence when requested",
 
   assert.deepEqual(writtenCommands, ["first cmd\nsecond cmd\r"]);
   assert.deepEqual(startupWriteOptions, { automated: true, lineDelayMs: 20 });
-  assert.deepEqual(executedCommands, ["first cmd", "second cmd"]);
+  assert.deepEqual(executedCommands, []);
   assert.equal(disposedAutoLoginCancelListener, true);
 });
 

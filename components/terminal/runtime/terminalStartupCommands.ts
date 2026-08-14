@@ -128,10 +128,9 @@ export const scheduleStartupCommand = (
       automated: true,
       lineDelayMs: delayMs,
     });
-    for (const line of lines) {
-      markPromptLineBreakCommandPending(ctx.promptLineBreakStateRef, term, line);
-      ctx.onCommandExecuted?.(line, ctx.host.id, ctx.host.label, ctx.sessionId);
-    }
+    // The backend may cancel undispatched lines when the user takes over.
+    // Until it can acknowledge individual dispatches, do not record this
+    // batch as executed or arm prompt bookkeeping for lines that may never run.
     onSettled?.();
   }, delayMs);
   return () => {
