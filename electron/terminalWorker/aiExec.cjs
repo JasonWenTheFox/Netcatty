@@ -13,6 +13,7 @@ const {
   ensureSessionShellKindForExec,
 } = require("../bridges/ai/sessionShellKind.cjs");
 const {
+  acquireSessionInputGate,
   capturePendingInputState,
   isPendingInputStateCurrent,
   isUserInputRevisionCurrent,
@@ -294,6 +295,7 @@ function createWorkerAiExecHandler({
         pendingUserInput: session._hasPendingUserInput === true,
         pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
         isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
+        acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },
@@ -486,6 +488,7 @@ function createWorkerAiJobStartHandler({
         pendingUserInput: session._hasPendingUserInput === true,
         pendingInputInterruptSafe,
         isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
+        acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },

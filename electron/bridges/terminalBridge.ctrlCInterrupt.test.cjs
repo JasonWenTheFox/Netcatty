@@ -404,6 +404,26 @@ test("terminal writes track whether the user left unsubmitted input", () => {
   assert.equal(session._hasPendingUserInput, false);
 });
 
+test("terminal input gate blocks user bytes but permits automated writes", async () => {
+  const calls = [];
+  const session = {
+    _aiInputClearToken: Symbol("clear"),
+    stream: { write(data) { calls.push(data); } },
+  };
+  initBridge(new Map([["ssh-1", session]]));
+
+  terminalBridge.writeToSession({ sender: {} }, { sessionId: "ssh-1", data: "\r" });
+  terminalBridge.writeToSession({ sender: {} }, {
+    sessionId: "ssh-1",
+    data: "automated\r",
+    automated: true,
+  });
+  await delay(5);
+
+  assert.deepEqual(calls, ["automated\r"]);
+  assert.equal(session._userInputRevision, undefined);
+});
+
 test("local Ctrl+C behavior is unchanged", () => {
   const calls = [];
   const sessions = new Map();

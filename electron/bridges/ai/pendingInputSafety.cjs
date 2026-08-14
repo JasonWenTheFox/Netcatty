@@ -28,6 +28,18 @@ function isUserInputRevisionCurrent(session, captured) {
   return capturePendingInputState(session).revision === captured?.revision;
 }
 
+function acquireSessionInputGate(session, captured) {
+  if (!session || !isPendingInputStateCurrent(session, captured)) return null;
+  if (session._aiInputClearToken) return null;
+  const token = Symbol("ai-input-clear");
+  session._aiInputClearToken = token;
+  return () => {
+    if (session._aiInputClearToken === token) {
+      delete session._aiInputClearToken;
+    }
+  };
+}
+
 function parseLocalProcessTable(stdout, rootPid) {
   const rows = [];
   for (const line of String(stdout || "").split("\n")) {
@@ -116,6 +128,7 @@ async function verifySessionForegroundShell(session, options = {}) {
 
 module.exports = {
   SAFE_MARKER,
+  acquireSessionInputGate,
   buildRemoteForegroundShellProbeCommand,
   capturePendingInputState,
   isPendingInputStateCurrent,

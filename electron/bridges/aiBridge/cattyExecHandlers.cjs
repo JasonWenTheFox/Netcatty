@@ -10,6 +10,7 @@ const {
   ensureSessionShellKindForExec,
 } = require("../ai/sessionShellKind.cjs");
 const {
+  acquireSessionInputGate,
   capturePendingInputState,
   isPendingInputStateCurrent,
   isUserInputRevisionCurrent,
@@ -196,6 +197,7 @@ function registerCattyExecHandlers(ctx) {
             pendingUserInput: session._hasPendingUserInput === true,
             pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
             isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
+            acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },

@@ -1462,7 +1462,10 @@ function getAutomatedLineDelayMs(payload) {
   return Number.isFinite(lineDelayMs) && lineDelayMs > 0 ? Math.min(lineDelayMs, 2000) : 0;
 }
 
-function shouldBlockSessionInput(session, data) {
+function shouldBlockSessionInput(session, data, payload = {}) {
+  if (session._aiInputClearToken && payload.automated !== true) {
+    return true;
+  }
   if (session.ymodemActive) {
     if (data === '\x03') {
       cancelActiveYmodemSession(session);
@@ -1491,7 +1494,7 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
     }, trace);
     return;
   }
-  if (shouldBlockSessionInput(session, data)) {
+  if (shouldBlockSessionInput(session, data, payload)) {
     logTerminalInterruptDebug("write-session-blocked-by-transfer", {
       sessionId: payload.sessionId,
       dataCode: data === "\x03" ? "ETX" : undefined,
@@ -1652,7 +1655,7 @@ function writeToSession(event, payload) {
   if (!payload.automated && !isTerminalReportSequence(payload.data)) {
     clearPendingAutomatedWrites(session);
   }
-  if (shouldBlockSessionInput(session, payload.data)) {
+  if (shouldBlockSessionInput(session, payload.data, payload)) {
     return;
   }
 

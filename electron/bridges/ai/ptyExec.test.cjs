@@ -82,6 +82,7 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     onPendingInputCleared: () => {
       cleared += 1;
     },
@@ -126,6 +127,7 @@ test("cancelling during pending-input clear never writes the agent wrapper", asy
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     timeoutMs: 1000,
   });
   job.cancel();
@@ -151,6 +153,7 @@ test("a delayed pending-input interrupt write failure resolves as a stream error
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     timeoutMs: 1000,
   });
 
@@ -176,6 +179,7 @@ test("pending-input clear stops before Ctrl+C when the user types during its han
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     isInputRevisionCurrent: () => revisionCurrent,
     timeoutMs: 1000,
   });
@@ -206,6 +210,7 @@ test("a delayed wrapper write failure resolves as a stream error", async () => {
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     timeoutMs: 1000,
   });
 
@@ -242,6 +247,7 @@ test("execViaPty clears shell state before synthetic echo and wrapper write", as
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
     typedInput: true,
     echoCommand: (cmd) => {
       echoes.push({ cmd, writesSoFar: writes.slice() });
@@ -373,6 +379,7 @@ async function verifyRealEditorPendingInputClear({
       expectedPrompt,
       pendingUserInput: true,
       pendingInputInterruptSafe: true,
+      acquireInputGate: () => () => {},
       timeoutMs: 5000,
     });
 

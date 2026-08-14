@@ -48,6 +48,7 @@ function startPtyJob(ptyStream, command, options) {
     pendingUserInput = false,
     pendingInputInterruptSafe = false,
     isInputRevisionCurrent,
+    acquireInputGate,
     onPendingInputCleared,
     typedInput = false,
     echoCommand,
@@ -87,6 +88,7 @@ function startPtyJob(ptyStream, command, options) {
   let waitingForInputClear = pendingUserInput === true;
   let inputClearInterruptSent = false;
   let commandStarted = false;
+  let releaseInputGate = null;
   // Track one-shot timers scheduled inside requestCancel so finish() can
   // clear them when the job exits early; otherwise they keep the Node
   // event loop alive after the resultPromise has already resolved.
@@ -329,6 +331,7 @@ function startPtyJob(ptyStream, command, options) {
     clearCancelRetryTimer();
     clearTimeout(inputClearPrepTimerId);
     clearTimeout(inputClearTimeoutId);
+    releaseInputGateOnce();
     // Clear any pending one-shot cancel timers so they do not keep the
     // Node event loop alive after the job has resolved.
     while (cancelOneShotTimers.length) {
@@ -439,7 +442,16 @@ function startPtyJob(ptyStream, command, options) {
       }
     }
 
-    writePtySafely(buildWrappedCommand(command, resolvedShellKind, marker));
+    if (writePtySafely(buildWrappedCommand(command, resolvedShellKind, marker))) {
+      releaseInputGateOnce();
+    }
+  }
+
+  function releaseInputGateOnce() {
+    const release = releaseInputGate;
+    releaseInputGate = null;
+    if (typeof release !== "function") return;
+    try { release(); } catch {}
   }
 
   function inputRevisionIsCurrent() {
@@ -690,6 +702,27 @@ function startPtyJob(ptyStream, command, options) {
         "Cannot safely execute while unsubmitted terminal input is present. Clear the current line and try again.",
       );
     } else {
+      try {
+        releaseInputGate = acquireInputGate?.() || null;
+      } catch {
+        releaseInputGate = null;
+      }
+      if (typeof releaseInputGate !== "function") {
+        finish("", -1, "Cannot safely lock terminal input for clearing. Clear the current line and try again.");
+        return {
+          marker,
+          cancel,
+          getSnapshot: () => ({
+            stdout: "",
+            outputBaseOffset: 0,
+            totalOutputChars: 0,
+            outputTruncated: false,
+            status: "finished",
+            foundStart: false,
+          }),
+          resultPromise,
+        };
+      }
       // Enter insert mode first, then Ctrl+C. In vi command mode fish binds
       // Ctrl+C only in its insert keymap; readline/zle/PSReadLine also accept
       // this sequence, and the interrupt discards the temporary literal `i`.
@@ -746,6 +779,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
  * @param {boolean} [options.pendingInputInterruptSafe=false] - Whether the caller proved the shell owns foreground input.
  * @param {() => boolean} [options.isInputRevisionCurrent] - Confirms the user has not typed since safety verification.
+ * @param {() => (() => void)|null} [options.acquireInputGate] - Atomically blocks renderer input until clearing finishes.
  * @param {() => void} [options.onPendingInputCleared] - Called after Ctrl+C redraws the expected prompt.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo
