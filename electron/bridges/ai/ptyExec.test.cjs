@@ -159,6 +159,32 @@ test("a delayed pending-input interrupt write failure resolves as a stream error
   assert.equal(writes, 2);
 });
 
+test("pending-input clear stops before Ctrl+C when the user types during its handshake", async () => {
+  const writes = [];
+  let revisionCurrent = true;
+  const pty = new EventEmitter();
+  pty.write = (data) => {
+    writes.push(String(data));
+    if (data === "i") {
+      revisionCurrent = false;
+      queueMicrotask(() => pty.emit("data", Buffer.from("i")));
+    }
+  };
+
+  const result = await execViaPty(pty, "uname -a", {
+    shellKind: "posix",
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    pendingInputInterruptSafe: true,
+    isInputRevisionCurrent: () => revisionCurrent,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /input changed/i);
+  assert.deepEqual(writes, ["i"]);
+});
+
 test("a delayed wrapper write failure resolves as a stream error", async () => {
   let writes = 0;
   const pty = new EventEmitter();

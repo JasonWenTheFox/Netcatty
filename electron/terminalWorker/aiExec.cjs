@@ -15,6 +15,7 @@ const {
 const {
   capturePendingInputState,
   isPendingInputStateCurrent,
+  isUserInputRevisionCurrent,
   verifySessionForegroundShell,
 } = require("../bridges/ai/pendingInputSafety.cjs");
 
@@ -292,6 +293,7 @@ function createWorkerAiExecHandler({
         expectedPrompt: getEditableIdlePrompt(session),
         pendingUserInput: session._hasPendingUserInput === true,
         pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
+        isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },
@@ -483,6 +485,7 @@ function createWorkerAiJobStartHandler({
         expectedPrompt: getEditableIdlePrompt(session),
         pendingUserInput: session._hasPendingUserInput === true,
         pendingInputInterruptSafe,
+        isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
         onPendingInputCleared: () => {
           session._hasPendingUserInput = false;
         },

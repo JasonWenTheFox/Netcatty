@@ -9,6 +9,7 @@ const { getEditableIdlePrompt } = require("../ai/shellUtils.cjs");
 const {
   capturePendingInputState,
   isPendingInputStateCurrent,
+  isUserInputRevisionCurrent,
   verifySessionForegroundShell,
 } = require("../ai/pendingInputSafety.cjs");
 
@@ -164,6 +165,7 @@ function createExecHandlerApi(ctx) {
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
             pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
+            isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },
@@ -333,6 +335,7 @@ function createExecHandlerApi(ctx) {
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
             pendingInputInterruptSafe,
+            isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },

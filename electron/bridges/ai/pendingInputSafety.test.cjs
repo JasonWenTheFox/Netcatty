@@ -37,6 +37,10 @@ test("parseLocalProcessTable accepts only the recorded foreground shell", () => 
     "250 100 250 250 script",
     "300 250 300 300 bash",
   ].join("\n"), 100), false);
+  assert.equal(parseLocalProcessTable([
+    "100 1 100 100 bash",
+    "200 100 100 100 python3",
+  ].join("\n"), 100), false);
   assert.equal(parseLocalProcessTable("300 1 300 300 bash\n", 100), false);
 });
 
@@ -60,6 +64,10 @@ test("verifySessionForegroundShell distinguishes an idle shell from a foreground
   try {
     await waitForText(ptyProcess, prompt);
     assert.equal(await verifySessionForegroundShell(session), true);
+
+    const noMonitorReady = waitForText(ptyProcess, prompt);
+    ptyProcess.write("set +m\r");
+    await noMonitorReady;
 
     const childReady = waitForText(ptyProcess, "CHILD_READY");
     ptyProcess.write("python3 -c 'import time; print(\"CHILD_READY\", flush=True); time.sleep(30)'\r");

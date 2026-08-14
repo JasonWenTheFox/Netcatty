@@ -24,6 +24,10 @@ function isPendingInputStateCurrent(session, captured) {
   return current.pending === captured?.pending && current.revision === captured?.revision;
 }
 
+function isUserInputRevisionCurrent(session, captured) {
+  return capturePendingInputState(session).revision === captured?.revision;
+}
+
 function parseLocalProcessTable(stdout, rootPid) {
   const rows = [];
   for (const line of String(stdout || "").split("\n")) {
@@ -39,12 +43,11 @@ function parseLocalProcessTable(stdout, rootPid) {
     rows.push(row);
   }
 
-  return rows.some((row) => (
-    row.pid === rootPid
-    && row.tpgid > 0
-    && row.pgid === row.tpgid
-    && isShellName(row.command)
-  ));
+  const root = rows.find((row) => row.pid === rootPid);
+  if (!root || root.tpgid <= 0 || root.pgid !== root.tpgid || !isShellName(root.command)) {
+    return false;
+  }
+  return !rows.some((row) => row.pid !== rootPid && row.pgid === root.pgid);
 }
 
 function verifyLocalForegroundShell(session) {
@@ -72,13 +75,13 @@ function buildRemoteForegroundShellProbeCommand(targetShellPid) {
     '[ "$_target_conn" = "$_conn" ] || exit 0',
     '_target_tty=$(ps -p "$TARGET" -o tty= 2>/dev/null | tr -d "[:space:]")',
     '[ -n "$_target_tty" ] && [ "$_target_tty" != "?" ] || exit 0',
-    'ps -e -o pid=,pgid=,tpgid=,tty=,comm= 2>/dev/null | while read _pid _pgid _tpgid _tty _comm; do',
-    '  [ "$_pid" = "$TARGET" ] || continue',
-    '  [ "$_tty" = "$_target_tty" ] || continue',
-    '  [ "$_pgid" = "$_tpgid" ] && [ "$_tpgid" -gt 0 ] 2>/dev/null || continue',
-    '  case "$_comm" in sh|bash|zsh|fish|ksh|dash|ash|csh|tcsh|-sh|-bash|-zsh|-fish|-ksh|-dash|-ash|-csh|-tcsh) ;; *) continue ;; esac',
-    `  echo ${SAFE_MARKER}; break`,
-    'done',
+    'set -- $(ps -p "$TARGET" -o pgid=,tpgid=,comm= 2>/dev/null)',
+    '_pgid=$1; _tpgid=$2; _comm=$3',
+    '[ "$_pgid" = "$_tpgid" ] && [ "$_tpgid" -gt 0 ] 2>/dev/null || exit 0',
+    'case "$_comm" in sh|bash|zsh|fish|ksh|dash|ash|csh|tcsh|-sh|-bash|-zsh|-fish|-ksh|-dash|-ash|-csh|-tcsh) ;; *) exit 0 ;; esac',
+    "_other=$(ps -e -o pid=,pgid=,tty= 2>/dev/null | awk -v target=\"$TARGET\" -v pgid=\"$_pgid\" -v tty=\"$_target_tty\" '$1 != target && $2 == pgid && $3 == tty { print $1; exit }')",
+    '[ -z "$_other" ] || exit 0',
+    `echo ${SAFE_MARKER}`,
   ].join("\n");
   return `exec sh -c '${script.replace(/'/g, "'\\''")}'`;
 }
@@ -116,6 +119,7 @@ module.exports = {
   buildRemoteForegroundShellProbeCommand,
   capturePendingInputState,
   isPendingInputStateCurrent,
+  isUserInputRevisionCurrent,
   parseLocalProcessTable,
   verifySessionForegroundShell,
 };

@@ -47,6 +47,7 @@ function startPtyJob(ptyStream, command, options) {
     expectedPrompt,
     pendingUserInput = false,
     pendingInputInterruptSafe = false,
+    isInputRevisionCurrent,
     onPendingInputCleared,
     typedInput = false,
     echoCommand,
@@ -424,6 +425,10 @@ function startPtyJob(ptyStream, command, options) {
 
   function writeWrappedCommand() {
     if (finished || commandStarted) return;
+    if (!inputRevisionIsCurrent()) {
+      finish(preStartOutput, -1, "Terminal input changed while command execution was being prepared. Try again.");
+      return;
+    }
     commandStarted = true;
 
     if (typedInput && typeof echoCommand === "function") {
@@ -435,6 +440,15 @@ function startPtyJob(ptyStream, command, options) {
     }
 
     writePtySafely(buildWrappedCommand(command, resolvedShellKind, marker));
+  }
+
+  function inputRevisionIsCurrent() {
+    if (typeof isInputRevisionCurrent !== "function") return true;
+    try {
+      return isInputRevisionCurrent() === true;
+    } catch {
+      return false;
+    }
   }
 
   function writePtySafely(data) {
@@ -454,6 +468,10 @@ function startPtyJob(ptyStream, command, options) {
 
   function sendPendingInputInterrupt() {
     if (finished || !waitingForInputClear || inputClearInterruptSent) return;
+    if (!inputRevisionIsCurrent()) {
+      finish(preStartOutput, -1, "Terminal input changed while command execution was being prepared. Try again.");
+      return;
+    }
     inputClearInterruptSent = true;
     clearTimeout(inputClearPrepTimerId);
     if (!writePtySafely("\x03")) return;
@@ -683,7 +701,9 @@ function startPtyJob(ptyStream, command, options) {
       // the live terminal tail proves they are still on the cached editable
       // prompt line. Wait for the prompt redraw before writing the wrapper to
       // avoid VINTR flushing its bytes.
-      if (writePtySafely("i")) {
+      if (!inputRevisionIsCurrent()) {
+        finish("", -1, "Terminal input changed while command execution was being prepared. Try again.");
+      } else if (writePtySafely("i")) {
         inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 100);
       }
     }
@@ -725,6 +745,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {string} [options.expectedPrompt] - Live editable prompt used for wrapper selection, prompt fallback, and safe pending-input cancellation.
  * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
  * @param {boolean} [options.pendingInputInterruptSafe=false] - Whether the caller proved the shell owns foreground input.
+ * @param {() => boolean} [options.isInputRevisionCurrent] - Confirms the user has not typed since safety verification.
  * @param {() => void} [options.onPendingInputCleared] - Called after Ctrl+C redraws the expected prompt.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo

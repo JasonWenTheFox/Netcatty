@@ -12,6 +12,7 @@ const {
 const {
   capturePendingInputState,
   isPendingInputStateCurrent,
+  isUserInputRevisionCurrent,
   verifySessionForegroundShell,
 } = require("../ai/pendingInputSafety.cjs");
 
@@ -194,6 +195,7 @@ function registerCattyExecHandlers(ctx) {
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: session._hasPendingUserInput === true,
             pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
+            isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             onPendingInputCleared: () => {
               session._hasPendingUserInput = false;
             },
