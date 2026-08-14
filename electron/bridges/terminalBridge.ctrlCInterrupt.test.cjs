@@ -440,6 +440,33 @@ test("terminal input gate blocks user bytes and defers automated writes", async 
   assert.deepEqual(calls, ["automated\r"]);
 });
 
+test("terminal input gate never replays an old session write into its replacement", async () => {
+  const oldWrites = [];
+  const newWrites = [];
+  const oldSession = {
+    _hasPendingUserInput: true,
+    stream: { write(data) { oldWrites.push(data); } },
+  };
+  const newSession = {
+    stream: { write(data) { newWrites.push(data); } },
+  };
+  const sessions = new Map([["ssh-1", oldSession]]);
+  initBridge(sessions);
+  const releaseGate = acquireSessionInputGate(oldSession, { pending: true, revision: 0 });
+
+  terminalBridge.writeToSession({ sender: {} }, {
+    sessionId: "ssh-1",
+    data: "queued-command\r",
+    automated: true,
+  });
+  sessions.set("ssh-1", newSession);
+  releaseGate(true);
+  await delay(5);
+
+  assert.deepEqual(oldWrites, []);
+  assert.deepEqual(newWrites, []);
+});
+
 test("local Ctrl+C behavior is unchanged", () => {
   const calls = [];
   const sessions = new Map();

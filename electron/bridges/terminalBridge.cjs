@@ -1497,7 +1497,10 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
   if (shouldBlockSessionInput(session, data)) {
     if (payload.automated === true) {
       session._aiInputClearDeferredWrites ??= [];
-      session._aiInputClearDeferredWrites.push(() => writeToSessionNow(payload, data, logRewrite));
+      session._aiInputClearDeferredWrites.push(() => {
+        if (sessions.get(payload.sessionId) !== session || session.closed) return;
+        writeToSessionNow(payload, data, logRewrite);
+      });
     }
     logTerminalInterruptDebug("write-session-blocked-by-transfer", {
       sessionId: payload.sessionId,
@@ -1653,7 +1656,10 @@ function writeToSession(event, payload) {
   if (session._aiInputClearToken) {
     if (payload.automated === true) {
       session._aiInputClearDeferredWrites ??= [];
-      session._aiInputClearDeferredWrites.push(() => writeToSession(event, payload));
+      session._aiInputClearDeferredWrites.push(() => {
+        if (sessions.get(payload.sessionId) !== session || session.closed) return;
+        writeToSession(event, payload);
+      });
     }
     return;
   }
