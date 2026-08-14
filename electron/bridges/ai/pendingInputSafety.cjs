@@ -26,7 +26,6 @@ function isPendingInputStateCurrent(session, captured) {
 
 function parseLocalProcessTable(stdout, rootPid) {
   const rows = [];
-  const parents = new Map();
   for (const line of String(stdout || "").split("\n")) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(.+)$/);
     if (!match) continue;
@@ -38,23 +37,13 @@ function parseLocalProcessTable(stdout, rootPid) {
       command: match[5].trim(),
     };
     rows.push(row);
-    parents.set(row.pid, row.ppid);
   }
 
-  const descendsFromRoot = (pid) => {
-    let current = pid;
-    for (let depth = 0; depth < 64 && current > 0; depth += 1) {
-      if (current === rootPid) return true;
-      current = parents.get(current) || 0;
-    }
-    return false;
-  };
-
   return rows.some((row) => (
-    row.tpgid > 0
+    row.pid === rootPid
+    && row.tpgid > 0
     && row.pgid === row.tpgid
     && isShellName(row.command)
-    && descendsFromRoot(row.pid)
   ));
 }
 
@@ -84,6 +73,7 @@ function buildRemoteForegroundShellProbeCommand(targetShellPid) {
     '_target_tty=$(ps -p "$TARGET" -o tty= 2>/dev/null | tr -d "[:space:]")',
     '[ -n "$_target_tty" ] && [ "$_target_tty" != "?" ] || exit 0',
     'ps -e -o pid=,pgid=,tpgid=,tty=,comm= 2>/dev/null | while read _pid _pgid _tpgid _tty _comm; do',
+    '  [ "$_pid" = "$TARGET" ] || continue',
     '  [ "$_tty" = "$_target_tty" ] || continue',
     '  [ "$_pgid" = "$_tpgid" ] && [ "$_tpgid" -gt 0 ] 2>/dev/null || continue',
     '  case "$_comm" in sh|bash|zsh|fish|ksh|dash|ash|csh|tcsh|-sh|-bash|-zsh|-fish|-ksh|-dash|-ash|-csh|-tcsh) ;; *) continue ;; esac',

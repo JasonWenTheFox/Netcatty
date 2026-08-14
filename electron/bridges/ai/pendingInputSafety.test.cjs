@@ -26,7 +26,7 @@ function waitForText(ptyProcess, needle, timeoutMs = 5000) {
   });
 }
 
-test("parseLocalProcessTable accepts only a foreground descendant shell", () => {
+test("parseLocalProcessTable accepts only the recorded foreground shell", () => {
   assert.equal(parseLocalProcessTable([
     "100 1 100 100 bash",
     "200 100 200 200 python3",
@@ -34,6 +34,8 @@ test("parseLocalProcessTable accepts only a foreground descendant shell", () => 
   assert.equal(parseLocalProcessTable([
     "100 1 100 200 bash",
     "200 100 200 200 python3",
+    "250 100 250 250 script",
+    "300 250 300 300 bash",
   ].join("\n"), 100), false);
   assert.equal(parseLocalProcessTable("300 1 300 300 bash\n", 100), false);
 });
@@ -63,6 +65,37 @@ test("verifySessionForegroundShell distinguishes an idle shell from a foreground
     ptyProcess.write("python3 -c 'import time; print(\"CHILD_READY\", flush=True); time.sleep(30)'\r");
     await childReady;
     assert.equal(await verifySessionForegroundShell(session), false);
+  } finally {
+    ptyProcess.kill();
+  }
+});
+
+test("verifySessionForegroundShell rejects a foreground bash child waiting for input", async (t) => {
+  if (process.platform === "win32" || spawnSync("bash", ["--version"]).status !== 0) {
+    t.skip("POSIX bash is unavailable");
+    return;
+  }
+  const ptyProcess = nodePty.spawn("bash", ["--noprofile", "--norc", "-i"], {
+    cols: 100,
+    rows: 30,
+    env: { ...process.env, PS1: "parent-shell$" },
+  });
+  const session = {
+    protocol: "local",
+    proc: ptyProcess,
+    _hasPendingUserInput: true,
+  };
+
+  try {
+    await waitForText(ptyProcess, "parent-shell$");
+    const childReady = waitForText(ptyProcess, "CHILD_SHELL_READY");
+    ptyProcess.write("bash -c 'printf CHILD_SHELL_READY; read value; printf CHILD_SHELL_ALIVE'\r");
+    await childReady;
+    assert.equal(await verifySessionForegroundShell(session), false);
+
+    const childAlive = waitForText(ptyProcess, "CHILD_SHELL_ALIVE");
+    ptyProcess.write("input\r");
+    await childAlive;
   } finally {
     ptyProcess.kill();
   }
