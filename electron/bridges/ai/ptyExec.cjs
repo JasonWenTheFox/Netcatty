@@ -433,14 +433,29 @@ function startPtyJob(ptyStream, command, options) {
       }
     }
 
-    ptyStream.write(buildWrappedCommand(command, resolvedShellKind, marker));
+    writePtySafely(buildWrappedCommand(command, resolvedShellKind, marker));
+  }
+
+  function writePtySafely(data) {
+    if (finished) return false;
+    try {
+      ptyStream.write(data);
+      return true;
+    } catch (error) {
+      finish(
+        foundStart ? output : preStartOutput,
+        -1,
+        `Stream error: ${error?.message || error}`,
+      );
+      return false;
+    }
   }
 
   function sendPendingInputInterrupt() {
     if (finished || !waitingForInputClear || inputClearInterruptSent) return;
     inputClearInterruptSent = true;
     clearTimeout(inputClearPrepTimerId);
-    ptyStream.write("\x03");
+    if (!writePtySafely("\x03")) return;
     inputClearTimeoutId = setTimeout(() => {
       if (!waitingForInputClear || finished) return;
       finish(
@@ -667,8 +682,9 @@ function startPtyJob(ptyStream, command, options) {
       // the live terminal tail proves they are still on the cached editable
       // prompt line. Wait for the prompt redraw before writing the wrapper to
       // avoid VINTR flushing its bytes.
-      ptyStream.write("i");
-      inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 100);
+      if (writePtySafely("i")) {
+        inputClearPrepTimerId = setTimeout(sendPendingInputInterrupt, 100);
+      }
     }
   } else {
     writeWrappedCommand();

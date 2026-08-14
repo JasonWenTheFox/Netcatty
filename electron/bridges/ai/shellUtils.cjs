@@ -141,6 +141,12 @@ function trackSessionIdlePrompt(session, chunk) {
   const nextTail = `${session._promptTrackTail || ""}${chunk}`.slice(-MAX_PROMPT_TRACK_TAIL);
   session._promptTrackTail = nextTail;
 
+  // While the user is editing, the current line contains the last known
+  // prompt followed by their input. Input ending in `$`, `#`, or `>` can look
+  // like a fresh prompt, so keep the proven prompt until the line is submitted
+  // or interrupted.
+  if (session._hasPendingUserInput === true) return "";
+
   const prompt = extractTrailingIdlePrompt(nextTail);
   if (prompt) {
     session.lastIdlePrompt = prompt;
@@ -196,7 +202,7 @@ function getEditableIdlePrompt(session) {
 
 // Track whether renderer keyboard input contains bytes that have not been
 // submitted to the terminal yet. This is deliberately conservative: cursor
-// keys and backspace keep the flag set, while Enter, Ctrl+C and Ctrl+D reset
+// keys and backspace keep the flag set, while Enter and Ctrl+C reset
 // it unless the same input chunk contains trailing text after that boundary.
 // Programmatic writes and terminal report responses do not represent user
 // command-line input and must not affect the state.
@@ -208,8 +214,13 @@ function trackSessionPendingUserInput(session, data, options = {}) {
   const text = String(data || "");
   if (!text) return session._hasPendingUserInput === true;
 
+  // Ctrl+D is an editing key on a non-empty readline/zle line (delete-char),
+  // not an unconditional submission boundary. Preserve the prior state when
+  // it is the only input byte; otherwise the surrounding text is pending.
+  if (/^\x04+$/.test(text)) return session._hasPendingUserInput === true;
+
   let lastBoundary = -1;
-  for (const boundary of ["\r", "\n", "\x03", "\x04"]) {
+  for (const boundary of ["\r", "\n", "\x03"]) {
     lastBoundary = Math.max(lastBoundary, text.lastIndexOf(boundary));
   }
   session._hasPendingUserInput = lastBoundary === -1

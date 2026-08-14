@@ -636,8 +636,10 @@ test("getEditableIdlePrompt keeps a cached prompt while unfinished input is on t
 
 test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries", () => {
   const session = {};
+  assert.equal(trackSessionPendingUserInput(session, "\x04"), false);
   assert.equal(trackSessionPendingUserInput(session, "ls"), true);
   assert.equal(trackSessionPendingUserInput(session, "\x1b[D"), true);
+  assert.equal(trackSessionPendingUserInput(session, "\x04"), true);
   assert.equal(trackSessionPendingUserInput(session, "\r"), false);
   assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
   assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
@@ -650,6 +652,21 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
     trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
     false,
   );
+});
+
+test("trackSessionIdlePrompt does not replace a proven prompt with unfinished input", () => {
+  for (const [prompt, input] of [
+    ["user@host:~$", " echo $"],
+    ["root@host:/#", " printf #"],
+    ["PS C:\\Users\\alice>", " Write-Output >"],
+  ]) {
+    const session = {};
+    trackSessionIdlePrompt(session, prompt);
+    session._hasPendingUserInput = true;
+    assert.equal(trackSessionIdlePrompt(session, input), "");
+    assert.equal(session.lastIdlePrompt, prompt);
+    assert.equal(getEditableIdlePrompt(session), prompt);
+  }
 });
 
 test("getFreshIdlePrompt and trackSessionIdlePrompt round-trip through a real PTY-like flow", () => {

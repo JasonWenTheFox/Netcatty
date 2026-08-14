@@ -135,6 +135,55 @@ test("cancelling during pending-input clear never writes the agent wrapper", asy
   assert.equal(writes.some((write) => write.includes("should-not-run")), false);
 });
 
+test("a delayed pending-input interrupt write failure resolves as a stream error", async () => {
+  let writes = 0;
+  const pty = new EventEmitter();
+  pty.write = () => {
+    writes += 1;
+    if (writes === 2) throw new Error("terminal closed");
+    queueMicrotask(() => pty.emit("data", Buffer.from("i")));
+  };
+
+  const result = await execViaPty(pty, "uname -a", {
+    shellKind: "posix",
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Stream error: terminal closed/);
+  assert.equal(writes, 2);
+});
+
+test("a delayed wrapper write failure resolves as a stream error", async () => {
+  let writes = 0;
+  const pty = new EventEmitter();
+  pty.write = (data) => {
+    writes += 1;
+    if (writes === 1) {
+      queueMicrotask(() => pty.emit("data", Buffer.from("i")));
+      return;
+    }
+    if (writes === 2) {
+      queueMicrotask(() => pty.emit("data", Buffer.from("^C\r\nuser@host:~$")));
+      return;
+    }
+    throw new Error("terminal closed");
+  };
+
+  const result = await execViaPty(pty, "uname -a", {
+    shellKind: "posix",
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Stream error: terminal closed/);
+  assert.equal(writes, 3);
+});
+
 test("execViaPty clears shell state before synthetic echo and wrapper write", async () => {
   const writes = [];
   const echoes = [];
