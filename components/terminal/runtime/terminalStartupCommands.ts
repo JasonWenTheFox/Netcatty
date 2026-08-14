@@ -6,6 +6,30 @@ import type { TerminalSessionStartersContext } from "./createTerminalSessionStar
 const STARTUP_COMMAND_DEFAULT_DELAY_MS = 600;
 const STARTUP_COMMAND_MAX_DELAY_MS = 10000;
 
+export const createAutomatedCompletionMarker = (): string | undefined => {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID !== "function") return undefined;
+  return `__NCAUTO_${randomUUID.call(globalThis.crypto).replace(/-/g, "")}__`;
+};
+
+export const buildAutomatedCompletionCommand = (
+  marker: string,
+  shellType: TerminalSessionStartersContext["shellType"],
+): string => {
+  const midpoint = Math.floor(marker.length / 2);
+  const left = marker.slice(0, midpoint);
+  const right = marker.slice(midpoint);
+  if (shellType === "powershell") return `Write-Output ('${left}' + '${right}')`;
+  if (shellType === "cmd") return `for %A in (${left}) do @for %B in (${right}) do @echo %A%B`;
+  return `printf '\\n%s%s\\n' '${left}' '${right}'`;
+};
+
+export const appendAutomatedCompletionCommand = (
+  command: string,
+  marker: string,
+  shellType: TerminalSessionStartersContext["shellType"],
+): string => `${command}\n${buildAutomatedCompletionCommand(marker, shellType)}`;
+
 /**
  * Split a (possibly multi-line) startup command into non-empty lines, dropping
  * blank/whitespace-only lines but preserving each line's content verbatim — so
@@ -98,10 +122,14 @@ export const scheduleStartupCommand = (
         onSettled?.();
         return;
       }
+      const completionMarker = createAutomatedCompletionMarker();
+      const startupInput = completionMarker
+        ? appendAutomatedCompletionCommand(commandToRun, completionMarker, ctx.shellType)
+        : commandToRun;
       ctx.terminalBackend.writeToSession(
         ctx.sessionRef.current,
-        buildStartupPasteInput(term, commandToRun),
-        { automated: true },
+        buildStartupPasteInput(term, startupInput),
+        { automated: true, automatedCompletionMarker: completionMarker },
       );
       for (const line of lines) {
         markPromptLineBreakCommandPending(ctx.promptLineBreakStateRef, term, line);
@@ -125,7 +153,15 @@ export const scheduleStartupCommand = (
       return;
     }
     const line = lines[index];
-    ctx.terminalBackend.writeToSession(ctx.sessionRef.current, `${line}\r`, { automated: true });
+    const isLastLine = index === lines.length - 1;
+    const completionMarker = isLastLine ? createAutomatedCompletionMarker() : undefined;
+    const data = completionMarker
+      ? `${line}\r${buildAutomatedCompletionCommand(completionMarker, ctx.shellType)}\r`
+      : `${line}\r`;
+    ctx.terminalBackend.writeToSession(ctx.sessionRef.current, data, {
+      automated: true,
+      automatedCompletionMarker: completionMarker,
+    });
     markPromptLineBreakCommandPending(ctx.promptLineBreakStateRef, term, line);
     ctx.onCommandExecuted?.(line, ctx.host.id, ctx.host.label, ctx.sessionId);
     index += 1;

@@ -1484,7 +1484,12 @@ function shouldBlockSessionInput(session, data) {
   return false;
 }
 
-function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
+function writeToSessionNow(
+  payload,
+  data,
+  logRewrite = payload.logRewrite,
+  inputStateAlreadyTracked = false,
+) {
   const session = sessions.get(payload.sessionId);
   const trace = payload.interruptTrace || null;
   if (!session) {
@@ -1585,7 +1590,7 @@ function writeToSessionNow(payload, data, logRewrite = payload.logRewrite) {
       didWrite = true;
     }
 
-    if (didWrite) {
+    if (didWrite && !inputStateAlreadyTracked) {
       trackSessionPendingUserInput(session, data, {
         automated: payload.automated === true,
         terminalReport: isTerminalReportSequence(data),
@@ -1609,6 +1614,7 @@ function writeToSessionWithInterception(
   data,
   logRewrite = payload.logRewrite,
   expectedSession = sessions.get(payload.sessionId),
+  inputStateAlreadyTracked = false,
 ) {
   const bypass = payload?.sensitive === true || isTerminalReportSequence(data);
   const hasInterceptor = Boolean(
@@ -1617,13 +1623,13 @@ function writeToSessionWithInterception(
   );
   const previous = terminalInputPipelineBarriers.get(payload.sessionId);
   if (!hasInterceptor && !previous) {
-    writeToSessionNow(payload, data, logRewrite);
+    writeToSessionNow(payload, data, logRewrite, inputStateAlreadyTracked);
     return;
   }
   const writeIfCurrent = (nextData) => {
     const current = sessions.get(payload.sessionId);
     if (!current || current !== expectedSession || current.closed) return;
-    writeToSessionNow(payload, nextData, logRewrite);
+    writeToSessionNow(payload, nextData, logRewrite, inputStateAlreadyTracked);
   };
   const write = async () => {
     if (!hasInterceptor) {
@@ -1677,6 +1683,23 @@ function writeToSession(event, payload) {
     return;
   }
 
+  const terminalReport = isTerminalReportSequence(payload.data);
+  trackSessionPendingUserInput(session, payload.data, {
+    automated: payload.automated === true,
+    terminalReport,
+  });
+  const completionMarker = payload.automated === true
+    && typeof payload.automatedCompletionMarker === "string"
+    && /^__NCAUTO_[A-Za-z0-9_-]{16,128}__$/.test(payload.automatedCompletionMarker)
+    ? payload.automatedCompletionMarker
+    : null;
+  if (completionMarker) {
+    session._automatedInputCompletionMarker = completionMarker;
+    session._automatedInputCompletionRevision = session._userInputRevision;
+    session._automatedInputCompletionSeen = false;
+    session._automatedInputCompletionTail = "";
+  }
+
   const lineDelayMs = getAutomatedLineDelayMs(payload);
   const lineChunks = lineDelayMs > 0 ? splitTerminalInputIntoLineWrites(payload.data) : [payload.data];
   if (lineDelayMs > 0 && lineChunks.length > 1) {
@@ -1691,6 +1714,7 @@ function writeToSession(event, payload) {
           chunk,
           index === 0 ? payload.logRewrite : undefined,
           current,
+          true,
         );
       };
       if (index === 0) {
@@ -1703,7 +1727,7 @@ function writeToSession(event, payload) {
     return;
   }
 
-  writeToSessionWithInterception(payload, payload.data, payload.logRewrite, session);
+  writeToSessionWithInterception(payload, payload.data, payload.logRewrite, session, true);
 }
 
 function drainPendingOutputForInterrupt(sessionId, session, trace) {

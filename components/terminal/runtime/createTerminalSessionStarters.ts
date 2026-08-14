@@ -29,7 +29,12 @@ import { teardownTerminalOutputPipeline } from "./terminalOutputPipeline";
 import { resetTerminalSyncBlockFilter } from "./terminalSyncBlockFilter";
 import { flushTerminalWriteCoalescer } from "./terminalWriteCoalescer";
 import { isConnectionTokenCurrent, registerConnectionToken, runDistroDetection } from "./terminalDistroDetection";
-import { resolveStartupCommand, scheduleStartupCommand } from "./terminalStartupCommands";
+import {
+  buildAutomatedCompletionCommand,
+  createAutomatedCompletionMarker,
+  resolveStartupCommand,
+  scheduleStartupCommand,
+} from "./terminalStartupCommands";
 import { markPromptLineBreakCommandPending } from "./promptLineBreak";
 import {
   isEncryptedCredentialPlaceholder,
@@ -153,7 +158,14 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     ctx.restoreCwdIntentRef.current = null;
     ctx.setProgressLogs((prev) => [...prev, tr("terminal.restore.cwdLog", `Restoring working directory: ${intent.cwd}`)
       .replace("{cwd}", intent.cwd)]);
-    ctx.terminalBackend.writeToSession(id, `${intent.command}\r`, { automated: true });
+    const completionMarker = createAutomatedCompletionMarker();
+    const completionCommand = completionMarker
+      ? `\r${buildAutomatedCompletionCommand(completionMarker, ctx.shellType)}\r`
+      : "\r";
+    ctx.terminalBackend.writeToSession(id, `${intent.command}${completionCommand}`, {
+      automated: true,
+      automatedCompletionMarker: completionMarker,
+    });
     ctx.onRestoreCwdIntentConsumed?.(intent.cwd);
     markPromptLineBreakCommandPending(ctx.promptLineBreakStateRef, term, intent.command);
   };

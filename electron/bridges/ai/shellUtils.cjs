@@ -137,6 +137,38 @@ function trackSessionIdlePrompt(session, chunk) {
   const nextTail = `${session._promptTrackTail || ""}${chunk}`.slice(-MAX_PROMPT_TRACK_TAIL);
   session._promptTrackTail = nextTail;
 
+  const completionMarker = session._automatedInputCompletionMarker;
+  if (completionMarker) {
+    if (session._automatedInputCompletionSeen === true) {
+      session._automatedInputCompletionTail = `${session._automatedInputCompletionTail || ""}${chunk}`
+        .slice(-MAX_PROMPT_TRACK_TAIL);
+    } else {
+      const markerIndex = nextTail.lastIndexOf(completionMarker);
+      if (markerIndex !== -1) {
+        session._automatedInputCompletionSeen = true;
+        session._automatedInputCompletionTail = nextTail.slice(markerIndex + completionMarker.length);
+      }
+    }
+
+    if (
+      session._automatedInputCompletionSeen === true
+      && session._automatedInputCompletionRevision === session._userInputRevision
+      && session._hasPendingUserInput !== true
+    ) {
+      const completedPrompt = extractTrailingIdlePrompt(session._automatedInputCompletionTail || "");
+      if (completedPrompt) {
+        session._awaitingPrimaryPromptAfterUserSubmit = false;
+        delete session._automatedInputCompletionMarker;
+        delete session._automatedInputCompletionRevision;
+        delete session._automatedInputCompletionSeen;
+        delete session._automatedInputCompletionTail;
+        session.lastIdlePrompt = completedPrompt;
+        session.lastIdlePromptAt = Date.now();
+        return completedPrompt;
+      }
+    }
+  }
+
   // While the user is editing, the current line contains the last known
   // prompt followed by their input. Input ending in `$`, `#`, or `>` can look
   // like a fresh prompt, so keep the proven prompt until the line is submitted

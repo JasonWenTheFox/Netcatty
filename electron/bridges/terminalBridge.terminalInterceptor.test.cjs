@@ -24,15 +24,66 @@ function createHarness() {
       },
     },
   });
-  return { writes, intercepted };
+  return { writes, intercepted, session: sessions.get("session-1") };
 }
 
 test("ordinary terminal input uses the worker-owned interceptor before transport encoding", async () => {
   const h = createHarness();
   terminalBridge.writeToSession(null, { sessionId: "session-1", data: "hello" });
+  assert.equal(h.session._hasPendingUserInput, true);
+  assert.equal(h.session._userInputRevision, 1);
+  assert.deepEqual(h.writes, []);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(h.intercepted.map((entry) => entry.data), ["hello"]);
   assert.deepEqual(h.writes, ["HELLO"]);
+  assert.equal(h.session._userInputRevision, 1);
+});
+
+test("an unresolved input interceptor marks the session unsafe before agent capture", async () => {
+  const writes = [];
+  let releaseInput;
+  const session = {
+    type: "local",
+    proc: { write(data) { writes.push(String(data)); } },
+  };
+  terminalBridge.init({
+    sessions: new Map([["session-1", session]]),
+    electronModule: {},
+    terminalDataPipeline: {
+      has() { return true; },
+      interceptInput() {
+        return new Promise((resolve) => { releaseInput = resolve; });
+      },
+    },
+  });
+
+  terminalBridge.writeToSession(null, { sessionId: "session-1", data: "danger\r" });
+  assert.equal(session._hasPendingUserInput, false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
+  assert.equal(session._userInputRevision, 1);
+  assert.deepEqual(writes, []);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseInput("danger\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(writes, ["danger\r"]);
+  assert.equal(session._userInputRevision, 1);
+});
+
+test("automated completion metadata is bound to the tracked input revision", async () => {
+  const h = createHarness();
+  const marker = "__NCAUTO_0123456789abcdef0123456789abcdef__";
+  terminalBridge.writeToSession(null, {
+    sessionId: "session-1",
+    data: "echo ready\r",
+    automated: true,
+    automatedCompletionMarker: marker,
+  });
+
+  assert.equal(h.session._awaitingPrimaryPromptAfterUserSubmit, true);
+  assert.equal(h.session._automatedInputCompletionMarker, marker);
+  assert.equal(h.session._automatedInputCompletionRevision, h.session._userInputRevision);
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("host-classified sensitive input bypasses interceptors and preserves original bytes", async () => {
