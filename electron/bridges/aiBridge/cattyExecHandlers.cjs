@@ -171,7 +171,7 @@ function registerCattyExecHandlers(ctx) {
           timeoutMs,
           trackForCancellation: mcpServerBridge.activePtyExecs,
           chatSessionId,
-          encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
+          encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
           pendingUserInput: pendingInputState.pending,
         }));
       }

@@ -148,7 +148,7 @@ function createExecHandlerApi(ctx) {
           timeoutMs: commandTimeoutMs,
           trackForCancellation: activePtyExecs,
           chatSessionId: params?.chatSessionId,
-          encoding: "utf8", // SSH PTY streams use UTF-8, not latin1
+          encoding: sessionProtocol === "serial" ? (session.serialEncoding || "utf8") : "utf8",
           pendingUserInput: pendingInputState.pending,
         }));
       }

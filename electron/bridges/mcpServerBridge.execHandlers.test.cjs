@@ -274,6 +274,32 @@ test("MCP raw exec refuses awaiting serial input without writing", async () => {
   assert.deepEqual(serialPort.writes, []);
 });
 
+test("MCP raw serial exec preserves the configured output encoding", async () => {
+  const serialPort = new FakePty();
+  const sessions = new Map([["serial-encoding", {
+    protocol: "serial",
+    serialEncoding: "gb18030",
+    serialPort,
+  }]]);
+  const ctx = createExecHandlerTestContext({ sessions, backgroundJobs: new Map() });
+  ctx.getSessionMeta = () => ({ protocol: "serial" });
+  let receivedOptions;
+  ctx.execViaRawPty = (_stream, _command, options) => {
+    receivedOptions = options;
+    return { ok: true, stdout: "" };
+  };
+  const api = createExecHandlerApi(ctx);
+
+  const result = await api.handleExec({
+    sessionId: "serial-encoding",
+    command: "show version",
+    chatSessionId: "chat-1",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(receivedOptions.encoding, "gb18030");
+});
+
 test("MCP serial exec refuses active file transfer without writing", async () => {
   const serialPort = new FakePty();
   const sessions = new Map([["serial-transfer", {

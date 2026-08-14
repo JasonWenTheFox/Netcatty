@@ -169,6 +169,54 @@ test("catty raw exec refuses awaiting serial input without writing", async () =>
   assert.deepEqual(writes, []);
 });
 
+test("catty raw serial exec preserves the configured output encoding", async () => {
+  const ipcMain = createFakeIpcMain();
+  const session = {
+    protocol: "serial",
+    serialEncoding: "gb18030",
+    serialPort: { write() {} },
+  };
+  let receivedOptions;
+  const mcpServerBridge = {
+    getPermissionMode: () => "auto",
+    reserveSessionExecution: () => ({ ok: true, token: "token-1" }),
+    releaseSessionExecution() {},
+    getSessionMeta: () => ({ protocol: "serial" }),
+    checkCommandSafety: () => ({ blocked: false }),
+    getCommandTimeoutMs: () => 1000,
+    activePtyExecs: new Map(),
+  };
+
+  registerCattyExecHandlers({
+    ipcMain,
+    validateSender: () => true,
+    sessions: new Map([["serial-encoding", session]]),
+    terminalWorkerManager: null,
+    mcpServerBridge,
+    electronModule: {},
+    safeSend() {},
+    require(id) {
+      if (id === "./ai/ptyExec.cjs") {
+        return {
+          execViaRawPty(_stream, _command, options) {
+            receivedOptions = options;
+            return { ok: true, stdout: "" };
+          },
+        };
+      }
+      return require(id);
+    },
+  });
+
+  const result = await ipcMain.handlers.get("netcatty:ai:exec")(
+    { sender: { id: 7 } },
+    { sessionId: "serial-encoding", command: "show version", chatSessionId: "chat-1" },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(receivedOptions.encoding, "gb18030");
+});
+
 test("catty serial exec refuses active file transfer without writing", async () => {
   const ipcMain = createFakeIpcMain();
   const writes = [];
