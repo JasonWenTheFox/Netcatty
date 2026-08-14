@@ -102,6 +102,38 @@ test("execViaPty cancels pending input, waits for prompt redraw, then writes the
   assert.equal(cleared, 1);
 });
 
+test("submitted shell state is interrupted without first typing a normal character", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+      if (data === "\x03") {
+        queueMicrotask(() => this.emit("data", Buffer.from("^C\r\nuser@host:~$")));
+        return;
+      }
+      const marker = markerFromWrite(data);
+      if (marker) {
+        queueMicrotask(() => this.emit("data", Buffer.from(`${marker}_S\nok\n${marker}_E:0\n`)));
+      }
+    }
+  }
+
+  const result = await execViaPty(new CapturePty(), "uname -a", {
+    shellKind: "posix",
+    timeoutMs: 1000,
+    expectedPrompt: "user@host:~$",
+    pendingUserInput: true,
+    submittedInputAwaitingPrompt: true,
+    pendingInputInterruptSafe: true,
+    acquireInputGate: () => () => {},
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(writes[0], "\x03");
+  assert.equal(writes.includes("i"), false);
+  assert.match(writes[1], /uname -a/);
+});
+
 test("execViaPty refuses pending input when no editable prompt is proven", async () => {
   const writes = [];
   const result = await execViaPty({
@@ -363,6 +395,7 @@ test("real bash continuation cannot consume an agent command after Enter (#2962)
       shellKind: "posix",
       expectedPrompt: getEditableIdlePrompt(session),
       pendingUserInput: pendingInputState.pending,
+      submittedInputAwaitingPrompt: true,
       pendingInputInterruptSafe: true,
       acquireInputGate: () => () => {},
       timeoutMs: 1000,
@@ -416,14 +449,60 @@ test("real bash cancels continuation even when PS2 is identical to PS1 (#2962)",
       shellKind: "posix",
       expectedPrompt: getEditableIdlePrompt(session),
       pendingUserInput: pendingInputState.pending,
+      submittedInputAwaitingPrompt: true,
       pendingInputInterruptSafe: true,
       acquireInputGate: () => () => {},
       timeoutMs: 5000,
     });
 
-    assert.equal(result.ok, true, result.error || "");
+    assert.equal(result.ok, true, `${result.error || ""}\n${JSON.stringify(result.stdout)}`);
     assert.equal(existsSync(agentPath), true, "agent command must run after cancellation");
     assert.equal(existsSync(splicedPath), false, "unfinished PS2 command must be cancelled");
+  } finally {
+    outputTracker.dispose();
+    try { ptyProcess.kill(); } catch {}
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("real bash read -n1 cannot consume the pending-state safety handshake (#2962)", {
+  skip: !existsSync("/bin/bash"),
+}, async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "netcatty-2962-read-n1-"));
+  const agentPath = join(workDir, "agent");
+  const followUpPath = join(workDir, "read-follow-up");
+  const expectedPrompt = "user@host:~$";
+  const session = {};
+  const ptyProcess = nodePty.spawn("/bin/bash", ["--noprofile", "--norc", "-i"], {
+    cols: 120,
+    rows: 30,
+    cwd: workDir,
+    env: { ...process.env, PS1: expectedPrompt },
+  });
+  const outputTracker = ptyProcess.onData((chunk) => trackSessionIdlePrompt(session, chunk));
+
+  try {
+    await waitForPtyText(ptyProcess, expectedPrompt);
+    const readPrompt = waitForPtyText(ptyProcess, expectedPrompt);
+    const readCommand = `read -n1 -p "$PS1"; touch '${followUpPath}'\r`;
+    trackSessionPendingUserInput(session, readCommand);
+    ptyProcess.write(readCommand);
+    await readPrompt;
+
+    const pendingInputState = capturePendingInputState(session);
+    const result = await execViaPty(ptyProcess, `touch '${agentPath}'`, {
+      shellKind: "posix",
+      expectedPrompt: getEditableIdlePrompt(session),
+      pendingUserInput: pendingInputState.pending,
+      submittedInputAwaitingPrompt: true,
+      pendingInputInterruptSafe: true,
+      acquireInputGate: () => () => {},
+      timeoutMs: 5000,
+    });
+
+    assert.equal(result.ok, true, `${result.error || ""}\n${JSON.stringify(result.stdout)}`);
+    assert.equal(existsSync(agentPath), true);
+    assert.equal(existsSync(followUpPath), false, "Ctrl+C must abort the read command list");
   } finally {
     outputTracker.dispose();
     try { ptyProcess.kill(); } catch {}

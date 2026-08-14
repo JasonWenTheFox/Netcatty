@@ -195,6 +195,8 @@ function registerCattyExecHandlers(ctx) {
             chatSessionId,
             expectedPrompt: getEditableIdlePrompt(session),
             pendingUserInput: pendingInputState.pending,
+            submittedInputAwaitingPrompt: session._awaitingPrimaryPromptAfterUserSubmit === true
+              && session._hasPendingUserInput !== true,
             pendingInputInterruptSafe: probed.pendingInputInterruptSafe,
             isInputRevisionCurrent: () => isUserInputRevisionCurrent(session, pendingInputState),
             acquireInputGate: () => acquireSessionInputGate(session, pendingInputState),
