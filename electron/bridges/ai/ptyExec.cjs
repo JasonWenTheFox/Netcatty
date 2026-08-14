@@ -89,6 +89,7 @@ function startPtyJob(ptyStream, command, options) {
   let inputClearInterruptSent = false;
   let commandStarted = false;
   let releaseInputGate = null;
+  let inputClearConfirmed = false;
   // Track one-shot timers scheduled inside requestCancel so finish() can
   // clear them when the job exits early; otherwise they keep the Node
   // event loop alive after the resultPromise has already resolved.
@@ -331,7 +332,7 @@ function startPtyJob(ptyStream, command, options) {
     clearCancelRetryTimer();
     clearTimeout(inputClearPrepTimerId);
     clearTimeout(inputClearTimeoutId);
-    releaseInputGateOnce();
+    releaseInputGateOnce(inputClearConfirmed);
     // Clear any pending one-shot cancel timers so they do not keep the
     // Node event loop alive after the job has resolved.
     while (cancelOneShotTimers.length) {
@@ -443,15 +444,15 @@ function startPtyJob(ptyStream, command, options) {
     }
 
     if (writePtySafely(buildWrappedCommand(command, resolvedShellKind, marker))) {
-      releaseInputGateOnce();
+      releaseInputGateOnce(true);
     }
   }
 
-  function releaseInputGateOnce() {
+  function releaseInputGateOnce(replayDeferred = false) {
     const release = releaseInputGate;
     releaseInputGate = null;
     if (typeof release !== "function") return;
-    try { release(); } catch {}
+    try { release(replayDeferred); } catch {}
   }
 
   function inputRevisionIsCurrent() {
@@ -528,6 +529,7 @@ function startPtyJob(ptyStream, command, options) {
       }
       if (hasExpectedPromptSuffix(preStartOutput, expectedPrompt)) {
         waitingForInputClear = false;
+        inputClearConfirmed = true;
         clearTimeout(inputClearTimeoutId);
         try {
           onPendingInputCleared?.();
@@ -779,7 +781,7 @@ function startPtyJob(ptyStream, command, options) {
  * @param {boolean} [options.pendingUserInput=false] - Whether renderer input contains unsubmitted bytes.
  * @param {boolean} [options.pendingInputInterruptSafe=false] - Whether the caller proved the shell owns foreground input.
  * @param {() => boolean} [options.isInputRevisionCurrent] - Confirms the user has not typed since safety verification.
- * @param {() => (() => void)|null} [options.acquireInputGate] - Atomically blocks renderer input until clearing finishes.
+ * @param {() => ((replayDeferred?: boolean) => void)|null} [options.acquireInputGate] - Atomically blocks renderer input until clearing finishes.
  * @param {() => void} [options.onPendingInputCleared] - Called after Ctrl+C redraws the expected prompt.
  * @param {boolean} [options.typedInput=false] - Emit synthetic command echo before execution
  * @param {(command: string) => void} [options.echoCommand] - Callback used to display synthetic command echo

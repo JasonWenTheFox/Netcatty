@@ -33,15 +33,17 @@ function acquireSessionInputGate(session, captured) {
   if (session._aiInputClearToken) return null;
   const token = Symbol("ai-input-clear");
   session._aiInputClearToken = token;
-  return () => {
+  return (replayDeferred = false) => {
     if (session._aiInputClearToken === token) {
       delete session._aiInputClearToken;
       const deferred = Array.isArray(session._aiInputClearDeferredWrites)
         ? session._aiInputClearDeferredWrites.splice(0)
         : [];
       delete session._aiInputClearDeferredWrites;
-      for (const replay of deferred) {
-        try { replay(); } catch {}
+      if (replayDeferred) {
+        for (const replay of deferred) {
+          try { replay(); } catch {}
+        }
       }
     }
   };

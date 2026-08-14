@@ -425,7 +425,17 @@ test("terminal input gate blocks user bytes and defers automated writes", async 
   });
   assert.deepEqual(calls, []);
   assert.equal(session._userInputRevision, undefined);
-  releaseGate();
+  releaseGate(true);
+  await delay(5);
+  assert.deepEqual(calls, ["automated\r"]);
+
+  const abortGate = acquireSessionInputGate(session, { pending: true, revision: 0 });
+  terminalBridge.writeToSession({ sender: {} }, {
+    sessionId: "ssh-1",
+    data: "must-not-replay\r",
+    automated: true,
+  });
+  abortGate(false);
   await delay(5);
   assert.deepEqual(calls, ["automated\r"]);
 });
