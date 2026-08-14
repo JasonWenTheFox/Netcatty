@@ -89,7 +89,6 @@ function startPtyJob(ptyStream, command, options) {
   let inputClearInterruptSent = false;
   let commandStarted = false;
   let releaseInputGate = null;
-  let inputClearConfirmed = false;
   // Track one-shot timers scheduled inside requestCancel so finish() can
   // clear them when the job exits early; otherwise they keep the Node
   // event loop alive after the resultPromise has already resolved.
@@ -332,7 +331,7 @@ function startPtyJob(ptyStream, command, options) {
     clearCancelRetryTimer();
     clearTimeout(inputClearPrepTimerId);
     clearTimeout(inputClearTimeoutId);
-    releaseInputGateOnce(inputClearConfirmed);
+    releaseInputGateOnce(false);
     // Clear any pending one-shot cancel timers so they do not keep the
     // Node event loop alive after the job has resolved.
     while (cancelOneShotTimers.length) {
@@ -529,7 +528,6 @@ function startPtyJob(ptyStream, command, options) {
       }
       if (hasExpectedPromptSuffix(preStartOutput, expectedPrompt)) {
         waitingForInputClear = false;
-        inputClearConfirmed = true;
         clearTimeout(inputClearTimeoutId);
         try {
           onPendingInputCleared?.();

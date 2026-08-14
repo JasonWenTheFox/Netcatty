@@ -191,6 +191,7 @@ test("pending-input clear stops before Ctrl+C when the user types during its han
 
 test("a delayed wrapper write failure resolves as a stream error", async () => {
   let writes = 0;
+  const gateReleases = [];
   const pty = new EventEmitter();
   pty.write = (data) => {
     writes += 1;
@@ -210,13 +211,14 @@ test("a delayed wrapper write failure resolves as a stream error", async () => {
     expectedPrompt: "user@host:~$",
     pendingUserInput: true,
     pendingInputInterruptSafe: true,
-    acquireInputGate: () => () => {},
+    acquireInputGate: () => (replayDeferred) => gateReleases.push(replayDeferred),
     timeoutMs: 1000,
   });
 
   assert.equal(result.ok, false);
   assert.match(result.error, /Stream error: terminal closed/);
   assert.equal(writes, 3);
+  assert.deepEqual(gateReleases, [false]);
 });
 
 test("execViaPty clears shell state before synthetic echo and wrapper write", async () => {
