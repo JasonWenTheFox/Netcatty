@@ -152,7 +152,7 @@ test("worker AI background jobs start, poll, stop, and block overlapping exec", 
       channel: "netcatty:data",
       payload: {
         sessionId: "ssh-1",
-        data: "\r\x1b[2Knpm test\r\n",
+        data: "npm test\r\n",
         syntheticEcho: true,
       },
     },
