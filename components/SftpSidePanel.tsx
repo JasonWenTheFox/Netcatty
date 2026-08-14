@@ -1036,7 +1036,6 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
         behaviorRef={behaviorRef}
         autoSyncRef={autoSyncRef}
         connectedHostObjRef={connectedHostObjRef}
-        connectedKeyRef={connectedKeyRef}
         onInteractiveWorkChange={setInteractiveWorkActive}
         listSftp={listSftp}
         mkdirLocal={mkdirLocal}
@@ -1084,7 +1083,6 @@ type SftpSidePanelInteractiveBodyProps = {
   behaviorRef: MutableRefObject<"open" | "transfer">;
   autoSyncRef: MutableRefObject<boolean>;
   connectedHostObjRef: MutableRefObject<Host | null>;
-  connectedKeyRef: MutableRefObject<string | null>;
   onInteractiveWorkChange: (active: boolean) => void;
   listSftp: ReturnType<typeof useSftpBackend>["listSftp"];
   mkdirLocal: ReturnType<typeof useSftpBackend>["mkdirLocal"];
@@ -1124,7 +1122,6 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   behaviorRef,
   autoSyncRef,
   connectedHostObjRef,
-  connectedKeyRef,
   onInteractiveWorkChange,
   listSftp,
   mkdirLocal,
@@ -1748,18 +1745,30 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     const leftConnection = sftp.leftPane.connection;
     const rightConnection = sftp.rightPane.connection;
     if (!leftConnection && !rightConnection) return [];
+    const panes = [leftConnection, rightConnection];
+    const remotes = panes.filter((connection): connection is NonNullable<typeof connection> => (
+      !!connection && !connection.isLocal
+    ));
     // Filter transfers to those relevant to the active connections' hosts,
     // so workspace focus switches don't show transfers from other hosts.
     const filtered = sftp.transfers.filter((task) => {
       if (task.parentTaskId) return false; // Child tasks rendered by SftpTransferQueue
-      for (const connection of [leftConnection, rightConnection]) {
+      const matchesActiveRemoteSource = remotes.some((remote) => (
+        task.sourceConnectionId === remote.id
+        || (task.sourceHostId != null && task.sourceHostId === remote.hostId)
+      ));
+      for (const connection of panes) {
         if (!connection) continue;
         if (connection.isLocal) {
           if (
             task.sourceConnectionId === connection.id
             || task.targetConnectionId === connection.id
-            || task.targetConnectionId === "local"
           ) {
+            return true;
+          }
+          // Downloads use the shared "local" sentinel; require an active remote
+          // source so another host's history does not leak after a focus switch.
+          if (task.targetConnectionId === "local" && matchesActiveRemoteSource) {
             return true;
           }
           continue;
@@ -1777,10 +1786,21 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     return [...filtered].reverse().slice(0, MAX_VISIBLE_TRANSFERS);
   }, [sftp.transfers, sftp.leftPane.connection, sftp.rightPane.connection]);
 
+  const findRemoteTransferTargetTab = useCallback((task: TransferTask) => {
+    const state = sftpRef.current;
+    for (const side of ["left", "right"] as const) {
+      const tabs = side === "left" ? state.leftTabs.tabs : state.rightTabs.tabs;
+      const pane = tabs.find((tab) => tab.connection?.id === task.targetConnectionId);
+      if (pane?.connection && !pane.connection.isLocal) {
+        return { side, tabId: pane.id };
+      }
+    }
+    return null;
+  }, [sftpRef]);
+
   const handleRevealTransferTarget = useCallback(
     async (task: TransferTask) => {
       if (!isConcreteTransferTargetPath(task)) return;
-      const connection = sftpRef.current.leftPane.connection;
       const revealPath = task.isDirectory ? task.targetPath : getParentPath(task.targetPath);
 
       if (task.targetConnectionId === "local") {
@@ -1794,11 +1814,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         return;
       }
 
-      if (!connection || connection.isLocal) return;
-
-      await sftpRef.current.navigateTo("left", revealPath, { force: true });
+      const targetTab = findRemoteTransferTargetTab(task);
+      if (!targetTab) return;
+      await sftpRef.current.navigateTo(targetTab.side, revealPath, {
+        force: true,
+        tabId: targetTab.tabId,
+      });
     },
-    [openPath, sftpRef, t],
+    [findRemoteTransferTargetTab, openPath, sftpRef, t],
   );
 
   const canRevealTransferTarget = useCallback(
@@ -1808,24 +1831,9 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       if (task.targetConnectionId === "local") {
         return true;
       }
-      if (task.direction !== "upload" && task.direction !== "remote-to-remote") return false;
-
-      const connection = sftp.leftPane.connection;
-      if (!connection || connection.isLocal) return false;
-
-      if (task.targetHostId) {
-        if (connection.hostId !== task.targetHostId) return false;
-        // If the transfer recorded a full endpoint key, use it to
-        // distinguish same-hostId uploads with different session overrides.
-        if (task.targetConnectionKey) {
-          return connectedKeyRef.current === task.targetConnectionKey;
-        }
-        return true;
-      }
-
-      return connection.id === task.targetConnectionId;
+      return !!findRemoteTransferTargetTab(task);
     },
-    [connectedKeyRef, sftp.leftPane.connection],
+    [findRemoteTransferTargetTab],
   );
 
   const canCopyTransferTargetPath = useCallback(
