@@ -644,7 +644,7 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
   assert.equal(trackSessionPendingUserInput(session, "\r"), false);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
   assert.equal(trackSessionPendingUserInput(session, "echo one\rnext"), true);
-  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
   assert.equal(trackSessionPendingUserInput(session, "\x03"), false);
   assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
 
@@ -657,6 +657,19 @@ test("trackSessionPendingUserInput follows unsubmitted renderer input boundaries
     trackSessionPendingUserInput(session, "ignored", { terminalReport: true }),
     false,
   );
+});
+
+test("simple submitted commands clear safely while shell grammar and read stay unsafe", () => {
+  const session = {};
+  assert.equal(trackSessionPendingUserInput(session, "true\r"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, false);
+
+  assert.equal(trackSessionPendingUserInput(session, "read\r"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
+
+  trackSessionPendingUserInput(session, "\x03");
+  assert.equal(trackSessionPendingUserInput(session, "printf x && \\\r"), false);
+  assert.equal(session._awaitingPrimaryPromptAfterUserSubmit, true);
 });
 
 test("submitted continuation input remains unsafe until a primary prompt is proven", () => {

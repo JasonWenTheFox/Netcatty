@@ -210,6 +210,27 @@ function getEditableIdlePrompt(session) {
   return cachedLine && currentLine.startsWith(cachedLine) ? session.lastIdlePrompt : "";
 }
 
+function submittedInputMayRetainShellState(text, reliable) {
+  if (reliable !== true) return true;
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+
+  // These bytes can open shell grammar, redirect input, quote a newline, or
+  // otherwise leave the shell waiting for more text after Enter. Treat them as
+  // unsafe across POSIX shells, fish, PowerShell, and cmd.exe.
+  if (/[\\'"`|&;(){}<>^[\]]/.test(trimmed)) return true;
+
+  // Shell builtins that can keep reading from the terminal without creating a
+  // distinct foreground process. External readers are caught by foreground
+  // process ownership, but these must remain conservative here.
+  const firstWord = trimmed.split(/\s+/, 1)[0].toLowerCase();
+  return new Set([
+    "begin", "case", "do", "done", "elif", "else", "esac", "eval", "exec",
+    "fi", "for", "function", "if", "read", "select", "source", "switch",
+    "then", "until", "while", ".",
+  ]).has(firstWord);
+}
+
 // Track whether renderer keyboard input contains bytes that have not been
 // submitted to the terminal yet. This is deliberately conservative: cursor
 // keys and backspace keep the flag set. Enter moves the session into an unsafe
@@ -228,24 +249,54 @@ function trackSessionPendingUserInput(session, data, options = {}) {
     ? session._userInputRevision
     : 0) + 1;
 
-  // Ctrl+D is an editing key on a non-empty readline/zle line (delete-char),
-  // not an unconditional submission boundary. Preserve the prior state when
-  // it is the only input byte; otherwise the surrounding text is pending.
-  if (/^\x04+$/.test(text)) return session._hasPendingUserInput === true;
+  let trackedText = typeof session._pendingUserInputText === "string"
+    ? session._pendingUserInputText
+    : "";
+  let reliable = session._pendingUserInputTextReliable !== false;
+  let hasPendingInput = session._hasPendingUserInput === true;
 
-  let lastBoundary = -1;
-  for (const boundary of ["\r", "\n", "\x03"]) {
-    lastBoundary = Math.max(lastBoundary, text.lastIndexOf(boundary));
-  }
-  if (lastBoundary === -1) {
-    session._hasPendingUserInput = true;
-    return session._hasPendingUserInput;
+  for (const char of text) {
+    if (char === "\x03") {
+      trackedText = "";
+      reliable = true;
+      hasPendingInput = false;
+      session._awaitingPrimaryPromptAfterUserSubmit = false;
+      continue;
+    }
+    if (char === "\r" || char === "\n") {
+      session._awaitingPrimaryPromptAfterUserSubmit = submittedInputMayRetainShellState(
+        trackedText,
+        reliable,
+      );
+      trackedText = "";
+      reliable = true;
+      hasPendingInput = false;
+      continue;
+    }
+    if (char === "\x7f" || char === "\b") {
+      if (reliable && trackedText) trackedText = trackedText.slice(0, -1);
+      hasPendingInput = true;
+      continue;
+    }
+    if (char === "\x04") {
+      reliable = false;
+      continue;
+    }
+    if (char >= " " && char !== "\x7f") {
+      if (reliable) trackedText += char;
+      hasPendingInput = true;
+      continue;
+    }
+
+    // Cursor movement, line-kill, and other editor controls make the
+    // exact buffer unknowable. Preserve pending input and fail closed on Enter.
+    reliable = false;
+    hasPendingInput = true;
   }
 
-  const trailingInput = text.slice(lastBoundary + 1).length > 0;
-  const boundary = text[lastBoundary];
-  session._hasPendingUserInput = trailingInput;
-  session._awaitingPrimaryPromptAfterUserSubmit = boundary === "\x03" ? false : true;
+  session._pendingUserInputText = trackedText;
+  session._pendingUserInputTextReliable = reliable;
+  session._hasPendingUserInput = hasPendingInput;
   return session._hasPendingUserInput;
 }
 
