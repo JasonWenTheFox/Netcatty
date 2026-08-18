@@ -151,7 +151,7 @@ test("parsePuttyCommandLine does not treat -D operands as the destination port",
   assert.equal(parsed?.url, "ssh://alice:secret@server.example");
 });
 
-test("parsePuttyCommandLine consumes operands of unknown value-taking flags", () => {
+test("parsePuttyCommandLine consumes operands of known value-taking flags such as -cmd", () => {
   const parsed = parsePuttyCommandLine([
     "Netcatty.exe",
     "-ssh",
@@ -163,6 +163,46 @@ test("parsePuttyCommandLine consumes operands of unknown value-taking flags", ()
   ]);
   assert.equal(parsed?.hostname, "server.example");
   assert.equal(parsed?.url, "ssh://alice:secret@server.example");
+});
+
+test("parsePuttyCommandLine rejects unsupported PuTTY protocol selectors", () => {
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "server.example",
+    "-raw",
+    "-P",
+    "8000",
+    "-pw",
+    "secret",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-serial",
+    "COM1",
+    "-P",
+    "22",
+  ]), null);
+});
+
+test("parsePuttyCommandLine keeps the host after valueless options such as -batch", () => {
+  const parsed = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "-batch",
+    "alice@server.example",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(parsed?.url, "ssh://alice:secret@server.example");
+});
+
+test("parsePuttyCommandLine rejects unknown dash flags", () => {
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "-not-a-putty-flag",
+    "alice@server.example",
+  ]), null);
 });
 
 test("redactPuttyCommandLinePasswords masks -pw values in argv", () => {

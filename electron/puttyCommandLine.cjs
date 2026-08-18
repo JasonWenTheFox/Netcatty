@@ -5,10 +5,13 @@ const PROTOCOL_FLAGS = new Map([
   ["-ssh", SSH_PROTOCOL],
   ["-telnet", TELNET_PROTOCOL],
 ]);
+const UNSUPPORTED_PROTOCOL_FLAGS = new Set([
+  "-raw", "-rlogin", "-serial", "-ssh-connection", "-supdup",
+]);
 
 const VALUE_FLAGS = new Set([
   "-P", "-p", "-l", "-pw", "-pwfile",
-  "-load", "-i", "-m",
+  "-load", "-i", "-m", "-cmd",
   "-L", "-R", "-D", "-nc",
   "-hostkey", "-loghost",
   "-sercfg", "-sessionlog", "-sshlog", "-sshrawlog", "-proxycmd",
@@ -27,7 +30,14 @@ const SKIP_FLAGS = new Set([
   "-agent", "-pagent", "-pageant",
   "-noagent", "-nopagent", "-nopageant",
   "-share", "-noshare",
+  "-batch",
   "-nethack",
+  "-pgpfp",
+  "-cleanup",
+  "-help",
+  "-no-antispoof",
+  "-sanitise-stderr", "-sanitise-stdout",
+  "-no-sanitise-stderr", "-no-sanitise-stdout",
   "-restrict-acl", "-restrict_acl", "-restrictacl",
 ]);
 
@@ -158,6 +168,8 @@ function parsePuttyCommandLine(argv) {
       continue;
     }
 
+    if (UNSUPPORTED_PROTOCOL_FLAGS.has(arg)) return null;
+
     if (SKIP_FLAGS.has(arg)) continue;
 
     if (VALUE_FLAGS.has(arg)) {
@@ -182,13 +194,7 @@ function parsePuttyCommandLine(argv) {
       continue;
     }
 
-    if (arg.startsWith("-")) {
-      const operand = argv[index + 1];
-      if (typeof operand === "string" && operand && !operand.startsWith("-")) {
-        index += 1;
-      }
-      continue;
-    }
+    if (arg.startsWith("-")) return null;
 
     const positionalPort = parsePort(arg);
     if (positionalPort !== null && /^\d+$/.test(arg.trim())) {
