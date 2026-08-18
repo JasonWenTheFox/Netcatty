@@ -2374,7 +2374,7 @@ const fileOpsApi = createFileOpsApi({
   requireSftpChannel, resolveEncodingForRequest, updateResolvedEncoding, encodePath, decodeName,
   detectEncodingFromList, statResultFromAttrs, normalizeRemotePathString, collectReadable, writeToWritable,
   throwIfAborted, pipeStreams, ensureRemoteDirForSession, removeRemotePathInternal, removeRemoteDirectory,
-  tryFastShellDirectoryDelete, renameRemotePath,
+  tryFastShellDirectoryDelete, execRemoteShellCommand, renameRemotePath,
   buildStagedRemotePath, buildBackupRemotePath,
   realpathAsync, statAsync, lstatAsync, readdirAsync, mkdirAsync, rmdirAsync, unlinkAsync, openFileAsync,
   writeFileChunkAsync, closeFileAsync, createAbortError, copySftpEncodingState, clearSftpEncodingState,
@@ -2395,6 +2395,7 @@ const {
   statSftp,
   lstatSftp,
   chmodSftp,
+  extractSftpArchive,
   getSftpHomeDir,
 } = fileOpsApi;
 
@@ -2590,6 +2591,7 @@ function registerHandlers(ipcMain, options = {}) {
       "netcatty:sftp:stat",
       "netcatty:sftp:lstat",
       "netcatty:sftp:chmod",
+      "netcatty:sftp:extract",
       "netcatty:sftp:homeDir",
     ].forEach((channel) => registerWorkerHandle(ipcMain, terminalWorkerManager, channel, ownership));
     return;
@@ -2612,6 +2614,7 @@ function registerHandlers(ipcMain, options = {}) {
     ["netcatty:sftp:stat", statSftp],
     ["netcatty:sftp:lstat", lstatSftp],
     ["netcatty:sftp:chmod", chmodSftp],
+    ["netcatty:sftp:extract", extractSftpArchive],
     ["netcatty:sftp:homeDir", getSftpHomeDir],
   ].forEach(([channel, handler]) => registerActivityHandle(ipcMain, channel, handler, ownership));
 }
@@ -2659,6 +2662,7 @@ module.exports = {
   statSftp,
   lstatSftp,
   chmodSftp,
+  extractSftpArchive,
   getSftpHomeDir,
   resolveEncodingForRequest,
   _execRemoteShellCommandForTests: execRemoteShellCommand,
