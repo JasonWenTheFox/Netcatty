@@ -119,6 +119,52 @@ test("parsePuttyCommandLine rejects invalid ports", () => {
   assert.equal(parsePuttyCommandLine(["Netcatty.exe", "-ssh", "host.example", "-P", "99999"]), null);
 });
 
+test("parsePuttyCommandLine does not treat -m operands as the destination host", () => {
+  const parsed = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "-l",
+    "alice",
+    "server.example",
+    "-m",
+    "commands.txt",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(parsed?.hostname, "server.example");
+  assert.equal(parsed?.username, "alice");
+  assert.equal(parsed?.url, "ssh://alice:secret@server.example");
+});
+
+test("parsePuttyCommandLine does not treat -D operands as the destination port", () => {
+  const parsed = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-D",
+    "1080",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(parsed?.hostname, "server.example");
+  assert.equal(parsed?.port, undefined);
+  assert.equal(parsed?.url, "ssh://alice:secret@server.example");
+});
+
+test("parsePuttyCommandLine consumes operands of unknown value-taking flags", () => {
+  const parsed = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-cmd",
+    "whoami",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(parsed?.hostname, "server.example");
+  assert.equal(parsed?.url, "ssh://alice:secret@server.example");
+});
+
 test("redactPuttyCommandLinePasswords masks -pw values in argv", () => {
   const argv = ["Netcatty.exe", "-ssh", "alice@host", "-pw", "s3cret!!"];
   redactPuttyCommandLinePasswords(argv);

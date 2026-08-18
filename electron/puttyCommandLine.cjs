@@ -6,11 +6,18 @@ const PROTOCOL_FLAGS = new Map([
   ["-telnet", TELNET_PROTOCOL],
 ]);
 
-const VALUE_FLAGS = new Set(["-P", "-p", "-l", "-pw", "-pwfile", "-load", "-i", "-newtab", "-title", "-loghost"]);
+const VALUE_FLAGS = new Set([
+  "-P", "-p", "-l", "-pw", "-pwfile",
+  "-load", "-i", "-m",
+  "-L", "-R", "-D", "-nc",
+  "-hostkey", "-loghost",
+  "-sercfg", "-sessionlog", "-sshlog", "-sshrawlog", "-proxycmd",
+  "-newtab", "-title", "-url",
+]);
 const PORT_FLAGS = new Set(["-P", "-p"]);
 
 const SKIP_FLAGS = new Set([
-  "-1", "-2", "-4", "-6",
+  "-1", "-2", "-4", "-6", "-ipv4", "-ipv6",
   "-A", "-a",
   "-C",
   "-N",
@@ -19,6 +26,9 @@ const SKIP_FLAGS = new Set([
   "-v",
   "-agent", "-pagent", "-pageant",
   "-noagent", "-nopagent", "-nopageant",
+  "-share", "-noshare",
+  "-nethack",
+  "-restrict-acl", "-restrict_acl", "-restrictacl",
 ]);
 
 function parsePort(raw) {
@@ -172,7 +182,13 @@ function parsePuttyCommandLine(argv) {
       continue;
     }
 
-    if (arg.startsWith("-")) continue;
+    if (arg.startsWith("-")) {
+      const operand = argv[index + 1];
+      if (typeof operand === "string" && operand && !operand.startsWith("-")) {
+        index += 1;
+      }
+      continue;
+    }
 
     const positionalPort = parsePort(arg);
     if (positionalPort !== null && /^\d+$/.test(arg.trim())) {
