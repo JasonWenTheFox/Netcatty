@@ -236,6 +236,34 @@ test("parsePuttyCommandLine rejects missing or empty option operands", () => {
   ]), null);
 });
 
+test("parsePuttyCommandLine rejects unsupported authentication and host-key overrides", () => {
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-pwfile",
+    "secret.txt",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-i",
+    "id_rsa.ppk",
+    "-pw",
+    "secret",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-hostkey",
+    "aa:bb:cc:dd",
+    "-pw",
+    "secret",
+  ]), null);
+});
+
 test("redactPuttyCommandLinePasswords masks -pw values in argv", () => {
   const argv = ["Netcatty.exe", "-ssh", "alice@host", "-pw", "s3cret!!"];
   redactPuttyCommandLinePasswords(argv);

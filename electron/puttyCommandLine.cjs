@@ -17,6 +17,7 @@ const VALUE_FLAGS = new Set([
   "-sercfg", "-sessionlog", "-sshlog", "-sshrawlog", "-proxycmd",
   "-newtab", "-title", "-url",
 ]);
+const REJECT_VALUE_FLAGS = new Set(["-pwfile", "-i", "-hostkey"]);
 const PORT_FLAGS = new Set(["-P", "-p"]);
 
 const SKIP_FLAGS = new Set([
@@ -176,6 +177,7 @@ function parsePuttyCommandLine(argv) {
       const value = argv[index + 1];
       if (typeof value !== "string") return null;
       index += 1;
+      if (REJECT_VALUE_FLAGS.has(arg)) return null;
       if (PORT_FLAGS.has(arg)) {
         const parsedPort = parsePort(value);
         if (parsedPort === null) return null;
