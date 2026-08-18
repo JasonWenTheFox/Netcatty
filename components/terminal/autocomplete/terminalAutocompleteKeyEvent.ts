@@ -36,8 +36,9 @@ export function autocompleteEscMetaFollowUpSequence(e: {
   metaKey: boolean;
   shiftKey: boolean;
 }): string | null {
-  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return null;
-  if (e.key === ".") return "\x1b.";
+  if (e.altKey || e.ctrlKey || e.metaKey) return null;
+  // `_` is Shift+Minus on a standard keyboard; Shift+. is `>` and must not yank.
+  if (e.key === "." && !e.shiftKey) return "\x1b.";
   if (e.key === "_") return "\x1b_";
   return null;
 }

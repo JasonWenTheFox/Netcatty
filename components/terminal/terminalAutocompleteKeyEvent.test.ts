@@ -234,6 +234,22 @@ test("Esc+. after dismissing the popup sends ESC+. to the shell", () => {
   assert.deepEqual(writes, ["\x1b."]);
 });
 
+test("Esc then Shift+. does not yank (Shift+. is >)", () => {
+  const { context, writes } = createContext();
+  handleTerminalAutocompleteKeyEvent(keyEvent("Escape"), context);
+  context.stateRef.current = {
+    ...context.stateRef.current,
+    popupVisible: false,
+    suggestions: [],
+  };
+
+  const greaterThan = shiftKeyEvent(">");
+  const result = handleTerminalAutocompleteKeyEvent(greaterThan, context);
+
+  assert.equal(result, true);
+  assert.deepEqual(writes, []);
+});
+
 test("Esc+_ after dismissing the popup sends ESC+_ to the shell", () => {
   const { context, writes } = createContext();
   handleTerminalAutocompleteKeyEvent(keyEvent("Escape"), context);
@@ -243,7 +259,7 @@ test("Esc+_ after dismissing the popup sends ESC+_ to the shell", () => {
     suggestions: [],
   };
 
-  const underscore = keyEvent("_");
+  const underscore = shiftKeyEvent("_");
   const result = handleTerminalAutocompleteKeyEvent(underscore, context);
 
   assert.equal(result, false);
