@@ -526,6 +526,7 @@ async function execRemoteShellCommand(sshClient, command, optionsOrSignal = null
     1,
     Number(options.maxOutputBytes) || REMOTE_DELETE_EXEC_MAX_OUTPUT_BYTES,
   );
+  const discardStdout = options.discardStdout === true;
   return await new Promise((resolve, reject) => {
     let settled = false;
     let streamRef = null;
@@ -575,6 +576,7 @@ async function execRemoteShellCommand(sshClient, command, optionsOrSignal = null
     const appendOutput = (target, chunk) => {
       if (settled) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      if (target === "stdout" && discardStdout) return;
       outputBytes += buffer.length;
       if (outputBytes > maxOutputBytes) {
         finish(new Error(`Remote command output exceeded ${maxOutputBytes} bytes`));

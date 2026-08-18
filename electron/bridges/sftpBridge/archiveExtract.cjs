@@ -7,10 +7,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawn, execFile } = require("node:child_process");
-const { promisify } = require("node:util");
-
-const execFileAsync = promisify(execFile);
+const { spawn } = require("node:child_process");
 
 const ARCHIVE_KINDS = [
   { kind: "tar.gz", suffixes: [".tar.gz", ".tgz"] },
@@ -107,7 +104,7 @@ function buildExtractCommand(archivePath, { encoding = "utf-8" } = {}) {
   if (kind === "zip") {
     return [
       `if command -v unzip >/dev/null 2>&1; then`,
-      `  unzip -o ${qArchive} -d ${qParent}`,
+      `  unzip -qo ${qArchive} -d ${qParent} >/dev/null`,
       `elif tar -tf ${qArchive} >/dev/null 2>&1; then`,
       `  tar -xf ${qArchive} -C ${qParent}`,
       `else`,
@@ -117,11 +114,24 @@ function buildExtractCommand(archivePath, { encoding = "utf-8" } = {}) {
     ].join("\n");
   }
 
-  const qOut = shellQuotePath(stripCompressionSuffix(remotePath, kind), encoding);
-  if (kind === "gz") return `gzip -dc -- ${qArchive} > ${qOut}`;
-  if (kind === "bz2") return `bzip2 -dc -- ${qArchive} > ${qOut}`;
-  if (kind === "xz") return `xz -dc -- ${qArchive} > ${qOut}`;
-  throw new Error(`Unsupported archive type: ${kind}`);
+  const outputPath = stripCompressionSuffix(remotePath, kind);
+  const decoder = kind === "gz" ? "gzip" : kind === "bz2" ? "bzip2" : kind === "xz" ? "xz" : null;
+  if (!decoder) throw new Error(`Unsupported archive type: ${kind}`);
+  return buildSingleFileExtractCommand(decoder, qArchive, outputPath, encoding);
+}
+
+function buildSingleFileExtractCommand(decoder, qArchive, outputPath, encoding) {
+  const { shellQuotePath } = require("./scpShell.cjs");
+  const qOut = shellQuotePath(outputPath, encoding);
+  const qStage = shellQuotePath(`${outputPath}.netcatty-extract`, encoding);
+  return [
+    "set -e",
+    `rm -f -- ${qStage}`,
+    `trap 'rm -f -- ${qStage}' EXIT`,
+    `${decoder} -dc -- ${qArchive} > ${qStage}`,
+    `mv -f -- ${qStage} ${qOut}`,
+    "trap - EXIT",
+  ].join("\n");
 }
 
 function tarArgs(flag, archivePath, parentDir) {
@@ -145,7 +155,7 @@ function buildLocalExtractPlan(archivePath, platform = process.platform) {
     }
     return {
       command: "unzip",
-      args: ["-o", archivePath, "-d", parentDir],
+      args: ["-qo", archivePath, "-d", parentDir],
       fallback: { command: "tar", args: ["-xf", archivePath, "-C", parentDir] },
     };
   }
@@ -162,11 +172,45 @@ function isMissingBinaryError(error) {
   return code === "ENOENT" || code === 127 || code === "127";
 }
 
+function localExtractStagingPath(destFile) {
+  return `${destFile}.netcatty-extract`;
+}
+
+async function replaceLocalFile(stagingFile, destFile) {
+  try {
+    await fs.promises.rename(stagingFile, destFile);
+  } catch (error) {
+    if (error?.code === "EEXIST" || error?.code === "EPERM") {
+      await fs.promises.rm(destFile, { force: true });
+      await fs.promises.rename(stagingFile, destFile);
+      return;
+    }
+    try {
+      await fs.promises.copyFile(stagingFile, destFile);
+    } finally {
+      await fs.promises.unlink(stagingFile).catch(() => {});
+    }
+  }
+}
+
+function collectBoundedStderr(stream) {
+  let stderr = "";
+  stream.on("data", (chunk) => {
+    if (stderr.length >= EXTRACT_MAX_OUTPUT_BYTES) return;
+    stderr += String(chunk);
+    if (stderr.length > EXTRACT_MAX_OUTPUT_BYTES) {
+      stderr = stderr.slice(0, EXTRACT_MAX_OUTPUT_BYTES);
+    }
+  });
+  return () => stderr;
+}
+
 function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
+  const stagingFile = localExtractStagingPath(stdoutFile);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    const out = fs.createWriteStream(stdoutFile);
-    let stderr = "";
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const out = fs.createWriteStream(stagingFile);
+    const readStderr = collectBoundedStderr(child.stderr);
     let settled = false;
     const timer = setTimeout(() => {
       finish(new Error(`Local extraction timed out after ${timeoutMs} ms`));
@@ -179,19 +223,13 @@ function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
       clearTimeout(timer);
       try { out.destroy(); } catch { /* ignore */ }
       if (error) {
-        fs.promises.unlink(stdoutFile).catch(() => {});
+        fs.promises.unlink(stagingFile).catch(() => {});
         reject(error);
         return;
       }
       resolve();
     };
     child.stdout.pipe(out);
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-      if (stderr.length > EXTRACT_MAX_OUTPUT_BYTES) {
-        stderr = stderr.slice(0, EXTRACT_MAX_OUTPUT_BYTES);
-      }
-    });
     out.on("error", (error) => finish(error));
     child.on("error", (error) => finish(error));
     child.on("close", (code) => {
@@ -199,6 +237,39 @@ function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
         out.end(() => finish(null));
         return;
       }
+      const stderr = readStderr();
+      finish(new Error(
+        `Local extraction failed (code ${code})${stderr ? `: ${stderr.trim()}` : ""}`,
+      ));
+    });
+  }).then(() => replaceLocalFile(stagingFile, stdoutFile));
+}
+
+function runSpawnedExtract(command, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const readStderr = collectBoundedStderr(child.stderr);
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(new Error(`Local extraction timed out after ${timeoutMs} ms`));
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    }, timeoutMs);
+    timer.unref?.();
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    child.stdout.on("data", () => {});
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (code === 0) {
+        finish(null);
+        return;
+      }
+      const stderr = readStderr();
       finish(new Error(
         `Local extraction failed (code ${code})${stderr ? `: ${stderr.trim()}` : ""}`,
       ));
@@ -211,11 +282,7 @@ async function runLocalExtractCommand(command, args, stdoutFile, timeoutMs) {
     await pipeCommandToFile(command, args, stdoutFile, timeoutMs);
     return;
   }
-  await execFileAsync(command, args, {
-    timeout: timeoutMs,
-    maxBuffer: EXTRACT_MAX_OUTPUT_BYTES,
-    windowsHide: true,
-  });
+  await runSpawnedExtract(command, args, timeoutMs);
 }
 
 async function executeLocalExtractPlan(plan, { timeoutMs = EXTRACT_MAX_TIMEOUT_MS } = {}) {

@@ -1069,6 +1069,7 @@ function createFileOpsApi(ctx) {
         openingTimeoutMs: EXTRACT_OPEN_TIMEOUT_MS,
         runTimeoutMs: computeExtractTimeoutMs(archiveSize),
         maxOutputBytes: EXTRACT_MAX_OUTPUT_BYTES,
+        discardStdout: true,
       });
       return { success: true };
     }

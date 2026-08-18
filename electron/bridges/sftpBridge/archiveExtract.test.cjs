@@ -42,11 +42,12 @@ test("extract commands quote spaces and single quotes", () => {
   assert.match(tarCmd, /-C '\/tmp\/my files'/);
 
   const zipCmd = buildExtractCommand("/opt/build/out.zip");
-  assert.match(zipCmd, /unzip -o '\/opt\/build\/out\.zip' -d '\/opt\/build'/);
+  assert.match(zipCmd, /unzip -qo '\/opt\/build\/out\.zip' -d '\/opt\/build' >\/dev\/null/);
   assert.match(zipCmd, /tar -xf '\/opt\/build\/out\.zip' -C '\/opt\/build'/);
 
   const gzCmd = buildExtractCommand("/var/log/syslog.gz");
-  assert.equal(gzCmd, "gzip -dc -- '/var/log/syslog.gz' > '/var/log/syslog'");
+  assert.match(gzCmd, /gzip -dc -- '\/var\/log\/syslog\.gz' > '\/var\/log\/syslog\.netcatty-extract'/);
+  assert.match(gzCmd, /mv -f -- '\/var\/log\/syslog\.netcatty-extract' '\/var\/log\/syslog'/);
 });
 
 test("extract command rejects newlines and unknown types", () => {
@@ -57,7 +58,7 @@ test("extract command rejects newlines and unknown types", () => {
 test("local extract plan uses unzip with tar fallback off Windows", () => {
   const unixZip = buildLocalExtractPlan("/tmp/a.zip", "linux");
   assert.deepEqual(unixZip.command, "unzip");
-  assert.deepEqual(unixZip.args, ["-o", "/tmp/a.zip", "-d", "/tmp"]);
+  assert.deepEqual(unixZip.args, ["-qo", "/tmp/a.zip", "-d", "/tmp"]);
   assert.deepEqual(unixZip.fallback, { command: "tar", args: ["-xf", "/tmp/a.zip", "-C", "/tmp"] });
 
   const winZip = buildLocalExtractPlan("C:\\tmp\\a.zip", "win32");
@@ -87,5 +88,23 @@ test("extractLocalArchiveFile unpacks a tar.gz next to the archive", async () =>
 
   await extractLocalArchiveFile(archive);
   assert.equal(fs.readFileSync(source, "utf8"), "hello-extract");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("failed gzip extract leaves an existing sibling file intact", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { extractLocalArchiveFile } = require("./archiveExtract.cjs");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nc-extract-keep-"));
+  const dest = path.join(dir, "notes.txt");
+  const archive = path.join(dir, "notes.txt.gz");
+  fs.writeFileSync(dest, "keep-me");
+  fs.writeFileSync(archive, "this-is-not-gzip");
+
+  await assert.rejects(() => extractLocalArchiveFile(archive), /Local extraction failed/);
+  assert.equal(fs.readFileSync(dest, "utf8"), "keep-me");
+  assert.equal(fs.existsSync(`${dest}.netcatty-extract`), false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
