@@ -86,6 +86,11 @@ export function handleTerminalAutocompleteKeyEvent(
     escMetaPrefixUntilRef.current = 0;
     e.preventDefault();
     writeToTerminal(metaFollowUp);
+    // Match handleTerminalAutocompleteInput's ESC-sequence path: yank-last-arg
+    // rewrites the shell line, so the append-only typed buffer is stale.
+    typedInputBufferRef.current = "";
+    typedBufferReliableRef.current = false;
+    lastAcceptedCommandRef.current = null;
     return false;
   }
   if (e.key !== "Escape" && e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {

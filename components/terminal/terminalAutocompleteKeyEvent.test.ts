@@ -232,6 +232,9 @@ test("Esc+. after dismissing the popup sends ESC+. to the shell", () => {
   assert.equal(result, false);
   assert.equal(period.defaultPrevented, true);
   assert.deepEqual(writes, ["\x1b."]);
+  assert.equal(context.typedInputBufferRef.current, "");
+  assert.equal(context.typedBufferReliableRef.current, false);
+  assert.equal(context.lastAcceptedCommandRef.current, null);
 });
 
 test("Esc then Shift+. does not yank (Shift+. is >)", () => {
