@@ -266,6 +266,26 @@ test("Esc+_ after dismissing the popup sends ESC+_ to the shell", () => {
   assert.deepEqual(writes, ["\x1b_"]);
 });
 
+test("Esc then Shift keydown then _ still yanks (Shift is a separate event)", () => {
+  const { context, writes } = createContext();
+  handleTerminalAutocompleteKeyEvent(keyEvent("Escape"), context);
+  context.stateRef.current = {
+    ...context.stateRef.current,
+    popupVisible: false,
+    suggestions: [],
+  };
+
+  const shiftDown = shiftKeyEvent("Shift");
+  assert.equal(handleTerminalAutocompleteKeyEvent(shiftDown, context), true);
+  assert.ok(context.escMetaPrefixUntilRef.current > 1_000);
+
+  const underscore = shiftKeyEvent("_");
+  const result = handleTerminalAutocompleteKeyEvent(underscore, context);
+
+  assert.equal(result, false);
+  assert.deepEqual(writes, ["\x1b_"]);
+});
+
 test("Esc then a non-Meta follow-up does not inject ESC and lets the key through", () => {
   const { context, writes } = createContext();
   handleTerminalAutocompleteKeyEvent(keyEvent("Escape"), context);

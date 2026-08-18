@@ -88,7 +88,7 @@ export function handleTerminalAutocompleteKeyEvent(
     writeToTerminal(metaFollowUp);
     return false;
   }
-  if (e.key !== "Escape") {
+  if (e.key !== "Escape" && e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {
     escMetaPrefixUntilRef.current = 0;
   }
 
