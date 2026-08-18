@@ -205,6 +205,37 @@ test("parsePuttyCommandLine rejects unknown dash flags", () => {
   ]), null);
 });
 
+test("parsePuttyCommandLine rejects missing or empty option operands", () => {
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-pw",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-pw",
+    "",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-P",
+  ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "server.example",
+    "-l",
+    "",
+    "-pw",
+    "secret",
+  ]), null);
+});
+
 test("redactPuttyCommandLinePasswords masks -pw values in argv", () => {
   const argv = ["Netcatty.exe", "-ssh", "alice@host", "-pw", "s3cret!!"];
   redactPuttyCommandLinePasswords(argv);

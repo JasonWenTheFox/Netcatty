@@ -174,7 +174,7 @@ function parsePuttyCommandLine(argv) {
 
     if (VALUE_FLAGS.has(arg)) {
       const value = argv[index + 1];
-      if (typeof value !== "string") continue;
+      if (typeof value !== "string") return null;
       index += 1;
       if (PORT_FLAGS.has(arg)) {
         const parsedPort = parsePort(value);
@@ -184,13 +184,16 @@ function parsePuttyCommandLine(argv) {
       }
       if (arg === "-l") {
         const nextUser = value.trim();
-        if (nextUser) username = nextUser;
+        if (!nextUser) return null;
+        username = nextUser;
         continue;
       }
       if (arg === "-pw") {
+        if (value === "") return null;
         password = value;
         continue;
       }
+      if (!value.trim()) return null;
       continue;
     }
 
