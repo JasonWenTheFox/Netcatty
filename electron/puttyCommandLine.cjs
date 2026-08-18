@@ -17,7 +17,7 @@ const VALUE_FLAGS = new Set([
   "-sercfg", "-sessionlog", "-sshlog", "-sshrawlog", "-proxycmd",
   "-newtab", "-title", "-url",
 ]);
-const REJECT_VALUE_FLAGS = new Set(["-pwfile", "-i", "-hostkey"]);
+const REJECT_VALUE_FLAGS = new Set(["-pwfile", "-i", "-hostkey", "-loghost"]);
 const PORT_FLAGS = new Set(["-P", "-p"]);
 
 const SKIP_FLAGS = new Set([
@@ -62,7 +62,8 @@ function isElectronNoiseArg(arg, index) {
   if (index === 0) return true;
   if (arg === "." || arg === "--") return true;
   if (arg.startsWith("--")) return true;
-  if (/\.(?:exe|app|js|cjs|mjs|asar)$/i.test(arg)) return true;
+  // Packaged argv is [exe, ...user args]; only the Electron script/asar sits at index 1.
+  if (index === 1 && /\.(?:js|cjs|mjs|asar)$/i.test(arg) && !arg.includes("@")) return true;
   if ((arg.includes("/") || arg.includes("\\")) && !arg.includes("@")) return true;
   return false;
 }

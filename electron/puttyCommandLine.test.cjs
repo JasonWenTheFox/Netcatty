@@ -262,6 +262,50 @@ test("parsePuttyCommandLine rejects unsupported authentication and host-key over
     "-pw",
     "secret",
   ]), null);
+  assert.equal(parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@server.example",
+    "-loghost",
+    "logical.example",
+    "-pw",
+    "secret",
+  ]), null);
+});
+
+test("parsePuttyCommandLine accepts destinations with executable-like suffixes", () => {
+  const parsed = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "-ssh",
+    "alice@prod.app",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(parsed?.hostname, "prod.app");
+  assert.equal(parsed?.url, "ssh://alice:secret@prod.app");
+
+  const positional = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "gateway.exe",
+    "-ssh",
+    "-l",
+    "alice",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(positional?.hostname, "gateway.exe");
+  assert.equal(positional?.url, "ssh://alice:secret@gateway.exe");
+
+  const fromElectron = parsePuttyCommandLine([
+    "electron",
+    "main.cjs",
+    "-ssh",
+    "alice@host.example",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(fromElectron?.hostname, "host.example");
+  assert.equal(fromElectron?.url, "ssh://alice:secret@host.example");
 });
 
 test("redactPuttyCommandLinePasswords masks -pw values in argv", () => {
