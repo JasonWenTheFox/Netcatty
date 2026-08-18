@@ -220,8 +220,19 @@ async function replaceLocalFile(stagingFile, destFile) {
     await fs.promises.rename(stagingFile, destFile);
   } catch (error) {
     if (error?.code === "EEXIST" || error?.code === "EPERM") {
-      await fs.promises.rm(destFile, { force: true });
-      await fs.promises.rename(stagingFile, destFile);
+      const backupFile = `${destFile}.netcatty-backup.${crypto.randomBytes(6).toString("hex")}`;
+      await fs.promises.rename(destFile, backupFile);
+      try {
+        await fs.promises.rename(stagingFile, destFile);
+      } catch (publishError) {
+        try {
+          await fs.promises.rename(backupFile, destFile);
+        } catch {
+          /* keep the backup file if restore also fails */
+        }
+        throw publishError;
+      }
+      await fs.promises.unlink(backupFile).catch(() => {});
       return;
     }
     try {
