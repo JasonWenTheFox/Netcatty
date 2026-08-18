@@ -146,6 +146,10 @@ function buildSingleFileExtractCommand(decoder, qArchive, outputPath, encoding) 
     "fi",
     "trap 'rm -f -- \"$stage\"' EXIT",
     `${decoder} -dc -- "$archive" > "$stage"`,
+    "if [ -d \"$out\" ]; then",
+    "  echo 'extraction target is a directory' >&2",
+    "  exit 1",
+    "fi",
     "mv -f -- \"$stage\" \"$out\"",
     "trap - EXIT",
   ].join("\n");
@@ -204,6 +208,14 @@ async function allocateLocalStagingFile(destFile) {
 }
 
 async function replaceLocalFile(stagingFile, destFile) {
+  try {
+    const destStat = await fs.promises.lstat(destFile);
+    if (destStat.isDirectory()) {
+      throw new Error("Extraction target is a directory");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   try {
     await fs.promises.rename(stagingFile, destFile);
   } catch (error) {
@@ -295,7 +307,12 @@ async function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
       ));
     });
   });
-  await replaceLocalFile(stagingFile, stdoutFile);
+  try {
+    await replaceLocalFile(stagingFile, stdoutFile);
+  } catch (error) {
+    await fs.promises.unlink(stagingFile).catch(() => {});
+    throw error;
+  }
 }
 
 function runSpawnedExtract(command, args, timeoutMs) {

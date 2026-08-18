@@ -50,6 +50,7 @@ test("extract commands quote spaces and single quotes", () => {
   assert.match(gzCmd, /archive='\/var\/log\/syslog\.gz'/);
   assert.match(gzCmd, /trap 'rm -f -- "\$stage"' EXIT/);
   assert.match(gzCmd, /gzip -dc -- "\$archive" > "\$stage"/);
+  assert.match(gzCmd, /if \[ -d "\$out" \]/);
   assert.match(gzCmd, /mv -f -- "\$stage" "\$out"/);
 
   const spacedGz = buildExtractCommand("/tmp/my file.txt.gz");
@@ -164,5 +165,24 @@ test("extractLocalArchiveFile gunzips with Node zlib and keeps a sibling staging
   await extractLocalArchiveFile(archive);
   assert.equal(fs.readFileSync(dest, "utf8"), "hello-gzip");
   assert.equal(fs.readFileSync(sibling, "utf8"), "do-not-touch");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("failed gzip extract leaves a sibling directory target intact", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const zlib = require("node:zlib");
+  const { extractLocalArchiveFile } = require("./archiveExtract.cjs");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nc-extract-dir-"));
+  const dest = path.join(dir, "notes.txt");
+  const archive = path.join(dir, "notes.txt.gz");
+  fs.mkdirSync(dest);
+  fs.writeFileSync(path.join(dest, "keep.txt"), "inside");
+  fs.writeFileSync(archive, zlib.gzipSync("hello-gzip"));
+
+  await assert.rejects(() => extractLocalArchiveFile(archive), /directory/);
+  assert.equal(fs.readFileSync(path.join(dest, "keep.txt"), "utf8"), "inside");
   fs.rmSync(dir, { recursive: true, force: true });
 });
