@@ -57,13 +57,26 @@ function looksLikeIpv6(value) {
   return (value.match(/:/g) || []).length >= 2;
 }
 
-function isElectronNoiseArg(arg, index) {
+function isElectronExecutableName(arg) {
+  if (typeof arg !== "string") return false;
+  const base = arg.replace(/^.*[/\\]/, "").toLowerCase();
+  return base === "electron" || base === "electron.exe";
+}
+
+function isElectronNoiseArg(arg, index, argv) {
   if (typeof arg !== "string") return true;
   if (index === 0) return true;
   if (arg === "." || arg === "--") return true;
   if (arg.startsWith("--")) return true;
-  // Packaged argv is [exe, ...user args]; only the Electron script/asar sits at index 1.
-  if (index === 1 && /\.(?:js|cjs|mjs|asar)$/i.test(arg) && !arg.includes("@")) return true;
+  // Dev argv is [electron, main.cjs|app.asar, ...]; packaged argv is [Netcatty.exe, ...user args].
+  if (
+    index === 1
+    && isElectronExecutableName(argv?.[0])
+    && /\.(?:js|cjs|mjs|asar)$/i.test(arg)
+    && !arg.includes("@")
+  ) {
+    return true;
+  }
   if ((arg.includes("/") || arg.includes("\\")) && !arg.includes("@")) return true;
   return false;
 }
@@ -162,7 +175,7 @@ function parsePuttyCommandLine(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (typeof arg !== "string" || !arg) continue;
-    if (isElectronNoiseArg(arg, index)) continue;
+    if (isElectronNoiseArg(arg, index, argv)) continue;
 
     const protocolFromFlag = PROTOCOL_FLAGS.get(arg);
     if (protocolFromFlag) {

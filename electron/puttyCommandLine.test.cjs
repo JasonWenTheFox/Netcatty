@@ -296,6 +296,18 @@ test("parsePuttyCommandLine accepts destinations with executable-like suffixes",
   assert.equal(positional?.hostname, "gateway.exe");
   assert.equal(positional?.url, "ssh://alice:secret@gateway.exe");
 
+  const scriptLikeHost = parsePuttyCommandLine([
+    "Netcatty.exe",
+    "prod.js",
+    "-ssh",
+    "-l",
+    "alice",
+    "-pw",
+    "secret",
+  ]);
+  assert.equal(scriptLikeHost?.hostname, "prod.js");
+  assert.equal(scriptLikeHost?.url, "ssh://alice:secret@prod.js");
+
   const fromElectron = parsePuttyCommandLine([
     "electron",
     "main.cjs",
