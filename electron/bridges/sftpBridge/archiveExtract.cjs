@@ -5,9 +5,12 @@
 
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { pipeline } = require("node:stream/promises");
+const zlib = require("node:zlib");
 
 const ARCHIVE_KINDS = [
   { kind: "tar.gz", suffixes: [".tar.gz", ".tgz"] },
@@ -123,13 +126,27 @@ function buildExtractCommand(archivePath, { encoding = "utf-8" } = {}) {
 function buildSingleFileExtractCommand(decoder, qArchive, outputPath, encoding) {
   const { shellQuotePath } = require("./scpShell.cjs");
   const qOut = shellQuotePath(outputPath, encoding);
-  const qStage = shellQuotePath(`${outputPath}.netcatty-extract`, encoding);
   return [
     "set -e",
-    `rm -f -- ${qStage}`,
-    `trap 'rm -f -- ${qStage}' EXIT`,
-    `${decoder} -dc -- ${qArchive} > ${qStage}`,
-    `mv -f -- ${qStage} ${qOut}`,
+    `out=${qOut}`,
+    `archive=${qArchive}`,
+    "n=0",
+    "stage=",
+    "while [ \"$n\" -lt 32 ]; do",
+    "  candidate=\"$out.netcatty-extract.$$.$n\"",
+    "  if (umask 077; set -C; : > \"$candidate\") 2>/dev/null; then",
+    "    stage=\"$candidate\"",
+    "    break",
+    "  fi",
+    "  n=$((n + 1))",
+    "done",
+    "if [ -z \"$stage\" ]; then",
+    "  echo 'could not allocate extraction staging file' >&2",
+    "  exit 1",
+    "fi",
+    "trap 'rm -f -- \"$stage\"' EXIT",
+    `${decoder} -dc -- "$archive" > "$stage"`,
+    "mv -f -- \"$stage\" \"$out\"",
     "trap - EXIT",
   ].join("\n");
 }
@@ -161,7 +178,7 @@ function buildLocalExtractPlan(archivePath, platform = process.platform) {
   }
 
   const outputPath = path.join(parentDir, path.basename(stripCompressionSuffix(archivePath.replace(/\\/g, "/"), kind)));
-  if (kind === "gz") return { command: "gzip", args: ["-dc", archivePath], stdoutFile: outputPath };
+  if (kind === "gz") return { builtin: "gunzip", archivePath, stdoutFile: outputPath };
   if (kind === "bz2") return { command: "bzip2", args: ["-dc", archivePath], stdoutFile: outputPath };
   if (kind === "xz") return { command: "xz", args: ["-dc", archivePath], stdoutFile: outputPath };
   throw new Error(`Unsupported archive type: ${kind}`);
@@ -172,8 +189,18 @@ function isMissingBinaryError(error) {
   return code === "ENOENT" || code === 127 || code === "127";
 }
 
-function localExtractStagingPath(destFile) {
-  return `${destFile}.netcatty-extract`;
+async function allocateLocalStagingFile(destFile) {
+  for (let i = 0; i < 32; i += 1) {
+    const stagingFile = `${destFile}.netcatty-extract.${crypto.randomBytes(6).toString("hex")}`;
+    try {
+      const handle = await fs.promises.open(stagingFile, "wx");
+      await handle.close();
+      return stagingFile;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Could not allocate extraction staging file");
 }
 
 async function replaceLocalFile(stagingFile, destFile) {
@@ -205,9 +232,34 @@ function collectBoundedStderr(stream) {
   return () => stderr;
 }
 
-function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
-  const stagingFile = localExtractStagingPath(stdoutFile);
-  return new Promise((resolve, reject) => {
+async function gunzipLocalFile(archivePath, stdoutFile, timeoutMs) {
+  const stagingFile = await allocateLocalStagingFile(stdoutFile);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    await pipeline(
+      fs.createReadStream(archivePath),
+      zlib.createGunzip(),
+      fs.createWriteStream(stagingFile),
+      { signal: ac.signal },
+    );
+    await replaceLocalFile(stagingFile, stdoutFile);
+  } catch (error) {
+    await fs.promises.unlink(stagingFile).catch(() => {});
+    if (error?.name === "AbortError") {
+      throw new Error(`Local extraction timed out after ${timeoutMs} ms`);
+    }
+    const detail = error?.message ? `: ${error.message}` : "";
+    throw new Error(`Local extraction failed${detail}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
+  const stagingFile = await allocateLocalStagingFile(stdoutFile);
+  await new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const out = fs.createWriteStream(stagingFile);
     const readStderr = collectBoundedStderr(child.stderr);
@@ -242,7 +294,8 @@ function pipeCommandToFile(command, args, stdoutFile, timeoutMs) {
         `Local extraction failed (code ${code})${stderr ? `: ${stderr.trim()}` : ""}`,
       ));
     });
-  }).then(() => replaceLocalFile(stagingFile, stdoutFile));
+  });
+  await replaceLocalFile(stagingFile, stdoutFile);
 }
 
 function runSpawnedExtract(command, args, timeoutMs) {
@@ -286,6 +339,10 @@ async function runLocalExtractCommand(command, args, stdoutFile, timeoutMs) {
 }
 
 async function executeLocalExtractPlan(plan, { timeoutMs = EXTRACT_MAX_TIMEOUT_MS } = {}) {
+  if (plan.builtin === "gunzip") {
+    await gunzipLocalFile(plan.archivePath, plan.stdoutFile, timeoutMs);
+    return;
+  }
   try {
     await runLocalExtractCommand(plan.command, plan.args, plan.stdoutFile, timeoutMs);
   } catch (error) {

@@ -46,8 +46,38 @@ test("extract commands quote spaces and single quotes", () => {
   assert.match(zipCmd, /tar -xf '\/opt\/build\/out\.zip' -C '\/opt\/build'/);
 
   const gzCmd = buildExtractCommand("/var/log/syslog.gz");
-  assert.match(gzCmd, /gzip -dc -- '\/var\/log\/syslog\.gz' > '\/var\/log\/syslog\.netcatty-extract'/);
-  assert.match(gzCmd, /mv -f -- '\/var\/log\/syslog\.netcatty-extract' '\/var\/log\/syslog'/);
+  assert.match(gzCmd, /out='\/var\/log\/syslog'/);
+  assert.match(gzCmd, /archive='\/var\/log\/syslog\.gz'/);
+  assert.match(gzCmd, /trap 'rm -f -- "\$stage"' EXIT/);
+  assert.match(gzCmd, /gzip -dc -- "\$archive" > "\$stage"/);
+  assert.match(gzCmd, /mv -f -- "\$stage" "\$out"/);
+
+  const spacedGz = buildExtractCommand("/tmp/my file.txt.gz");
+  assert.match(spacedGz, /out='\/tmp\/my file\.txt'/);
+  assert.match(spacedGz, /archive='\/tmp\/my file\.txt\.gz'/);
+  assert.doesNotMatch(spacedGz, /trap 'rm -f -- '/);
+});
+
+test("generated gzip extract script can install its EXIT trap with spaces in the path", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { spawnSync } = require("node:child_process");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nc-trap-"));
+  const archive = path.join(dir, "my file.txt.gz");
+  fs.writeFileSync(archive, "x");
+  const cmd = buildExtractCommand(archive);
+  const prefix = [];
+  for (const line of cmd.split("\n")) {
+    prefix.push(line);
+    if (line.startsWith("trap ")) break;
+  }
+  prefix.push("trap - EXIT");
+  prefix.push("rm -f -- \"$stage\"");
+  const ran = spawnSync("sh", ["-c", prefix.join("\n")], { encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("extract command rejects newlines and unknown types", () => {
@@ -64,6 +94,11 @@ test("local extract plan uses unzip with tar fallback off Windows", () => {
   const winZip = buildLocalExtractPlan("C:\\tmp\\a.zip", "win32");
   assert.equal(winZip.command, "tar");
   assert.ok(winZip.args.includes("-xf"));
+
+  const gz = buildLocalExtractPlan("/tmp/notes.txt.gz", "win32");
+  assert.equal(gz.builtin, "gunzip");
+  assert.equal(gz.archivePath, "/tmp/notes.txt.gz");
+  assert.equal(gz.stdoutFile, "/tmp/notes.txt");
 });
 
 test("unknown archive size uses the maximum extract timeout", () => {
@@ -105,6 +140,29 @@ test("failed gzip extract leaves an existing sibling file intact", async () => {
 
   await assert.rejects(() => extractLocalArchiveFile(archive), /Local extraction failed/);
   assert.equal(fs.readFileSync(dest, "utf8"), "keep-me");
-  assert.equal(fs.existsSync(`${dest}.netcatty-extract`), false);
+  assert.deepEqual(
+    fs.readdirSync(dir).filter((name) => name.includes(".netcatty-extract")),
+    [],
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("extractLocalArchiveFile gunzips with Node zlib and keeps a sibling staging name", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const zlib = require("node:zlib");
+  const { extractLocalArchiveFile } = require("./archiveExtract.cjs");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nc-extract-gz-"));
+  const dest = path.join(dir, "notes.txt");
+  const archive = path.join(dir, "notes.txt.gz");
+  const sibling = `${dest}.netcatty-extract`;
+  fs.writeFileSync(sibling, "do-not-touch");
+  fs.writeFileSync(archive, zlib.gzipSync("hello-gzip"));
+
+  await extractLocalArchiveFile(archive);
+  assert.equal(fs.readFileSync(dest, "utf8"), "hello-gzip");
+  assert.equal(fs.readFileSync(sibling, "utf8"), "do-not-touch");
   fs.rmSync(dir, { recursive: true, force: true });
 });
