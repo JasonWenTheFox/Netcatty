@@ -49,8 +49,8 @@ test("menu close requests remain available when the keyboard shortcut is disable
   }), true);
 });
 
-test("disabled and rebound keyboard requests cannot close the Vault or a log view", () => {
-  assert.equal(resolveWindowCommandCloseRequestIntent({
+test("disabled and rebound keyboard requests return to the general hotkey dispatcher", () => {
+  assert.deepEqual(resolveWindowCommandCloseRequestIntent({
     request: commandWRequest,
     closeTabKeyStr: null,
     isMac: true,
@@ -59,8 +59,8 @@ test("disabled and rebound keyboard requests cannot close the Vault or a log vie
     sessionIds: [],
     workspaceIds: [],
     logViewIds: [],
-  }), null);
-  assert.equal(resolveWindowCommandCloseRequestIntent({
+  }), { kind: "hotkey", input: commandWRequest.input });
+  assert.deepEqual(resolveWindowCommandCloseRequestIntent({
     request: commandWRequest,
     closeTabKeyStr: "⌘ + E",
     isMac: true,
@@ -69,7 +69,7 @@ test("disabled and rebound keyboard requests cannot close the Vault or a log vie
     sessionIds: [],
     workspaceIds: [],
     logViewIds: ["log-1"],
-  }), null);
+  }), { kind: "hotkey", input: commandWRequest.input });
 });
 
 test("enabled keyboard requests preserve Vault and log-view close behavior", () => {

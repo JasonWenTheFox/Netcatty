@@ -1109,6 +1109,26 @@ export function AppSideEffects() {
     });
     if (!intent) return;
 
+    if (intent.kind === 'hotkey') {
+      if (hotkeyScheme === 'disabled' || isHotkeyRecording) return;
+      const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+      handleGlobalHotkeyKeyDownImpl(() => ({
+        HOTKEY_DEBUG,
+        closeTabKeyStr,
+        executeHotkeyAction,
+        hotkeyScheme,
+        keyBindings,
+        matchesKeyBinding,
+      }), {
+        ...intent.input,
+        target,
+        composedPath: () => target ? [target] : [],
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      } as unknown as KeyboardEvent);
+      return;
+    }
+
     const openDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][data-state="open"]'));
     const topmostOpenDialog = openDialogs[openDialogs.length - 1] ?? null;
     const topmostDialogClose = topmostOpenDialog?.querySelector<HTMLElement>('[data-dialog-close="true"]');
@@ -1128,7 +1148,7 @@ export function AppSideEffects() {
     }
 
     await netcattyBridge.get()?.windowClose?.();
-  }, [closeLogView, closeTabKeyStr, editorTabs, executeHotkeyAction, hotkeyScheme, logViews, pluginViewTabs, sessions, workspaces]);
+  }, [closeLogView, closeTabKeyStr, editorTabs, executeHotkeyAction, hotkeyScheme, isHotkeyRecording, keyBindings, logViews, pluginViewTabs, sessions, workspaces]);
 
   useEffect(() => {
     // Cmd/Ctrl+W from the app menu arrives via IPC, not the keydown listener.

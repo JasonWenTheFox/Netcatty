@@ -35,6 +35,19 @@ class FakeHTMLElement {
   }
 }
 
+class FakePageHTMLElement extends FakeHTMLElement {
+  tagName = 'DIV';
+  classList = { contains: () => false };
+
+  closest(): FakePageHTMLElement | null {
+    return null;
+  }
+
+  hasAttribute(): boolean {
+    return false;
+  }
+}
+
 const previousHTMLElement = globalThis.HTMLElement;
 globalThis.HTMLElement = FakeHTMLElement as unknown as typeof HTMLElement;
 
@@ -197,6 +210,42 @@ test('close-tab shortcut follows disabled, default, and rebound settings in focu
   } finally {
     globalThis.document = previousDocument;
   }
+});
+
+test('reassigning Command+W routes it to the newly configured action', () => {
+  const target = new FakePageHTMLElement();
+  const handledActions: string[] = [];
+  const keyBindings = DEFAULT_KEY_BINDINGS.map((binding) => {
+    if (binding.action === 'closeTab') return { ...binding, mac: '⌘ + E' };
+    if (binding.action === 'newTab') return { ...binding, mac: '⌘ + W' };
+    return binding;
+  });
+  const event = {
+    key: 'w',
+    code: 'KeyW',
+    ctrlKey: false,
+    metaKey: true,
+    altKey: false,
+    shiftKey: false,
+    target,
+    composedPath: () => [target],
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  } as unknown as KeyboardEvent;
+
+  handleGlobalHotkeyKeyDownImpl(
+    () => ({
+      HOTKEY_DEBUG: false,
+      closeTabKeyStr: '⌘ + E',
+      executeHotkeyAction: (action: string) => { handledActions.push(action); },
+      hotkeyScheme: 'mac',
+      keyBindings,
+      matchesKeyBinding,
+    }),
+    event,
+  );
+
+  assert.deepEqual(handledActions, ['newTab']);
 });
 
 test('global hotkey handler routes quick switch through focused search inputs', () => {
