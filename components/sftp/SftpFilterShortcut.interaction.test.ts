@@ -78,6 +78,7 @@ test("Ctrl+F opens and refocuses the active SFTP pane filter without handling in
     showHiddenFiles: false,
     transferMutationToken: 0,
   };
+  let refreshCalls = 0;
 
   const Harness = ({
     isActive,
@@ -93,6 +94,7 @@ test("Ctrl+F opens and refocuses the active SFTP pane filter without handling in
     const sftpRef = React.useRef({
       leftTabs: { tabs: [pane], activeTabId: pane.id },
       rightTabs: { tabs: [], activeTabId: null },
+      refresh: () => { refreshCalls += 1; },
     } as unknown as SftpStateApi);
 
     useSftpKeyboardShortcuts({
@@ -294,6 +296,25 @@ test("Ctrl+F opens and refocuses the active SFTP pane filter without handling in
       metaKey: false,
     })).defaultPrevented, true, "the configured PC search shortcut should open the filter");
     assert.ok(window.document.querySelector('[data-section="terminal-sftp-filter-bar"]'));
+
+    const commandWRefreshBindings = DEFAULT_KEY_BINDINGS.map((binding) => {
+      if (binding.action === "closeTab") return { ...binding, mac: "⌘ + E" };
+      if (binding.action === "sftpRefresh") return { ...binding, mac: "⌘ + W" };
+      return binding;
+    });
+    await act(async () => root.render(React.createElement(Harness, {
+      isActive: true,
+      hotkeyScheme: "mac",
+      keyBindings: commandWRefreshBindings,
+    })));
+    sftpTarget.focus();
+    assert.equal((await pressShortcut(sftpTarget, {
+      key: "w",
+      code: "KeyW",
+      ctrlKey: false,
+      metaKey: true,
+    })).defaultPrevented, true, "reassigned Command+W should reach the SFTP handler");
+    assert.equal(refreshCalls, 1);
 
     await act(async () => root.render(React.createElement(Harness, {
       isActive: true,

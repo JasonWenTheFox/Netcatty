@@ -13,7 +13,6 @@ export interface WindowCommandCloseRequest {
 }
 
 export type WindowCommandCloseIntent =
-  | { kind: 'hotkey'; input: NonNullable<WindowCommandCloseRequest['input']> }
   | { kind: 'closeTab' }
   | { kind: 'closeLogView'; tabId: string }
   | { kind: 'closeWindow' };
@@ -83,9 +82,6 @@ export function resolveWindowCommandCloseRequestIntent({
   isMac: boolean;
 }): WindowCommandCloseIntent | null {
   if (!shouldHandleWindowCommandCloseRequest({ request, closeTabKeyStr, isMac })) {
-    if (request?.source === 'keyboard' && request.input) {
-      return { kind: 'hotkey', input: request.input };
-    }
     return null;
   }
   return resolveWindowCommandCloseIntent(intentInput);

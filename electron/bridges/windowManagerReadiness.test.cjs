@@ -512,9 +512,10 @@ test("shouldCloseWindowFromInput only matches macOS Command+W keydown", () => {
   assert.equal(shouldCloseWindowFromInput({ type: "keyDown", meta: true, shift: true, key: "w" }), false);
 });
 
-test("main window marks macOS Command+W as a settings-gated close request", async () => {
+test("main window lets macOS Command+W reach renderer shortcut handlers without invoking the menu", async () => {
   let beforeInputHandler = null;
   const commandCloseRequests = [];
+  const ignoreMenuShortcutValues = [];
 
   class BrowserWindowStub {
     constructor() {
@@ -530,7 +531,9 @@ test("main window marks macOS Command+W as a settings-gated close request", asyn
         isCrashed() {
           return false;
         },
-        setIgnoreMenuShortcuts() {},
+        setIgnoreMenuShortcuts(value) {
+          ignoreMenuShortcutValues.push(value);
+        },
         setWindowOpenHandler() {},
         openDevTools() {},
       };
@@ -621,20 +624,9 @@ test("main window marks macOS Command+W as a settings-gated close request", asyn
     key: "w",
   });
 
-  assert.equal(prevented, true);
-  assert.equal(commandCloseRequests.length, 1);
-  assert.equal(commandCloseRequests[0].win.webContents.id, 1);
-  assert.deepEqual(commandCloseRequests[0].request, {
-    source: "keyboard",
-    input: {
-      key: "w",
-      code: "",
-      metaKey: true,
-      ctrlKey: false,
-      altKey: false,
-      shiftKey: false,
-    },
-  });
+  assert.equal(prevented, false);
+  assert.deepEqual(ignoreMenuShortcutValues, [true]);
+  assert.deepEqual(commandCloseRequests, []);
 });
 
 test("main window leaves primary-modifier reload-like shortcuts available to renderer handlers", async () => {

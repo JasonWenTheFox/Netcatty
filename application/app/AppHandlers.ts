@@ -226,7 +226,7 @@ export function flushQueuedTrayPanelConnectHostsImpl(getCtx: AppContextGetter) {
 }
 
 export function handleGlobalHotkeyKeyDownImpl(getCtx: AppContextGetter, e: KeyboardEvent) {
-  const { HOTKEY_DEBUG, closeTabKeyStr, executeHotkeyAction, hotkeyScheme, keyBindings, matchesKeyBinding } = getCtx();
+  const { HOTKEY_DEBUG, closeTabKeyStr, executeCloseTabHotkey, executeHotkeyAction, hotkeyScheme, keyBindings, matchesKeyBinding } = getCtx();
 {
     const isMac = hotkeyScheme === 'mac';
     const target = e.target as HTMLElement;
@@ -318,6 +318,10 @@ export function handleGlobalHotkeyKeyDownImpl(getCtx: AppContextGetter, e: Keybo
           isTerminalElement,
           isTerminalInPath,
         });
+      }
+      if (binding.action === 'closeTab' && executeCloseTabHotkey) {
+        executeCloseTabHotkey(e);
+        return;
       }
       executeHotkeyAction(binding.action, e);
       return;

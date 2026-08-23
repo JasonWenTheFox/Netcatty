@@ -154,6 +154,50 @@ test('terminal close-tab shortcut follows disabled, default, and rebound setting
   }
 });
 
+test('matched close-tab shortcut delegates to the complete close path', () => {
+  const target = new FakePageHTMLElement();
+  const handledActions: string[] = [];
+  let completeCloseRequests = 0;
+  let prevented = false;
+  let stopped = false;
+  const previousDocument = globalThis.document;
+  globalThis.document = { querySelectorAll: () => [] } as unknown as Document;
+  const event = {
+    key: 'w',
+    code: 'KeyW',
+    ctrlKey: false,
+    metaKey: true,
+    altKey: false,
+    shiftKey: false,
+    target,
+    composedPath: () => [target],
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => { stopped = true; },
+  } as unknown as KeyboardEvent;
+
+  try {
+    handleGlobalHotkeyKeyDownImpl(
+      () => ({
+        HOTKEY_DEBUG: false,
+        closeTabKeyStr: '⌘ + W',
+        executeCloseTabHotkey: () => { completeCloseRequests += 1; },
+        executeHotkeyAction: (action: string) => { handledActions.push(action); },
+        hotkeyScheme: 'mac',
+        keyBindings: DEFAULT_KEY_BINDINGS,
+        matchesKeyBinding,
+      }),
+      event,
+    );
+  } finally {
+    globalThis.document = previousDocument;
+  }
+
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(completeCloseRequests, 1);
+  assert.deepEqual(handledActions, []);
+});
+
 test('close-tab shortcut follows disabled, default, and rebound settings in focused inputs', () => {
   const target = new FakeInputHTMLElement();
   const handledActions: string[] = [];
@@ -246,6 +290,46 @@ test('reassigning Command+W routes it to the newly configured action', () => {
   );
 
   assert.deepEqual(handledActions, ['newTab']);
+});
+
+test('reassigning Command+W to a terminal action leaves the real event for xterm', () => {
+  const target = new FakeHTMLElement();
+  const handledActions: string[] = [];
+  let prevented = false;
+  let stopped = false;
+  const keyBindings = DEFAULT_KEY_BINDINGS.map((binding) => {
+    if (binding.action === 'closeTab') return { ...binding, mac: '⌘ + E' };
+    if (binding.action === 'searchTerminal') return { ...binding, mac: '⌘ + W' };
+    return binding;
+  });
+  const event = {
+    key: 'w',
+    code: 'KeyW',
+    ctrlKey: false,
+    metaKey: true,
+    altKey: false,
+    shiftKey: false,
+    target,
+    composedPath: () => [target],
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => { stopped = true; },
+  } as unknown as KeyboardEvent;
+
+  handleGlobalHotkeyKeyDownImpl(
+    () => ({
+      HOTKEY_DEBUG: false,
+      closeTabKeyStr: '⌘ + E',
+      executeHotkeyAction: (action: string) => { handledActions.push(action); },
+      hotkeyScheme: 'mac',
+      keyBindings,
+      matchesKeyBinding,
+    }),
+    event,
+  );
+
+  assert.equal(prevented, false);
+  assert.equal(stopped, false);
+  assert.deepEqual(handledActions, []);
 });
 
 test('global hotkey handler routes quick switch through focused search inputs', () => {

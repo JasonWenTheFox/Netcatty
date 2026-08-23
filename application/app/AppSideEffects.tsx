@@ -599,7 +599,28 @@ export function AppSideEffects() {
   const _handleTrayTogglePortForward = useEffectEvent((ruleId: string, start: boolean) => { return handleTrayTogglePortForwardImpl(() => ({ hasRuntimeTunnel, hosts, identities, keys, knownHosts: effectiveKnownHosts, portForwardingRules, resolveEffectiveHost, ruleId, start, startTunnel, stopTunnel, t, terminalSettings, toast, undefined }), ruleId, start); });
   const _handleTrayPanelConnect = useEffectEvent((hostId: string) => { return handleTrayPanelConnectImpl(() => ({ addConnectionLog, connectToHost, hostId, hosts, identities, keys, resolveEffectiveHost, resolveHostAuth, systemInfoRef, t, toast }), hostId); });
   const _handleTrayPanelConnectRequest = useEffectEvent((hostId: string) => { return handleTrayPanelConnectRequestImpl(() => ({ connectNow: _handleTrayPanelConnect, hostId, isVaultInitialized, queueConnect: (queuedHostId: string) => setPendingTrayPanelConnectHostIds((prev) => [...prev, queuedHostId]) }), hostId); });
-  const _handleGlobalHotkeyKeyDown = useEffectEvent((e: KeyboardEvent) => { return handleGlobalHotkeyKeyDownImpl(() => ({ HOTKEY_DEBUG, closeTabKeyStr, e, executeHotkeyAction, hotkeyScheme, keyBindings, matchesKeyBinding }), e); });
+  const _handleGlobalHotkeyKeyDown = useEffectEvent((e: KeyboardEvent) => { return handleGlobalHotkeyKeyDownImpl(() => ({
+    HOTKEY_DEBUG,
+    closeTabKeyStr,
+    e,
+    executeCloseTabHotkey: (event: KeyboardEvent) => {
+      void handleWindowCommandCloseRequest({
+        source: 'keyboard',
+        input: {
+          key: event.key,
+          code: event.code,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+        },
+      });
+    },
+    executeHotkeyAction,
+    hotkeyScheme,
+    keyBindings,
+    matchesKeyBinding,
+  }), e); });
   const _handleEscapeKeyDown = useEffectEvent((e: KeyboardEvent) => { return handleEscapeKeyDownImpl(() => ({ e, isQuickSwitcherOpen, setIsQuickSwitcherOpen, sftpPaneMagnificationRef, terminalPaneMagnificationRef }), e); });
 
   // Vault hosts for tray / auto-start; terminalHosts (vault + ephemeral) only for
@@ -1109,26 +1130,6 @@ export function AppSideEffects() {
     });
     if (!intent) return;
 
-    if (intent.kind === 'hotkey') {
-      if (hotkeyScheme === 'disabled' || isHotkeyRecording) return;
-      const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
-      handleGlobalHotkeyKeyDownImpl(() => ({
-        HOTKEY_DEBUG,
-        closeTabKeyStr,
-        executeHotkeyAction,
-        hotkeyScheme,
-        keyBindings,
-        matchesKeyBinding,
-      }), {
-        ...intent.input,
-        target,
-        composedPath: () => target ? [target] : [],
-        preventDefault: () => {},
-        stopPropagation: () => {},
-      } as unknown as KeyboardEvent);
-      return;
-    }
-
     const openDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][data-state="open"]'));
     const topmostOpenDialog = openDialogs[openDialogs.length - 1] ?? null;
     const topmostDialogClose = topmostOpenDialog?.querySelector<HTMLElement>('[data-dialog-close="true"]');
@@ -1148,7 +1149,7 @@ export function AppSideEffects() {
     }
 
     await netcattyBridge.get()?.windowClose?.();
-  }, [closeLogView, closeTabKeyStr, editorTabs, executeHotkeyAction, hotkeyScheme, isHotkeyRecording, keyBindings, logViews, pluginViewTabs, sessions, workspaces]);
+  }, [closeLogView, closeTabKeyStr, editorTabs, executeHotkeyAction, hotkeyScheme, logViews, pluginViewTabs, sessions, workspaces]);
 
   useEffect(() => {
     // Cmd/Ctrl+W from the app menu arrives via IPC, not the keydown listener.
