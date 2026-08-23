@@ -57,7 +57,9 @@ export const useWindowControls = () => {
 
   const onFullscreenChanged = useCallback(subscribeWindowFullscreenChanged, []);
 
-  const onWindowCommandCloseRequested = useCallback((cb: () => void) => {
+  const onWindowCommandCloseRequested = useCallback((
+    cb: (request?: import('./windowCommandClose').WindowCommandCloseRequest) => void,
+  ) => {
     const bridge = netcattyBridge.get();
     return bridge?.onWindowCommandCloseRequested?.(cb) ?? (() => {});
   }, []);

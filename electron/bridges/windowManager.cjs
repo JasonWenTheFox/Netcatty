@@ -438,12 +438,12 @@ function closeBrowserWindow(win) {
   }
 }
 
-function requestWindowCommandClose(win) {
+function requestWindowCommandClose(win, request) {
   if (!win || win.isDestroyed?.()) return false;
   try {
     const webContents = win.webContents;
     if (!webContents || webContents.isDestroyed?.()) return closeBrowserWindow(win);
-    webContents.send(WINDOW_COMMAND_CLOSE_CHANNEL);
+    webContents.send(WINDOW_COMMAND_CLOSE_CHANNEL, request);
     return true;
   } catch {
     return closeBrowserWindow(win);

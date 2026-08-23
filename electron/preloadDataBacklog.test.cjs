@@ -1250,6 +1250,33 @@ test("onWindowFocusRequested is wired to the focus-requested IPC", () => {
   }
 });
 
+test("onWindowCommandCloseRequested forwards the keyboard request payload", () => {
+  const preload = loadPreloadWithFakeElectron();
+  try {
+    const calls = [];
+    preload.api.onWindowCommandCloseRequested((request) => {
+      calls.push(request);
+    });
+    const request = {
+      source: "keyboard",
+      input: {
+        key: "w",
+        code: "KeyW",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+      },
+    };
+
+    preload.handlers.get("netcatty:window:command-close")?.({}, request);
+
+    assert.deepEqual(calls, [request]);
+  } finally {
+    preload.cleanup();
+  }
+});
+
 test("onZmodemEvent unsubscribe removes empty listener set", () => {
   const zmodemListeners = new Map();
   const api = createPreloadApi({

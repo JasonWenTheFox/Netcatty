@@ -1092,7 +1092,7 @@ function createPreloadApi(ctx) {
     return () => ipcRenderer.removeListener("netcatty:window:openSession", handler);
   },
   onWindowCommandCloseRequested: (cb) => {
-    const handler = () => cb();
+    const handler = (_event, request) => cb(request);
     ipcRenderer.on("netcatty:window:command-close", handler);
     return () => ipcRenderer.removeListener("netcatty:window:command-close", handler);
   },

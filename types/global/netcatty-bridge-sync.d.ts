@@ -63,7 +63,9 @@ declare global {
       sourceSession: import("../../domain/models").TerminalSession;
       localShellType?: import("../../domain/models").TerminalSession['shellType'];
     }) => void): () => void;
-    onWindowCommandCloseRequested?(cb: () => void): () => void;
+    onWindowCommandCloseRequested?(
+      cb: (request?: import('../../application/state/windowCommandClose').WindowCommandCloseRequest) => void,
+    ): () => void;
     onWindowFullScreenChanged?(cb: (isFullscreen: boolean) => void): () => void;
     onWindowShown?(cb: () => void): () => void;
     onWindowFocusRequested?(cb: () => void): () => void;

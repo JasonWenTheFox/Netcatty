@@ -484,19 +484,24 @@ test("buildAppMenu renders localized plugin commands with checked and disabled s
 });
 
 test("requestWindowCommandClose sends command-close to renderer-capable windows", () => {
-  const sentChannels = [];
+  const sentMessages = [];
   const win = {
     isDestroyed() { return false; },
     webContents: {
       isDestroyed() { return false; },
-      send(channel) {
-        sentChannels.push(channel);
+      send(channel, request) {
+        sentMessages.push({ channel, request });
       },
     },
   };
 
   assert.equal(requestWindowCommandClose(win), true);
-  assert.deepEqual(sentChannels, ["netcatty:window:command-close"]);
+  const keyboardRequest = { source: "keyboard", input: { key: "w" } };
+  assert.equal(requestWindowCommandClose(win, keyboardRequest), true);
+  assert.deepEqual(sentMessages, [
+    { channel: "netcatty:window:command-close", request: undefined },
+    { channel: "netcatty:window:command-close", request: keyboardRequest },
+  ]);
 });
 
 test("shouldCloseWindowFromInput only matches macOS Command+W keydown", () => {
@@ -507,10 +512,9 @@ test("shouldCloseWindowFromInput only matches macOS Command+W keydown", () => {
   assert.equal(shouldCloseWindowFromInput({ type: "keyDown", meta: true, shift: true, key: "w" }), false);
 });
 
-test("main window lets the renderer apply the configured close-tab binding to macOS Command+W", async () => {
+test("main window marks macOS Command+W as a settings-gated close request", async () => {
   let beforeInputHandler = null;
   const commandCloseRequests = [];
-  const ignoreMenuShortcutValues = [];
 
   class BrowserWindowStub {
     constructor() {
@@ -526,9 +530,7 @@ test("main window lets the renderer apply the configured close-tab binding to ma
         isCrashed() {
           return false;
         },
-        setIgnoreMenuShortcuts(value) {
-          ignoreMenuShortcutValues.push(value);
-        },
+        setIgnoreMenuShortcuts() {},
         setWindowOpenHandler() {},
         openDevTools() {},
       };
@@ -583,8 +585,8 @@ test("main window lets the renderer apply the configured close-tab binding to ma
     createAppWindowOpenHandler() { return {}; },
     attachOAuthLoadingOverlay() {},
     registerWindowHandlers() {},
-    requestWindowCommandClose(win) {
-      commandCloseRequests.push(win);
+    requestWindowCommandClose(win, request) {
+      commandCloseRequests.push({ win, request });
       return true;
     },
     shouldCloseWindowFromInput,
@@ -619,9 +621,20 @@ test("main window lets the renderer apply the configured close-tab binding to ma
     key: "w",
   });
 
-  assert.equal(prevented, false);
-  assert.equal(commandCloseRequests.length, 0);
-  assert.deepEqual(ignoreMenuShortcutValues, [true]);
+  assert.equal(prevented, true);
+  assert.equal(commandCloseRequests.length, 1);
+  assert.equal(commandCloseRequests[0].win.webContents.id, 1);
+  assert.deepEqual(commandCloseRequests[0].request, {
+    source: "keyboard",
+    input: {
+      key: "w",
+      code: "",
+      metaKey: true,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    },
+  });
 });
 
 test("main window leaves primary-modifier reload-like shortcuts available to renderer handlers", async () => {

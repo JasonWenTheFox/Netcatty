@@ -55,7 +55,10 @@ import { collectSessionIds } from '../../domain/workspace';
 import type { PaneMagnificationController } from '../../domain/paneMagnification';
 import { resolveCloseIntent } from '../state/resolveCloseIntent';
 import { resolveSnippetsShortcutIntent } from '../state/resolveSnippetsShortcutIntent';
-import { resolveWindowCommandCloseIntent } from '../state/windowCommandClose';
+import {
+  resolveWindowCommandCloseRequestIntent,
+  type WindowCommandCloseRequest,
+} from '../state/windowCommandClose';
 import type { SyncPayload } from '../../domain/sync';
 import { applySyncPayload, buildLocalVaultPayloadAsync, hasMeaningfulSyncData } from '../syncPayload';
 import {
@@ -1092,16 +1095,11 @@ export function AppSideEffects() {
     confirmIfBusyLocalTerminal,
   ]);
 
-  const handleWindowCommandCloseRequest = useCallback(async () => {
-    const openDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][data-state="open"]'));
-    const topmostOpenDialog = openDialogs[openDialogs.length - 1] ?? null;
-    const topmostDialogClose = topmostOpenDialog?.querySelector<HTMLElement>('[data-dialog-close="true"]');
-    if (topmostDialogClose) {
-      topmostDialogClose.click();
-      return;
-    }
-
-    const intent = resolveWindowCommandCloseIntent({
+  const handleWindowCommandCloseRequest = useCallback(async (request?: WindowCommandCloseRequest) => {
+    const intent = resolveWindowCommandCloseRequestIntent({
+      request,
+      closeTabKeyStr,
+      isMac: hotkeyScheme === 'mac',
       activeTabId: activeTabStore.getActiveTabId(),
       editorTabIds: editorTabs.map((tab) => toEditorTabId(tab.id)),
       sessionIds: sessions.map((session) => session.id),
@@ -1109,6 +1107,15 @@ export function AppSideEffects() {
       logViewIds: logViews.map((logView) => logView.id),
       pluginViewTabIds: pluginViewTabs.map((tab) => tab.id),
     });
+    if (!intent) return;
+
+    const openDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][data-state="open"]'));
+    const topmostOpenDialog = openDialogs[openDialogs.length - 1] ?? null;
+    const topmostDialogClose = topmostOpenDialog?.querySelector<HTMLElement>('[data-dialog-close="true"]');
+    if (topmostDialogClose) {
+      topmostDialogClose.click();
+      return;
+    }
 
     if (intent.kind === 'closeTab') {
       executeHotkeyAction('closeTab', new KeyboardEvent('keydown', { key: 'w', metaKey: true }));
@@ -1121,14 +1128,14 @@ export function AppSideEffects() {
     }
 
     await netcattyBridge.get()?.windowClose?.();
-  }, [closeLogView, editorTabs, executeHotkeyAction, logViews, pluginViewTabs, sessions, workspaces]);
+  }, [closeLogView, closeTabKeyStr, editorTabs, executeHotkeyAction, hotkeyScheme, logViews, pluginViewTabs, sessions, workspaces]);
 
   useEffect(() => {
     // Cmd/Ctrl+W from the app menu arrives via IPC, not the keydown listener.
     // Gate it while locked so sessions/tabs cannot close behind the overlay.
-    const unsubscribe = netcattyBridge.get()?.onWindowCommandCloseRequested?.(() => {
+    const unsubscribe = netcattyBridge.get()?.onWindowCommandCloseRequested?.((request) => {
       if (shouldDeferExternalActionWhileAppLocked({ locked: appLockLocked })) return;
-      void handleWindowCommandCloseRequest();
+      void handleWindowCommandCloseRequest(request);
     });
     return () => unsubscribe?.();
   }, [appLockLocked, handleWindowCommandCloseRequest]);

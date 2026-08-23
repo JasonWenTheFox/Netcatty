@@ -1,7 +1,111 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveWindowCommandCloseIntent } from "./windowCommandClose.ts";
+import {
+  resolveWindowCommandCloseIntent,
+  resolveWindowCommandCloseRequestIntent,
+  shouldHandleWindowCommandCloseRequest,
+} from "./windowCommandClose.ts";
+
+const commandWRequest = {
+  source: "keyboard" as const,
+  input: {
+    key: "w",
+    code: "KeyW",
+    metaKey: true,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+  },
+};
+
+test("keyboard close requests follow disabled, default, and rebound settings", () => {
+  assert.equal(shouldHandleWindowCommandCloseRequest({
+    request: commandWRequest,
+    closeTabKeyStr: null,
+    isMac: true,
+  }), false);
+  assert.equal(shouldHandleWindowCommandCloseRequest({
+    request: commandWRequest,
+    closeTabKeyStr: "Disabled",
+    isMac: true,
+  }), false);
+  assert.equal(shouldHandleWindowCommandCloseRequest({
+    request: commandWRequest,
+    closeTabKeyStr: "⌘ + W",
+    isMac: true,
+  }), true);
+  assert.equal(shouldHandleWindowCommandCloseRequest({
+    request: commandWRequest,
+    closeTabKeyStr: "⌘ + E",
+    isMac: true,
+  }), false);
+});
+
+test("menu close requests remain available when the keyboard shortcut is disabled", () => {
+  assert.equal(shouldHandleWindowCommandCloseRequest({
+    closeTabKeyStr: null,
+    isMac: true,
+  }), true);
+});
+
+test("disabled and rebound keyboard requests cannot close the Vault or a log view", () => {
+  assert.equal(resolveWindowCommandCloseRequestIntent({
+    request: commandWRequest,
+    closeTabKeyStr: null,
+    isMac: true,
+    activeTabId: "vault",
+    editorTabIds: [],
+    sessionIds: [],
+    workspaceIds: [],
+    logViewIds: [],
+  }), null);
+  assert.equal(resolveWindowCommandCloseRequestIntent({
+    request: commandWRequest,
+    closeTabKeyStr: "⌘ + E",
+    isMac: true,
+    activeTabId: "log-1",
+    editorTabIds: [],
+    sessionIds: [],
+    workspaceIds: [],
+    logViewIds: ["log-1"],
+  }), null);
+});
+
+test("enabled keyboard requests preserve Vault and log-view close behavior", () => {
+  assert.deepEqual(resolveWindowCommandCloseRequestIntent({
+    request: commandWRequest,
+    closeTabKeyStr: "⌘ + W",
+    isMac: true,
+    activeTabId: "vault",
+    editorTabIds: [],
+    sessionIds: [],
+    workspaceIds: [],
+    logViewIds: [],
+  }), { kind: "closeWindow" });
+  assert.deepEqual(resolveWindowCommandCloseRequestIntent({
+    request: commandWRequest,
+    closeTabKeyStr: "⌘ + W",
+    isMac: true,
+    activeTabId: "log-1",
+    editorTabIds: [],
+    sessionIds: [],
+    workspaceIds: [],
+    logViewIds: ["log-1"],
+  }), { kind: "closeLogView", tabId: "log-1" });
+});
+
+test("menu requests preserve Vault close behavior with the shortcut disabled", () => {
+  assert.deepEqual(resolveWindowCommandCloseRequestIntent({
+    closeTabKeyStr: null,
+    isMac: true,
+    activeTabId: "vault",
+    editorTabIds: [],
+    sessionIds: [],
+    workspaceIds: [],
+    logViewIds: [],
+  }), { kind: "closeWindow" });
+});
 
 test("Cmd+W closes the active closable tab first", () => {
   assert.deepEqual(

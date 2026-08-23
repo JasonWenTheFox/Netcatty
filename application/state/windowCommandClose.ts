@@ -1,3 +1,17 @@
+import { matchesKeyBinding } from '../../domain/models/keyBindings';
+
+export interface WindowCommandCloseRequest {
+  source?: 'keyboard';
+  input?: {
+    key: string;
+    code: string;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+  };
+}
+
 export type WindowCommandCloseIntent =
   | { kind: 'closeTab' }
   | { kind: 'closeLogView'; tabId: string }
@@ -10,6 +24,20 @@ interface ResolveWindowCommandCloseIntentInput {
   workspaceIds: string[];
   logViewIds: string[];
   pluginViewTabIds?: string[];
+}
+
+export function shouldHandleWindowCommandCloseRequest({
+  request,
+  closeTabKeyStr,
+  isMac,
+}: {
+  request?: WindowCommandCloseRequest;
+  closeTabKeyStr: string | null;
+  isMac: boolean;
+}): boolean {
+  if (request?.source !== 'keyboard') return true;
+  if (!request.input || !closeTabKeyStr) return false;
+  return matchesKeyBinding(request.input as KeyboardEvent, closeTabKeyStr, isMac);
 }
 
 export function resolveWindowCommandCloseIntent({
@@ -41,4 +69,20 @@ export function resolveWindowCommandCloseIntent({
   }
 
   return { kind: 'closeWindow' };
+}
+
+export function resolveWindowCommandCloseRequestIntent({
+  request,
+  closeTabKeyStr,
+  isMac,
+  ...intentInput
+}: ResolveWindowCommandCloseIntentInput & {
+  request?: WindowCommandCloseRequest;
+  closeTabKeyStr: string | null;
+  isMac: boolean;
+}): WindowCommandCloseIntent | null {
+  if (!shouldHandleWindowCommandCloseRequest({ request, closeTabKeyStr, isMac })) {
+    return null;
+  }
+  return resolveWindowCommandCloseIntent(intentInput);
 }
