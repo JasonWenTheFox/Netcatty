@@ -28,6 +28,7 @@ import { HotkeyScheme, KeyBinding, matchesKeyBinding } from '../../domain/models
 import { pasteForMonacoEditorCommand } from '../../infrastructure/monaco/monacoClipboardPaste';
 import { useNetcattyMonacoTheme } from '../../infrastructure/monaco/useNetcattyMonacoTheme';
 import { getLanguageName, getSupportedLanguages } from '../../lib/sftpFileUtils';
+import { isMacPlatform } from '../../lib/utils';
 import { Button } from '../ui/button';
 import { Combobox } from '../ui/combobox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -116,6 +117,28 @@ export function getTextEditorContentStats(content: string): { lineCount: number;
   return { lineCount, charCount: content.length };
 }
 
+export function shouldHandleMonacoCloseCommand({
+  hotkeyScheme,
+  closeTabBinding,
+  macPlatform,
+}: {
+  hotkeyScheme: HotkeyScheme;
+  closeTabBinding: KeyBinding | undefined;
+  macPlatform: boolean;
+}): boolean {
+  if (hotkeyScheme === 'disabled' || !closeTabBinding) return false;
+  const isMacScheme = hotkeyScheme === 'mac';
+  const keyStr = isMacScheme ? closeTabBinding.mac : closeTabBinding.pc;
+  return matchesKeyBinding({
+    key: 'w',
+    code: 'KeyW',
+    metaKey: macPlatform,
+    ctrlKey: !macPlatform,
+    altKey: false,
+    shiftKey: false,
+  } as KeyboardEvent, keyStr, isMacScheme);
+}
+
 export const TextEditorPromoteButton: React.FC<{
   saving: boolean;
   onPromoteToTab: () => void;
@@ -173,6 +196,8 @@ const TextEditorPaneInner: React.FC<TextEditorPaneProps> = ({
     () => keyBindings.find((binding) => binding.action === 'closeTab'),
     [keyBindings],
   );
+  const closeTabShortcutRef = useRef({ hotkeyScheme, closeTabBinding });
+  closeTabShortcutRef.current = { hotkeyScheme, closeTabBinding };
 
   const handleSave = useCallback(() => {
     if (saving) return;
@@ -263,11 +288,14 @@ const TextEditorPaneInner: React.FC<TextEditorPaneProps> = ({
       handleSaveRef.current();
     });
 
-    // Close-tab shortcut inside Monaco. The capture-phase keydown on the
-    // Pane's root div also tries to handle this, but Monaco's internal
-    // key-event dispatcher fires first for focused editor keystrokes, so
-    // registering the command here is the reliable path.
+    // Monaco handles the platform's default close key before the pane's DOM
+    // capture handler. Keep this fallback, but consult the live shortcut
+    // setting so a disabled or reassigned close-tab binding is not bypassed.
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, () => {
+      if (!shouldHandleMonacoCloseCommand({
+        ...closeTabShortcutRef.current,
+        macPlatform: isMacPlatform(),
+      })) return;
       handleCloseRef.current?.();
     });
 

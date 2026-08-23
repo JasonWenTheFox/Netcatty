@@ -275,8 +275,12 @@ function createMainWindowApi(ctx) {
       // while preventing Chromium's built-in shortcuts from triggering.
       win.webContents.on("before-input-event", (event, input) => {
         if (isMac && shouldCloseWindowFromInput(input)) {
-          event.preventDefault();
-          requestWindowCommandClose(win);
+          // The app menu reserves Cmd+W before the renderer can compare it
+          // with the user's close-tab binding. Bypass the menu accelerator for
+          // this key event so the normal renderer shortcut path decides whether
+          // the binding is enabled, disabled, or reassigned. Clicking the menu
+          // item still uses requestWindowCommandClose directly.
+          win.webContents.setIgnoreMenuShortcuts(true);
           return;
         }
 

@@ -7,8 +7,10 @@ import {
   canPromoteTextEditor,
   getTextEditorContentStats,
   isTextEditorReadOnly,
+  shouldHandleMonacoCloseCommand,
   TextEditorPromoteButton,
 } from "./TextEditorPane.tsx";
+import { DEFAULT_KEY_BINDINGS } from "../../domain/models/keyBindings.ts";
 import { TooltipProvider } from "../ui/tooltip.tsx";
 
 const wrap = (child: React.ReactElement) =>
@@ -48,4 +50,30 @@ test("renders the promote button disabled while a save is running", () => {
 test("counts editor content without allocating line arrays", () => {
   assert.deepEqual(getTextEditorContentStats(""), { lineCount: 1, charCount: 0 });
   assert.deepEqual(getTextEditorContentStats("one\ntwo\n"), { lineCount: 3, charCount: 8 });
+});
+
+test("Monaco close command follows disabled, default, and rebound close-tab settings", () => {
+  const closeTabBinding = DEFAULT_KEY_BINDINGS.find((binding) => binding.action === "closeTab");
+  assert.ok(closeTabBinding);
+
+  assert.equal(shouldHandleMonacoCloseCommand({
+    hotkeyScheme: "mac",
+    closeTabBinding: { ...closeTabBinding, mac: "Disabled" },
+    macPlatform: true,
+  }), false);
+  assert.equal(shouldHandleMonacoCloseCommand({
+    hotkeyScheme: "mac",
+    closeTabBinding,
+    macPlatform: true,
+  }), true);
+  assert.equal(shouldHandleMonacoCloseCommand({
+    hotkeyScheme: "mac",
+    closeTabBinding: { ...closeTabBinding, mac: "⌘ + E" },
+    macPlatform: true,
+  }), false);
+  assert.equal(shouldHandleMonacoCloseCommand({
+    hotkeyScheme: "disabled",
+    closeTabBinding,
+    macPlatform: true,
+  }), false);
 });

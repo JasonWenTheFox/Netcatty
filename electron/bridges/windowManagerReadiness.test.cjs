@@ -507,9 +507,10 @@ test("shouldCloseWindowFromInput only matches macOS Command+W keydown", () => {
   assert.equal(shouldCloseWindowFromInput({ type: "keyDown", meta: true, shift: true, key: "w" }), false);
 });
 
-test("main window asks renderer to close tabs from macOS Command+W before-input-event", async () => {
+test("main window lets the renderer apply the configured close-tab binding to macOS Command+W", async () => {
   let beforeInputHandler = null;
   const commandCloseRequests = [];
+  const ignoreMenuShortcutValues = [];
 
   class BrowserWindowStub {
     constructor() {
@@ -525,7 +526,9 @@ test("main window asks renderer to close tabs from macOS Command+W before-input-
         isCrashed() {
           return false;
         },
-        setIgnoreMenuShortcuts() {},
+        setIgnoreMenuShortcuts(value) {
+          ignoreMenuShortcutValues.push(value);
+        },
         setWindowOpenHandler() {},
         openDevTools() {},
       };
@@ -616,8 +619,9 @@ test("main window asks renderer to close tabs from macOS Command+W before-input-
     key: "w",
   });
 
-  assert.equal(prevented, true);
-  assert.equal(commandCloseRequests.length, 1);
+  assert.equal(prevented, false);
+  assert.equal(commandCloseRequests.length, 0);
+  assert.deepEqual(ignoreMenuShortcutValues, [true]);
 });
 
 test("main window leaves primary-modifier reload-like shortcuts available to renderer handlers", async () => {
