@@ -141,6 +141,64 @@ test('terminal close-tab shortcut follows disabled, default, and rebound setting
   }
 });
 
+test('close-tab shortcut follows disabled, default, and rebound settings in focused inputs', () => {
+  const target = new FakeInputHTMLElement();
+  const handledActions: string[] = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = { querySelectorAll: () => [] } as unknown as Document;
+
+  const dispatch = (key: string, keyBindings = DEFAULT_KEY_BINDINGS) => {
+    let prevented = false;
+    let stopped = false;
+    const event = {
+      key,
+      code: `Key${key.toUpperCase()}`,
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      target,
+      composedPath: () => [target],
+      preventDefault: () => { prevented = true; },
+      stopPropagation: () => { stopped = true; },
+    } as unknown as KeyboardEvent;
+
+    handleGlobalHotkeyKeyDownImpl(
+      () => ({
+        HOTKEY_DEBUG: false,
+        closeTabKeyStr: keyBindings.find((binding) => binding.action === 'closeTab')?.mac ?? null,
+        executeHotkeyAction: (action: string) => { handledActions.push(action); },
+        hotkeyScheme: 'mac',
+        keyBindings,
+        matchesKeyBinding,
+      }),
+      event,
+    );
+    return { prevented, stopped };
+  };
+
+  try {
+    const disabledBindings = DEFAULT_KEY_BINDINGS.map((binding) =>
+      binding.action === 'closeTab' ? { ...binding, mac: 'Disabled' } : binding,
+    );
+    assert.deepEqual(dispatch('w', disabledBindings), { prevented: false, stopped: false });
+    assert.deepEqual(handledActions, []);
+
+    assert.deepEqual(dispatch('w'), { prevented: true, stopped: true });
+    assert.deepEqual(handledActions, ['closeTab']);
+
+    handledActions.length = 0;
+    const reboundBindings = DEFAULT_KEY_BINDINGS.map((binding) =>
+      binding.action === 'closeTab' ? { ...binding, mac: '⌘ + E' } : binding,
+    );
+    assert.deepEqual(dispatch('w', reboundBindings), { prevented: false, stopped: false });
+    assert.deepEqual(dispatch('e', reboundBindings), { prevented: true, stopped: true });
+    assert.deepEqual(handledActions, ['closeTab']);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test('global hotkey handler routes quick switch through focused search inputs', () => {
   const target = new FakeInputHTMLElement();
   const handledActions: string[] = [];

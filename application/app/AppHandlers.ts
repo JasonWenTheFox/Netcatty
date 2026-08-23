@@ -268,6 +268,7 @@ export function handleGlobalHotkeyKeyDownImpl(getCtx: AppContextGetter, e: Keybo
       (isFormElement || isMonacoElement)
       && !isXtermInput
       && e.key !== 'Escape'
+      && !isCloseTabHotkey
       && !isQuickSwitchHotkey
       && !isPaneZoomHotkey
     ) {
