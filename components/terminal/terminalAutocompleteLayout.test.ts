@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   clampAutocompletePopupGeometry,
   computeAutocompletePopupPlacement,
+  didAutocompleteClampViewportChange,
   nextAutocompletePopupAnchorViewport,
   resolveAutocompleteAnchorInViewport,
   resolveAutocompleteClampViewport,
@@ -872,5 +873,19 @@ test("nextAutocompletePopupAnchorViewport is a no-op when the stored viewport is
       anchor,
     ),
     null,
+  );
+});
+
+test("didAutocompleteClampViewportChange detects layout-only viewport changes", () => {
+  const viewport = { left: 0, top: 0, width: 800, height: 600 };
+  assert.equal(didAutocompleteClampViewportChange(null, viewport), false);
+  assert.equal(didAutocompleteClampViewportChange(viewport, { ...viewport }), false);
+  assert.equal(
+    didAutocompleteClampViewportChange(viewport, { ...viewport, width: 700 }),
+    true,
+  );
+  assert.equal(
+    didAutocompleteClampViewportChange(viewport, { ...viewport, left: 12 }),
+    true,
   );
 });

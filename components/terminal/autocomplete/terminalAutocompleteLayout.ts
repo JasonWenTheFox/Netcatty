@@ -584,6 +584,18 @@ export function resolveAutocompletePopupAnchorInViewport(
   );
 }
 
+/** Whether the clamp bounds moved since the last reposition (layout-driven change). */
+export function didAutocompleteClampViewportChange(
+  prev: PopupClampViewport | null,
+  next: PopupClampViewport,
+): boolean {
+  if (!prev) return false;
+  return prev.left !== next.left
+    || prev.top !== next.top
+    || prev.width !== next.width
+    || prev.height !== next.height;
+}
+
 /**
  * Next stored popup viewport when the command-start / cursor anchor moves.
  * Returns `prev` when nothing changed so callers can skip a React update.

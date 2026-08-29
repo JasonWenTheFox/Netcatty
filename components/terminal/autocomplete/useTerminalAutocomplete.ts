@@ -31,11 +31,14 @@ import { isWindowsShellLineInput, shouldWriteAutocompleteLivePreview } from "./l
 import {
   areSubDirPanelsEqual,
   areSuggestionsEqual,
+  didAutocompleteClampViewportChange,
   nextAutocompletePopupAnchorViewport,
+  resolveAutocompleteClampViewport,
   resolveAutocompleteCursorCell,
   resolveAutocompleteCwdWithSource,
   resolveAutocompletePopupAnchorInViewport,
   resolvePreservedSuggestionIndex,
+  type PopupClampViewport,
 } from "./terminalAutocompleteLayout";
 import { handleTerminalAutocompleteInput } from "./terminalAutocompleteInput";
 import { handleTerminalAutocompleteKeyEvent } from "./terminalAutocompleteKeyEvent";
@@ -358,6 +361,13 @@ export function useTerminalAutocomplete(
   const previewBaselineRef = useRef<string>("");
   /** Whether a popup candidate is currently rendered into the command line (#1005). */
   const previewActiveRef = useRef(false);
+  /**
+   * Clamp viewport measured at the last reposition. The popup derives its
+   * clamp bounds at render time, so a layout-only resize (e.g. pixel shrink
+   * from opening a side panel) must force a re-render even when the anchor
+   * did not move (#3204).
+   */
+  const lastClampViewportRef = useRef<PopupClampViewport | null>(null);
   /** Monotonic counter to invalidate stale async sub-dir fetches */
   const subDirFetchVersionRef = useRef(0);
   /**
@@ -477,6 +487,7 @@ export function useTerminalAutocomplete(
     }
     echoValidationTypedRef.current = null;
     echoValidationStartedAtRef.current = null;
+    lastClampViewportRef.current = null;
     ghostAddonRef.current?.hide();
     completionAbortRef.current?.abort();
     completionAbortRef.current = null;
@@ -508,6 +519,16 @@ export function useTerminalAutocomplete(
     if (!stateRef.current.popupVisible || stateRef.current.suggestions.length === 0) return;
     const term = termRef.current;
     if (!term) return;
+
+    // Track clamp bounds so a layout-driven resize (anchor unchanged) still
+    // forces a render — the popup recomputes resolveAutocompleteClampViewport
+    // only when it re-renders (#3204).
+    const clampViewport = resolveAutocompleteClampViewport(containerRef.current);
+    const clampChanged = didAutocompleteClampViewportChange(
+      lastClampViewportRef.current,
+      clampViewport,
+    );
+    lastClampViewportRef.current = clampViewport;
 
     setState((prev) => {
       if (!prev.popupVisible || prev.suggestions.length === 0) return prev;
@@ -542,7 +563,11 @@ export function useTerminalAutocomplete(
         prev.expandUpward,
         anchor,
       );
-      if (!nextAnchor) return prev;
+      if (!nextAnchor) {
+        // Anchor unchanged but the clamp viewport moved (container resized);
+        // re-render so the popup can re-clamp its width/position.
+        return clampChanged ? { ...prev } : prev;
+      }
 
       return {
         ...prev,
