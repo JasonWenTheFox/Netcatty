@@ -1517,19 +1517,11 @@ async function runRemoteUploadTransaction(client, localPath, remotePath, options
     // back. Stop accepting cancellation before the final size verification so
     // a late request cannot report the completed overwrite as cancelled.
     commitPromotion();
-    // Some servers recreate the inode on OPEN|CREAT|TRUNC. Restore captured
-    // permission bits after an in-place overwrite (incl. stage→in-place
-    // fallback) so executable/setuid bits are not left at umask defaults.
-    // Do not forward the transfer AbortSignal: promotion already committed, and
-    // a late cancel must not abort required mode restoration (best-effort would
-    // otherwise swallow the failure and leave umask defaults).
-    if (Number.isFinite(plan.existingMode)) {
-      await restoreRemoteMode(client, encodedPath, plan.existingMode, {
-        bestEffort: false,
-        remotePath,
-        encoding,
-      });
-    }
+    // Some servers recreate the inode on OPEN|CREAT|TRUNC, so an in-place
+    // overwrite can leave the final path at umask defaults. Mode restoration is
+    // centralized post-commit in the upload-driver (transferBridge): it runs
+    // once, bounded and best-effort, so a stalled/failed chmod cannot report a
+    // successfully written upload as failed or duplicate a strict chmod here.
     // SCP stat reports the link node itself. After an in-place symlink upload,
     // it cannot reliably verify the followed target's byte count.
     if (Number.isFinite(expectedSize) && expectedSize >= 0 && !(scpMode && plan.writeInPlace)) {

@@ -2288,9 +2288,6 @@ async function uploadFile(
   options = {},
 ) {
   const generatedStagePath = options.generatedStagePath === true;
-  const existingRemoteMode = Number.isFinite(options.existingMode)
-    ? options.existingMode & 0o7777
-    : null;
   if (isScpModeClient(client)) {
     transfer.pauseSupported = false;
     transfer.pauseUnavailableReason = "Pause is unavailable for SCP transfers";
@@ -2347,17 +2344,6 @@ async function uploadFile(
       });
     }
     await assertRemoteUploadSize(client, remotePath, fileSize);
-    // In-place replace writes the final path (fastPut / pipelined WRITE). Restore
-    // captured mode here; staged `.part` uploads restore after rename instead.
-    if (!generatedStagePath && Number.isFinite(existingRemoteMode)) {
-      await restoreRemoteUploadModeBestEffort(
-        client,
-        options.sftpId,
-        options.finalRemotePath || remotePath,
-        encoding,
-        existingRemoteMode,
-      );
-    }
   };
 
   // Prefer an isolated SFTP channel so cancellation cannot kill the browse session.
@@ -5943,12 +5929,7 @@ async function startTransferNow(event, payload, onProgress) {
             sendProgress,
             resolvedTargetEncoding,
             usesStage ? null : () => { transfer.completionCommitted = true; },
-            {
-              generatedStagePath: usesStage,
-              existingMode: existingRemoteMode,
-              sftpId: targetSftpId,
-              finalRemotePath: targetPath,
-            },
+            { generatedStagePath: usesStage },
           );
         },
       });
@@ -6416,12 +6397,7 @@ async function startTransferNow(event, payload, onProgress) {
               uploadProgress,
               resolvedTargetEncoding,
               usesStage ? null : () => { transfer.completionCommitted = true; },
-              {
-                generatedStagePath: usesStage,
-                existingMode: existingRemoteMode,
-                sftpId: targetSftpId,
-                finalRemotePath: targetPath,
-              },
+              { generatedStagePath: usesStage },
             );
           },
         });
