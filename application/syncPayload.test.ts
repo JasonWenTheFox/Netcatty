@@ -225,6 +225,52 @@ test("retainLocalHostLastConnectedAt does not invent timestamps for unknown host
   assert.equal(retained?.[0]?.lastConnectedAt, undefined);
 });
 
+test("retainLocalHostLastConnectedAt prefers local recency over legacy incoming telemetry", () => {
+  const host = {
+    id: "host-keep",
+    label: "prod",
+    hostname: "prod.example.com",
+    username: "root",
+    tags: [],
+    os: "linux" as const,
+    protocol: "ssh" as const,
+  };
+  const local = [{ ...host, lastConnectedAt: 100 }];
+  const incoming = [{ ...host, label: "prod-renamed", lastConnectedAt: 900 }];
+
+  const retained = retainLocalHostLastConnectedAt(incoming, local);
+
+  assert.equal(retained?.[0]?.lastConnectedAt, 100);
+  assert.equal(retained?.[0]?.label, "prod-renamed");
+});
+
+test("retainLocalHostLastConnectedAt drops incoming telemetry for hosts unknown locally", () => {
+  const incoming = [{
+    id: "cloud-host",
+    label: "cloud",
+    hostname: "cloud.example.com",
+    username: "root",
+    tags: [],
+    os: "linux" as const,
+    protocol: "ssh" as const,
+    lastConnectedAt: 42,
+  }];
+  const local = [{
+    id: "local-host",
+    label: "local",
+    hostname: "local.example.com",
+    username: "root",
+    tags: [],
+    os: "linux" as const,
+    protocol: "ssh" as const,
+    lastConnectedAt: 7,
+  }];
+
+  const retained = retainLocalHostLastConnectedAt(incoming, local);
+
+  assert.equal(retained?.[0]?.lastConnectedAt, undefined);
+});
+
 test("buildSyncPayload includes reusable proxy profiles", () => {
   const proxyProfiles = [
     {

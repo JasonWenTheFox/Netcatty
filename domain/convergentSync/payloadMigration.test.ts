@@ -20,6 +20,7 @@ import {
   withConvergentSyncEnvelope,
   createConvergentSyncState,
 } from './index.ts';
+import type { JsonObject, ConvergentSyncStateV2 } from './types.ts';
 
 const NOW = 1_700_000_000_000;
 
@@ -286,6 +287,72 @@ test('diffLegacySyncPayload ignores lastConnectedAt-only host changes', () => {
   };
 
   assert.deepEqual(diffLegacySyncPayload(baseline, legacy), []);
+});
+
+/** Build a state as a pre-#2629 writer would: register telemetry without sanitization. */
+function legacyStateWithHostTelemetry(): ConvergentSyncStateV2 {
+  return applyConvergentMutations(
+    createConvergentSyncState(),
+    'legacy-device',
+    [{
+      kind: 'entity-upsert',
+      collection: 'hosts',
+      entityId: 'host-1',
+      value: { ...payload().hosts[0], lastConnectedAt: NOW } as unknown as JsonObject,
+      position: 0,
+    }],
+    NOW,
+  );
+}
+
+test('materializeSyncPayloadFromConvergentState strips telemetry from legacy replicas', () => {
+  const state = legacyStateWithHostTelemetry();
+
+  const materialized = materializeSyncPayloadFromConvergentState(state, { syncedAt: NOW });
+
+  assert.equal(materialized.hosts[0]?.lastConnectedAt, undefined);
+  assert.equal('lastConnectedAt' in (materialized.hosts[0] ?? {}), false);
+});
+
+test('v2 envelopes from legacy replicas do not carry telemetry registers', () => {
+  const state = legacyStateWithHostTelemetry();
+  const materialized = materializeSyncPayloadFromConvergentState(state, { syncedAt: NOW });
+
+  const envelope = createConvergentSyncEnvelope(state, materialized);
+  const hostFields = envelope.state.collections['hosts']!.entities['host-1']!.fields;
+
+  assert.equal('lastConnectedAt' in hostFields, false);
+});
+
+test('legacy telemetry registers never reach materialized payloads or new envelopes', () => {
+  const state = legacyStateWithHostTelemetry();
+  const envelope = { ...withConvergentSyncEnvelope(state, { syncedAt: NOW }).convergentSync! };
+  // Simulate a pre-#2629 replica: the envelope and adjacent snapshot still
+  // carry the telemetry register the older writer stored. Reuse the register
+  // from raw CRDT mutations so its dots stay causally consistent.
+  const telemetryRegister = state
+    .collections['hosts']!.entities['host-1']!.fields['lastConnectedAt']!;
+  envelope.state.collections['hosts']!.entities['host-1']!.fields['lastConnectedAt'] = {
+    candidates: telemetryRegister.candidates.map((candidate) => ({
+      dot: { ...candidate.dot },
+      context: candidate.context.map((contextDot) => ({ ...contextDot })),
+      hlc: { ...candidate.hlc },
+      materialized: true as const,
+    })),
+  };
+  const snapshot: SyncPayload = {
+    ...materializeSyncPayloadFromConvergentState(state, { syncedAt: NOW }),
+    hosts: [{ ...payload().hosts[0], lastConnectedAt: NOW }],
+  };
+  const hydrated = hydrateConvergentSyncEnvelope(envelope, snapshot);
+  const roundTripped = materializeSyncPayloadFromConvergentState(hydrated, { syncedAt: NOW });
+
+  assert.equal('lastConnectedAt' in (roundTripped.hosts[0] ?? {}), false);
+  const nextEnvelope = createConvergentSyncEnvelope(hydrated, roundTripped);
+  assert.equal(
+    'lastConnectedAt' in nextEnvelope.state.collections['hosts']!.entities['host-1']!.fields,
+    false,
+  );
 });
 
 test('trusted legacy diff becomes causal CRDT writes without carrying transport metadata', () => {

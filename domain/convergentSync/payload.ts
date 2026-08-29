@@ -1,4 +1,6 @@
 import {
+  isHostLocalOnlyField,
+  stripHostLocalOnlyFields,
   withHostsSanitizedForSync,
   type CloudSyncPayloadEntityKey,
   type SyncFileMeta,
@@ -218,7 +220,12 @@ export function materializeSyncPayloadFromConvergentState(
     ? materialized.settings as unknown as NonNullable<SyncPayload['settings']>
     : undefined;
   return {
-    hosts: typedCollection<import('../models').Host>(materialized.collections, 'hosts'),
+    // Replicas created before #2629 can still hold a device-local telemetry
+    // register (e.g. `lastConnectedAt`) on hosts. It must never reach a
+    // materialized cloud snapshot or v2 envelope, so strip it on the way out.
+    hosts: stripHostLocalOnlyFields(
+      typedCollection<import('../models').Host>(materialized.collections, 'hosts'),
+    ) ?? [],
     keys: typedCollection<import('../models').SSHKey>(materialized.collections, 'keys'),
     identities: typedCollection<import('../models').Identity>(materialized.collections, 'identities'),
     proxyProfiles: typedCollection<import('../models').ProxyProfile>(materialized.collections, 'proxyProfiles'),
@@ -345,6 +352,7 @@ export function createConvergentSyncEnvelope(
       const materialized = materializedEntity(materializedPayload, collectionName, id);
       const fields = createEmptyRecord<ConvergentEnvelopeRegister>();
       for (const [field, register] of Object.entries(entity.fields)) {
+        if (collectionName === 'hosts' && isHostLocalOnlyField(field)) continue;
         setOwnRecordValue(fields, field, compactRegister(register, materialized?.[field], true));
       }
       setOwnRecordValue(entities, id, {
@@ -522,7 +530,10 @@ export function hydrateConvergentSyncEnvelope(
   };
   assertValidConvergentSyncState(state);
   const canonical = canonicalizeConvergentSyncState(state);
-  assertMaterializedPayloadMatchesState(canonical, materializedPayload);
+  // Legacy snapshots can still carry host telemetry their registers were
+  // seeded from; materialization strips it, so compare against a sanitized
+  // snapshot instead of failing the invariant on pre-#2629 replicas.
+  assertMaterializedPayloadMatchesState(canonical, withHostsSanitizedForSync(materializedPayload));
   return canonical;
 }
 

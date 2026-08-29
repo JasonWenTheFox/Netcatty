@@ -402,6 +402,33 @@ export function sanitizeHostsForSync(
   return hosts.map((host) => ({ ...host, lastConnectedAt: undefined }));
 }
 
+/**
+ * Host fields that hold device-local telemetry. `lastConnectedAt` updates on
+ * every successful SSH connect and must never enter cloud payloads,
+ * convergent CRDT state, or v2 envelopes (#2629).
+ */
+export const HOST_LOCAL_ONLY_FIELDS = ['lastConnectedAt'] as const;
+
+export function isHostLocalOnlyField(field: string): boolean {
+  return (HOST_LOCAL_ONLY_FIELDS as readonly string[]).includes(field);
+}
+
+/**
+ * Copy hosts with device-local telemetry fields removed entirely. Unlike
+ * `sanitizeHostsForSync` (which masks values for equality), this drops the
+ * keys so materialized cloud snapshots never carry a telemetry register.
+ */
+export function stripHostLocalOnlyFields(
+  hosts: import('./models').Host[] | undefined,
+): import('./models').Host[] | undefined {
+  if (!hosts) return hosts;
+  return hosts.map((host) => {
+    const copy = { ...host };
+    for (const field of HOST_LOCAL_ONLY_FIELDS) delete (copy as Record<string, unknown>)[field];
+    return copy;
+  });
+}
+
 /** Copy a payload with device-local host telemetry stripped for compare/convert. */
 export function withHostsSanitizedForSync(payload: SyncPayload): SyncPayload {
   return {
@@ -411,9 +438,12 @@ export function withHostsSanitizedForSync(payload: SyncPayload): SyncPayload {
 }
 
 /**
- * Re-attach this device's Recently Connected timestamps when a cloud payload
- * omits `lastConnectedAt`. Incoming timestamps (local backups, legacy cloud
- * snapshots) still win when present.
+ * Re-attach this device's Recently Connected ordering when applying a remote
+ * payload. `lastConnectedAt` is device-local (#2629), so incoming telemetry —
+ * even from legacy v1 payloads or older convergent replicas — is never
+ * authoritative: this device's timestamp always wins when it has one, hosts
+ * unknown to this device get no invented value, and foreign timestamps are
+ * dropped rather than replacing the local Recently Connected ordering.
  */
 export function retainLocalHostLastConnectedAt(
   incoming: import('./models').Host[] | undefined,
@@ -423,9 +453,12 @@ export function retainLocalHostLastConnectedAt(
   if (!local?.length) return incoming;
   const localById = new Map(local.map((host) => [host.id, host.lastConnectedAt]));
   return incoming.map((host) => {
-    if (host.lastConnectedAt != null) return host;
     const localTs = localById.get(host.id);
-    if (localTs == null) return host;
+    if (localTs == null) {
+      // Not known locally: never adopt another device's activity timestamps.
+      return host.lastConnectedAt === undefined ? host : { ...host, lastConnectedAt: undefined };
+    }
+    if (host.lastConnectedAt === localTs) return host;
     return { ...host, lastConnectedAt: localTs };
   });
 }
