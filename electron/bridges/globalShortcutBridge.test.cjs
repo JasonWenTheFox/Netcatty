@@ -1489,7 +1489,7 @@ test("toggleWindowVisibility focuses visible-but-unfocused windows via showAndFo
   });
 });
 
-function installFakeTrayPanelWindow(electronModule, { getBoundsSize, ignoreBoundsWhileHidden } = {}) {
+function installFakeTrayPanelWindow(electronModule, { getBoundsSize } = {}) {
   class FakePanelWindow extends EventEmitter {
     constructor(opts = {}) {
       super();
@@ -1502,7 +1502,6 @@ function installFakeTrayPanelWindow(electronModule, { getBoundsSize, ignoreBound
         height: opts.height,
       };
       this.setBoundsCalls = [];
-      this.setBoundWhileVisible = [];
       this.destroyed = false;
       this.visible = false;
       const webContents = new EventEmitter();
@@ -1515,15 +1514,8 @@ function installFakeTrayPanelWindow(electronModule, { getBoundsSize, ignoreBound
       if (getBoundsSize) return { ...this.bounds, ...getBoundsSize };
       return { ...this.bounds };
     }
-    getContentBounds() {
-      return { ...this.bounds };
-    }
     setBounds(next) {
       this.setBoundsCalls.push({ ...next });
-      this.setBoundWhileVisible.push(this.visible);
-      // Windows glitch model (#3181): when enabled, a setBounds pushed while
-      // the window is hidden is undone at show time and never takes effect.
-      if (ignoreBoundsWhileHidden && !this.visible) return;
       this.bounds = { ...this.bounds, ...next };
     }
     isDestroyed() {
@@ -1670,86 +1662,6 @@ test("macOS tray click still opens the panel below a top menu-bar icon", async (
 
       assert.deepEqual(
         FakePanelWindow.instances[0].setBoundsCalls[0],
-        placeTrayPanel({ anchor: eventBounds, workArea, width: 360, height: 520 }),
-      );
-    } finally {
-      bridge.cleanup();
-    }
-  });
-});
-
-test("Windows tray panel re-applies the intended bounds after show when the hidden setBounds did not stick", async () => {
-  await withPlatform("win32", async () => {
-    const { placeTrayPanel } = require("./trayPanelBounds.cjs");
-    const bridge = loadBridge();
-    const electronModule = createElectronStub();
-    const FakePanelWindow = installFakeTrayPanelWindow(electronModule, {
-      ignoreBoundsWhileHidden: true,
-    });
-    const workArea = { x: 0, y: 0, width: 1920, height: 1040 };
-    const eventBounds = { x: 1680, y: 1044, width: 24, height: 24 };
-    electronModule.screen = {
-      getCursorScreenPoint: () => ({ x: 1690, y: 1050 }),
-      getDisplayNearestPoint: () => ({ workArea }),
-    };
-
-    try {
-      await enableCloseToTray(bridge, electronModule);
-      const trayInstance = bridge.getTray();
-      trayInstance.getBounds = () => ({ x: 0, y: 0, width: 0, height: 0 });
-      trayInstance.handlers.get("right-click")(null, eventBounds);
-
-      const panel = FakePanelWindow.instances[0];
-      // Windows glitch model: the bounds pushed while hidden did not take
-      // effect and the first show waits for the renderer load.
-      assert.equal(panel.setBoundsCalls.length, 1);
-      assert.equal(panel.setBoundWhileVisible[0], false, "first setBounds happens before show");
-      assert.equal(panel.visible, false, "first show waits for did-finish-load");
-
-      panel.webContents.emit("did-finish-load");
-
-      const expected = placeTrayPanel({
-        anchor: eventBounds,
-        workArea,
-        width: 360,
-        height: 520,
-      });
-      assert.equal(panel.visible, true);
-      assert.ok(panel.setBoundsCalls.length > 1, "show-time verify must re-apply the intended bounds");
-      assert.equal(panel.setBoundWhileVisible[panel.setBoundWhileVisible.length - 1], true);
-      assert.deepEqual(panel.getContentBounds(), expected);
-    } finally {
-      bridge.cleanup();
-    }
-  });
-});
-
-test("Windows tray panel skips the extra setBounds when the hidden setBounds already stuck", async () => {
-  await withPlatform("win32", async () => {
-    const { placeTrayPanel } = require("./trayPanelBounds.cjs");
-    const bridge = loadBridge();
-    const electronModule = createElectronStub();
-    const FakePanelWindow = installFakeTrayPanelWindow(electronModule);
-    const workArea = { x: 0, y: 0, width: 1920, height: 1040 };
-    const eventBounds = { x: 1680, y: 1044, width: 24, height: 24 };
-    electronModule.screen = {
-      getCursorScreenPoint: () => ({ x: 1690, y: 1050 }),
-      getDisplayNearestPoint: () => ({ workArea }),
-    };
-
-    try {
-      await enableCloseToTray(bridge, electronModule);
-      const trayInstance = bridge.getTray();
-      trayInstance.getBounds = () => ({ x: 0, y: 0, width: 0, height: 0 });
-      trayInstance.handlers.get("right-click")(null, eventBounds);
-
-      const panel = FakePanelWindow.instances[0];
-      panel.webContents.emit("did-finish-load");
-
-      assert.equal(panel.visible, true);
-      assert.equal(panel.setBoundsCalls.length, 1, "no redundant resize when bounds already match");
-      assert.deepEqual(
-        panel.getContentBounds(),
         placeTrayPanel({ anchor: eventBounds, workArea, width: 360, height: 520 }),
       );
     } finally {

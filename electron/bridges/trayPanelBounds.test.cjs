@@ -4,8 +4,6 @@ const assert = require("node:assert/strict");
 const {
   TRAY_PANEL_WIDTH,
   TRAY_PANEL_HEIGHT,
-  BOUNDS_MATCH_TOLERANCE_PX,
-  boundsMatch,
   isValidRect,
   resolveTrayAnchor,
   resolveTrayDisplayPoint,
@@ -79,26 +77,6 @@ test("resolveTrayAnchor falls back to the cursor when tray bounds are empty", ()
     }),
     { x: 1700, y: 1040, width: 1, height: 1 },
   );
-});
-
-test("boundsMatch accepts the same rect within the tolerance", () => {
-  const intended = { x: 1520, y: 514, width: TRAY_PANEL_WIDTH, height: TRAY_PANEL_HEIGHT };
-  assert.equal(boundsMatch(intended, intended), true);
-  assert.equal(
-    boundsMatch(
-      { x: intended.x + BOUNDS_MATCH_TOLERANCE_PX, y: intended.y, width: intended.width, height: intended.height },
-      intended,
-    ),
-    true,
-  );
-});
-
-test("boundsMatch rejects a wrong size, a wrong position, and invalid rects", () => {
-  const intended = { x: 1520, y: 514, width: TRAY_PANEL_WIDTH, height: TRAY_PANEL_HEIGHT };
-  assert.equal(boundsMatch({ ...intended, width: 180 }, intended), false);
-  assert.equal(boundsMatch({ ...intended, x: intended.x + 50 }, intended), false);
-  assert.equal(boundsMatch({ x: 0, y: 0, width: 0, height: 0 }, intended), false);
-  assert.equal(boundsMatch(null, intended), false);
 });
 
 test("placeTrayPanel puts the designed size below a top tray (macOS)", () => {

@@ -14,7 +14,6 @@ const TRAY_PANEL_WIDTH = 360;
 const TRAY_PANEL_HEIGHT = 520;
 const TRAY_PANEL_GAP = 6;
 const ANCHOR_CURSOR_SLOP_PX = 96;
-const BOUNDS_MATCH_TOLERANCE_PX = 1;
 
 function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
@@ -158,26 +157,11 @@ function placeTrayPanel({
   };
 }
 
-/**
- * Compare a live window rect against the intended panel rect. Used to detect
- * a Windows show-time glitch where bounds pushed while the window is hidden
- * do not stick (panel appears at a wrong, e.g. half, size with #3064/#3181).
- */
-function boundsMatch(actual, expected, tolerancePx = BOUNDS_MATCH_TOLERANCE_PX) {
-  if (!isValidRect(actual) || !isValidRect(expected)) return false;
-  return Math.abs(actual.x - expected.x) <= tolerancePx
-    && Math.abs(actual.y - expected.y) <= tolerancePx
-    && Math.abs(actual.width - expected.width) <= tolerancePx
-    && Math.abs(actual.height - expected.height) <= tolerancePx;
-}
-
 module.exports = {
   TRAY_PANEL_WIDTH,
   TRAY_PANEL_HEIGHT,
   TRAY_PANEL_GAP,
-  BOUNDS_MATCH_TOLERANCE_PX,
   isValidRect,
-  boundsMatch,
   resolveTrayAnchor,
   resolveTrayDisplayPoint,
   placeTrayPanel,

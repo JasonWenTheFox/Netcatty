@@ -8,8 +8,6 @@ const fs = require("node:fs");
 const {
   TRAY_PANEL_WIDTH,
   TRAY_PANEL_HEIGHT,
-  boundsMatch,
-  isValidRect,
   resolveTrayAnchor,
   resolveTrayDisplayPoint,
   placeTrayPanel,
@@ -56,8 +54,6 @@ let pendingHostConnections = [];
 /** True after the tray panel renderer finishes its first load. */
 let trayPanelReady = false;
 let trayPanelShowWhenReady = false;
-/** Intended bounds of the last showTrayPanel call, for the show-time verify. */
-let trayPanelPendingBounds = null;
 let trayPanelRefreshTimer = null;
 // Watchdog: if `leave-full-screen` never arrives (edge case / stuck transition)
 // we eventually give up and force a hide attempt. Better a visible window than
@@ -471,7 +467,6 @@ function ensureTrayPanelWindow() {
       trayPanelShowWhenReady = false;
       try {
         trayPanelWindow.show();
-        ensureTrayPanelBounds(trayPanelWindow, trayPanelPendingBounds);
         trayPanelWindow.focus();
       } catch {
         // ignore
@@ -499,30 +494,6 @@ function readCursorPoint() {
   }
 }
 
-/**
- * Verify the live panel rect against the intended one and re-apply once when
- * they drifted.
- *
- * On Windows, a setBounds pushed while the window is still hidden can be
- * undone at show time: the shell re-applies a stale physical-pixel rect at
- * the current DPI, so the transparent, non-resizable panel appears at a
- * wrong (e.g. half) size with complete, scaled-down content (#3064 / #3181).
- * setBounds before show() alone is not enough, so after every show the live
- * content bounds are checked and the intended rect is re-applied if needed.
- */
-function ensureTrayPanelBounds(win, intendedBounds) {
-  if (!isValidRect(intendedBounds)) return false;
-  if (!win || win.isDestroyed?.()) return false;
-  try {
-    const actual = win.getContentBounds?.() ?? win.getBounds?.();
-    if (boundsMatch(actual, intendedBounds)) return false;
-    win.setBounds({ ...intendedBounds }, false);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function showTrayPanel(eventBounds) {
   if (!tray) return;
   const { screen } = electronModule;
@@ -545,14 +516,12 @@ function showTrayPanel(eventBounds) {
   });
 
   win.setBounds(panelBounds, false);
-  trayPanelPendingBounds = panelBounds;
   // Wait for first paint/load so the opaque main-app splash cannot flash as a
   // square underlay before the tray route clears it (#2505).
   if (!trayPanelReady) {
     trayPanelShowWhenReady = true;
   } else {
     win.show();
-    ensureTrayPanelBounds(win, panelBounds);
     win.focus();
     // Background-locked tray panel sits behind AppLockOverlay, which suppresses
     // auto system-unlock until reopenSignal > 0. Emit reopen when the panel is
@@ -1328,7 +1297,6 @@ function cleanup() {
   }
   trayPanelReady = false;
   trayPanelShowWhenReady = false;
-  trayPanelPendingBounds = null;
 }
 
 module.exports = {
