@@ -1877,7 +1877,7 @@ test("pause acknowledges quickly then publishes a full source identity", async (
 });
 
 test("remote restart verifies the complete source with bounded concurrent reads", async (t) => {
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-resume-window-"));
+  const tempDir = await fs.promises.mkdtemp(`${tempDirBridge.getTempFilePath("resume-window")}-`);
   t.after(async () => { await fs.promises.rm(tempDir, { recursive: true, force: true }); });
   const transferId = `resume-window-${crypto.randomUUID()}`;
   const payload = Buffer.alloc(2 * 1024 * 1024 + 17);
