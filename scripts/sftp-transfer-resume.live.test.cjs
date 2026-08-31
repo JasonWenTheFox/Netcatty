@@ -15,6 +15,7 @@ async function main() {
   const managedTempBridge = require(tempBridgePath);
   const root = fs.mkdtempSync(`${managedTempBridge.getTempFilePath("sftp-live")}-`);
   try {
+    console.log("SFTP_LIVE_ROOT", root);
     // Keep the fixture visible to managed cleanup, but isolate its staging and
     // identity paths from the user's app. Reload only this process's cached
     // bridge after changing the environment; never delete the managed parent.
@@ -150,22 +151,33 @@ if (process.env.NETCATTY_SFTP_LIVE === "1") {
   main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
 } else {
   const test = require("node:test");
-  test("live SFTP fixture removes its managed child after setup failure", () => {
-    const result = require("node:child_process").spawnSync(process.execPath, [__filename], {
-      env: { ...process.env, NETCATTY_SFTP_LIVE: "1", SFTP_LIVE_MIB: "-1", SFTP_LIVE_BASELINE_REF: "" },
-      encoding: "utf8",
-      timeout: 10_000,
+  for (const existingParent of [false, true]) {
+    test(`live SFTP fixture cleans setup failure with ${existingParent ? "existing" : "fresh"} managed parent`, (t) => {
+      const tempDirBridge = require("../electron/bridges/tempDirBridge.cjs");
+      const testRoot = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("sftp-live-setup-test")}-`);
+      t.after(() => fs.rmSync(testRoot, { recursive: true, force: true }));
+      const managedParent = path.join(testRoot, "Netcatty");
+      if (existingParent) fs.mkdirSync(managedParent, { mode: 0o700 });
+      const result = require("node:child_process").spawnSync(process.execPath, [__filename], {
+        env: {
+          ...process.env,
+          ...Object.fromEntries(["TMPDIR", "TMP", "TEMP", "HOME"].map((key) => [key, testRoot])),
+          NETCATTY_SFTP_LIVE: "1", SFTP_LIVE_MIB: "-1", SFTP_LIVE_BASELINE_REF: "",
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /RangeError/);
+      const match = result.stdout.match(/^SFTP_LIVE_ROOT ([^\r\n]+)/m);
+      assert.ok(match, result.stdout);
+      const fixtureRoot = match[1];
+      assert.match(path.basename(fixtureRoot), /sftp-live/);
+      assert.equal(path.dirname(fixtureRoot), managedParent);
+      assert.equal(fs.existsSync(fixtureRoot), false);
+      assert.equal(fs.existsSync(path.dirname(fixtureRoot)), true, "must not delete the shared managed parent");
     });
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /RangeError/);
-    const match = result.stdout.match(/Created Netcatty temp directory: ([^\r\n]+)/);
-    assert.ok(match, result.stdout);
-    const fixtureRoot = path.dirname(match[1]);
-    assert.match(path.basename(fixtureRoot), /sftp-live/);
-    assert.equal(path.basename(path.dirname(fixtureRoot)), "Netcatty");
-    assert.equal(fs.existsSync(fixtureRoot), false);
-    assert.equal(fs.existsSync(path.dirname(fixtureRoot)), true, "must not delete the shared managed parent");
-  });
+  }
   test("large-file SFTP resume over a loopback SSH connection", {
     skip: "set NETCATTY_SFTP_LIVE=1 to run the real connection fixture",
   }, () => {});
