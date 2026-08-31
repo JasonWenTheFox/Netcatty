@@ -40,6 +40,10 @@ on:
   pull_request:
     paths:
       - ".github/workflows/build.yml"
+      - "components/AppLockGate.tsx"
+      - "components/TrayPanel.tsx"
+      - "index.tsx"
+      - "index.css"
       - "build/**"
       - "electron-builder.config.cjs"
       - "electron/**"
@@ -76,6 +80,7 @@ on:
       - "scripts/rebuildPatchedNodePty.cjs"
       - "scripts/resolve-et-bin-release.cjs"
       - "scripts/resolve-mosh-bin-release.cjs"
+      - "scripts/tray-panel-layout.live.test.cjs"
       - "scripts/verify-linux-*.sh"
       - "scripts/xterm-macos-column-selection.live.test.cjs"
       - "skills/**"
