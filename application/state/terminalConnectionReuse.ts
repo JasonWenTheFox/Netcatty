@@ -70,6 +70,12 @@ function createTerminalSessionClone(
     fontSizeOverride: session.fontSizeOverride,
     ...(session.ephemeralHost ? { ephemeralHost: true } : {}),
     ...(injectsInheritedCwd && options.inheritedCwd ? { pendingInitialCwd: options.inheritedCwd } : {}),
+    // Clearing `reuseConnectionFromSessionId` only disables source-specific
+    // reuse; without an explicit fresh-connection flag the bridge would still
+    // be eligible for general endpoint/idle transport reuse (e.g. borrowing
+    // the source's live transport). Flag the clone so the starter sends
+    // `reuseTransport: false` and the session truly dials fresh.
+    ...(options.reuseConnection === false ? { requireFreshConnection: true } : {}),
     reuseConnectionFromSessionId: options.reuseConnection === false
       ? undefined
       : (canReuseTerminalConnection(session) ? session.id : undefined),

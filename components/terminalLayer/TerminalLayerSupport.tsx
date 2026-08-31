@@ -1568,6 +1568,7 @@ const TerminalPane: React.FC<TerminalPaneProps> = memo(({
         pendingScriptId={session.pendingScriptId}
         pendingScript={session.pendingScript}
         reuseConnectionFromSessionId={session.reuseConnectionFromSessionId}
+        requireFreshConnection={session.requireFreshConnection}
         serialConfig={session.serialConfig}
         hotkeyScheme={hotkeyScheme}
         disableTerminalFontZoom={disableTerminalFontZoom}

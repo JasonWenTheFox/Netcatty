@@ -86,13 +86,24 @@ test("copy session clones reuse SSH sources and preserve serial config", () => {
 });
 
 test("copy session clones open a fresh connection when reuseConnection is false", () => {
-  assert.equal(
-    createCopiedTerminalSessionClone(session(), { id: "copy-fresh", reuseConnection: false }).reuseConnectionFromSessionId,
-    undefined,
-  );
+  const fresh = createCopiedTerminalSessionClone(session(), { id: "copy-fresh", reuseConnection: false });
+  assert.equal(fresh.reuseConnectionFromSessionId, undefined);
+  // The explicit fresh flag must survive: without it the bridge treats the
+  // clone as eligible for general endpoint reuse and can still borrow the
+  // source's live authenticated transport.
+  assert.equal(fresh.requireFreshConnection, true);
   // Local sources never had reuse to drop — behavior is unchanged.
   assert.equal(
     createCopiedTerminalSessionClone(session({ protocol: "local" }), { id: "copy-local-fresh", reuseConnection: false }).reuseConnectionFromSessionId,
+    undefined,
+  );
+});
+
+test("copy and split clones default to no fresh-connection requirement", () => {
+  assert.equal(createCopiedTerminalSessionClone(session(), { id: "copy-default" }).requireFreshConnection, undefined);
+  assert.equal(createSplitTerminalSessionClone(session(), { id: "split-default" }).requireFreshConnection, undefined);
+  assert.equal(
+    createCopiedTerminalSessionClone(session(), { id: "copy-reuse", reuseConnection: true }).requireFreshConnection,
     undefined,
   );
 });
