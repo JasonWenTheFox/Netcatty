@@ -85,6 +85,25 @@ test("copy session clones reuse SSH sources and preserve serial config", () => {
   assert.deepEqual(copied.serialConfig, { path: "/dev/tty.usbserial", baudRate: 115200 });
 });
 
+test("copy session clones open a fresh connection when reuseConnection is false", () => {
+  assert.equal(
+    createCopiedTerminalSessionClone(session(), { id: "copy-fresh", reuseConnection: false }).reuseConnectionFromSessionId,
+    undefined,
+  );
+  // Local sources never had reuse to drop — behavior is unchanged.
+  assert.equal(
+    createCopiedTerminalSessionClone(session({ protocol: "local" }), { id: "copy-local-fresh", reuseConnection: false }).reuseConnectionFromSessionId,
+    undefined,
+  );
+});
+
+test("copy session clones default to connection reuse when reuseConnection is unset", () => {
+  assert.equal(
+    createCopiedTerminalSessionClone(session(), { id: "copy-default" }).reuseConnectionFromSessionId,
+    "session-1",
+  );
+});
+
 test("split and copy session clones preserve local start directory", () => {
   const source = session({
     protocol: "local",

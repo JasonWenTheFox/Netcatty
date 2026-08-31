@@ -18,6 +18,12 @@ type CloneSessionOptions = {
   localShellType?: TerminalSession["shellType"];
   workspaceId?: string;
   inheritedCwd?: string;
+  /**
+   * When false, the clone never reuses the source's established SSH channel and
+   * instead opens a brand-new connection (fresh auth; e.g. a new bastion login).
+   * Defaults to true (reuse when possible).
+   */
+  reuseConnection?: boolean;
 };
 
 function getClonedShellType(
@@ -64,7 +70,9 @@ function createTerminalSessionClone(
     fontSizeOverride: session.fontSizeOverride,
     ...(session.ephemeralHost ? { ephemeralHost: true } : {}),
     ...(injectsInheritedCwd && options.inheritedCwd ? { pendingInitialCwd: options.inheritedCwd } : {}),
-    reuseConnectionFromSessionId: canReuseTerminalConnection(session) ? session.id : undefined,
+    reuseConnectionFromSessionId: options.reuseConnection === false
+      ? undefined
+      : (canReuseTerminalConnection(session) ? session.id : undefined),
   };
 
   if (options.workspaceId) {

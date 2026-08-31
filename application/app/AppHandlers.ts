@@ -551,7 +551,11 @@ export async function splitSessionWithCurrentShellImpl(getCtx: AppContextGetter,
   });
 }
 
-export async function copySessionWithCurrentShellImpl(getCtx: AppContextGetter, sessionId: string) {
+export async function copySessionWithCurrentShellImpl(
+  getCtx: AppContextGetter,
+  sessionId: string,
+  options?: { reuseConnection?: boolean },
+) {
   const { classifyLocalShellType, copySession, discoveredShells, resolveShellSetting, terminalSettings } = getCtx();
   const resolved = resolveShellSetting(terminalSettings.localShell, discoveredShells);
   const inheritedCwd = await captureCtxInheritedCwd(getCtx, sessionId);
@@ -559,7 +563,18 @@ export async function copySessionWithCurrentShellImpl(getCtx: AppContextGetter, 
   return copySession(sessionId, {
     localShellType: classifyLocalShellType(resolved?.command || terminalSettings.localShell, userAgent),
     inheritedCwd,
+    reuseConnection: options?.reuseConnection,
   });
+}
+
+/**
+ * "Duplicate session": clone the tab but open a brand-new connection instead of
+ * multiplexing over the source's established SSH channel (fresh auth; with a
+ * bastion/jump host this restarts the bastion login so the user can pick a new
+ * target host).
+ */
+export async function duplicateSessionWithCurrentShellImpl(getCtx: AppContextGetter, sessionId: string) {
+  return copySessionWithCurrentShellImpl(getCtx, sessionId, { reuseConnection: false });
 }
 
 export async function copyWorkspaceWithCurrentShellImpl(getCtx: AppContextGetter, workspaceId: string) {
