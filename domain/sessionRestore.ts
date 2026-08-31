@@ -218,6 +218,7 @@ type RestoreCwdSession = Pick<TerminalSession, "status"> & {
   lastCwd?: string;
   moshEnabled?: boolean;
   etEnabled?: boolean;
+  requireFreshConnection?: boolean;
 };
 
 const isRestoreCwdPathEligible = (cwd: string | undefined): cwd is string => {
@@ -239,6 +240,9 @@ export function shouldAttemptRestoreCwd({
 }): boolean {
   if (!enabled) return false;
   if (!isRestoredDisconnectedSession(session)) return false;
+  // Restored duplicates still perform a fresh remote login, which may stop
+  // at a bastion selector rather than the previous target's shell.
+  if (session.requireFreshConnection === true && session.protocol !== "local") return false;
   return isCwdInjectionEligible({ session: { ...session, cwd: session.lastCwd }, isNetworkDevice });
 }
 

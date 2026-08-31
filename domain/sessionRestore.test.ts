@@ -671,6 +671,21 @@ test("shouldAttemptRestoreCwd allows restored local and unix ssh sessions only w
   }), false);
 });
 
+test("restored fresh SSH duplicates retain metadata without injecting the previous target directory", () => {
+  for (const protocol of ["ssh", undefined, "local"] as const) {
+    const payload = buildSessionRestorePayload({
+      sessions: [{ ...session("s1"), protocol, requireFreshConnection: true, lastCwd: "/srv/old-target" }],
+      workspaces: [], tabOrder: ["s1"], activeTabId: "s1",
+    });
+    const restored = sanitizeSessionRestorePayload(JSON.parse(JSON.stringify(payload))).sessions[0];
+    assert.equal(restored.requireFreshConnection, true);
+    assert.equal(restored.lastCwd, "/srv/old-target");
+    const intent = resolveRestoreCwdIntent({ enabled: true, session: restored, isNetworkDevice: false });
+    if (protocol === "local") assert.equal(intent?.command, "cd -- '/srv/old-target'");
+    else assert.equal(intent, null, "a fresh bastion login must await target selection");
+  }
+});
+
 test("shouldAttemptRestoreCwd skips ineligible protocols and network devices", () => {
   const base = { ...session("s1"), status: "disconnected" as const, restoreState: "restored-disconnected" as const, lastCwd: "/srv/app" };
 
