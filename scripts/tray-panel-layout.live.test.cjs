@@ -8,9 +8,9 @@ if (!process.versions.electron) {
   const assert = require("node:assert/strict");
   const fs = require("node:fs");
   const path = require("node:path");
-  const { app, BrowserWindow, ipcMain } = require("electron");
+  const { app, BrowserWindow, ipcMain, screen } = require("electron");
   const tempDirBridge = require("../electron/bridges/tempDirBridge.cjs");
-  const { TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT } = require("../electron/bridges/trayPanelBounds.cjs");
+  const { TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT, placeTrayPanel } = require("../electron/bridges/trayPanelBounds.cjs");
   const { windowsCssRoundedOverlayChromeOptions } = require("../electron/bridges/windowManager/windowsWindowChrome.cjs");
 
   const userData = fs.mkdtempSync(`${tempDirBridge.getTempFilePath("tray-layout-test")}-`);
@@ -73,8 +73,9 @@ if (!process.versions.electron) {
         inert: background.inert, hidden: background.getAttribute('aria-hidden'),
       };
     })()`);
-    assert.equal(actual.viewportWidth, TRAY_PANEL_WIDTH, label);
-    assert.equal(actual.viewportHeight, TRAY_PANEL_HEIGHT, label);
+    const detail = `${label}: ${JSON.stringify({ ...actual, nativeBounds: win.getContentBounds() })}`;
+    assert.equal(actual.viewportWidth, TRAY_PANEL_WIDTH, detail);
+    assert.equal(actual.viewportHeight, TRAY_PANEL_HEIGHT, detail);
     if (process.platform === "win32") assert.equal(actual.deviceScale, Number(scale), label);
     assert.equal(actual.width, TRAY_PANEL_WIDTH, label);
     assert.equal(actual.height, TRAY_PANEL_HEIGHT, `${label}: panel must fill the window, got ${JSON.stringify(actual)}`);
@@ -84,6 +85,14 @@ if (!process.versions.electron) {
   };
 
   void app.whenReady().then(async () => {
+    const { workArea, bounds, scaleFactor } = screen.getPrimaryDisplay();
+    console.log("TRAY_LAYOUT_DISPLAY", JSON.stringify({ workArea, bounds, scaleFactor }));
+    const panelBounds = placeTrayPanel({
+      anchor: { x: workArea.x + workArea.width - 24, y: workArea.y + workArea.height, width: 24, height: 24 },
+      workArea,
+      width: TRAY_PANEL_WIDTH,
+      height: TRAY_PANEL_HEIGHT,
+    });
     win = new BrowserWindow({
       width: TRAY_PANEL_WIDTH,
       height: TRAY_PANEL_HEIGHT,
@@ -94,6 +103,9 @@ if (!process.versions.electron) {
       webPreferences: { preload, contextIsolation: true, sandbox: false, zoomFactor: 1 },
     });
     ipcMain.on("test:hide-tray", () => win.hide());
+    // Match showTrayPanel: construction alone may constrain a window to the
+    // display work area (notably on the small Windows CI desktop at 200%).
+    win.setBounds(panelBounds, false);
     await win.loadFile(path.join(__dirname, "../dist/index.html"), { hash: "/tray" });
     await waitFor("Boolean(document.getElementById('tray-panel-root'))");
     win.show();
@@ -101,6 +113,7 @@ if (!process.versions.electron) {
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       win.hide();
+      win.setBounds(panelBounds, false);
       win.show();
       await checkLayout(`reopen-${attempt}`);
     }
