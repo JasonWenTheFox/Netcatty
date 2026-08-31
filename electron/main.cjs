@@ -693,7 +693,8 @@ const pendingOpenTerminalPaths = resolveOpenTerminalPathsFromArgs(process.argv);
 let flushingSshDeepLinks = false;
 let flushingTelnetDeepLinks = false;
 let flushingOpenTerminalPaths = false;
-let sshDeepLinkDeliveryGeneration = 0;
+// Only scheme-originated requests are invalidated by the protocol preference.
+let sshSchemeDeliveryGeneration = 0;
 
 let jmsDeepLinkEnabled = readJmsDeepLinkEnabledPreference({ app });
 const pendingJmsDeepLinkUrls = jmsDeepLinkEnabled ? collectJmsDeepLinkUrls(process.argv) : [];
@@ -740,6 +741,9 @@ function queueResolvedOpenTerminalPaths(paths) {
 // Drops preference-gated pending links while keeping command-line launches
 // queued — CLI args may still be delivered after the ssh:// preference flips.
 function dropSchemePendingDeepLinks() {
+  // Permanently cancel requests already waiting for a window or renderer,
+  // even if protocol handling is enabled again before that wait completes.
+  sshSchemeDeliveryGeneration += 1;
   for (let index = pendingSshDeepLinkUrls.length - 1; index >= 0; index -= 1) {
     if (pendingSshDeepLinkUrls[index]?.viaCommandLine === true) continue;
     pendingSshDeepLinkUrls.splice(index, 1);
@@ -890,13 +894,13 @@ async function flushPendingJmsDeepLinks() {
   }
 }
 
-async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { viaCommandLine = false } = {}) {
+async function deliverSshDeepLink(rawUrl, expectedGeneration = sshSchemeDeliveryGeneration, { viaCommandLine = false } = {}) {
   // The ssh:// preference can flip while a delivery is waiting for the
   // renderer, so re-check it at every gate instead of reusing the queue-time
   // snapshot. Command-line (PuTTY-style) launches bypass the preference.
-  const shouldDeliver = () => shouldDeliverSshDeepLink({
-    enabled: viaCommandLine === true || sshDeepLinkEnabled,
-    deliveryGeneration: sshDeepLinkDeliveryGeneration,
+  const shouldDeliver = () => viaCommandLine === true || shouldDeliverSshDeepLink({
+    enabled: sshDeepLinkEnabled,
+    deliveryGeneration: sshSchemeDeliveryGeneration,
     expectedGeneration,
   });
   if (!shouldDeliver()) {
@@ -926,13 +930,13 @@ async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDelive
   return result || { success: true };
 }
 
-async function deliverTelnetDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { viaCommandLine = false } = {}) {
+async function deliverTelnetDeepLink(rawUrl, expectedGeneration = sshSchemeDeliveryGeneration, { viaCommandLine = false } = {}) {
   // Mirror deliverSshDeepLink: gate on the live preference so disabling
   // protocol handling cancels in-flight scheme deliveries, while
   // command-line launches stay deliverable.
-  const shouldDeliver = () => shouldDeliverTelnetDeepLink({
-    enabled: viaCommandLine === true || sshDeepLinkEnabled,
-    deliveryGeneration: sshDeepLinkDeliveryGeneration,
+  const shouldDeliver = () => viaCommandLine === true || shouldDeliverTelnetDeepLink({
+    enabled: sshDeepLinkEnabled,
+    deliveryGeneration: sshSchemeDeliveryGeneration,
     expectedGeneration,
   });
   if (!shouldDeliver()) return;
@@ -967,13 +971,14 @@ async function flushPendingSshDeepLinks() {
       // Command-line launches bypass the ssh:// protocol-client preference;
       // scheme-originated deliveries gate on it and are cancelled once it is
       // disabled (deliverSshDeepLink re-checks the live preference).
-      const result = await deliverSshDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, {
+      const expectedGeneration = sshSchemeDeliveryGeneration;
+      const result = await deliverSshDeepLink(item.rawUrl, expectedGeneration, {
         viaCommandLine: item.viaCommandLine === true,
       });
       if (shouldRequeueFailedSshDeepLinkDelivery({
         enabled: item.viaCommandLine === true || sshDeepLinkEnabled,
-        deliveryGeneration: sshDeepLinkDeliveryGeneration,
-        expectedGeneration: sshDeepLinkDeliveryGeneration,
+        deliveryGeneration: item.viaCommandLine === true ? expectedGeneration : sshSchemeDeliveryGeneration,
+        expectedGeneration,
         result,
         cancelReason: "ssh-deep-link-disabled",
       })) {
@@ -1011,13 +1016,14 @@ async function flushPendingTelnetDeepLinks() {
       // Command-line launches bypass the ssh:// protocol-client preference;
       // scheme-originated deliveries gate on it and are cancelled once it is
       // disabled (deliverTelnetDeepLink re-checks the live preference).
-      const result = await deliverTelnetDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, {
+      const expectedGeneration = sshSchemeDeliveryGeneration;
+      const result = await deliverTelnetDeepLink(item.rawUrl, expectedGeneration, {
         viaCommandLine: item.viaCommandLine === true,
       });
       if (shouldRequeueFailedSshDeepLinkDelivery({
         enabled: item.viaCommandLine === true || sshDeepLinkEnabled,
-        deliveryGeneration: sshDeepLinkDeliveryGeneration,
-        expectedGeneration: sshDeepLinkDeliveryGeneration,
+        deliveryGeneration: item.viaCommandLine === true ? expectedGeneration : sshSchemeDeliveryGeneration,
+        expectedGeneration,
         result,
         cancelReason: "telnet-deep-link-disabled",
       })) {
@@ -1260,7 +1266,6 @@ if (!gotLock) {
       // (they do not depend on being the ssh:// protocol client).
       clearPending: () => {
         dropSchemePendingDeepLinks();
-        sshDeepLinkDeliveryGeneration += 1;
       },
     });
     sshDeepLinkEnabled = initialSshDeepLinkPreference.enabled;
