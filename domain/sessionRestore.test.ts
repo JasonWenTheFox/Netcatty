@@ -41,6 +41,36 @@ test("buildSessionRestorePayload stores restored sessions as disconnected and dr
   assert.equal(payload.sessions[0].restoreState, "restored-disconnected");
 });
 
+test("restore keeps the duplicate-session fresh-connection marker and sanitizes it on load", () => {
+  const payload = buildSessionRestorePayload({
+    sessions: [{ ...session("s1"), requireFreshConnection: true }],
+    workspaces: [],
+    tabOrder: ["s1"],
+    activeTabId: "s1",
+    now: 123,
+  });
+
+  assert.equal(payload.sessions[0].requireFreshConnection, true);
+
+  const restored = sanitizeSessionRestorePayload({
+    version: 1,
+    savedAt: 123,
+    activeTabId: "s1",
+    tabOrder: ["s1"],
+    sessions: [payload.sessions[0] as unknown as Record<string, unknown>],
+  });
+  assert.equal(restored.sessions[0].requireFreshConnection, true);
+
+  const corrupted = sanitizeSessionRestorePayload({
+    version: 1,
+    savedAt: 123,
+    activeTabId: "s1",
+    tabOrder: ["s1"],
+    sessions: [{ ...payload.sessions[0], requireFreshConnection: "yes" } as unknown as Record<string, unknown>],
+  });
+  assert.equal(corrupted.sessions[0].requireFreshConnection, undefined);
+});
+
 test("buildSessionRestorePayload excludes ephemeral-host sessions and their tabs", () => {
   const payload = buildSessionRestorePayload({
     sessions: [
