@@ -1166,6 +1166,9 @@ function showStartupError(err) {
 // CLI connection parser. The second process's own process.argv preserves the
 // original order.
 const gotLock = app.requestSingleInstanceLock({ rawLaunchArgv: rawLaunchArgvForHandoff.slice(1) });
+// Electron has synchronously copied the handoff data. Release our pristine
+// snapshot so a primary instance does not retain the launch password forever.
+rawLaunchArgvForHandoff.length = 0;
 if (!gotLock) {
   app.quit();
 } else {

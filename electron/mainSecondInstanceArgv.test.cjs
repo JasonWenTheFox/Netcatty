@@ -3,8 +3,10 @@ const test = require("node:test");
 
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const {
   collectSshDeepLinkQueueItems,
+  redactPuttyCommandLinePasswords,
 } = require("./deepLink.cjs");
 
 test("second instance forwards its raw argv through the single-instance lock", () => {
@@ -77,3 +79,36 @@ test("failed protocol registration keeps command-line launch intents queued", ()
   assert.match(callSource, /clearPending: \(\) => \{/);
   assert.match(callSource, /dropSchemePendingDeepLinks\(\)/);
 });
+
+for (const gotLock of [true, false]) {
+  test(`launch password snapshot is released after handoff (primary=${gotLock})`, () => {
+    const source = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    const snapshotStart = source.indexOf("const rawLaunchArgvForHandoff");
+    const snapshotEnd = source.indexOf("const pendingOpenTerminalPaths", snapshotStart);
+    const lockStart = source.indexOf("const gotLock = app.requestSingleInstanceLock");
+    const lockEnd = source.indexOf("if (!gotLock)", lockStart);
+    assert.ok(snapshotStart >= 0 && snapshotEnd > snapshotStart);
+    assert.ok(lockStart >= 0 && lockEnd > lockStart);
+    const argv = ["netcatty", "-ssh", "alice@localhost", "-pw", "test password:@"];
+    let handedOff;
+    const context = vm.createContext({
+      process: { argv },
+      redactPuttyCommandLinePasswords,
+      app: {
+        requestSingleInstanceLock(data) {
+          // Electron serializes additionalData synchronously in this call.
+          handedOff = JSON.parse(JSON.stringify(data));
+          return gotLock;
+        },
+      },
+    });
+    vm.runInContext([
+      source.slice(snapshotStart, snapshotEnd),
+      source.slice(lockStart, lockEnd),
+      "globalThis.remainingArgs = rawLaunchArgvForHandoff.length;",
+    ].join("\n"), context);
+    assert.equal(handedOff.rawLaunchArgv.at(-1), "test password:@", "forward the real password");
+    assert.notEqual(argv.at(-1), "test password:@", "scrub process.argv");
+    assert.equal(context.remainingArgs, 0, "do not retain a plaintext handoff snapshot");
+  });
+}
