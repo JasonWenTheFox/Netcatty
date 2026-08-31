@@ -195,50 +195,6 @@ test("persisted unfinished tasks restore as interrupted without controllers", ()
   assert.equal(restored.canControl("a"), true);
 });
 
-test("ongoing large-file checkpoints survive restart without requiring pause or completion", (t) => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_700_000_000_000 });
-  let persisted = "";
-  let writes = 0;
-  const store = createSftpTransferCenterStore({
-    read: () => null,
-    write: (value) => { persisted = value; writes += 1; },
-  });
-  store.publishOwner("panel", [{
-    ...makeTask("large-file"), checkpointBytes: 0, totalBytes: 200_000_000,
-    sourceFingerprint: `sha256:${"a".repeat(64)}`,
-  }]);
-  const writesBeforeProgress = writes;
-  for (let index = 1; index <= 40; index += 1) {
-    store.ingestBackgroundEvent({
-      type: "progress", transferId: "large-file", transferred: index * 1_000_000,
-      checkpointBytes: index * 1_000_000, totalBytes: 200_000_000,
-    });
-  }
-  assert.equal(writes, writesBeforeProgress, "network progress must not synchronously write history");
-  t.mock.timers.tick(5_000);
-  const restored = createSftpTransferCenterStore({ read: () => persisted, write: () => {} });
-  assert.equal(restored.getTask("large-file")?.checkpointBytes, 40_000_000);
-  assert.equal(restored.getTask("large-file")?.reconnectRequired, true);
-  assert.equal(writes, writesBeforeProgress + 1, "coalesce progress into one periodic checkpoint");
-  t.mock.timers.tick(5_000);
-  assert.equal(writes, writesBeforeProgress + 1, "do not rewrite unchanged checkpoints");
-});
-
-test("completion flushes a pending progress checkpoint without a later stale write", (t) => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_700_000_000_000 });
-  const writes: string[] = [];
-  const store = createSftpTransferCenterStore({ read: () => null, write: (value) => writes.push(value) });
-  store.publishOwner("panel", [makeTask("finishing")]);
-  store.patchTask("finishing", { transferredBytes: 5, checkpointBytes: 5 });
-  store.patchTask("finishing", { status: "completed", transferredBytes: 10, checkpointBytes: 10 });
-  const writesAtCompletion = writes.length;
-  t.mock.timers.tick(10_000);
-  assert.equal(writes.length, writesAtCompletion);
-  const restored = createSftpTransferCenterStore({ read: () => writes.at(-1) ?? null, write: () => {} });
-  assert.equal(restored.getTask("finishing")?.status, "completed");
-  assert.equal(restored.getTask("finishing")?.checkpointBytes, 10);
-});
-
 test("paused source fingerprint patches are persisted for restart", () => {
   let persisted = "";
   const first = createSftpTransferCenterStore({

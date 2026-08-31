@@ -29,21 +29,15 @@ reported symptom has one cause. Keep both issues open for reporter confirmation.
    This still checks every required byte with bounded memory, cancellation and
    inactivity deadlines. It does not substitute metadata, sampling or file size
    for content verification.
-4. Pure progress events never scheduled a persistence write. Long-running files
-   could therefore lose all progress since the last lifecycle event. Coalesce a
-   recovery snapshot every five seconds without writing synchronously in a
-   network-progress callback. Pause, completion and new source identity still
-   flush immediately; completed/dismissed tasks cannot be resurrected by an old
-   delayed snapshot.
 
 ## Correctness boundaries retained
 
 - Only contiguous acknowledged ranges are checkpoints; aggregate displayed
   progress and sparse file length are not safe offsets.
 - First-run force-kill recovery still restarts at zero when no complete source
-  identity was captured. Periodic checkpoint persistence does **not** remove
-  that guard. It improves recovery where valid identity/staging evidence exists,
-  including progress after a previously verified pause/resume.
+  identity was captured. Recovery persistence is unchanged: progress since the
+  last lifecycle save can still be lost. This PR improves the verified resume
+  path's latency, not every whole-app force-kill recovery scenario.
 - SCP and legacy fastPut paths do not gain unsupported pause/resume.
 - Source changes, staged-prefix mismatch, missing staging, cancellation,
   replacement, permissions and conflict handling retain their existing checks.
@@ -76,8 +70,7 @@ reported symptom has one cause. Keep both issues open for reporter confirmation.
 
 ## Reproduction and verification
 
-The regression tests exercise scheduler admission/order/yielding, periodic
-checkpoint restoration and terminal-state flushing, complete remote prefix
+The regression tests exercise scheduler admission/order/yielding, complete remote prefix
 verification, and actual transfer-center DOM bounds/scrolling. Each new defect
 was observed failing before its fix.
 
@@ -114,3 +107,8 @@ popover, pause-all/resume-all, scrolling to the last file, bucket switching and
   including when fixture setup fails.
 - Keep transfer-row separators based on the actual list position, not the
   temporary viewport wrappers. The final list row alone omits its separator.
+- Remove the proposed periodic full-history save: with 20,000 queued files,
+  serialization alone occupied about 80 ms every five seconds. A compact journal
+  would additionally need cross-window ownership and retry-attempt coordination.
+  Those recovery semantics are not changed in this focused responsiveness PR.
+  There is no new persistence timer, storage key or schema migration.
