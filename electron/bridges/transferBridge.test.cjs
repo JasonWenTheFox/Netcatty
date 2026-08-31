@@ -1876,6 +1876,54 @@ test("pause acknowledges quickly then publishes a full source identity", async (
   assert.equal((await running).error, undefined);
 });
 
+test("remote restart verifies the complete source with bounded concurrent reads", async (t) => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-resume-window-"));
+  t.after(async () => { await fs.promises.rm(tempDir, { recursive: true, force: true }); });
+  const transferId = `resume-window-${crypto.randomUUID()}`;
+  const payload = Buffer.alloc(2 * 1024 * 1024 + 17);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = index % 251;
+  const checkpoint = 512 * 1024;
+  const targetPath = path.join(tempDir, "target.bin");
+  const stagePath = tempDirBridge.getTransferTempFilePath(transferId, "target.bin");
+  await fs.promises.writeFile(stagePath, payload.subarray(0, checkpoint));
+  t.after(async () => { await fs.promises.unlink(stagePath).catch(() => {}); });
+  const sender = createSender();
+  let verificationReads = 0;
+  let maxVerificationReads = 0;
+  let verificationBytes = 0;
+  const { sftp } = createPipelinedDownloadSftp(payload, {
+    read(_handle, buffer, offset, length, position, callback) {
+      const verifying = sender.sent.at(-1)?.payload.phase === "verifying";
+      if (verifying) {
+        verificationReads += 1;
+        maxVerificationReads = Math.max(maxVerificationReads, verificationReads);
+      }
+      setTimeout(() => {
+        const bytes = Math.min(length, payload.length - position);
+        payload.copy(buffer, offset, position, position + bytes);
+        if (verifying) {
+          verificationReads -= 1;
+          verificationBytes += bytes;
+        }
+        callback(null, bytes);
+      }, 2);
+    },
+  });
+  const client = { sftp, stat: async () => ({ size: payload.length }) };
+  transferBridge.init({ sftpClients: new Map([["source", client]]) });
+  const result = await transferBridge.startTransfer({ sender }, {
+    transferId, sourcePath: "/source.bin", targetPath,
+    sourceType: "sftp", targetType: "local", sourceSftpId: "source",
+    totalBytes: payload.length, resumable: true, checkpointBytes: checkpoint,
+    sourceFingerprint: `sha256:p${payload.length}:${crypto.createHash("sha256").update(payload).digest("hex")}`,
+  });
+  assert.equal(result.error, undefined, result.error);
+  assert.deepEqual(await fs.promises.readFile(targetPath), payload);
+  assert.ok(maxVerificationReads > 1, "large resume verification must not wait for one network read at a time");
+  assert.ok(maxVerificationReads <= DOWNLOAD_TRANSFER_CONCURRENCY);
+  assert.ok(verificationBytes >= payload.length, "verify every source byte, not a sample");
+});
+
 test("remote resume identity rejects a same-size source rewrite", async (t) => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "netcatty-transfer-modifytime-id-"));
   t.after(async () => {

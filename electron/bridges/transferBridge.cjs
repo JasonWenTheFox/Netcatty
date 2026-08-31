@@ -900,6 +900,11 @@ async function hashRemotePrefix(client, sftpId, filePath, encoding, bytes, optio
   if (isScpModeClient(client)) return null;
   await requireSftpChannel(client, { signal: options?.signal });
   const encodedPath = encodePathForSession(sftpId, filePath, encoding);
+  // Resume still hashes the entire required prefix. Use the same bounded READ
+  // window as downloads instead of ssh2's serial stream, which makes a large
+  // pause/restart verification pay one network round trip per read.
+  const rangeDigest = await hashRemotePrefixWithSftpRanges(client, encodedPath, bytes, options);
+  if (rangeDigest !== null) return rangeDigest;
   return hashReadable(
     client.sftp.createReadStream(encodedPath, { start: 0, end: bytes - 1 }),
     options,

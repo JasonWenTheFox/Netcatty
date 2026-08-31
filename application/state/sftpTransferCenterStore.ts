@@ -411,11 +411,13 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
   const controllers = new Map<string, SftpTransferOwnerControls>();
   const lastPublishedByOwner = new Map<string, ReadonlyMap<string, TransferTask>>();
   const PERSIST_INTERVAL_MS = 250;
-  // Progress ticks must not touch localStorage — see emitProgress. Pause/complete
-  // and other lifecycle emits still persist immediately via emit()/persist(true).
+  const PROGRESS_PERSIST_INTERVAL_MS = 5_000;
+  // Byte ticks never write synchronously. Periodic recovery snapshots must still
+  // advance while a large file runs without any pause/completion lifecycle event.
   let lastPersistedAt = 0;
   let persistenceDirty = false;
   let persistenceTimer: ReturnType<typeof setTimeout> | null = null;
+  let progressPersistenceTimer: ReturnType<typeof setTimeout> | null = null;
   const resumeInvocations = new Map<string, Promise<void>>();
   const resumePreparationFailures = new Map<string, string>();
   let dedicatedResumeHandler: DedicatedTransferResumeHandler | null = null;
@@ -459,6 +461,10 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
 
   const writePersistence = () => {
     if (!persistence || !persistenceDirty || restoreMigrationPending) return;
+    if (progressPersistenceTimer !== null) {
+      clearTimeout(progressPersistenceTimer);
+      progressPersistenceTimer = null;
+    }
     persistenceDirty = false;
     try {
       persistence.write(serializeSftpTransferCenter(tasks));
@@ -492,6 +498,17 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
       persistenceTimer = null;
       writePersistence();
     }, PERSIST_INTERVAL_MS - elapsed);
+  };
+  const scheduleProgressPersistence = () => {
+    if (!persistence) return;
+    persistenceDirty = true;
+    if (restoreMigrationPending || progressPersistenceTimer !== null) return;
+    progressPersistenceTimer = setTimeout(() => {
+      progressPersistenceTimer = null;
+      writePersistence();
+    }, PROGRESS_PERSIST_INTERVAL_MS);
+    // Store instances used outside the app must not keep Node alive for history.
+    progressPersistenceTimer.unref?.();
   };
   const notifyOwnersOfPrunedTasks = (removed: readonly TransferTask[]) => {
     if (removed.length === 0) return;
@@ -644,8 +661,7 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
       return;
     }
     snapshotDirty = true;
-    // Never JSON.stringify/localStorage on the pure-progress path. Sync storage
-    // on large directory histories freezes CSS spinners every few seconds.
+    // Never JSON.stringify/localStorage inline on the pure-progress path.
     // Pause / complete / fingerprint / lifecycle still force persist below.
     if (persistImmediately) {
       snapshotDirty = false;
@@ -658,6 +674,7 @@ export function createSftpTransferCenterStore(persistence?: StorePersistence): S
       for (const listener of progressListeners) listener();
       return;
     }
+    scheduleProgressPersistence();
     notifyDedicatedResumeWaiters();
     scheduleProgressNotify();
   };
