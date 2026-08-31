@@ -683,6 +683,11 @@ const initialDeepLinkQueueItems = collectSshDeepLinkQueueItems(process.argv, {
 });
 const pendingSshDeepLinkUrls = [...initialDeepLinkQueueItems.ssh];
 const pendingTelnetDeepLinkUrls = [...initialDeepLinkQueueItems.telnet];
+// Snapshot the pristine argv before scrubbing it in place below: the
+// single-instance handoff forwards this list to the running instance and a
+// redacted copy would make warm PuTTY-style launches authenticate with the
+// masked password.
+const rawLaunchArgvForHandoff = [...process.argv];
 redactPuttyCommandLinePasswords(process.argv);
 const pendingOpenTerminalPaths = resolveOpenTerminalPathsFromArgs(process.argv);
 let flushingSshDeepLinks = false;
@@ -885,20 +890,20 @@ async function flushPendingJmsDeepLinks() {
   }
 }
 
-async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { enabled = sshDeepLinkEnabled } = {}) {
-  if (!shouldDeliverSshDeepLink({
-    enabled,
+async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { viaCommandLine = false } = {}) {
+  // The ssh:// preference can flip while a delivery is waiting for the
+  // renderer, so re-check it at every gate instead of reusing the queue-time
+  // snapshot. Command-line (PuTTY-style) launches bypass the preference.
+  const shouldDeliver = () => shouldDeliverSshDeepLink({
+    enabled: viaCommandLine === true || sshDeepLinkEnabled,
     deliveryGeneration: sshDeepLinkDeliveryGeneration,
     expectedGeneration,
-  })) {
+  });
+  if (!shouldDeliver()) {
     return { success: false, reason: "ssh-deep-link-disabled" };
   }
   const win = await createAndShowMainWindow();
-  if (!shouldDeliverSshDeepLink({
-    enabled,
-    deliveryGeneration: sshDeepLinkDeliveryGeneration,
-    expectedGeneration,
-  })) {
+  if (!shouldDeliver()) {
     return { success: false, reason: "ssh-deep-link-disabled" };
   }
   focusMainWindow();
@@ -911,11 +916,7 @@ async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDelive
     { url: rawUrl },
     {
       timeoutMs: getSshDeepLinkRendererReadyTimeoutMs({ isDev }),
-      shouldSend: () => shouldDeliverSshDeepLink({
-        enabled,
-        deliveryGeneration: sshDeepLinkDeliveryGeneration,
-        expectedGeneration,
-      }),
+      shouldSend: shouldDeliver,
       cancelReason: "ssh-deep-link-disabled",
     },
   );
@@ -925,18 +926,18 @@ async function deliverSshDeepLink(rawUrl, expectedGeneration = sshDeepLinkDelive
   return result || { success: true };
 }
 
-async function deliverTelnetDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { enabled = sshDeepLinkEnabled } = {}) {
-  if (!shouldDeliverTelnetDeepLink({
-    enabled,
+async function deliverTelnetDeepLink(rawUrl, expectedGeneration = sshDeepLinkDeliveryGeneration, { viaCommandLine = false } = {}) {
+  // Mirror deliverSshDeepLink: gate on the live preference so disabling
+  // protocol handling cancels in-flight scheme deliveries, while
+  // command-line launches stay deliverable.
+  const shouldDeliver = () => shouldDeliverTelnetDeepLink({
+    enabled: viaCommandLine === true || sshDeepLinkEnabled,
     deliveryGeneration: sshDeepLinkDeliveryGeneration,
     expectedGeneration,
-  })) return;
+  });
+  if (!shouldDeliver()) return;
   const win = await createAndShowMainWindow();
-  if (!shouldDeliverTelnetDeepLink({
-    enabled,
-    deliveryGeneration: sshDeepLinkDeliveryGeneration,
-    expectedGeneration,
-  })) return;
+  if (!shouldDeliver()) return;
   focusMainWindow();
   const windowManager = getWindowManager();
   const result = await windowManager.sendWhenRendererReady?.(
@@ -945,11 +946,7 @@ async function deliverTelnetDeepLink(rawUrl, expectedGeneration = sshDeepLinkDel
     { url: rawUrl },
     {
       timeoutMs: 0,
-      shouldSend: () => shouldDeliverTelnetDeepLink({
-        enabled,
-        deliveryGeneration: sshDeepLinkDeliveryGeneration,
-        expectedGeneration,
-      }),
+      shouldSend: shouldDeliver,
       cancelReason: "telnet-deep-link-disabled",
     },
   );
@@ -967,11 +964,14 @@ async function flushPendingSshDeepLinks() {
     while (pendingSshDeepLinkUrls.length > 0) {
       const item = pendingSshDeepLinkUrls.shift();
       if (!item?.rawUrl) continue;
-      // Command-line launches bypass the ssh:// protocol-client preference.
-      const deliveryEnabled = item.viaCommandLine === true || sshDeepLinkEnabled;
-      const result = await deliverSshDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, { enabled: deliveryEnabled });
+      // Command-line launches bypass the ssh:// protocol-client preference;
+      // scheme-originated deliveries gate on it and are cancelled once it is
+      // disabled (deliverSshDeepLink re-checks the live preference).
+      const result = await deliverSshDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, {
+        viaCommandLine: item.viaCommandLine === true,
+      });
       if (shouldRequeueFailedSshDeepLinkDelivery({
-        enabled: deliveryEnabled,
+        enabled: item.viaCommandLine === true || sshDeepLinkEnabled,
         deliveryGeneration: sshDeepLinkDeliveryGeneration,
         expectedGeneration: sshDeepLinkDeliveryGeneration,
         result,
@@ -1008,11 +1008,14 @@ async function flushPendingTelnetDeepLinks() {
     while (pendingTelnetDeepLinkUrls.length > 0) {
       const item = pendingTelnetDeepLinkUrls.shift();
       if (!item?.rawUrl) continue;
-      // Command-line launches bypass the ssh:// protocol-client preference.
-      const deliveryEnabled = item.viaCommandLine === true || sshDeepLinkEnabled;
-      const result = await deliverTelnetDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, { enabled: deliveryEnabled });
+      // Command-line launches bypass the ssh:// protocol-client preference;
+      // scheme-originated deliveries gate on it and are cancelled once it is
+      // disabled (deliverTelnetDeepLink re-checks the live preference).
+      const result = await deliverTelnetDeepLink(item.rawUrl, sshDeepLinkDeliveryGeneration, {
+        viaCommandLine: item.viaCommandLine === true,
+      });
       if (shouldRequeueFailedSshDeepLinkDelivery({
-        enabled: deliveryEnabled,
+        enabled: item.viaCommandLine === true || sshDeepLinkEnabled,
         deliveryGeneration: sshDeepLinkDeliveryGeneration,
         expectedGeneration: sshDeepLinkDeliveryGeneration,
         result,
@@ -1156,7 +1159,7 @@ function showStartupError(err) {
 // args), which separates PuTTY-style flags from their values and breaks the
 // CLI connection parser. The second process's own process.argv preserves the
 // original order.
-const gotLock = app.requestSingleInstanceLock({ rawLaunchArgv: process.argv.slice(1) });
+const gotLock = app.requestSingleInstanceLock({ rawLaunchArgv: rawLaunchArgvForHandoff.slice(1) });
 if (!gotLock) {
   app.quit();
 } else {

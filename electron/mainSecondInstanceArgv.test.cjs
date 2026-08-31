@@ -13,12 +13,21 @@ test("second instance forwards its raw argv through the single-instance lock", (
   // Chromium regroups the second launch's command line into dash switches
   // followed by positional args, which splits PuTTY-style flags from their
   // values (-ssh host ... -P 22 -pw pass) and breaks the CLI parser. The
-  // launching process therefore sends its own process.argv slice as
-  // additionalData and the handler prefers it.
+  // launching process therefore sends its own pristine argv slice as
+  // additionalData (captured before passwords get redacted in place) and the
+  // handler prefers it.
   assert.match(
     source,
-    /app\.requestSingleInstanceLock\(\{ rawLaunchArgv: process\.argv\.slice\(1\) \}\)/,
+    /app\.requestSingleInstanceLock\(\{ rawLaunchArgv: rawLaunchArgvForHandoff\.slice\(1\) \}\)/,
     "lock acquisition must forward the raw launch argv",
+  );
+  const redactIndex = source.indexOf("redactPuttyCommandLinePasswords(process.argv)");
+  const snapshotIndex = source.indexOf("const rawLaunchArgvForHandoff");
+  assert.notEqual(redactIndex, -1);
+  assert.notEqual(snapshotIndex, -1);
+  assert.ok(
+    snapshotIndex < redactIndex,
+    "the handoff argv snapshot must be captured before passwords are redacted",
   );
   const handlerIndex = source.indexOf('app.on("second-instance"');
   assert.notEqual(handlerIndex, -1, "second-instance handler must exist");
