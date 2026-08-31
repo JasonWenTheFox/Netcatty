@@ -6,15 +6,27 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { Server } = require("ssh2");
 const SftpClient = require("ssh2-sftp-client");
 
 async function main() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "netcatty-sftp-live-"));
-  // Isolate Netcatty's global staging and identity paths from the user's app.
-  for (const key of ["TMPDIR", "TMP", "TEMP", "HOME"]) process.env[key] = root;
+  const tempBridgePath = require.resolve("../electron/bridges/tempDirBridge.cjs");
+  const managedTempBridge = require(tempBridgePath);
+  const root = fs.mkdtempSync(`${managedTempBridge.getTempFilePath("sftp-live")}-`);
+  try {
+    // Keep the fixture visible to managed cleanup, but isolate its staging and
+    // identity paths from the user's app. Reload only this process's cached
+    // bridge after changing the environment; never delete the managed parent.
+    for (const key of ["TMPDIR", "TMP", "TEMP", "HOME"]) process.env[key] = root;
+    delete require.cache[tempBridgePath];
+    await runFixture(root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function runFixture(root) {
   let bridge;
   if (process.env.SFTP_LIVE_BASELINE_REF) {
     const Module = require("node:module");
@@ -28,6 +40,7 @@ async function main() {
     bridge = require("../electron/bridges/transferBridge.cjs");
   }
   const tempDirBridge = require("../electron/bridges/tempDirBridge.cjs");
+  assert.equal(path.dirname(tempDirBridge.getTempDir()), root, "fixture staging must remain isolated");
   const bytes = Number(process.env.SFTP_LIVE_MIB || 8) * 1024 * 1024;
   const fileCount = Number(process.env.SFTP_LIVE_FILES || 1);
   const payload = Buffer.allocUnsafe(bytes);
@@ -68,9 +81,12 @@ async function main() {
       });
     }));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const client = new SftpClient();
   try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
     await client.connect({ host: "127.0.0.1", port: server.address().port, username: "fixture", password: "fixture" });
     bridge.init({ sftpClients: new Map([["source", client]]) });
     const runFile = async (index) => {
@@ -126,7 +142,6 @@ async function main() {
     await client.end().catch(() => {});
     for (const connection of connections) connection.end();
     await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -134,7 +149,24 @@ if (process.env.NETCATTY_SFTP_LIVE === "1") {
   const watchdog = setTimeout(() => { console.error("SFTP_LIVE_FAIL timeout"); process.exit(1); }, 120_000);
   main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));
 } else {
-  require("node:test")("large-file SFTP resume over a loopback SSH connection", {
+  const test = require("node:test");
+  test("live SFTP fixture removes its managed child after setup failure", () => {
+    const result = require("node:child_process").spawnSync(process.execPath, [__filename], {
+      env: { ...process.env, NETCATTY_SFTP_LIVE: "1", SFTP_LIVE_MIB: "-1", SFTP_LIVE_BASELINE_REF: "" },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /RangeError/);
+    const match = result.stdout.match(/Created Netcatty temp directory: ([^\r\n]+)/);
+    assert.ok(match, result.stdout);
+    const fixtureRoot = path.dirname(match[1]);
+    assert.match(path.basename(fixtureRoot), /sftp-live/);
+    assert.equal(path.basename(path.dirname(fixtureRoot)), "Netcatty");
+    assert.equal(fs.existsSync(fixtureRoot), false);
+    assert.equal(fs.existsSync(path.dirname(fixtureRoot)), true, "must not delete the shared managed parent");
+  });
+  test("large-file SFTP resume over a loopback SSH connection", {
     skip: "set NETCATTY_SFTP_LIVE=1 to run the real connection fixture",
   }, () => {});
 }

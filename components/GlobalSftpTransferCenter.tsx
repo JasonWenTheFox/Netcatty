@@ -344,11 +344,13 @@ function TransferRow({
   childTasks = [],
   expanded,
   onToggleExpanded,
+  isLast,
 }: {
   task: TransferTask;
   childTasks?: readonly TransferTask[];
   expanded: boolean;
   onToggleExpanded: () => void;
+  isLast: boolean;
 }) {
   const { t } = useI18n();
   const folderReplaceWarningId = React.useId();
@@ -482,7 +484,7 @@ function TransferRow({
 
   return (
     <div
-      className="border-b border-border/40 px-3 py-2.5 last:border-b-0 hover:bg-muted/30"
+      className={cn("border-border/40 px-3 py-2.5 hover:bg-muted/30", isLast ? "border-b-0" : "border-b")}
       data-section="global-sftp-transfer-row"
       data-transfer-status={task.status}
       data-directory-parent={isDirParent ? "true" : undefined}
@@ -776,12 +778,13 @@ function TransferList({ tasks, childrenByParent, empty }: {
     overscan: 4,
     enabled: virtual,
   });
-  const renderRow = (task: TransferTask) => (
+  const renderRow = (task: TransferTask, index: number) => (
     <TransferRow
       key={task.id}
       task={task}
       childTasks={childrenByParent.get(task.id) ?? []}
       expanded={expandedIds.has(task.id)}
+      isLast={index === tasks.length - 1}
       onToggleExpanded={() => setExpandedIds((previous) => {
         const next = new Set(previous);
         if (next.has(task.id)) next.delete(task.id);
@@ -802,7 +805,7 @@ function TransferList({ tasks, childrenByParent, empty }: {
               className="absolute left-0 top-0 w-full"
               style={{ transform: `translateY(${row.start}px)` }}
             >
-              {renderRow(tasks[row.index])}
+              {renderRow(tasks[row.index], row.index)}
             </div>
           ))}
         </div>

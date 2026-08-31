@@ -50,6 +50,9 @@ test("large transfer histories mount only visible rows and can scroll to the las
   const rows = () => env.document.querySelectorAll("[role=progressbar]");
   assert.ok(rows().length > 0 && rows().length < 40, `rendered ${rows().length} rows`);
   assert.ok(env.document.querySelector('[role=progressbar][aria-label="file-999.bin"]'));
+  const firstRow = env.document.querySelector('[data-transfer-status="queued"]');
+  assert.ok(firstRow);
+  assert.equal(firstRow.matches('.last\\:border-b-0:last-child'), false, "a virtual row must not lose its divider just because it has a wrapper");
 
   const scroll = env.document.querySelector<HTMLElement>("[data-section=global-sftp-transfer-list]");
   assert.ok(scroll);
@@ -58,5 +61,7 @@ test("large transfer histories mount only visible rows and can scroll to the las
   await flushEffects();
   assert.ok(rows().length > 0 && rows().length < 40);
   assert.ok(env.document.querySelector('[role=progressbar][aria-label="file-0.bin"]'));
+  const lastRow = env.document.querySelector('[role=progressbar][aria-label="file-0.bin"]')?.closest('[data-transfer-status]');
+  assert.ok(lastRow?.classList.contains("border-b-0"), "only the actual final row omits its divider");
   assert.equal(store.getSnapshot().tasks.length, 1_000, "offscreen files must remain queued");
 });

@@ -100,3 +100,17 @@ about 1.45-3.18 seconds in this run. These are fixture-specific observations,
 not performance promises. Electron verification also exercised the production
 popover, pause-all/resume-all, scrolling to the last file, bucket switching and
 20,000-job admission while the popover was open.
+
+## Review follow-up
+
+- Preserve serial prefix verification when a server rejects range OPEN/READ
+  with an ordinary protocol error. Cancellation and request timeouts do not
+  fall back; timed-out channels are abandoned before another attempt.
+- Count every positive short READ as inactivity-watchdog activity, without
+  changing ordered full-range hashing. Finished windows cannot publish late
+  progress, rearm their watchdog or issue another partial READ.
+- Allocate the live fixture inside the managed temp directory, then isolate
+  its own staging/home state. Cleanup removes only that unique fixture child,
+  including when fixture setup fails.
+- Keep transfer-row separators based on the actual list position, not the
+  temporary viewport wrappers. The final list row alone omits its separator.
