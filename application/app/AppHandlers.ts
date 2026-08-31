@@ -556,9 +556,14 @@ export async function copySessionWithCurrentShellImpl(
   sessionId: string,
   options?: { reuseConnection?: boolean },
 ) {
-  const { classifyLocalShellType, copySession, discoveredShells, resolveShellSetting, terminalSettings } = getCtx();
+  const { classifyLocalShellType, copySession, discoveredShells, resolveShellSetting, sessions, terminalSettings } = getCtx();
   const resolved = resolveShellSetting(terminalSettings.localShell, discoveredShells);
-  const inheritedCwd = await captureCtxInheritedCwd(getCtx, sessionId);
+  // A fresh remote login may stop at a bastion's host-selection prompt. Do
+  // not probe the old target or send its directory command to the new login.
+  // Local duplicates still open in the source terminal's current directory.
+  const inheritCwd = options?.reuseConnection !== false
+    || sessions?.find((session: { id: string }) => session.id === sessionId)?.protocol === "local";
+  const inheritedCwd = inheritCwd ? await captureCtxInheritedCwd(getCtx, sessionId) : undefined;
   const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
   return copySession(sessionId, {
     localShellType: classifyLocalShellType(resolved?.command || terminalSettings.localShell, userAgent),

@@ -108,6 +108,20 @@ test("copy and split clones default to no fresh-connection requirement", () => {
   );
 });
 
+test("fresh SSH clones discard inherited directories even when a caller supplies one", () => {
+  for (const protocol of ["ssh", undefined] as const) {
+    const clone = createCopiedTerminalSessionClone(session({ protocol }), {
+      id: "fresh-no-cwd", reuseConnection: false, inheritedCwd: "/srv/old-target",
+    });
+    assert.equal(clone.pendingInitialCwd, undefined);
+    assert.equal(clone.requireFreshConnection, true);
+  }
+  const localClone = createCopiedTerminalSessionClone(session({ protocol: "local" }), {
+    id: "local-cwd", reuseConnection: false, inheritedCwd: "/home/alice/project",
+  });
+  assert.equal(localClone.localStartDir, "/home/alice/project");
+});
+
 test("copy session clones default to connection reuse when reuseConnection is unset", () => {
   assert.equal(
     createCopiedTerminalSessionClone(session(), { id: "copy-default" }).reuseConnectionFromSessionId,

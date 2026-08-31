@@ -42,7 +42,8 @@ function createTerminalSessionClone(
   // pendingInitialCwd for telnet/serial/mosh/et would be dead, never-cleared
   // state (those protocols don't track cwd, so it's never consumed or cleared).
   const injectsInheritedCwd =
-    (session.protocol === "ssh" || session.protocol === undefined)
+    options.reuseConnection !== false
+    && (session.protocol === "ssh" || session.protocol === undefined)
     && !session.moshEnabled
     && !session.etEnabled;
   const clonedSession: TerminalSession = {
