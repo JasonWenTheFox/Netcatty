@@ -436,6 +436,34 @@ test("SftpSidePanel bounds first-open retries and disables cached fallback", () 
   assert.match(source, /setInitialFollowRetryNonce\(\(value\) => value \+ 1\)/);
 });
 
+test("SftpSidePanel binds first-open probe eligibility to the linked terminal session", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  // Two connected same-endpoint sessions can report an equal cached cwd, so no
+  // cwd-change invalidation fires while the source-session rebind is still
+  // deferred through requestAnimationFrame. The probe must still be bound to
+  // the session it was armed for, or it navigates the newly focused session's
+  // pane to the previous session's cwd.
+  assert.match(source, /const expectedSessionId = activeSessionId \?\? null;/);
+  assert.match(
+    source,
+    /expectedSessionId === null \|\| activeSessionIdRef\.current === expectedSessionId/,
+  );
+});
+
+test("SftpSidePanel keeps a queued first-open retry consumed when the surface is hidden", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+  const retryTimer = source.match(
+    /initialFollowRetryTimerRef\.current = setTimeout\(\(\) => \{[\s\S]*?\n\s+\}, 250\);/,
+  );
+
+  assert.ok(retryTimer);
+  // While the retry delay is pending, the one-shot slot stays consumed, and a
+  // retry expiring while the surface is hidden (terminal-tab switch with the
+  // owner panel still open) is consumed instead of re-arming on return.
+  assert.match(retryTimer[0], /shouldReleaseInitialFollowSyncAttempt/);
+});
+
 test("follow bookkeeping keeps handled state across hidden-panel null cwd transitions", () => {
   // Hidden panels receive activeTerminalCwd={null} and get the last live value
   // back on reshow: the visibility transitions may not drop handled follow

@@ -1290,6 +1290,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   const effectiveFollowTerminalCwdRef = useRef(effectiveFollowTerminalCwd);
   const canFollowTerminalCwdRef = useRef(canFollowTerminalCwd);
   const activeTerminalCwdRef = useRef(activeTerminalCwd);
+  const activeSessionIdRef = useRef(activeSessionId);
   const connectionId = sftp.leftPane.connection?.id ?? null;
   const connectionIdRef = useRef(connectionId);
   const connectionPath = sftp.leftPane.connection?.currentPath ?? null;
@@ -1299,6 +1300,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   effectiveFollowTerminalCwdRef.current = effectiveFollowTerminalCwd;
   canFollowTerminalCwdRef.current = canFollowTerminalCwd;
   activeTerminalCwdRef.current = activeTerminalCwd;
+  activeSessionIdRef.current = activeSessionId;
   connectionIdRef.current = connectionId;
   isVisibleRef.current = isVisible;
   ownerPanelOpenRef.current = ownerPanelOpen;
@@ -1700,6 +1702,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     initialFollowRetryRef.current.attempts += 1;
     initialFollowSyncedConnRef.current = connection.id;
     const expectedConnectionId = connection.id;
+    // Bind the attempt to the linked terminal session as well: two connected
+    // same-endpoint sessions can report an equal cached cwd (so no cwd-change
+    // invalidation fires) while the source-session rebind is still deferred
+    // through requestAnimationFrame. A fresh-CWD probe armed for the previous
+    // session must not navigate the pane once focus moved to another session
+    // of the same endpoint, even while the SFTP connection id still belongs to
+    // the session the probe was armed for.
+    const expectedSessionId = activeSessionId ?? null;
     // Snapshot the (possibly stale) cached cwd so we can neutralize it below.
     const staleTerminalCwd = activeTerminalCwdRef.current;
     const syncGeneration = followSyncGenerationRef.current;
@@ -1713,6 +1723,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       && canFollowTerminalCwdRef.current
       && isVisibleRef.current
       && !hasActiveWorkRef.current
+      && (expectedSessionId === null || activeSessionIdRef.current === expectedSessionId)
       && sftpRef.current.leftPane.connection?.id === expectedConnectionId
       && !sftpRef.current.leftPane.connection?.isLocal
       && sftpRef.current.leftPane.connection?.status === "connected"
@@ -1741,19 +1752,40 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       ) {
         return;
       }
-      if (initialFollowSyncedConnRef.current === expectedConnectionId) {
-        initialFollowSyncedConnRef.current = null;
-      }
       if (
         !initialFollowMountedRef.current
         || !followCurrentlyEligible()
         || initialFollowRetryRef.current.attempts >= 3
       ) {
+        if (initialFollowSyncedConnRef.current === expectedConnectionId) {
+          initialFollowSyncedConnRef.current = null;
+        }
         return;
       }
+      // Keep the one-shot slot consumed while the retry is queued: if the
+      // surface is hidden during the delay (terminal-tab switch with the owner
+      // panel still open), the hide-latch effect sees no pending probe, so the
+      // queued retry itself must not re-arm the first-open sync on return —
+      // it stays consumed instead. The regular follow sync still follows
+      // later cwd changes.
       if (initialFollowRetryTimerRef.current) clearTimeout(initialFollowRetryTimerRef.current);
       initialFollowRetryTimerRef.current = setTimeout(() => {
         initialFollowRetryTimerRef.current = null;
+        // The surface was hidden (owner panel still open) while the retry was
+        // queued: consume the queued retry so returning to the tab does not
+        // navigate the pane away from the preserved directory and clear its
+        // filename filter.
+        if (
+          !shouldReleaseInitialFollowSyncAttempt({
+            isVisible: isVisibleRef.current,
+            ownerPanelOpen: ownerPanelOpenRef.current,
+          })
+        ) {
+          return;
+        }
+        if (initialFollowSyncedConnRef.current === expectedConnectionId) {
+          initialFollowSyncedConnRef.current = null;
+        }
         setInitialFollowRetryNonce((value) => value + 1);
       }, 250);
     };
@@ -1783,6 +1815,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       if (!completed && isCurrentAttempt) clearAttemptAndRetry();
     });
   }, [
+    activeSessionId,
     canFollowTerminalCwd,
     effectiveFollowTerminalCwd,
     hasActiveWork,
