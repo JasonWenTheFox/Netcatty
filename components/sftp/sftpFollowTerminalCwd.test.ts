@@ -9,6 +9,7 @@ import {
   shouldApplyFollowTerminalCwdSyncResult,
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
+  shouldResetInitialFollowTerminalCwdSync,
 } from "./sftpFollowTerminalCwd";
 
 const base = {
@@ -430,4 +431,61 @@ test("SftpSidePanel bounds first-open retries and disables cached fallback", () 
   );
   assert.match(source, /initialFollowRetryRef\.current\.attempts >= 3/);
   assert.match(source, /setInitialFollowRetryNonce\(\(value\) => value \+ 1\)/);
+});
+
+test("first-open sync reset re-arms on a replaced connection", () => {
+  assert.equal(
+    shouldResetInitialFollowTerminalCwdSync({
+      isVisible: true,
+      ownerPanelOpen: true,
+      connectionId: "conn-2",
+      trackedConnectionId: "conn-1",
+    }),
+    true,
+  );
+});
+
+test("first-open sync reset re-arms after a fresh open on the same connection", () => {
+  assert.equal(
+    shouldResetInitialFollowTerminalCwdSync({
+      isVisible: false,
+      ownerPanelOpen: false,
+      connectionId: "conn-1",
+      trackedConnectionId: "conn-1",
+    }),
+    true,
+  );
+});
+
+test("first-open sync reset survives hiding the surface while the owner panel stays open", () => {
+  // Terminal tab switches / side-panel tool switches keep the panel mounted
+  // and open: the user's browsed directory and filename filter must survive.
+  assert.equal(
+    shouldResetInitialFollowTerminalCwdSync({
+      isVisible: false,
+      ownerPanelOpen: true,
+      connectionId: "conn-1",
+      trackedConnectionId: "conn-1",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldResetInitialFollowTerminalCwdSync({
+      isVisible: true,
+      ownerPanelOpen: true,
+      connectionId: "conn-1",
+      trackedConnectionId: "conn-1",
+    }),
+    false,
+  );
+});
+
+test("SftpSidePanel feeds ownerPanelOpen into the first-open reset guard", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  assert.match(
+    source,
+    /shouldResetInitialFollowTerminalCwdSync\(\{\s*\n\s*isVisible,\s*\n\s*ownerPanelOpen,/,
+  );
+  assert.match(source, /\[connectionId, isVisible, ownerPanelOpen\]/);
 });

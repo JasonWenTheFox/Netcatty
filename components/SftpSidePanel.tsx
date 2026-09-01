@@ -70,6 +70,7 @@ import {
   shouldApplyFollowTerminalCwdSyncResult,
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
+  shouldResetInitialFollowTerminalCwdSync,
   type SftpFollowTerminalCwdBlock,
 } from "./sftp/sftpFollowTerminalCwd";
 import {
@@ -988,6 +989,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
         onSftpFollowTerminalCwdChange={onSftpFollowTerminalCwdChange}
         onRequestTerminalFocus={onRequestTerminalFocus}
         isVisible={isVisible}
+        ownerPanelOpen={ownerPanelOpen}
         behaviorRef={behaviorRef}
         autoSyncRef={autoSyncRef}
         connectedHostObjRef={connectedHostObjRef}
@@ -1036,6 +1038,8 @@ type SftpSidePanelInteractiveBodyProps = {
   onSftpFollowTerminalCwdChange?: (enabled: boolean, host?: Host | null) => void;
   onRequestTerminalFocus?: () => void;
   isVisible: boolean;
+  /** Side panel still open for this terminal tab (another tool/tab may have focus). */
+  ownerPanelOpen: boolean;
   behaviorRef: MutableRefObject<"open" | "transfer">;
   autoSyncRef: MutableRefObject<boolean>;
   connectedHostObjRef: MutableRefObject<Host | null>;
@@ -1076,6 +1080,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   onSftpFollowTerminalCwdChange,
   onRequestTerminalFocus,
   isVisible,
+  ownerPanelOpen,
   behaviorRef,
   autoSyncRef,
   connectedHostObjRef,
@@ -1596,7 +1601,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     };
   }, []);
   useEffect(() => {
-    if (!isVisible || initialFollowRetryRef.current.connectionId !== connectionId) {
+    if (
+      shouldResetInitialFollowTerminalCwdSync({
+        isVisible,
+        ownerPanelOpen,
+        connectionId,
+        trackedConnectionId: initialFollowRetryRef.current.connectionId,
+      })
+    ) {
       initialFollowSyncedConnRef.current = null;
       initialFollowRetryRef.current = { connectionId, attempts: 0 };
       if (initialFollowRetryTimerRef.current) {
@@ -1604,7 +1616,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         initialFollowRetryTimerRef.current = null;
       }
     }
-  }, [connectionId, isVisible]);
+  }, [connectionId, isVisible, ownerPanelOpen]);
   useEffect(() => {
     if (!effectiveFollowTerminalCwd || !canFollowTerminalCwd || !isVisible || hasActiveWork) return;
     const connection = sftpRef.current.leftPane.connection;

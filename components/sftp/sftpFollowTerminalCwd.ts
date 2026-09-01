@@ -93,6 +93,34 @@ export const runInitialFollowTerminalCwdSync = async ({
   return navigateResult === "superseded";
 };
 
+/**
+ * Whether the one-shot "first open" terminal cwd sync must re-arm.
+ *
+ * Hiding the surface while the owner side panel stays open (switching terminal
+ * tabs, or focusing another side-panel tool in the same tab) must NOT re-arm
+ * the sync: re-running it would navigate the pane away from the user's browsed
+ * directory back to the terminal cwd and clear the filename filter on every
+ * switch. A changed terminal cwd is still followed by the regular follow sync
+ * through its handled/blocked bookkeeping. The sync re-arms only when the
+ * owning panel actually closed (fresh open resyncs, #2335) or the linked
+ * connection replaced itself (Start over).
+ */
+export const shouldResetInitialFollowTerminalCwdSync = ({
+  isVisible,
+  ownerPanelOpen,
+  connectionId,
+  trackedConnectionId,
+}: {
+  isVisible: boolean;
+  /** Side panel still open for this terminal tab (another tool/tab may have focus). */
+  ownerPanelOpen: boolean;
+  connectionId: string | null;
+  trackedConnectionId: string | null;
+}): boolean => {
+  if (connectionId !== trackedConnectionId) return true;
+  return !isVisible && !ownerPanelOpen;
+};
+
 export const resolveHostFollowTerminalCwd = (
   hostFollowTerminalCwd: boolean | undefined,
   globalFollowTerminalCwd: boolean,
