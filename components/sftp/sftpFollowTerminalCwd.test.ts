@@ -10,6 +10,7 @@ import {
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
   shouldInvalidateFollowBookkeepingOnCwdChange,
+  shouldLatchInitialFollowInterruption,
   shouldReleaseInitialFollowSyncAttempt,
   shouldResetInitialFollowTerminalCwdSync,
 } from "./sftpFollowTerminalCwd";
@@ -592,4 +593,40 @@ test("SftpSidePanel keeps interrupted initial sync consumed across tab switches"
   );
   assert.match(source, /const ownerPanelOpenRef = useRef\(ownerPanelOpen\);/);
   assert.match(source, /ownerPanelOpenRef\.current = ownerPanelOpen;/);
+});
+
+test("first-open probe is latched as interrupted on a hide with the owner panel open", () => {
+  // Terminal-tab switch while the fresh-CWD probe is pending: the probe must be
+  // latched as interrupted so it cannot navigate once the tab is reshown.
+  assert.equal(
+    shouldLatchInitialFollowInterruption({ isVisible: false, ownerPanelOpen: true }),
+    true,
+  );
+  assert.equal(
+    shouldLatchInitialFollowInterruption({ isVisible: true, ownerPanelOpen: true }),
+    false,
+  );
+  // A panel close is not an interruption latch: the reset guard re-arms there.
+  assert.equal(
+    shouldLatchInitialFollowInterruption({ isVisible: false, ownerPanelOpen: false }),
+    false,
+  );
+});
+
+test("SftpSidePanel latch blocks the restored-tab stale probe and keeps the slot consumed", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  assert.match(source, /const initialFollowInterruptedRef = useRef\(false\);/);
+  assert.match(
+    source,
+    /if \(!shouldLatchInitialFollowInterruption\(\{ isVisible, ownerPanelOpen \}\)\) return;\s*\n\s*initialFollowInterruptedRef\.current = true;/,
+  );
+  // The latch resets only when the first-open sync re-arms.
+  assert.match(
+    source,
+    /initialFollowSyncedConnRef\.current = null;\s*\n\s*initialFollowInterruptedRef\.current = false;/,
+  );
+  // Eligibility and retry must both consult the latch.
+  assert.match(source, /&& !initialFollowInterruptedRef\.current/);
+  assert.match(source, /if \(initialFollowInterruptedRef\.current\) return;/);
 });

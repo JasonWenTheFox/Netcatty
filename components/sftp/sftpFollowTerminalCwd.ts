@@ -156,6 +156,28 @@ export const shouldResetInitialFollowTerminalCwdSync = ({
 };
 
 /**
+ * Whether a hide transition with the owning panel still open (terminal-tab
+ * switch, or focusing another side-panel tool in the same tab) must latch the
+ * pending first-open fresh-CWD probe as interrupted.
+ *
+ * When the surface is hidden while a probe is still in flight, the probe's
+ * eligibility is only re-checked live when it resolves. If the tab becomes
+ * visible again before then, the live checks pass again (generation unchanged,
+ * visible, no active work) and the stale probe would navigate the pane back to
+ * the terminal cwd, clearing the user's browsed directory and filename filter.
+ * The hide transition must latch the attempt as interrupted while keeping its
+ * one-shot slot consumed (no re-arm on return — see
+ * {@link shouldReleaseInitialFollowSyncAttempt}).
+ */
+export const shouldLatchInitialFollowInterruption = ({
+  isVisible,
+  ownerPanelOpen,
+}: {
+  isVisible: boolean;
+  ownerPanelOpen: boolean;
+}): boolean => !isVisible && ownerPanelOpen;
+
+/**
  * Whether an unfinished one-shot "first open" sync attempt may release its
  * consumed slot so a retry can re-arm.
  *

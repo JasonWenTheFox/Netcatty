@@ -71,6 +71,7 @@ import {
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
   shouldInvalidateFollowBookkeepingOnCwdChange,
+  shouldLatchInitialFollowInterruption,
   shouldReleaseInitialFollowSyncAttempt,
   shouldResetInitialFollowTerminalCwdSync,
   type SftpFollowTerminalCwdBlock,
@@ -1611,6 +1612,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     attempts: 0,
   });
   const initialFollowRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latched when the surface is hidden while the owning panel stays open
+  // (terminal-tab switch) with a fresh-CWD first-open probe still pending.
+  // The probe re-checks eligibility live when it resolves; if the tab became
+  // visible again in the meantime, those live checks pass again and the stale
+  // probe would navigate the pane back to the terminal cwd (clearing the
+  // user's browsed directory and filename filter). The latch makes such an
+  // interrupted attempt ineligible while its one-shot slot stays consumed.
+  const initialFollowInterruptedRef = useRef(false);
   const initialFollowMountedRef = useRef(true);
   const [initialFollowRetryNonce, setInitialFollowRetryNonce] = useState(0);
   useEffect(() => {
@@ -1621,6 +1630,10 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     };
   }, []);
   useEffect(() => {
+    if (!shouldLatchInitialFollowInterruption({ isVisible, ownerPanelOpen })) return;
+    initialFollowInterruptedRef.current = true;
+  }, [isVisible, ownerPanelOpen]);
+  useEffect(() => {
     if (
       shouldResetInitialFollowTerminalCwdSync({
         isVisible,
@@ -1630,6 +1643,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       })
     ) {
       initialFollowSyncedConnRef.current = null;
+      initialFollowInterruptedRef.current = false;
       initialFollowRetryRef.current = { connectionId, attempts: 0 };
       if (initialFollowRetryTimerRef.current) {
         clearTimeout(initialFollowRetryTimerRef.current);
@@ -1675,9 +1689,15 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     );
     const followStillEligible = () => (
       syncGeneration === followSyncGenerationRef.current
+      && !initialFollowInterruptedRef.current
       && followCurrentlyEligible()
     );
     const clearAttemptAndRetry = () => {
+      // A hide transition latched this attempt as interrupted (the surface was
+      // hidden with the owner panel open while the probe was pending, then
+      // possibly reshown before it resolved): keep it consumed, the regular
+      // follow sync still follows later cwd changes.
+      if (initialFollowInterruptedRef.current) return;
       // While the surface is hidden but the owning panel stays open (terminal
       // tab switch), an interrupted attempt must remain consumed: clearing it
       // here would re-run the first-open sync on return and navigate the pane
