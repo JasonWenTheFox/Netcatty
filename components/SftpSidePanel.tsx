@@ -1619,12 +1619,20 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   // probe would navigate the pane back to the terminal cwd (clearing the
   // user's browsed directory and filename filter). The latch makes such an
   // interrupted attempt ineligible while its one-shot slot stays consumed.
-  // `initialFollowProbePendingRef` tracks whether a probe is actually in
+  // `initialFollowProbeAttemptRef` tracks whether a probe is actually in
   // flight: hiding while the connection is merely `connecting` (no probe has
   // started yet) must not latch, or the fresh-CWD resync on return would see
-  // a permanently-ineligible probe until the owner panel closes.
+  // a permanently-ineligible probe until the owner panel closes. It stores
+  // the identity (sequence number) of the in-flight attempt instead of a
+  // shared boolean: while connection A's probe is still outstanding the
+  // connection can be replaced and connection B's probe can start, and A's
+  // completion must not report "no probe pending" while B is still running —
+  // otherwise the hide-latch effect below would skip arming the interruption
+  // latch and B's current-generation result could navigate the pane on a
+  // later tab return (clearing the browsed directory and filename filter).
   const initialFollowInterruptedRef = useRef(false);
-  const initialFollowProbePendingRef = useRef(false);
+  const initialFollowProbeSeqRef = useRef(0);
+  const initialFollowProbeAttemptRef = useRef<number | null>(null);
   const initialFollowMountedRef = useRef(true);
   const [initialFollowRetryNonce, setInitialFollowRetryNonce] = useState(0);
   useEffect(() => {
@@ -1635,7 +1643,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     };
   }, []);
   useEffect(() => {
-    if (!initialFollowProbePendingRef.current) return;
+    if (initialFollowProbeAttemptRef.current === null) return;
     if (!shouldLatchInitialFollowInterruption({ isVisible, ownerPanelOpen })) return;
     initialFollowInterruptedRef.current = true;
   }, [isVisible, ownerPanelOpen]);
@@ -1740,7 +1748,9 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         setInitialFollowRetryNonce((value) => value + 1);
       }, 250);
     };
-    initialFollowProbePendingRef.current = true;
+    initialFollowProbeSeqRef.current += 1;
+    const probeAttempt = initialFollowProbeSeqRef.current;
+    initialFollowProbeAttemptRef.current = probeAttempt;
     void runInitialFollowTerminalCwdSync({
       expectedConnectionId,
       staleTerminalCwd,
@@ -1754,8 +1764,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       setHandled: (value) => { handledFollowRef.current = value; },
       setBlocked: (value) => { blockedFollowRef.current = value; },
     }).then((completed) => {
-      initialFollowProbePendingRef.current = false;
-      if (!completed) clearAttemptAndRetry();
+      // Only the matching attempt may clear the pending marker: a superseded
+      // probe (its connection was replaced or the sync re-armed while it was
+      // still in flight) resolving must not report "no probe pending" while a
+      // newer probe is running, or the hide-latch effect would skip arming
+      // the interruption latch for that newer probe.
+      const isCurrentAttempt = initialFollowProbeAttemptRef.current === probeAttempt;
+      if (isCurrentAttempt) initialFollowProbeAttemptRef.current = null;
+      if (!completed && isCurrentAttempt) clearAttemptAndRetry();
     });
   }, [
     canFollowTerminalCwd,

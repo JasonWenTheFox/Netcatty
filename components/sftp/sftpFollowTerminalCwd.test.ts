@@ -619,16 +619,23 @@ test("SftpSidePanel latch blocks the restored-tab stale probe and keeps the slot
   assert.match(source, /const initialFollowInterruptedRef = useRef\(false\);/);
   // The latch only arms while a first-open probe is actually in flight:
   // hiding during `connecting` (before any probe started) must not consume
-  // the one-shot resync permanently.
-  assert.match(source, /const initialFollowProbePendingRef = useRef\(false\);/);
+  // the one-shot resync permanently. The pending marker stores the identity
+  // of the in-flight attempt, not a shared boolean: a superseded probe
+  // resolving must not clear the marker while a newer probe is still
+  // running, or the latch would be skipped for that newer probe.
+  assert.match(source, /const initialFollowProbeSeqRef = useRef\(0\);/);
+  assert.match(source, /const initialFollowProbeAttemptRef = useRef<number \| null>\(null\);/);
   assert.match(
     source,
-    /if \(!initialFollowProbePendingRef\.current\) return;\s*\n\s*if \(!shouldLatchInitialFollowInterruption\(\{ isVisible, ownerPanelOpen \}\)\) return;\s*\n\s*initialFollowInterruptedRef\.current = true;/,
+    /if \(initialFollowProbeAttemptRef\.current === null\) return;\s*\n\s*if \(!shouldLatchInitialFollowInterruption\(\{ isVisible, ownerPanelOpen \}\)\) return;\s*\n\s*initialFollowInterruptedRef\.current = true;/,
   );
-  assert.match(source, /initialFollowProbePendingRef\.current = true;\s*\n\s*void runInitialFollowTerminalCwdSync\(/);
   assert.match(
     source,
-    /initialFollowProbePendingRef\.current = false;\s*\n\s*if \(!completed\) clearAttemptAndRetry\(\);/,
+    /initialFollowProbeAttemptRef\.current = probeAttempt;\s*\n\s*void runInitialFollowTerminalCwdSync\(/,
+  );
+  assert.match(
+    source,
+    /const isCurrentAttempt = initialFollowProbeAttemptRef\.current === probeAttempt;\s*\n\s*if \(isCurrentAttempt\) initialFollowProbeAttemptRef\.current = null;\s*\n\s*if \(!completed && isCurrentAttempt\) clearAttemptAndRetry\(\);/,
   );
   // The latch resets only when the first-open sync re-arms.
   assert.match(
