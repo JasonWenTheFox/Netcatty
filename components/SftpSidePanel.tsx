@@ -1651,6 +1651,13 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       initialFollowSyncedConnRef.current = null;
       initialFollowInterruptedRef.current = false;
       initialFollowRetryRef.current = { connectionId, attempts: 0 };
+      // Invalidate any fresh-CWD probe that is still in flight from before the
+      // reset (e.g. the panel was closed and reopened on the same connection
+      // while the probe was pending). Its snapshot generation no longer
+      // matches, so it can no longer pass the live eligibility re-check and
+      // race the re-armed probe into an obsolete directory. Without this, the
+      // latch/marker reset above would re-enable a stale probe on reopen.
+      followSyncGenerationRef.current += 1;
       if (initialFollowRetryTimerRef.current) {
         clearTimeout(initialFollowRetryTimerRef.current);
         initialFollowRetryTimerRef.current = null;
