@@ -443,6 +443,7 @@ test("follow bookkeeping keeps handled state across hidden-panel null cwd transi
     shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: null,
       lastCwd: "/home/user/project",
+      isVisible: false,
     }),
     false,
   );
@@ -450,6 +451,15 @@ test("follow bookkeeping keeps handled state across hidden-panel null cwd transi
     shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: "/home/user/project",
       lastCwd: "/home/user/project",
+      isVisible: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: "/home/user/project",
+      lastCwd: "/home/user/project",
+      isVisible: true,
     }),
     false,
   );
@@ -457,6 +467,7 @@ test("follow bookkeeping keeps handled state across hidden-panel null cwd transi
     shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: null,
       lastCwd: null,
+      isVisible: false,
     }),
     false,
   );
@@ -467,6 +478,7 @@ test("follow bookkeeping invalidates on a real terminal cwd change", () => {
     shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: "/home/user/other",
       lastCwd: "/home/user/project",
+      isVisible: true,
     }),
     true,
   );
@@ -475,6 +487,18 @@ test("follow bookkeeping invalidates on a real terminal cwd change", () => {
     shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: "/home/user/other",
       lastCwd: null,
+      isVisible: true,
+    }),
+    true,
+  );
+  // A `null` while the surface is visible means the linked terminal session
+  // changed (or closed) and its cwd cache is empty: in-flight follow results
+  // of the previous session must be invalidated.
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: null,
+      lastCwd: "/home/user/project",
+      isVisible: true,
     }),
     true,
   );

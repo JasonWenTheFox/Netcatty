@@ -97,22 +97,35 @@ export const runInitialFollowTerminalCwdSync = async ({
  * Whether a change of the live `activeTerminalCwd` input must invalidate the
  * handled/blocked follow bookkeeping.
  *
- * Hidden side panels receive `activeTerminalCwd={null}`
+ * Hidden surfaces receive `activeTerminalCwd={null}`
  * (terminalLayerSidePanelSlots) and get the live value back when the tab
- * becomes visible again. Those visibility transitions are not real cwd
- * changes: invalidating on them would drop `handledFollowRef` and make the
- * regular follow sync navigate the user's browsed pane back to the terminal
- * cwd (clearing the filename filter) on every terminal-tab switch. Only a
- * concrete non-null value change invalidates — including a cwd that really
- * changed while the panel was hidden.
+ * becomes visible again. That visibility-induced `null` is synthetic and must
+ * not invalidate: invalidating on it would drop `handledFollowRef` and make
+ * the regular follow sync navigate the user's browsed pane back to the
+ * terminal cwd (clearing the filename filter) on every terminal-tab switch.
+ *
+ * While the surface is visible, though, a `null` is a real transition: the
+ * linked terminal session moved to (or closed on) a session whose cwd cache is
+ * empty. Passing it through would leave the generation valid, and the
+ * first-open eligibility checks do not bind to the terminal session identity,
+ * so an in-flight probe of the previous session could navigate the visible
+ * pane. Any live value change while visible invalidates — including to `null`.
  */
 export const shouldInvalidateFollowBookkeepingOnCwdChange = ({
   nextCwd,
   lastCwd,
+  isVisible,
 }: {
   nextCwd: string | null;
   lastCwd: string | null;
-}): boolean => nextCwd !== null && nextCwd !== lastCwd;
+  isVisible: boolean;
+}): boolean => {
+  if (nextCwd === lastCwd) return false;
+  // Only the hidden synthetic `null` pass-through is ignored; a caller that
+  // still forwards live values while hidden keeps the concrete-change rule.
+  if (!isVisible) return nextCwd !== null;
+  return true;
+};
 
 /**
  * Whether the one-shot "first open" terminal cwd sync must re-arm.

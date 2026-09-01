@@ -1315,19 +1315,24 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   }, [followTerminalCwdHost?.id, connectionId, invalidateInFlightFollowSync]);
 
   // A concrete terminal cwd change invalidates handled/blocked bookkeeping so
-  // the changed cwd is followed. Visibility-induced `null` transitions (hidden
-  // panels receive `activeTerminalCwd={null}`) must NOT: invalidating on them
-  // would drop `handledFollowRef` and navigate the user's browsed pane back to
-  // the terminal cwd (clearing the filter) on every terminal-tab switch.
+  // the changed cwd is followed. The visibility-induced `null` of hidden
+  // surfaces (they receive `activeTerminalCwd={null}`) must NOT: invalidating
+  // on it would drop `handledFollowRef` and navigate the user's browsed pane
+  // back to the terminal cwd (clearing the filter) on every terminal-tab
+  // switch. A `null` while visible is real, though — the linked terminal
+  // session moved to (or closed on) a session whose cwd cache is empty — and
+  // must invalidate so an in-flight first-open probe of the previous session
+  // is dropped before it can navigate the visible pane.
   const lastLiveTerminalCwdRef = useRef<string | null>(activeTerminalCwd);
   useEffect(() => {
     if (!shouldInvalidateFollowBookkeepingOnCwdChange({
       nextCwd: activeTerminalCwd,
       lastCwd: lastLiveTerminalCwdRef.current,
+      isVisible,
     })) return;
     lastLiveTerminalCwdRef.current = activeTerminalCwd;
     invalidateInFlightFollowSync();
-  }, [activeTerminalCwd, invalidateInFlightFollowSync]);
+  }, [activeTerminalCwd, isVisible, invalidateInFlightFollowSync]);
 
   useEffect(() => {
     if (effectiveFollowTerminalCwd) return;
