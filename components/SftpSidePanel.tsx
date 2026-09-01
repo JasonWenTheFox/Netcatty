@@ -71,6 +71,7 @@ import {
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
   shouldInvalidateFollowBookkeepingOnCwdChange,
+  shouldReleaseInitialFollowSyncAttempt,
   shouldResetInitialFollowTerminalCwdSync,
   type SftpFollowTerminalCwdBlock,
 } from "./sftp/sftpFollowTerminalCwd";
@@ -1292,12 +1293,14 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   const connectionIdRef = useRef(connectionId);
   const connectionPath = sftp.leftPane.connection?.currentPath ?? null;
   const isVisibleRef = useRef(isVisible);
+  const ownerPanelOpenRef = useRef(ownerPanelOpen);
   const hasActiveWorkRef = useRef(hasActiveWork);
   effectiveFollowTerminalCwdRef.current = effectiveFollowTerminalCwd;
   canFollowTerminalCwdRef.current = canFollowTerminalCwd;
   activeTerminalCwdRef.current = activeTerminalCwd;
   connectionIdRef.current = connectionId;
   isVisibleRef.current = isVisible;
+  ownerPanelOpenRef.current = ownerPanelOpen;
   hasActiveWorkRef.current = hasActiveWork;
 
   const invalidateInFlightFollowSync = useCallback(() => {
@@ -1670,6 +1673,19 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       && followCurrentlyEligible()
     );
     const clearAttemptAndRetry = () => {
+      // While the surface is hidden but the owning panel stays open (terminal
+      // tab switch), an interrupted attempt must remain consumed: clearing it
+      // here would re-run the first-open sync on return and navigate the pane
+      // away from the user's browsed directory (clearing its filename filter).
+      if (
+        initialFollowSyncedConnRef.current === expectedConnectionId
+        && !shouldReleaseInitialFollowSyncAttempt({
+          isVisible: isVisibleRef.current,
+          ownerPanelOpen: ownerPanelOpenRef.current,
+        })
+      ) {
+        return;
+      }
       if (initialFollowSyncedConnRef.current === expectedConnectionId) {
         initialFollowSyncedConnRef.current = null;
       }

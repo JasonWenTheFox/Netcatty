@@ -10,6 +10,7 @@ import {
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
   shouldInvalidateFollowBookkeepingOnCwdChange,
+  shouldReleaseInitialFollowSyncAttempt,
   shouldResetInitialFollowTerminalCwdSync,
 } from "./sftpFollowTerminalCwd";
 
@@ -543,4 +544,28 @@ test("SftpSidePanel feeds ownerPanelOpen into the first-open reset guard", () =>
     /shouldResetInitialFollowTerminalCwdSync\(\{\s*\n\s*isVisible,\s*\n\s*ownerPanelOpen,/,
   );
   assert.match(source, /\[connectionId, isVisible, ownerPanelOpen\]/);
+});
+
+test("first-open sync attempt is released while visible or after the owner panel closed", () => {
+  assert.equal(shouldReleaseInitialFollowSyncAttempt({ isVisible: true, ownerPanelOpen: true }), true);
+  assert.equal(shouldReleaseInitialFollowSyncAttempt({ isVisible: true, ownerPanelOpen: false }), true);
+  assert.equal(shouldReleaseInitialFollowSyncAttempt({ isVisible: false, ownerPanelOpen: false }), true);
+});
+
+test("first-open sync attempt stays consumed while hidden with the owner panel open", () => {
+  // Terminal tab switch while the fresh-CWD probe is still pending: the
+  // interrupted attempt must not re-arm, or returning to the tab re-runs the
+  // first-open sync and navigates away from the browsed directory.
+  assert.equal(shouldReleaseInitialFollowSyncAttempt({ isVisible: false, ownerPanelOpen: true }), false);
+});
+
+test("SftpSidePanel keeps interrupted initial sync consumed across tab switches", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  assert.match(
+    source,
+    /!shouldReleaseInitialFollowSyncAttempt\(\{\s*\n\s*isVisible: isVisibleRef\.current,\s*\n\s*ownerPanelOpen: ownerPanelOpenRef\.current,/,
+  );
+  assert.match(source, /const ownerPanelOpenRef = useRef\(ownerPanelOpen\);/);
+  assert.match(source, /ownerPanelOpenRef\.current = ownerPanelOpen;/);
 });

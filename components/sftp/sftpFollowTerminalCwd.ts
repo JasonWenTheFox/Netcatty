@@ -142,6 +142,26 @@ export const shouldResetInitialFollowTerminalCwdSync = ({
   return !isVisible && !ownerPanelOpen;
 };
 
+/**
+ * Whether an unfinished one-shot "first open" sync attempt may release its
+ * consumed slot so a retry can re-arm.
+ *
+ * If the fresh-CWD probe resolves while the surface is hidden but the owning
+ * panel is still open (terminal-tab switch), the attempt must stay consumed:
+ * releasing it would re-run the first-open sync when the tab becomes visible
+ * again and navigate the pane away from the directory the user browsed to
+ * while the original probe was pending (clearing its filename filter). The
+ * attempt is released once the surface is visible again or the owning panel
+ * closed (fresh open resyncs, #2335).
+ */
+export const shouldReleaseInitialFollowSyncAttempt = ({
+  isVisible,
+  ownerPanelOpen,
+}: {
+  isVisible: boolean;
+  ownerPanelOpen: boolean;
+}): boolean => isVisible || !ownerPanelOpen;
+
 export const resolveHostFollowTerminalCwd = (
   hostFollowTerminalCwd: boolean | undefined,
   globalFollowTerminalCwd: boolean,
