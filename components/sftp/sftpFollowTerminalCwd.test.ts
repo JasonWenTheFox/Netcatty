@@ -464,6 +464,19 @@ test("SftpSidePanel keeps a queued first-open retry consumed when the surface is
   assert.match(retryTimer[0], /shouldReleaseInitialFollowSyncAttempt/);
 });
 
+test("SftpSidePanel consumes a queued first-open retry on a hide mid-delay", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  // Hiding with the owner panel still open while the 250 ms retry is queued
+  // must cancel it: the timer's current-state-only visibility check cannot
+  // observe a hide restored before expiry, and would release the one-shot
+  // slot on return, re-arming the first-open sync over the preserved pane.
+  assert.match(
+    source,
+    /if \(isVisible \|\| !ownerPanelOpen\) return;\s*\n\s*if \(!initialFollowRetryTimerRef\.current\) return;\s*\n\s*clearTimeout\(initialFollowRetryTimerRef\.current\);\s*\n\s*initialFollowRetryTimerRef\.current = null;/,
+  );
+});
+
 test("follow bookkeeping keeps handled state across hidden-panel null cwd transitions", () => {
   // Hidden panels receive activeTerminalCwd={null} and get the last live value
   // back on reshow: the visibility transitions may not drop handled follow

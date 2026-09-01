@@ -1650,6 +1650,20 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     initialFollowInterruptedRef.current = true;
   }, [isVisible, ownerPanelOpen]);
   useEffect(() => {
+    // A hide with the owner panel still open (terminal-tab switch) while a
+    // 250 ms retry is queued must consume that retry: the timer's expiry
+    // check inspects only the current visibility state, so a hide restored
+    // before the delay expires is invisible to it and it would release the
+    // one-shot slot and re-arm the first-open sync on return — navigating
+    // the preserved pane back to the terminal cwd (clearing its filename
+    // filter). Cancelling here keeps the slot consumed; the regular follow
+    // sync still follows later cwd changes.
+    if (isVisible || !ownerPanelOpen) return;
+    if (!initialFollowRetryTimerRef.current) return;
+    clearTimeout(initialFollowRetryTimerRef.current);
+    initialFollowRetryTimerRef.current = null;
+  }, [isVisible, ownerPanelOpen]);
+  useEffect(() => {
     if (
       shouldResetInitialFollowTerminalCwdSync({
         isVisible,
