@@ -642,6 +642,15 @@ test("SftpSidePanel latch blocks the restored-tab stale probe and keeps the slot
     source,
     /initialFollowSyncedConnRef\.current = null;\s*\n\s*initialFollowInterruptedRef\.current = false;/,
   );
+  // The connection reset must also drop a stale pending-probe marker: while
+  // connection A's probe is still outstanding and the pane starts connecting
+  // to B, hiding the tab must not treat A's marker as a current pending probe
+  // and latch the interruption (which would keep B's fresh first-open sync
+  // ineligible until the owner panel closes).
+  assert.match(
+    source,
+    /followSyncGenerationRef\.current \+= 1;\s*\n(\s*\/\/[^\n]*\n)*\s*initialFollowProbeAttemptRef\.current = null;/,
+  );
   // Eligibility and retry must both consult the latch.
   assert.match(source, /&& !initialFollowInterruptedRef\.current/);
   assert.match(source, /if \(initialFollowInterruptedRef\.current\) return;/);

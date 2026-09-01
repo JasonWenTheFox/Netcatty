@@ -1666,6 +1666,15 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       // race the re-armed probe into an obsolete directory. Without this, the
       // latch/marker reset above would re-enable a stale probe on reopen.
       followSyncGenerationRef.current += 1;
+      // Also clear the pending-probe marker: it may still hold the replaced
+      // connection's attempt identity. If the tab is hidden before that stale
+      // probe settles (or before the new connection's probe starts), the
+      // hide-latch effect would treat the stale marker as a current pending
+      // probe and arm the interruption latch, leaving the new connection's
+      // fresh first-open sync ineligible until the owner panel closes. The
+      // generation bump above already invalidates any probe from before the
+      // reset, so dropping its marker here cannot resurrect its result.
+      initialFollowProbeAttemptRef.current = null;
       if (initialFollowRetryTimerRef.current) {
         clearTimeout(initialFollowRetryTimerRef.current);
         initialFollowRetryTimerRef.current = null;
