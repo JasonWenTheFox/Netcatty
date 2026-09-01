@@ -70,6 +70,7 @@ import {
   shouldApplyFollowTerminalCwdSyncResult,
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
+  shouldInvalidateFollowBookkeepingOnCwdChange,
   shouldResetInitialFollowTerminalCwdSync,
   type SftpFollowTerminalCwdBlock,
 } from "./sftp/sftpFollowTerminalCwd";
@@ -1305,14 +1306,25 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     handledFollowRef.current = null;
   }, []);
 
+  // A terminal/connection replacement always invalidates follow bookkeeping.
   useEffect(() => {
     invalidateInFlightFollowSync();
-  }, [
-    activeTerminalCwd,
-    followTerminalCwdHost?.id,
-    connectionId,
-    invalidateInFlightFollowSync,
-  ]);
+  }, [followTerminalCwdHost?.id, connectionId, invalidateInFlightFollowSync]);
+
+  // A concrete terminal cwd change invalidates handled/blocked bookkeeping so
+  // the changed cwd is followed. Visibility-induced `null` transitions (hidden
+  // panels receive `activeTerminalCwd={null}`) must NOT: invalidating on them
+  // would drop `handledFollowRef` and navigate the user's browsed pane back to
+  // the terminal cwd (clearing the filter) on every terminal-tab switch.
+  const lastLiveTerminalCwdRef = useRef<string | null>(activeTerminalCwd);
+  useEffect(() => {
+    if (!shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: activeTerminalCwd,
+      lastCwd: lastLiveTerminalCwdRef.current,
+    })) return;
+    lastLiveTerminalCwdRef.current = activeTerminalCwd;
+    invalidateInFlightFollowSync();
+  }, [activeTerminalCwd, invalidateInFlightFollowSync]);
 
   useEffect(() => {
     if (effectiveFollowTerminalCwd) return;

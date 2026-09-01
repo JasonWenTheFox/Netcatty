@@ -94,6 +94,27 @@ export const runInitialFollowTerminalCwdSync = async ({
 };
 
 /**
+ * Whether a change of the live `activeTerminalCwd` input must invalidate the
+ * handled/blocked follow bookkeeping.
+ *
+ * Hidden side panels receive `activeTerminalCwd={null}`
+ * (terminalLayerSidePanelSlots) and get the live value back when the tab
+ * becomes visible again. Those visibility transitions are not real cwd
+ * changes: invalidating on them would drop `handledFollowRef` and make the
+ * regular follow sync navigate the user's browsed pane back to the terminal
+ * cwd (clearing the filename filter) on every terminal-tab switch. Only a
+ * concrete non-null value change invalidates — including a cwd that really
+ * changed while the panel was hidden.
+ */
+export const shouldInvalidateFollowBookkeepingOnCwdChange = ({
+  nextCwd,
+  lastCwd,
+}: {
+  nextCwd: string | null;
+  lastCwd: string | null;
+}): boolean => nextCwd !== null && nextCwd !== lastCwd;
+
+/**
  * Whether the one-shot "first open" terminal cwd sync must re-arm.
  *
  * Hiding the surface while the owner side panel stays open (switching terminal

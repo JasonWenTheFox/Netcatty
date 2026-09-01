@@ -9,6 +9,7 @@ import {
   shouldApplyFollowTerminalCwdSyncResult,
   shouldClearBlockedFollowOnReach,
   shouldFollowTerminalCwdNavigate,
+  shouldInvalidateFollowBookkeepingOnCwdChange,
   shouldResetInitialFollowTerminalCwdSync,
 } from "./sftpFollowTerminalCwd";
 
@@ -431,6 +432,60 @@ test("SftpSidePanel bounds first-open retries and disables cached fallback", () 
   );
   assert.match(source, /initialFollowRetryRef\.current\.attempts >= 3/);
   assert.match(source, /setInitialFollowRetryNonce\(\(value\) => value \+ 1\)/);
+});
+
+test("follow bookkeeping keeps handled state across hidden-panel null cwd transitions", () => {
+  // Hidden panels receive activeTerminalCwd={null} and get the last live value
+  // back on reshow: the visibility transitions may not drop handled follow
+  // bookkeeping when the cwd did not actually change.
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: null,
+      lastCwd: "/home/user/project",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: "/home/user/project",
+      lastCwd: "/home/user/project",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: null,
+      lastCwd: null,
+    }),
+    false,
+  );
+});
+
+test("follow bookkeeping invalidates on a real terminal cwd change", () => {
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: "/home/user/other",
+      lastCwd: "/home/user/project",
+    }),
+    true,
+  );
+  // A cwd that changed while the panel was hidden still invalidates on reshow.
+  assert.equal(
+    shouldInvalidateFollowBookkeepingOnCwdChange({
+      nextCwd: "/home/user/other",
+      lastCwd: null,
+    }),
+    true,
+  );
+});
+
+test("SftpSidePanel guards cwd invalidation behind the visibility-safe helper", () => {
+  const source = readComponentSource("../SftpSidePanel.tsx");
+
+  assert.match(
+    source,
+    /shouldInvalidateFollowBookkeepingOnCwdChange\(\{\s*\n\s*nextCwd: activeTerminalCwd,\s*\n\s*lastCwd: lastLiveTerminalCwdRef\.current,/,
+  );
 });
 
 test("first-open sync reset re-arms on a replaced connection", () => {
