@@ -1619,7 +1619,12 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
   // probe would navigate the pane back to the terminal cwd (clearing the
   // user's browsed directory and filename filter). The latch makes such an
   // interrupted attempt ineligible while its one-shot slot stays consumed.
+  // `initialFollowProbePendingRef` tracks whether a probe is actually in
+  // flight: hiding while the connection is merely `connecting` (no probe has
+  // started yet) must not latch, or the fresh-CWD resync on return would see
+  // a permanently-ineligible probe until the owner panel closes.
   const initialFollowInterruptedRef = useRef(false);
+  const initialFollowProbePendingRef = useRef(false);
   const initialFollowMountedRef = useRef(true);
   const [initialFollowRetryNonce, setInitialFollowRetryNonce] = useState(0);
   useEffect(() => {
@@ -1630,6 +1635,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
     };
   }, []);
   useEffect(() => {
+    if (!initialFollowProbePendingRef.current) return;
     if (!shouldLatchInitialFollowInterruption({ isVisible, ownerPanelOpen })) return;
     initialFollowInterruptedRef.current = true;
   }, [isVisible, ownerPanelOpen]);
@@ -1727,6 +1733,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
         setInitialFollowRetryNonce((value) => value + 1);
       }, 250);
     };
+    initialFollowProbePendingRef.current = true;
     void runInitialFollowTerminalCwdSync({
       expectedConnectionId,
       staleTerminalCwd,
@@ -1740,6 +1747,7 @@ const SftpSidePanelInteractiveBody: React.FC<SftpSidePanelInteractiveBodyProps> 
       setHandled: (value) => { handledFollowRef.current = value; },
       setBlocked: (value) => { blockedFollowRef.current = value; },
     }).then((completed) => {
+      initialFollowProbePendingRef.current = false;
       if (!completed) clearAttemptAndRetry();
     });
   }, [

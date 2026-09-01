@@ -617,9 +617,18 @@ test("SftpSidePanel latch blocks the restored-tab stale probe and keeps the slot
   const source = readComponentSource("../SftpSidePanel.tsx");
 
   assert.match(source, /const initialFollowInterruptedRef = useRef\(false\);/);
+  // The latch only arms while a first-open probe is actually in flight:
+  // hiding during `connecting` (before any probe started) must not consume
+  // the one-shot resync permanently.
+  assert.match(source, /const initialFollowProbePendingRef = useRef\(false\);/);
   assert.match(
     source,
-    /if \(!shouldLatchInitialFollowInterruption\(\{ isVisible, ownerPanelOpen \}\)\) return;\s*\n\s*initialFollowInterruptedRef\.current = true;/,
+    /if \(!initialFollowProbePendingRef\.current\) return;\s*\n\s*if \(!shouldLatchInitialFollowInterruption\(\{ isVisible, ownerPanelOpen \}\)\) return;\s*\n\s*initialFollowInterruptedRef\.current = true;/,
+  );
+  assert.match(source, /initialFollowProbePendingRef\.current = true;\s*\n\s*void runInitialFollowTerminalCwdSync\(/);
+  assert.match(
+    source,
+    /initialFollowProbePendingRef\.current = false;\s*\n\s*if \(!completed\) clearAttemptAndRetry\(\);/,
   );
   // The latch resets only when the first-open sync re-arms.
   assert.match(
