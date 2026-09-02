@@ -524,6 +524,14 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
     originFocused: boolean;
     sourceActive: boolean;
   } | null>(null);
+  // Origin sessions observed focused while uploads are pending. Only the
+  // queue head is surfaced to the panel, so a drop queued behind an earlier
+  // request has its drop-time focus switch (issued by handleOpenSftp) land
+  // while the panel is still tracking the head. Remember those observations
+  // so the queued request is not treated as "focus never landed" once it
+  // reaches the head, which would defer cancellation and auto-connect
+  // indefinitely until the user manually revisits the origin pane.
+  const pendingUploadFocusedOriginSessionsRef = useRef<Set<string>>(new Set());
   const {
     barrierRef: pendingUploadRebindBarrierRef,
     bindTarget: bindPendingUploadRebindTarget,
@@ -1040,6 +1048,9 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
 
   useEffect(() => {
     if (!pendingUpload) return;
+    if (focusedSessionId) {
+      pendingUploadFocusedOriginSessionsRef.current.add(focusedSessionId);
+    }
     if (handledPendingUploadIdRef.current === pendingUpload.requestId) return;
 
     const rebindBarrier = pendingUploadRebindBarrierRef.current;
@@ -1065,7 +1076,12 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
     if (pendingUploadFocusSeenRef.current?.requestId !== pendingUpload.requestId) {
       pendingUploadFocusSeenRef.current = {
         requestId: pendingUpload.requestId,
-        originFocused: false,
+        // A queued drop's origin focus already landed (and was recorded) while
+        // an earlier request owned the queue head; only a fresh head must wait
+        // for its own focus switch to propagate.
+        originFocused: pendingUpload.originSessionId
+          ? pendingUploadFocusedOriginSessionsRef.current.has(pendingUpload.originSessionId)
+          : false,
         sourceActive: false,
       };
     }
@@ -1243,6 +1259,7 @@ const SftpSidePanelInner: React.FC<SftpSidePanelProps> = ({
   useEffect(() => {
     if (!pendingUpload) {
       pendingUploadFocusSeenRef.current = null;
+      pendingUploadFocusedOriginSessionsRef.current.clear();
       resetPendingUploadRebind();
       return;
     }
