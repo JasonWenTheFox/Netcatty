@@ -335,7 +335,33 @@ test("pending-input clear prefix covers interactive shells and skips raw devices
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
-test("startPtyJob writes the clear prefix before the wrapper", async () => {
+test("startPtyJob trusts a live PowerShell prompt over a cmd login hint without clearing it", async () => {
+  for (const command of ["Write-Output 'one'", "Write-Output 'two'"]) {
+    const writes = [];
+    class CapturePty extends EventEmitter {
+      write(data) {
+        writes.push(String(data));
+      }
+    }
+    const pty = new CapturePty();
+    const job = startPtyJob(pty, command, {
+      shellKind: "unknown",
+      loginShellHint: "cmd",
+      timeoutMs: 50,
+      expectedPrompt: "PS C:\\Users\\alice>",
+    });
+    assert.equal(writes.length, 1);
+    assert.ok(writes[0].startsWith("$__NCMCP_"));
+    assert.equal(writes[0].startsWith("\x1b\x15\x0b"), false);
+    assert.match(writes[0], /__NCMCP_/);
+    assert.doesNotMatch(writes[0], /cmd \/d \/s \/c/i);
+    job.cancel();
+    pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
+    await job.resultPromise;
+  }
+});
+
+test("startPtyJob keeps the clear prefix for non-PowerShell sessions", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
