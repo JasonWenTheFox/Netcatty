@@ -48,7 +48,7 @@ function createExecHandlerApi(ctx) {
       // metacharacters in blocklist patterns (eval, $(), backticks, pipes) cannot
       // actually be interpreted even if sent to a serial-connected shell.
       if (!isNetworkDevice) {
-        const safety = checkCommandSafety(command);
+        const safety = checkCommandSafetyForShell(command, resolveSessionBlocklistShellKind(session));
         if (safety.blocked) {
           debugLog("handleExec:blocklisted", { sessionId, matchedPattern: safety.matchedPattern });
           return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };

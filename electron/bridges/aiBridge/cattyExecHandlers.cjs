@@ -32,7 +32,11 @@ async function proxyCattyExecToWorker({
 
   const meta = getWorkerExecutionMeta(mcpServerBridge, sessionId, chatSessionId);
   if (!isNetworkDeviceLike(meta)) {
-    const safety = mcpServerBridge.checkCommandSafety(command);
+    // No live session here: settings additions plus common defaults only; the
+    // terminal worker re-runs the shell-selected defaults on the live session.
+    const safety = meta.shellType
+      ? mcpServerBridge.checkCommandSafetyForShell(command, meta.shellType)
+      : mcpServerBridge.checkCommandSafetyCommonOnly(command);
     if (safety.blocked) {
       return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
     }
@@ -112,7 +116,10 @@ function registerCattyExecHandlers(ctx) {
     // Shell blocklist is meaningless on network device CLIs (e.g. "shutdown"
     // disables an interface on Cisco). Skip for network devices and serial sessions.
     if (!isNetworkDevice) {
-      const safety = mcpServerBridge.checkCommandSafety(command);
+      const safety = mcpServerBridge.checkCommandSafetyForShell(
+        command,
+        mcpServerBridge.resolveSessionBlocklistShellKind(session),
+      );
       if (safety.blocked) {
         releaseLock();
         return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };

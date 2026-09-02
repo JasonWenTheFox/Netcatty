@@ -12,6 +12,10 @@ const {
   ensureSessionShellKind,
   ensureSessionShellKindForExec,
 } = require("../bridges/ai/sessionShellKind.cjs");
+const {
+  checkBlocklistForShell,
+  resolveSessionBlocklistShellKind,
+} = require("../bridges/ai/commandSafety.cjs");
 
 const DEFAULT_BACKGROUND_JOB_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_BACKGROUND_JOB_POLL_INTERVAL_MS = 30 * 1000;
@@ -244,6 +248,17 @@ function createWorkerAiExecHandler({
     const { sessionProtocol, isNetworkDevice } = isNetworkDeviceSession(session, meta);
     const timeoutMs = Number.isFinite(commandTimeoutMs) ? commandTimeoutMs : 60000;
 
+    // Authoritative shell-aware blocklist check for worker-hosted sessions.
+    // Upstream bridge paths only pre-filter settings additions plus common
+    // defaults; here the live session resolves the shell kind the same way the
+    // PTY wrapper will (confirmed kind, idle prompt, login-shell hint).
+    if (!isNetworkDevice) {
+      const safety = checkBlocklistForShell(command, resolveSessionBlocklistShellKind(session));
+      if (safety.blocked) {
+        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
+      }
+    }
+
     if ((session.protocol === "local" || session.type === "local") && session.shellKind === "unknown") {
       return {
         ok: false,
@@ -362,6 +377,15 @@ function createWorkerAiJobStartHandler({
         ok: false,
         error: "Background execution currently supports shell-backed PTY sessions only.",
       };
+    }
+
+    // Authoritative shell-aware blocklist check for worker-hosted background
+    // jobs — same resolution as the foreground exec path above.
+    {
+      const safety = checkBlocklistForShell(command, resolveSessionBlocklistShellKind(session));
+      if (safety.blocked) {
+        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
+      }
     }
 
     const ptyStream = session.stream || session.pty || session.proc;

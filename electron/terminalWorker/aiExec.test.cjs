@@ -344,3 +344,75 @@ test("worker chat cancel during shellKind probe aborts job start before PTY writ
     "cancelled pending start must not type a wrapper into the PTY",
   );
 });
+
+test("worker exec keeps shell-selected defaults: powershell frees $(), dangerous PS commands blocked", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([
+    ["ps-1", {
+      protocol: "ssh",
+      stream: pty,
+      shellKind: "",
+      lastIdlePrompt: "PS C:\\Users\\dev> ",
+      _promptTrackTail: "Microsoft Windows [Version 10.0.26200]\r\nPS C:\\Users\\dev> ",
+    }],
+  ]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+  const event = createFakeEvent();
+  const exec = ipcMain.handlers.get("netcatty:ai:exec");
+
+  // PowerShell subexpression syntax on a PowerShell session is legal: the
+  // command must pass the worker blocklist and reach the PTY wrapper.
+  const allowedPromise = exec(event, {
+    sessionId: "ps-1",
+    command: 'Write-Host "now: $(Get-Date)"',
+    chatSessionId: "chat-ps",
+    commandTimeoutMs: 300,
+  });
+  await nextTick();
+  assert.ok(
+    pty.writes.some((entry) => entry.includes("__NCMCP_")),
+    "expected the unblocked command to reach the PTY",
+  );
+  await allowedPromise.catch(() => {});
+
+  // PowerShell-native destructive commands are blocked by the new group.
+  const blocked = await exec(event, {
+    sessionId: "ps-1",
+    command: "Remove-Item -Recurse -Force C:\\important",
+    chatSessionId: "chat-ps",
+    commandTimeoutMs: 5000,
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /Command blocked by safety policy/);
+  assert.equal(blocked.error.includes("Remove-Item"), true);
+});
+
+test("worker exec on an unclassified posix session still blocks command substitution", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([
+    ["ssh-posix", {
+      protocol: "ssh",
+      stream: pty,
+      shellKind: "posix",
+    }],
+  ]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+  const event = createFakeEvent();
+
+  const blocked = await ipcMain.handlers.get("netcatty:ai:exec")(event, {
+    sessionId: "ssh-posix",
+    command: "echo $(whoami)",
+    chatSessionId: "chat-posix",
+    commandTimeoutMs: 5000,
+  });
+
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /Command blocked by safety policy/);
+  assert.equal(
+    pty.writes.filter((entry) => entry.includes("__NCMCP_")).length,
+    0,
+    "blocked commands must not reach the PTY",
+  );
+});

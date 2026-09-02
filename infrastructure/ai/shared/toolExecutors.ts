@@ -87,7 +87,9 @@ export async function executeTerminalExecute(
   const isSshOrSerial = proto === 'ssh' || proto === 'serial';
   const isNetworkDevice = proto === 'serial' || (targetSession?.deviceType === 'network' && isSshOrSerial);
   if (!isNetworkDevice) {
-    const safety = checkCommandSafety(command, commandBlocklist);
+    // shellType selects the default pattern groups (posix vs powershell vs cmd);
+    // unknown/empty shell kinds fall back to the strict full default table.
+    const safety = checkCommandSafety(command, commandBlocklist, targetSession?.shellType);
     if (safety.blocked) {
       return { ok: false, error: `Command blocked by safety policy. Matched pattern: ${safety.matchedPattern}` };
     }

@@ -35,8 +35,14 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     getSessionMeta() {
       return { protocol: "ssh", deviceType: "", hostname: "host.example" };
     },
-    checkCommandSafety() {
+    checkCommandSafetyForShell() {
       return { blocked: false };
+    },
+    checkCommandSafetyCommonOnly() {
+      return { blocked: false };
+    },
+    resolveSessionBlocklistShellKind() {
+      return "";
     },
     getCommandTimeoutMs() {
       return 12345;

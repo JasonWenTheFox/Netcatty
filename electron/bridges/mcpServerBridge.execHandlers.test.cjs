@@ -68,8 +68,11 @@ function createExecHandlerTestContext({ sessions, backgroundJobs }) {
     getSessionMeta() {
       return {};
     },
-    checkCommandSafety() {
+    checkCommandSafetyForShell() {
       return { blocked: false };
+    },
+    resolveSessionBlocklistShellKind() {
+      return "";
     },
     beginChatExecution() {
       return { ok: true, release() {} };
