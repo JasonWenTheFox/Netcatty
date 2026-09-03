@@ -30,12 +30,21 @@ const { extractTrailingIdlePrompt } = require("./shellUtils.cjs");
 
 const DEFAULT_FOREGROUND_PTY_CAPTURE_CHARS = 1024 * 1024;
 const END_MARKER_PROMPT_WAIT_MS = 30000;
+const promptRecoveryPendingPtys = new WeakSet();
 
 function stripJobMarkerLines(text, marker) {
   return text.replace(
     new RegExp(`^([^\r\n]*?)${marker}[^\r\n]*[\r\n]*`, "gm"),
     "$1",
   );
+}
+
+function trailingPrefixLength(text, prefix) {
+  const maxLength = Math.min(text.length, prefix.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (text.endsWith(prefix.slice(0, length))) return length;
+  }
+  return 0;
 }
 
 function startPtyJob(ptyStream, command, options) {
@@ -62,6 +71,17 @@ function startPtyJob(ptyStream, command, options) {
   const waitForReturnedPrompt = loginShellHint === "cmd"
     && resolvedShellKind === "powershell"
     && Boolean(expectedPrompt);
+  if (promptRecoveryPendingPtys.has(ptyStream)) {
+    if (extractTrailingIdlePrompt(expectedPrompt || "")) {
+      promptRecoveryPendingPtys.delete(ptyStream);
+    } else {
+      const error = new Error(
+        "Terminal is still waiting for the shell prompt after the previous command",
+      );
+      error.code = "SHELL_PROMPT_PENDING";
+      throw error;
+    }
+  }
   const captureLimitChars = maxBufferedChars > 0
     ? maxBufferedChars
     : DEFAULT_FOREGROUND_PTY_CAPTURE_CHARS;
@@ -127,6 +147,12 @@ function startPtyJob(ptyStream, command, options) {
     }
   }
 
+  function finishWithoutReturnedPrompt() {
+    if (!pendingEnd || finished) return;
+    promptRecoveryPendingPtys.add(ptyStream);
+    finish(pendingEnd.stdout, pendingEnd.exitCode);
+  }
+
   function armOutputTimeout() {
     clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
@@ -150,7 +176,7 @@ function startPtyJob(ptyStream, command, options) {
     wallTimeoutId = setTimeout(() => {
       if (finished) return;
       if (pendingEnd) {
-        finish(pendingEnd.stdout, pendingEnd.exitCode);
+        finishWithoutReturnedPrompt();
         return;
       }
       sendInterrupt();
@@ -271,6 +297,19 @@ function startPtyJob(ptyStream, command, options) {
     const found = findEndMarker(output, marker, { allowInline: true });
     if (!found) return;
     const stdout = output.slice(0, found.endIdx);
+    if (maxBufferedChars > 0) {
+      // visibleOutput is assembled independently from the raw marker buffer.
+      // If a chunk split happens inside the constant "__NCMCP_" prefix, the
+      // partial prefix may already have entered visibleOutput before the next
+      // chunk makes the full marker recognizable. Roll back at the complete
+      // marker now that checkEnd has reconstructed it from raw output.
+      const visibleEnd = findEndMarker(visibleOutput, marker, { allowInline: true });
+      if (visibleEnd) {
+        visibleOutput = visibleOutput.slice(0, visibleEnd.endIdx);
+        visibleMarkerCarry = "";
+        visibleCarry = "";
+      }
+    }
     pendingEnd = { stdout, exitCode: found.exitCode };
     clearTimeout(timeoutId);
     timeoutId = null;
@@ -285,9 +324,10 @@ function startPtyJob(ptyStream, command, options) {
     // restored prompt can arrive separately. Keep the lock until the prompt
     // returns so a consecutive command cannot fall back to cmd.exe.
     if (!endMarkerWaitTimer) {
-      endMarkerWaitTimer = setTimeout(() => {
-        finish(stdout, found.exitCode);
-      }, END_MARKER_PROMPT_WAIT_MS);
+      endMarkerWaitTimer = setTimeout(
+        finishWithoutReturnedPrompt,
+        END_MARKER_PROMPT_WAIT_MS,
+      );
     }
   }
 
@@ -323,24 +363,24 @@ function startPtyJob(ptyStream, command, options) {
       // lines split across PTY data boundaries are matched as a whole.
       cleanVisible = visibleMarkerCarry + cleanVisible;
       visibleMarkerCarry = "";
-      // We must withhold any trailing line that *might* be the start of an
-      // internal marker line, even if the random marker token isn't fully
-      // present yet (the chunk boundary may split the marker mid-token).
-      // Detect this by looking for the constant prefix "__NCMCP_" — only
-      // user output that *contains an unrelated __NCMCP_ string and ends
-      // with a newline* will be preserved through the next strip step.
-      const NCMCP_PREFIX = "__NCMCP_";
-      const lastNl = cleanVisible.lastIndexOf("\n");
-      if (lastNl === -1) {
-        if (cleanVisible.includes(NCMCP_PREFIX)) {
-          visibleMarkerCarry = cleanVisible;
-          return;
-        }
-      } else if (lastNl < cleanVisible.length - 1) {
-        const trailing = cleanVisible.slice(lastNl + 1);
-        if (trailing.includes(NCMCP_PREFIX)) {
-          visibleMarkerCarry = trailing;
-          cleanVisible = cleanVisible.slice(0, lastNl + 1);
+      // Once the end marker is visible, freeze the background result at that
+      // exact boundary. A changed PowerShell prompt may not match
+      // expectedPrompt, but it is session state rather than command output.
+      const completedMarker = findEndMarker(cleanVisible, marker, { allowInline: true });
+      if (completedMarker) {
+        cleanVisible = cleanVisible.slice(0, completedMarker.endIdx);
+      } else {
+        // Hold back the longest suffix that could still become this job's end
+        // marker. This covers chunk splits anywhere in the random marker,
+        // including before the constant "__NCMCP_" prefix is complete, while
+        // allowing preceding command output to remain visible to pollers.
+        const partialMarkerLength = trailingPrefixLength(
+          cleanVisible,
+          `${marker}_E:`,
+        );
+        if (partialMarkerLength > 0) {
+          visibleMarkerCarry = cleanVisible.slice(-partialMarkerLength);
+          cleanVisible = cleanVisible.slice(0, -partialMarkerLength);
         }
       }
       // Strip only this job's specific marker lines so user output that
@@ -359,7 +399,7 @@ function startPtyJob(ptyStream, command, options) {
     if (!text) return;
     const next = appendBoundedOutput(output, text, captureLimitChars);
     output = next.text;
-    appendToVisible(text);
+    if (!pendingEnd) appendToVisible(text);
   }
 
   function finish(stdout, exitCode, error) {

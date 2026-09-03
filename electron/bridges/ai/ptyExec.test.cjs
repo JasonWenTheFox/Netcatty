@@ -166,6 +166,39 @@ test("background PTY jobs preserve output that has no trailing newline", async (
   assert.equal(result.exitCode, 0);
 });
 
+test("background PowerShell jobs exclude a changed prompt from results and snapshots", async () => {
+  class CapturePty extends EventEmitter {
+    write() {}
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "Set-Location C:\\tmp; Write-Output 'DONE'", {
+    shellKind: "unknown",
+    loginShellHint: "cmd",
+    timeoutMs: 1000,
+    expectedPrompt: "PS C:\\Users\\alice>",
+    maxBufferedChars: 1024,
+    normalizeFinalOutput: false,
+  });
+
+  const endMarker = `${job.marker}_E:0`;
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\nDONE\r\n${endMarker.slice(0, 4)}`));
+  const partialSnapshot = job.getSnapshot();
+  assert.equal(partialSnapshot.stdout, "DONE\n");
+  assert.equal(partialSnapshot.totalOutputChars, "DONE\n".length);
+  assert.doesNotMatch(partialSnapshot.stdout, /__NC/);
+
+  pty.emit("data", Buffer.from(`${endMarker.slice(4)}\r\nPS C:\\tmp>`));
+  const result = await job.resultPromise;
+  const snapshot = job.getSnapshot();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stdout, "DONE\n");
+  assert.equal(snapshot.stdout, "DONE\n");
+  assert.ok(snapshot.totalOutputChars >= partialSnapshot.totalOutputChars);
+  assert.doesNotMatch(result.stdout, /PS C:\\\\tmp>/);
+  assert.doesNotMatch(snapshot.stdout, /PS C:\\\\tmp>/);
+});
+
 test("uses PowerShell wrapping when a session with no confirmed shell sees a PowerShell prompt", () => {
   // SSH sessions don't set shellKind (sshBridge never assigns one), which
   // is exactly the issue #841 case the override targets.
@@ -523,7 +556,7 @@ test("stream termination after an end marker preserves the completed result", as
   }
 });
 
-test("prompt waiting honors the original foreground wall deadline", async () => {
+test("a foreground wall deadline returns on time but blocks writes until the prompt returns", async () => {
   const writes = [];
   class CapturePty extends EventEmitter {
     write(data) {
@@ -531,34 +564,61 @@ test("prompt waiting honors the original foreground wall deadline", async () => 
     }
   }
   const pty = new CapturePty();
-  const job = startPtyJob(pty, "Write-Output 'DONE'", {
-    shellKind: "unknown",
-    loginShellHint: "cmd",
-    timeoutMs: 120,
-    expectedPrompt: "PS C:\\Users\\alice>",
+  const session = { _loginShellKind: "cmd" };
+  pty.on("data", (data) => trackSessionIdlePrompt(session, String(data)));
+  trackSessionIdlePrompt(session, "PS C:\\Users\\alice>");
+
+  const first = startPtyJob(pty, "Write-Output 'DONE'", {
+    shellKind: session.shellKind,
+    loginShellHint: session._loginShellKind,
+    timeoutMs: 30,
+    expectedPrompt: getFreshIdlePrompt(session),
     enforceWallTimeout: true,
   });
-  pty.emit("data", Buffer.from(`${job.marker}_S\r\nDONE\r\n${job.marker}_E:0\r\n`));
+  pty.emit("data", Buffer.from(`${first.marker}_S\r\nDONE\r\n${first.marker}_E:0\r\n`));
 
-  let settled = false;
-  job.resultPromise.then(() => { settled = true; });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  assert.equal(settled, false);
+  const deadlineGuard = Symbol("deadline guard");
+  const firstResult = await Promise.race([
+    first.resultPromise,
+    new Promise((resolve) => setTimeout(() => resolve(deadlineGuard), 300)),
+  ]);
+  assert.notEqual(firstResult, deadlineGuard);
+  assert.equal(firstResult.ok, true);
+  assert.equal(firstResult.exitCode, 0);
+  assert.equal(firstResult.stdout, "DONE");
   assert.equal(writes.filter((write) => write === "\x03").length, 0);
 
-  const didNotReachDeadline = Symbol("did not reach deadline");
-  const outcome = await Promise.race([
-    job.resultPromise,
-    new Promise((resolve) => setTimeout(() => resolve(didNotReachDeadline), 300)),
-  ]);
-  if (outcome === didNotReachDeadline) {
-    pty.emit("close");
-  }
+  assert.throws(
+    () => startPtyJob(pty, "Write-Output 'TOO_EARLY'", {
+      shellKind: session.shellKind,
+      loginShellHint: session._loginShellKind,
+      timeoutMs: 1000,
+      expectedPrompt: getFreshIdlePrompt(session),
+    }),
+    (error) => (
+      error?.code === "SHELL_PROMPT_PENDING"
+      && /waiting for the shell prompt/i.test(error.message)
+    ),
+  );
+  assert.equal(writes.length, 1);
 
-  assert.notEqual(outcome, didNotReachDeadline);
-  assert.equal(outcome.ok, true);
-  assert.equal(outcome.exitCode, 0);
-  assert.equal(outcome.stdout, "DONE");
+  pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
+  const second = startPtyJob(pty, "Write-Output 'NEXT'", {
+    shellKind: session.shellKind,
+    loginShellHint: session._loginShellKind,
+    timeoutMs: 1000,
+    expectedPrompt: getFreshIdlePrompt(session),
+  });
+  const secondWrite = writes.at(-1);
+  assert.match(secondWrite, /\$__NCMCP_/);
+  assert.doesNotMatch(secondWrite, /cmd \/d \/s \/c/i);
+  pty.emit(
+    "data",
+    Buffer.from(`${second.marker}_S\r\nNEXT\r\n${second.marker}_E:0\r\nPS C:\\Users\\alice>`),
+  );
+  const secondResult = await second.resultPromise;
+  assert.equal(secondResult.ok, true);
+  assert.equal(secondResult.stdout, "NEXT");
   assert.equal(writes.filter((write) => write === "\x03").length, 0);
 });
 
