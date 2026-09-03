@@ -83,3 +83,18 @@ test('an actual legacy list with one future PowerShell rule gains the remaining 
     [...legacyDefaults, ...commandBlocklistTable.powershell],
   );
 });
+
+test('customized lists keep revision provenance when an old client restores a legacy rule', () => {
+  const customized = [
+    ...legacyDefaults.slice(1),
+    ...commandBlocklistTable.powershell.slice(1),
+  ];
+  const marked = addCommandBlocklistSyncMarker(customized);
+  assert.equal(hasCommandBlocklistSyncMarker(marked), true);
+
+  const oldClientRestoredLegacyRule = [legacyDefaults[0], ...marked];
+  assert.deepEqual(
+    migrateLegacyCommandBlocklist(oldClientRestoredLegacyRule),
+    [...legacyDefaults, ...commandBlocklistTable.powershell.slice(1)],
+  );
+});

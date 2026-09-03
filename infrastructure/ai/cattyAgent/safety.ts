@@ -6,7 +6,7 @@ const { detectShellInvocations, getShellCommandScanText } = shellInvocationDetec
   detectShellInvocations: (
     command: string,
     shellKind?: string,
-  ) => Array<{ group: 'native' | 'posix' | 'powershell'; command: string }>;
+  ) => Array<{ group: 'native' | 'posix' | 'powershell' | 'overflow'; command: string }>;
   getShellCommandScanText: (command: string, shellKind?: string) => string;
 };
 
@@ -167,6 +167,10 @@ export function checkCommandSafety(
 
   const enabledPatterns = new Set(blocklist);
   for (const invocation of detectShellInvocations(command, shellKind)) {
+    if (invocation.group === 'overflow') {
+      if (blocklist.length > 0) return { blocked: true, matchedPattern: 'nested-shell-scan-limit' };
+      continue;
+    }
     const invocationGroups = invocation.group === 'native'
       ? [compiledCommonGroup, compiledPosixNativeGroup]
       : selectDefaultGroups(invocation.group);

@@ -45,19 +45,18 @@ export function stripCommandBlocklistSyncMarker(blocklist: string[]): string[] {
 
 /**
  * Older clients preserve only the string list. Attach the revision marker to
- * an existing shell-independent rule so their settings UI gains no extra row.
- * Lists missing a legacy default need no marker because migration already
- * recognizes them as customized.
+ * an existing rule so their settings UI gains no extra row. Customized lists
+ * also need provenance: an older client may restore a missing legacy default,
+ * making the list otherwise look like an untouched pre-migration value.
  */
 export function addCommandBlocklistSyncMarker(blocklist: string[]): string[] {
   const unmarked = stripCommandBlocklistSyncMarker(blocklist);
-  if (!LEGACY_DEFAULT_PATTERNS.every((pattern) => unmarked.includes(pattern))) {
-    return unmarked;
-  }
+  if (unmarked.length === 0) return unmarked;
 
+  const carrierIndex = Math.max(0, unmarked.indexOf(SYNC_MARKER_CARRIER_PATTERN));
   let marked = false;
-  return unmarked.map((pattern) => {
-    if (!marked && pattern === SYNC_MARKER_CARRIER_PATTERN) {
+  return unmarked.map((pattern, index) => {
+    if (!marked && index === carrierIndex) {
       marked = true;
       return markCommandBlocklistPatternForSync(pattern);
     }

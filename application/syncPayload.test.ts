@@ -379,6 +379,7 @@ test("buildSyncPayload includes AI configuration settings", () => {
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_SHOW_TERMINAL_SELECTION_ACTION, "false");
 
   const payload = buildSyncPayload(vault([]));
+  const syncedCommandBlocklist = addCommandBlocklistSyncMarker(["rm -rf"]);
 
   // Device-bound enc:v1 apiKeys are stripped from portable sync settings.
   const { apiKey: _providerKey, ...providerWithoutKey } = providers[0]!;
@@ -390,10 +391,10 @@ test("buildSyncPayload includes AI configuration settings", () => {
     globalPermissionMode: "auto",
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
-    commandBlocklist: ["rm -rf"],
+    commandBlocklist: syncedCommandBlocklist,
     commandBlocklistSchema: {
       version: 1,
-      blocklist: ["rm -rf"],
+      blocklist: syncedCommandBlocklist,
     },
     commandTimeout: 120,
     responseIdleTimeout: 600,

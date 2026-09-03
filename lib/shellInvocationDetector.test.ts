@@ -137,6 +137,15 @@ test("detectShellInvocations follows control flow and encoded or array arguments
       ["powershell"],
     );
   }
+  const quotePosix = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  let deeplyNested = `powershell.exe /EncodedCommand ${encodedIex}`;
+  for (let depth = 0; depth < 4; depth += 1) deeplyNested = `bash -c ${quotePosix(deeplyNested)}`;
+  assert.equal(
+    detectShellInvocations(deeplyNested, "posix").some(
+      ({ group, command }) => group === "powershell" && command.includes("Invoke-Expression"),
+    ),
+    true,
+  );
   assert.deepEqual(
     detectInvokedShellGroups('cmd /c echo "safe & powershell.exe -Command Invoke-Expression"', "cmd"),
     [],
@@ -162,6 +171,10 @@ test("detectShellInvocations scans inline scripts piped into shells", () => {
   assert.deepEqual(
     detectShellInvocations("printf 'eval $(echo payload)' | bash", "posix"),
     [{ group: "posix", command: "printf eval $(echo payload)" }],
+  );
+  assert.deepEqual(
+    detectShellInvocations("printf 'eval $(echo payload)' | cat | bash", "posix"),
+    [{ group: "posix", command: "printf eval $(echo payload) cat" }],
   );
   assert.deepEqual(
     detectShellInvocations("printf 'eval $(echo payload)' | bash script.sh", "posix"),

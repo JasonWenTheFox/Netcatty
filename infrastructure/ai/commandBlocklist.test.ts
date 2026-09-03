@@ -190,6 +190,7 @@ test("nested shell checks cover wrappers, control flow, encoded commands, and ar
     ["cmd", 'cmd /c ""C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD""'],
     ["posix", ">/tmp/x pwsh -Command 'Invoke-Expression $PAYLOAD'"],
     ["posix", "printf 'eval $(echo cm0gLXJmIC9pbXBvcnRhbnQ= | base64 -d)' | bash"],
+    ["posix", "printf 'eval $(echo payload)' | cat | bash"],
   ] as const) {
     assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, shellKind).blocked, true, command);
   }
@@ -204,6 +205,26 @@ test("nested shell checks cover wrappers, control flow, encoded commands, and ar
       shellKind,
     );
   }
+  assert.equal(
+    checkCommandSafety(
+      `powershell.exe /EncodedCommand ${encodedIex}`,
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      `powershell.exe -EncodedCommand:${encodedIex}`,
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  const quotePosix = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  let deeplyNested = `powershell.exe /EncodedCommand ${encodedIex}`;
+  for (let depth = 0; depth < 4; depth += 1) deeplyNested = `bash -c ${quotePosix(deeplyNested)}`;
+  assert.equal(checkCommandSafety(deeplyNested, DEFAULT_COMMAND_BLOCKLIST, "posix").blocked, true);
   assert.equal(
     checkCommandSafety(
       'cmd /c echo "safe & powershell.exe -Command Invoke-Expression"',

@@ -302,6 +302,25 @@ function effectiveCommandBlocklist(source: Record<string, unknown>): unknown {
     : value;
 }
 
+function markedCommandBlocklistSetting(
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const content = effectiveCommandBlocklist(source);
+  const version = commandBlocklistRevisionVersion(source);
+  if (
+    version == null
+    || !Array.isArray(content)
+    || !content.every((pattern) => typeof pattern === 'string')
+  ) {
+    return commandBlocklistSetting(source);
+  }
+  const marked = addCommandBlocklistSyncMarker(content);
+  return {
+    commandBlocklist: marked,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(marked, version),
+  };
+}
+
 function hasCommandBlocklistRevision(source: Record<string, unknown>): boolean {
   return commandBlocklistRevisionVersion(source) != null;
 }
@@ -331,7 +350,7 @@ function highestCommandBlocklistRevisionSetting(
       && version > selectedVersion
       && fingerprint(effectiveCommandBlocklist(source)) === expectedFingerprint
     ) {
-      selected = commandBlocklistSetting(source);
+      selected = markedCommandBlocklistSetting(source);
       selectedVersion = version;
     }
   }
@@ -406,7 +425,7 @@ function carryHighestCommandBlocklistRevisionOntoEdit(
 
   return revisionSource
     ? carryCommandBlocklistRevisionOntoEdit(edited, revisionSource)
-    : commandBlocklistSetting(edited);
+    : markedCommandBlocklistSetting(edited);
 }
 
 function mergeDivergentVersionedCommandBlocklists(
@@ -525,8 +544,8 @@ function mergeCommandBlocklistSetting(
     ) {
       return matchingRevision;
     }
-    if (hasCommandBlocklistRevision(local)) return lVal;
-    if (hasCommandBlocklistRevision(remote)) return rVal;
+    if (hasCommandBlocklistRevision(local)) return markedCommandBlocklistSetting(local);
+    if (hasCommandBlocklistRevision(remote)) return markedCommandBlocklistSetting(remote);
     return bVal;
   }
   if (lChanged && !rChanged) {

@@ -119,6 +119,10 @@ function checkBlocklistForShell(command, shellKind, configuredBlocklist = DEFAUL
   if (shellMatch) return shellMatch;
 
   for (const invocation of detectShellInvocations(command, shellKind)) {
+    if (invocation.group === "overflow") {
+      if (blocklist.length > 0) return { blocked: true, matchedPattern: "nested-shell-scan-limit" };
+      continue;
+    }
     const patterns = invocation.group === "native"
       ? compiledNativePatterns
       : compiledDefaultPatternsFor(invocation.group);

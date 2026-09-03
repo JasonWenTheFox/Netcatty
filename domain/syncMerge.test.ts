@@ -29,6 +29,14 @@ function payload(overrides: Partial<SyncPayload> = {}): SyncPayload {
   };
 }
 
+function syncedCommandBlocklistSetting(blocklist: string[], version = 1) {
+  const marked = addCommandBlocklistSyncMarker(blocklist);
+  return {
+    commandBlocklist: marked,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(marked, version),
+  };
+}
+
 const knownHosts = (n: number): SyncPayload["knownHosts"] =>
   Array.from({ length: n }, (_, i) => ({
     id: `kh-${i}`,
@@ -348,10 +356,10 @@ test("mergeSyncPayloads keeps the command blocklist schema paired with a first-s
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["current-list", "legacy-cloud-list"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["current-list", "legacy-cloud-list"]),
-  });
+  assert.deepEqual(
+    result.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["current-list", "legacy-cloud-list"]),
+  );
 });
 
 test("same-version command blocklist edits use the shared base", () => {
@@ -384,10 +392,10 @@ test("same-version command blocklist edits use the shared base", () => {
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["base", "local", "remote"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["base", "local", "remote"], 2),
-  });
+  assert.deepEqual(
+    result.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["base", "local", "remote"], 2),
+  );
 
   const deletions = mergeSyncPayloads(
     payload({
@@ -442,8 +450,7 @@ test("one-sided AI object changes keep command blocklist revisions", () => {
     }),
   );
   assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["base", "remote-edit"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["base", "remote-edit"], 2),
+    ...syncedCommandBlocklistSetting(["base", "remote-edit"], 2),
     activeModelId: "base-model",
   });
 
@@ -452,10 +459,10 @@ test("one-sided AI object changes keep command blocklist revisions", () => {
     payload({ settings: { ai: { commandBlocklist: baseList, activeModelId: "local-model" } } }),
     payload({ settings: { ai: baseAi } }),
   );
-  assert.deepEqual(oldClientRoundTrip.payload.settings?.ai?.commandBlocklistSchema, {
-    version: 2,
-    blocklist: baseList,
-  });
+  assert.deepEqual(
+    oldClientRoundTrip.payload.settings?.ai,
+    { ...syncedCommandBlocklistSetting(baseList, 2), activeModelId: "local-model" },
+  );
 });
 
 test("first cross-version sync distinguishes subsets from divergent additions", () => {
@@ -479,10 +486,10 @@ test("first cross-version sync distinguishes subsets from divergent additions", 
     }),
   ).payload.settings?.ai;
 
-  assert.deepEqual(merge(["future"], ["base", "future"]), {
-    commandBlocklist: ["future"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["future"], 2),
-  });
+  assert.deepEqual(
+    merge(["future"], ["base", "future"]),
+    syncedCommandBlocklistSetting(["future"], 2),
+  );
   assert.deepEqual(merge([], ["base", "future"]), {
     commandBlocklist: [],
     commandBlocklistSchema: createCommandBlocklistSyncSchema([], 2),
@@ -500,10 +507,10 @@ test("first cross-version sync distinguishes subsets from divergent additions", 
     }),
     payload({ settings: { ai: { commandBlocklist: ["base", "old-user"] } } }),
   );
-  assert.deepEqual(divergent.payload.settings?.ai, {
-    commandBlocklist: ["base", "future", "old-user"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["base", "future", "old-user"], 2),
-  });
+  assert.deepEqual(
+    divergent.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["base", "future", "old-user"], 2),
+  );
 
   const sameVersionDivergent = mergeSyncPayloads(
     null,
@@ -524,10 +531,10 @@ test("first cross-version sync distinguishes subsets from divergent additions", 
       },
     }),
   );
-  assert.deepEqual(sameVersionDivergent.payload.settings?.ai, {
-    commandBlocklist: ["base", "local", "remote"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["base", "local", "remote"], 2),
-  });
+  assert.deepEqual(
+    sameVersionDivergent.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["base", "local", "remote"], 2),
+  );
 });
 
 test("mergeSyncPayloads does not let a schema-only upgrade hide a remote list edit", () => {
@@ -552,10 +559,7 @@ test("mergeSyncPayloads does not let a schema-only upgrade hide a remote list ed
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["remote-edit"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["remote-edit"]),
-  });
+  assert.deepEqual(result.payload.settings?.ai, syncedCommandBlocklistSetting(["remote-edit"]));
 });
 
 test("mergeSyncPayloads does not let automatically added defaults hide a remote list edit", () => {
@@ -724,10 +728,7 @@ test("mergeSyncPayloads preserves the highest schema when both sides make the sa
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: editedBlocklist,
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
-  });
+  assert.deepEqual(result.payload.settings?.ai, syncedCommandBlocklistSetting(editedBlocklist, 2));
 });
 
 test("matching edits from older clients do not downgrade a newer base schema", () => {
@@ -752,10 +753,7 @@ test("matching edits from older clients do not downgrade a newer base schema", (
 
   const result = mergeSyncPayloads(base, oldClientEdit, oldClientEdit);
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: editedBlocklist,
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
-  });
+  assert.deepEqual(result.payload.settings?.ai, syncedCommandBlocklistSetting(editedBlocklist, 2));
 });
 
 test("mergeSyncPayloads carries a higher remote schema onto a one-sided local edit", () => {
@@ -789,10 +787,7 @@ test("mergeSyncPayloads carries a higher remote schema onto a one-sided local ed
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: editedBlocklist,
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
-  });
+  assert.deepEqual(result.payload.settings?.ai, syncedCommandBlocklistSetting(editedBlocklist, 2));
 });
 
 test("carrying a higher schema does not restore a user-removed PowerShell rule", () => {
@@ -995,10 +990,7 @@ test("first sync preserves newer-version rules against an older cloud list", () 
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: localBlocklist,
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist, 2),
-  });
+  assert.deepEqual(result.payload.settings?.ai, syncedCommandBlocklistSetting(localBlocklist, 2));
 });
 
 test("cross-version conflicts preserve both a deletion and a newer rule addition", () => {
@@ -1033,10 +1025,10 @@ test("cross-version conflicts preserve both a deletion and a newer rule addition
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["future-v2-guard"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["future-v2-guard"], 2),
-  });
+  assert.deepEqual(
+    result.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["future-v2-guard"], 2),
+  );
 });
 
 test("cross-version conflicts preserve a newer local rule and an older remote deletion", () => {
@@ -1071,10 +1063,10 @@ test("cross-version conflicts preserve a newer local rule and an older remote de
     }),
   );
 
-  assert.deepEqual(result.payload.settings?.ai, {
-    commandBlocklist: ["future-v2-guard"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["future-v2-guard"], 2),
-  });
+  assert.deepEqual(
+    result.payload.settings?.ai,
+    syncedCommandBlocklistSetting(["future-v2-guard"], 2),
+  );
 });
 
 test("mergeSyncPayloads honors empty cloud setting maps as resets on the first merge", () => {
