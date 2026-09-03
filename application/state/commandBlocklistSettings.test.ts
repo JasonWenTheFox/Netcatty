@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import commandBlocklistTable from '../../lib/commandBlocklist.json';
 import {
   COMMAND_BLOCKLIST_SYNC_MARKER,
+  hasCommandBlocklistSyncMarker,
+} from '../../domain/sync';
+import commandBlocklistTable from '../../lib/commandBlocklist.json';
+import {
+  addCommandBlocklistSyncMarker,
   migrateLegacyCommandBlocklist,
 } from './commandBlocklistSettings';
 
@@ -33,23 +37,45 @@ test('legacy settings keep user additions while gaining new defaults', () => {
   );
 });
 
-test('the in-list sync marker preserves PowerShell customizations through old clients', () => {
-  const removedOne = [
+test('the sync marker preserves PowerShell customizations without adding a visible row', () => {
+  const removedOne = addCommandBlocklistSyncMarker([
     ...legacyDefaults,
     ...commandBlocklistTable.powershell.slice(1),
-    COMMAND_BLOCKLIST_SYNC_MARKER,
-  ];
-  const removedAll = [...legacyDefaults, COMMAND_BLOCKLIST_SYNC_MARKER];
-  const editedAll = [
+  ]);
+  const removedAll = addCommandBlocklistSyncMarker(legacyDefaults);
+  const editedAll = addCommandBlocklistSyncMarker([
     ...legacyDefaults,
     ...commandBlocklistTable.powershell.map((pattern) => `edited:${pattern}`),
-    COMMAND_BLOCKLIST_SYNC_MARKER,
-  ];
+  ]);
 
-  assert.deepEqual(migrateLegacyCommandBlocklist(removedOne), removedOne.slice(0, -1));
+  assert.equal(removedAll.length, legacyDefaults.length);
+  assert.equal(removedAll.includes(COMMAND_BLOCKLIST_SYNC_MARKER), false);
+  assert.equal(hasCommandBlocklistSyncMarker(removedAll), true);
+  assert.deepEqual(
+    migrateLegacyCommandBlocklist(removedOne),
+    [...legacyDefaults, ...commandBlocklistTable.powershell.slice(1)],
+  );
   assert.deepEqual(migrateLegacyCommandBlocklist(removedAll), legacyDefaults);
-  assert.deepEqual(migrateLegacyCommandBlocklist(editedAll), editedAll.slice(0, -1));
+  assert.deepEqual(
+    migrateLegacyCommandBlocklist(editedAll),
+    [
+      ...legacyDefaults,
+      ...commandBlocklistTable.powershell.map((pattern) => `edited:${pattern}`),
+    ],
+  );
   assert.equal(new RegExp(COMMAND_BLOCKLIST_SYNC_MARKER).test('any command'), false);
+});
+
+test('the marked carrier rule keeps the original regular-expression behavior', () => {
+  const original = commandBlocklistTable.common[1];
+  const marked = addCommandBlocklistSyncMarker(legacyDefaults).find(
+    (pattern) => pattern !== original && pattern.includes(COMMAND_BLOCKLIST_SYNC_MARKER),
+  );
+
+  assert.ok(marked);
+  for (const command of ['shutdown now', 'sudo reboot', 'echo safe', 'Write-Host now']) {
+    assert.equal(new RegExp(marked, 'i').test(command), new RegExp(original, 'i').test(command));
+  }
 });
 
 test('an actual legacy list with one future PowerShell rule gains the remaining defaults', () => {

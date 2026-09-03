@@ -21,7 +21,9 @@
 
 import { carryForwardSyncDeletions, getDeletedEntityIds } from './syncReliability';
 import {
+  hasCommandBlocklistSyncMarker,
   sanitizeHostsForSync,
+  stripCommandBlocklistSyncMarker,
   type CloudSyncPayloadEntityKey,
   type SyncPayload,
 } from './sync';
@@ -287,6 +289,21 @@ function commandBlocklistSetting(
   };
 }
 
+function effectiveCommandBlocklist(source: Record<string, unknown>): unknown {
+  const value = source.commandBlocklist;
+  return Array.isArray(value)
+    ? stripCommandBlocklistSyncMarker(value)
+    : value;
+}
+
+function hasCommandBlocklistRevision(source: Record<string, unknown>): boolean {
+  return source.commandBlocklistSchema !== undefined
+    || (
+      Array.isArray(source.commandBlocklist)
+      && hasCommandBlocklistSyncMarker(source.commandBlocklist)
+    );
+}
+
 /** Keep the schema descriptor from being selected independently of its list. */
 function mergeCommandBlocklistSetting(
   base: Record<string, unknown>,
@@ -297,10 +314,15 @@ function mergeCommandBlocklistSetting(
   const bVal = commandBlocklistSetting(base);
   const lVal = commandBlocklistSetting(local);
   const rVal = commandBlocklistSetting(remote);
-  const lChanged = fingerprint(lVal) !== fingerprint(bVal);
-  const rChanged = fingerprint(rVal) !== fingerprint(bVal);
+  const bContent = effectiveCommandBlocklist(base);
+  const lChanged = fingerprint(effectiveCommandBlocklist(local)) !== fingerprint(bContent);
+  const rChanged = fingerprint(effectiveCommandBlocklist(remote)) !== fingerprint(bContent);
 
-  if (!lChanged && !rChanged) return bVal;
+  if (!lChanged && !rChanged) {
+    if (hasCommandBlocklistRevision(local)) return lVal;
+    if (hasCommandBlocklistRevision(remote)) return rVal;
+    return bVal;
+  }
   if (lChanged && !rChanged) return lVal;
   if (!lChanged && rChanged) return rVal;
 

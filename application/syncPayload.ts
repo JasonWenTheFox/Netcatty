@@ -23,9 +23,11 @@ import {
   CLOUD_SYNC_PAYLOAD_ENTITY_KEYS,
   SYNC_PAYLOAD_ENTITY_KEYS,
   SYNC_STORAGE_KEYS,
+  hasCommandBlocklistSyncMarker,
   hasSyncPayloadEntityData,
   retainLocalHostLastConnectedAt,
   sanitizeHostsForSync,
+  stripCommandBlocklistSyncMarker,
   type SyncPayload,
 } from '../domain/sync';
 import { migrateHostsFromLegacyLineTimestamps } from '../domain/host';
@@ -119,12 +121,10 @@ import { isTerminalSidePanelAutoOpenTab } from '../domain/terminalSidePanelAutoO
 import { prepareRestoredPayloadConvergentWrites } from './convergentSyncReplica';
 import {
   COMMAND_BLOCKLIST_SCHEMA_VERSION,
-  COMMAND_BLOCKLIST_SYNC_MARKER,
   addCommandBlocklistSyncMarker,
   createCommandBlocklistSyncSchema,
   getMatchingCommandBlocklistSchemaVersion,
   migrateLegacyCommandBlocklist,
-  stripCommandBlocklistSyncMarker,
 } from './state/commandBlocklistSettings';
 
 // ---------------------------------------------------------------------------
@@ -848,7 +848,7 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
     // that still carry an `externalAgents` field are silently ignored.
     if (ai.defaultAgentId != null) localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, ai.defaultAgentId);
     if (ai.commandBlocklist != null) {
-      const hasSyncMarker = ai.commandBlocklist.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
+      const hasSyncMarker = hasCommandBlocklistSyncMarker(ai.commandBlocklist);
       const incomingSchemaVersion = getMatchingCommandBlocklistSchemaVersion(
         ai.commandBlocklist,
         ai.commandBlocklistSchema,

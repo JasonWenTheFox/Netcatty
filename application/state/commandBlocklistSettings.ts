@@ -1,26 +1,36 @@
 import commandBlocklistTable from '../../lib/commandBlocklist.json';
-import type { CommandBlocklistSyncSchema } from '../../domain/sync';
+import {
+  hasCommandBlocklistSyncMarker,
+  markCommandBlocklistPatternForSync,
+  stripCommandBlocklistSyncMarker,
+  type CommandBlocklistSyncSchema,
+} from '../../domain/sync';
 import { DEFAULT_COMMAND_BLOCKLIST } from '../../infrastructure/ai/types';
 import { STORAGE_KEY_AI_COMMAND_BLOCKLIST, STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA } from '../../infrastructure/config/storageKeys';
 import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
 
 export const COMMAND_BLOCKLIST_SCHEMA_VERSION = 1;
-export const COMMAND_BLOCKLIST_SYNC_MARKER = '(?!)netcatty-shell-aware-v1';
 const LEGACY_DEFAULT_PATTERNS = [
   ...commandBlocklistTable.common,
   ...commandBlocklistTable.posixNative,
   ...commandBlocklistTable.posix,
 ];
+const SYNC_MARKER_CARRIER_PATTERN = commandBlocklistTable.common[1];
 
 export function addCommandBlocklistSyncMarker(blocklist: string[]): string[] {
-  return [
-    ...blocklist.filter((pattern) => pattern !== COMMAND_BLOCKLIST_SYNC_MARKER),
-    COMMAND_BLOCKLIST_SYNC_MARKER,
-  ];
-}
+  const unmarked = stripCommandBlocklistSyncMarker(blocklist);
+  if (!LEGACY_DEFAULT_PATTERNS.every((pattern) => unmarked.includes(pattern))) {
+    return unmarked;
+  }
 
-export function stripCommandBlocklistSyncMarker(blocklist: string[]): string[] {
-  return blocklist.filter((pattern) => pattern !== COMMAND_BLOCKLIST_SYNC_MARKER);
+  let marked = false;
+  return unmarked.map((pattern) => {
+    if (!marked && pattern === SYNC_MARKER_CARRIER_PATTERN) {
+      marked = true;
+      return markCommandBlocklistPatternForSync(pattern);
+    }
+    return pattern;
+  });
 }
 
 export function createCommandBlocklistSyncSchema(
@@ -54,7 +64,7 @@ export function getMatchingCommandBlocklistSchemaVersion(
  * authoritative.
  */
 export function migrateLegacyCommandBlocklist(blocklist: string[]): string[] {
-  const hasSyncMarker = blocklist.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
+  const hasSyncMarker = hasCommandBlocklistSyncMarker(blocklist);
   const unmarked = stripCommandBlocklistSyncMarker(blocklist);
   if (hasSyncMarker) return unmarked;
 
@@ -78,7 +88,7 @@ export function readCommandBlocklistSetting(): string[] {
 
   const current = stored ?? [...DEFAULT_COMMAND_BLOCKLIST];
   const schemaVersion = localStorageAdapter.readNumber(STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA) ?? 0;
-  const hasSyncMarker = current.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
+  const hasSyncMarker = hasCommandBlocklistSyncMarker(current);
   const migrated = stored == null
     ? current
     : schemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION && !hasSyncMarker

@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 
 import { mergeSyncPayloads } from "./syncMerge.ts";
 import { withSyncReliabilityMeta } from "./syncReliability.ts";
-import type { SyncPayload } from "./sync.ts";
+import {
+  markCommandBlocklistPatternForSync,
+  type SyncPayload,
+} from "./sync.ts";
 
 function payload(overrides: Partial<SyncPayload> = {}): SyncPayload {
   return {
@@ -345,6 +348,55 @@ test("mergeSyncPayloads keeps the command blocklist schema paired with the winni
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: ["legacy-cloud-list"],
   });
+});
+
+test("mergeSyncPayloads does not let a schema-only upgrade hide a remote list edit", () => {
+  const base = payload({
+    settings: { ai: { commandBlocklist: ["custom-base"] } },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: [markCommandBlocklistPatternForSync("custom-base")],
+          commandBlocklistSchema: {
+            version: 1,
+            blocklist: [markCommandBlocklistPatternForSync("custom-base")],
+          },
+        },
+      },
+    }),
+    payload({
+      settings: { ai: { commandBlocklist: ["remote-edit"] } },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: ["remote-edit"],
+  });
+});
+
+test("mergeSyncPayloads retains a blocklist schema upgrade when the rules did not change", () => {
+  const base = payload({
+    settings: { ai: { commandBlocklist: ["custom-base"] } },
+  });
+  const upgraded = {
+    commandBlocklist: [markCommandBlocklistPatternForSync("custom-base")],
+    commandBlocklistSchema: {
+      version: 1,
+      blocklist: [markCommandBlocklistPatternForSync("custom-base")],
+    },
+  };
+  const result = mergeSyncPayloads(
+    base,
+    payload({ settings: { ai: upgraded } }),
+    payload({
+      settings: { ai: { commandBlocklist: ["custom-base"] } },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, upgraded);
 });
 
 test("mergeSyncPayloads honors empty cloud setting maps as resets on the first merge", () => {

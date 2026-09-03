@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { SyncPayload } from "../domain/sync.ts";
+import {
+  hasCommandBlocklistSyncMarker,
+  type SyncPayload,
+} from "../domain/sync.ts";
 import type { KnownHost } from "../domain/models.ts";
 import type { SyncableVaultData } from "./syncPayload.ts";
 import { parseTerminalFontSizeRecord } from "./state/terminalFontSizeSync.ts";
@@ -58,7 +61,7 @@ const storageKeys = await import("../infrastructure/config/storageKeys.ts");
 const { SYNC_STORAGE_KEYS } = await import("../domain/sync.ts");
 const { localStorageAdapter } = await import("../infrastructure/persistence/localStorageAdapter.ts");
 const {
-  COMMAND_BLOCKLIST_SYNC_MARKER,
+  addCommandBlocklistSyncMarker,
   readCommandBlocklistSetting,
 } = await import("./state/commandBlocklistSettings.ts");
 
@@ -389,10 +392,10 @@ test("buildSyncPayload includes AI configuration settings", () => {
     globalPermissionMode: "auto",
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
-    commandBlocklist: ["rm -rf", COMMAND_BLOCKLIST_SYNC_MARKER],
+    commandBlocklist: ["rm -rf"],
     commandBlocklistSchema: {
       version: 1,
-      blocklist: ["rm -rf", COMMAND_BLOCKLIST_SYNC_MARKER],
+      blocklist: ["rm -rf"],
     },
     commandTimeout: 120,
     responseIdleTimeout: 600,
@@ -700,7 +703,7 @@ test("applySyncPayload preserves an all-PowerShell-rules removal after an old-cl
     customGroups: [],
     settings: {
       ai: {
-        commandBlocklist: [...customized, COMMAND_BLOCKLIST_SYNC_MARKER],
+        commandBlocklist: addCommandBlocklistSyncMarker(customized),
       },
     },
     syncedAt: 1,
@@ -708,8 +711,8 @@ test("applySyncPayload preserves an all-PowerShell-rules removal after an old-cl
 
   assert.deepEqual(readCommandBlocklistSetting(), customized);
   assert.equal(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!).includes(
-      COMMAND_BLOCKLIST_SYNC_MARKER,
+    hasCommandBlocklistSyncMarker(
+      JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
     ),
     false,
   );
