@@ -5,6 +5,7 @@ import type { SyncPayload } from "../domain/sync.ts";
 import type { KnownHost } from "../domain/models.ts";
 import type { SyncableVaultData } from "./syncPayload.ts";
 import { parseTerminalFontSizeRecord } from "./state/terminalFontSizeSync.ts";
+import commandBlocklistTable from "../lib/commandBlocklist.json";
 
 type LocalStorageMock = {
   clear(): void;
@@ -56,6 +57,7 @@ const {
 const storageKeys = await import("../infrastructure/config/storageKeys.ts");
 const { SYNC_STORAGE_KEYS } = await import("../domain/sync.ts");
 const { localStorageAdapter } = await import("../infrastructure/persistence/localStorageAdapter.ts");
+const { readCommandBlocklistSetting } = await import("./state/commandBlocklistSettings.ts");
 
 const knownHost = (id = "kh-1"): KnownHost => ({
   id,
@@ -362,6 +364,7 @@ test("buildSyncPayload includes AI configuration settings", () => {
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_TOOL_INTEGRATION_MODE, "skills");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_DEFAULT_AGENT, "codex");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST, JSON.stringify(["rm -rf"]));
+  localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA, "1");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_TIMEOUT, "120");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT, "600");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_MAX_ITERATIONS, "10");
@@ -384,6 +387,7 @@ test("buildSyncPayload includes AI configuration settings", () => {
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
     commandBlocklist: ["rm -rf"],
+    commandBlocklistSchema: 1,
     commandTimeout: 120,
     responseIdleTimeout: 600,
     maxIterations: 10,
@@ -640,6 +644,64 @@ test("applySyncPayload restores AI configuration settings", async () => {
   assert.deepEqual(JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_AGENT_PROVIDER_MAP)!), { catty: "anthropic-main" });
   assert.deepEqual(JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_WEB_SEARCH)!), webSearch);
   assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_SHOW_TERMINAL_SELECTION_ACTION), "false");
+});
+
+test("applySyncPayload re-migrates an untouched legacy command blocklist received from sync", async () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posix,
+  ];
+  localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA, "1");
+
+  await applySyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    settings: {
+      ai: {
+        commandBlocklist: legacyDefaults,
+      },
+    },
+    syncedAt: 1,
+  } as SyncPayload, { importVaultData: () => {} });
+
+  assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA), "1");
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
+    [...legacyDefaults, ...commandBlocklistTable.powershell],
+  );
+  assert.deepEqual(
+    readCommandBlocklistSetting(),
+    [...legacyDefaults, ...commandBlocklistTable.powershell],
+  );
+});
+
+test("applySyncPayload preserves a current customized PowerShell blocklist", async () => {
+  const currentCustomized = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posix,
+    ...commandBlocklistTable.powershell.slice(1),
+  ];
+
+  await applySyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    settings: {
+      ai: {
+        commandBlocklist: currentCustomized,
+        commandBlocklistSchema: 1,
+      },
+    },
+    syncedAt: 1,
+  } as SyncPayload, { importVaultData: () => {} });
+
+  assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA), "1");
+  assert.deepEqual(readCommandBlocklistSetting(), currentCustomized);
 });
 
 test("applySyncPayload encrypts synced plaintext AI API keys before saving locally", async () => {

@@ -3,7 +3,7 @@ import { DEFAULT_COMMAND_BLOCKLIST } from '../../infrastructure/ai/types';
 import { STORAGE_KEY_AI_COMMAND_BLOCKLIST, STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA } from '../../infrastructure/config/storageKeys';
 import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
 
-const COMMAND_BLOCKLIST_SCHEMA_VERSION = 1;
+export const COMMAND_BLOCKLIST_SCHEMA_VERSION = 1;
 const LEGACY_DEFAULT_PATTERNS = [
   ...commandBlocklistTable.common,
   ...commandBlocklistTable.posix,

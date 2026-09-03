@@ -100,6 +100,7 @@ import {
   STORAGE_KEY_AI_HOST_PERMISSIONS,
   STORAGE_KEY_AI_DEFAULT_AGENT,
   STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+  STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
   STORAGE_KEY_AI_COMMAND_TIMEOUT,
   STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT,
   STORAGE_KEY_AI_MAX_ITERATIONS,
@@ -116,6 +117,10 @@ import {
 } from '../infrastructure/config/storageKeys';
 import { isTerminalSidePanelAutoOpenTab } from '../domain/terminalSidePanelAutoOpen';
 import { prepareRestoredPayloadConvergentWrites } from './convergentSyncReplica';
+import {
+  COMMAND_BLOCKLIST_SCHEMA_VERSION,
+  migrateLegacyCommandBlocklist,
+} from './state/commandBlocklistSettings';
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -321,6 +326,7 @@ export const SYNCABLE_SETTING_STORAGE_KEYS = [
   STORAGE_KEY_AI_HOST_PERMISSIONS,
   STORAGE_KEY_AI_DEFAULT_AGENT,
   STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+  STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
   STORAGE_KEY_AI_COMMAND_TIMEOUT,
   STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT,
   STORAGE_KEY_AI_MAX_ITERATIONS,
@@ -573,7 +579,15 @@ export function collectSyncableSettings(): SyncPayload['settings'] {
   const defaultAgentId = localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT);
   if (defaultAgentId != null) ai.defaultAgentId = defaultAgentId;
   const commandBlocklist = localStorageAdapter.read<string[]>(STORAGE_KEY_AI_COMMAND_BLOCKLIST);
-  if (Array.isArray(commandBlocklist)) ai.commandBlocklist = commandBlocklist;
+  if (Array.isArray(commandBlocklist)) {
+    ai.commandBlocklist = commandBlocklist;
+    const commandBlocklistSchema = localStorageAdapter.readNumber(
+      STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
+    );
+    if (commandBlocklistSchema != null && commandBlocklistSchema > 0) {
+      ai.commandBlocklistSchema = commandBlocklistSchema;
+    }
+  }
   const commandTimeout = localStorageAdapter.readNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT);
   if (commandTimeout != null && Number.isFinite(commandTimeout)) ai.commandTimeout = commandTimeout;
   const responseIdleTimeout = localStorageAdapter.readNumber(STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT);
@@ -824,7 +838,25 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
     // externalAgents intentionally not applied: device-local. Legacy snapshots
     // that still carry an `externalAgents` field are silently ignored.
     if (ai.defaultAgentId != null) localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, ai.defaultAgentId);
-    if (ai.commandBlocklist != null) localStorageAdapter.write(STORAGE_KEY_AI_COMMAND_BLOCKLIST, ai.commandBlocklist);
+    if (ai.commandBlocklist != null) {
+      const incomingSchema = ai.commandBlocklistSchema;
+      const schemaIsCurrent = typeof incomingSchema === 'number'
+        && Number.isInteger(incomingSchema)
+        && incomingSchema >= COMMAND_BLOCKLIST_SCHEMA_VERSION;
+      const blocklist = schemaIsCurrent
+        ? ai.commandBlocklist
+        : migrateLegacyCommandBlocklist(ai.commandBlocklist);
+      const persisted = localStorageAdapter.write(
+        STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+        blocklist,
+      );
+      if (persisted) {
+        localStorageAdapter.writeNumber(
+          STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
+          schemaIsCurrent ? incomingSchema : COMMAND_BLOCKLIST_SCHEMA_VERSION,
+        );
+      }
+    }
     if (ai.commandTimeout != null) localStorageAdapter.writeNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT, ai.commandTimeout);
     if (ai.responseIdleTimeout != null) {
       localStorageAdapter.writeNumber(STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT, ai.responseIdleTimeout);

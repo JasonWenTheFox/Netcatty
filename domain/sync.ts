@@ -360,6 +360,7 @@ export interface SyncPayload {
       // (binary paths, OS-specific values) and don't survive cross-device sync.
       defaultAgentId?: string;
       commandBlocklist?: string[];
+      commandBlocklistSchema?: number;
       commandTimeout?: number;
       responseIdleTimeout?: number;
       maxIterations?: number;
