@@ -164,6 +164,14 @@ test("powershell sessions apply POSIX syntax guards inside an invoked shell", ()
     ).blocked,
     true,
   );
+  assert.equal(
+    checkCommandSafety(
+      "Start-Process -WindowStyle Hidden bash -ArgumentList '-c','eval $PAYLOAD'",
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
 });
 
 test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", () => {

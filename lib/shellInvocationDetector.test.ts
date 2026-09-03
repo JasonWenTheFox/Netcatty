@@ -32,6 +32,10 @@ test("detectInvokedShellGroups recognizes executable positions and wrappers", ()
     ["powershell"],
   );
   assert.deepEqual(detectInvokedShellGroups("Start-Process bash.exe -ArgumentList '-c','eval echo'", "powershell"), ["posix"]);
+  assert.deepEqual(
+    detectInvokedShellGroups("Start-Process -WindowStyle Hidden bash -ArgumentList '-c','eval echo'", "powershell"),
+    ["posix"],
+  );
   assert.deepEqual(detectInvokedShellGroups('& "bash" -c test', "powershell"), ["posix"]);
   assert.deepEqual(
     detectInvokedShellGroups('env -S "pwsh -Command \'Invoke-Expression $PAYLOAD\'"', "posix"),

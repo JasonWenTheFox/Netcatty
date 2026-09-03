@@ -52,6 +52,13 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
     checkBlocklistForShell("Start-Process bash.exe -ArgumentList '-c','eval echo'", "powershell").blocked,
     true,
   );
+  assert.equal(
+    checkBlocklistForShell(
+      "Start-Process -WindowStyle Hidden bash -ArgumentList '-c','eval $PAYLOAD'",
+      "powershell",
+    ).blocked,
+    true,
+  );
   // cmd omits POSIX syntax while retaining guards for native tools it can launch.
   assert.equal(checkBlocklistForShell("echo $(date)", "cmd").blocked, false);
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);
