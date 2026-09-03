@@ -188,10 +188,10 @@ function buildPendingInputClearPrefix(shellKind) {
     case "cmd":
       return "\x1b";
     case "powershell":
-      // Escape+S replaces the whole Vi line, while Escape+r is Emacs
+      // Vi gg+dG removes the whole multiline buffer, while Escape+r is Emacs
       // RevertLine. Repeated Escape clears Windows mode, and the final
       // i+Backspace leaves every mode on an empty editable line.
-      return "\x1bS\x1br\x1b\x1bi\x08";
+      return "\x1bggdG\x1br\x1b\x1bi\x08";
     default:
       return "\x15\x0b";
   }

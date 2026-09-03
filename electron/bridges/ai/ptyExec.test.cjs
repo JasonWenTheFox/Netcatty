@@ -330,7 +330,7 @@ test("loginShellHint selects fish/posix/powershell/cmd without pinning confirmed
 test("pending-input clear prefix covers interactive shells and skips raw devices", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1bS\x1br\x1b\x1bi\x08");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1bggdG\x1br\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
@@ -344,6 +344,7 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
       this.cursor = 0;
       this.viInsertMode = true;
       this.viReplacePending = false;
+      this.viChord = "";
       this.emacsChord = false;
       this.submittedLines = [];
       this.writes = [];
@@ -353,6 +354,8 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
       this.pendingInput = text;
       this.cursor = cursor;
       this.viInsertMode = viInsertMode;
+      this.viReplacePending = false;
+      this.viChord = "";
     }
 
     insert(text) {
@@ -405,15 +408,23 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
         this.viReplacePending = false;
         return;
       }
-      if (!this.viInsertMode) {
-        if (key === "S") {
-          this.pendingInput = "";
+      if (this.viChord) {
+        const chord = this.viChord;
+        this.viChord = "";
+        if (chord === "g" && key === "g") {
           this.cursor = 0;
-          this.viInsertMode = true;
-        } else if (key === "i") {
+        } else if (chord === "d" && key === "G") {
+          this.pendingInput = this.pendingInput.slice(0, this.cursor);
+        }
+        return;
+      }
+      if (!this.viInsertMode) {
+        if (key === "i") {
           this.viInsertMode = true;
         } else if (key === "r") {
           this.viReplacePending = true;
+        } else if (key === "g" || key === "d") {
+          this.viChord = key;
         }
         return;
       }
@@ -453,12 +464,14 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
   }
 
   const editorCases = [
-    { editMode: "windows", cursorAtStart: false, viInsertMode: true },
-    { editMode: "emacs", cursorAtStart: true, viInsertMode: true },
-    { editMode: "vi", cursorAtStart: true, viInsertMode: true },
-    { editMode: "vi", cursorAtStart: true, viInsertMode: false },
+    { editMode: "windows", cursorAtStart: false, viInsertMode: true, multiline: false },
+    { editMode: "emacs", cursorAtStart: true, viInsertMode: true, multiline: false },
+    { editMode: "vi", cursorAtStart: true, viInsertMode: true, multiline: false },
+    { editMode: "vi", cursorAtStart: true, viInsertMode: false, multiline: false },
+    { editMode: "vi", cursorAtStart: false, viInsertMode: true, multiline: true },
+    { editMode: "vi", cursorAtStart: false, viInsertMode: false, multiline: true },
   ];
-  for (const { editMode, cursorAtStart, viInsertMode } of editorCases) {
+  for (const { editMode, cursorAtStart, viInsertMode, multiline } of editorCases) {
     const pty = new PowerShellLinePty(editMode);
     const commands = ["Write-Output 'one'", "Write-Output 'two'"];
     for (const [index, command] of commands.entries()) {
@@ -466,9 +479,11 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
         // Model input accepted by PSReadLine before its echo reaches the
         // tracked PTY output. The leading semicolon makes a retained suffix
         // executable after the wrapper, matching the dangerous Vi edge case.
-        const pendingInput = cursorAtStart
-          ? "; Write-Output 'USER'"
-          : "Write-Output 'USER'; ";
+        const pendingInput = multiline
+          ? "; Write-Output 'USER'\nWrite-Output 'USER_SECOND'"
+          : cursorAtStart
+            ? "; Write-Output 'USER'"
+            : "Write-Output 'USER'; ";
         pty.setPendingInput(pendingInput, {
           cursor: cursorAtStart ? 0 : pendingInput.length,
           viInsertMode,
@@ -486,9 +501,10 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor state
     assert.equal(pty.writes.length, 2);
     assert.equal(pty.submittedLines.length, 2);
     for (const [index, submittedLine] of pty.submittedLines.entries()) {
-      assert.ok(pty.writes[index].startsWith("\x1bS\x1br\x1b\x1bi\x08$__NCMCP_"));
+      assert.ok(pty.writes[index].startsWith("\x1bggdG\x1br\x1b\x1bi\x08$__NCMCP_"));
       assert.ok(submittedLine.startsWith("$__NCMCP_"));
       assert.doesNotMatch(submittedLine, /Write-Output 'USER'/);
+      assert.doesNotMatch(submittedLine, /Write-Output 'USER_SECOND'/);
       assert.doesNotMatch(submittedLine, /cmd \/d \/s \/c/i);
     }
   }
