@@ -28,15 +28,7 @@ import {
   sanitizeHostsForSync,
   type SyncPayload,
 } from '../domain/sync';
-import {
-  COMMAND_BLOCKLIST_SCHEMA_VERSION,
-  addCommandBlocklistSyncMarker,
-  createCommandBlocklistSyncSchema,
-  getMatchingCommandBlocklistSchemaVersion,
-  hasCommandBlocklistSyncMarker,
-  migrateLegacyCommandBlocklist,
-  stripCommandBlocklistSyncMarker,
-} from '../domain/commandBlocklist';
+import { migrateLegacyCommandBlocklist } from '../domain/commandBlocklist';
 import { migrateHostsFromLegacyLineTimestamps } from '../domain/host';
 import { toPersistedPortForwardingRules } from '../domain/portForwardingPersistence';
 import {
@@ -55,7 +47,6 @@ import { emitAIStateChanged } from './state/aiStateEvents';
 import {
   persistCommandBlocklistSetting,
   readCommandBlocklistSetting,
-  readStoredCommandBlocklistSchemaVersion,
 } from './state/commandBlocklistSettings';
 import { rehydrateGlobalSftpBookmarks } from './state/sftp/globalSftpBookmarks';
 import {
@@ -114,7 +105,6 @@ import {
   STORAGE_KEY_AI_HOST_PERMISSIONS,
   STORAGE_KEY_AI_DEFAULT_AGENT,
   STORAGE_KEY_AI_COMMAND_BLOCKLIST,
-  STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
   STORAGE_KEY_AI_COMMAND_TIMEOUT,
   STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT,
   STORAGE_KEY_AI_MAX_ITERATIONS,
@@ -336,7 +326,6 @@ export const SYNCABLE_SETTING_STORAGE_KEYS = [
   STORAGE_KEY_AI_HOST_PERMISSIONS,
   STORAGE_KEY_AI_DEFAULT_AGENT,
   STORAGE_KEY_AI_COMMAND_BLOCKLIST,
-  STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
   STORAGE_KEY_AI_COMMAND_TIMEOUT,
   STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT,
   STORAGE_KEY_AI_MAX_ITERATIONS,
@@ -590,16 +579,7 @@ export function collectSyncableSettings(): SyncPayload['settings'] {
   if (defaultAgentId != null) ai.defaultAgentId = defaultAgentId;
   const storedCommandBlocklist = localStorageAdapter.read<string[]>(STORAGE_KEY_AI_COMMAND_BLOCKLIST);
   if (Array.isArray(storedCommandBlocklist)) {
-    const commandBlocklist = readCommandBlocklistSetting();
-    const syncedCommandBlocklist = addCommandBlocklistSyncMarker(commandBlocklist);
-    ai.commandBlocklist = syncedCommandBlocklist;
-    const commandBlocklistSchema = readStoredCommandBlocklistSchemaVersion(commandBlocklist);
-    if (commandBlocklistSchema != null && commandBlocklistSchema > 0) {
-      ai.commandBlocklistSchema = createCommandBlocklistSyncSchema(
-        syncedCommandBlocklist,
-        commandBlocklistSchema,
-      );
-    }
+    ai.commandBlocklist = readCommandBlocklistSetting();
   }
   const commandTimeout = localStorageAdapter.readNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT);
   if (commandTimeout != null && Number.isFinite(commandTimeout)) ai.commandTimeout = commandTimeout;
@@ -852,25 +832,7 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
     // that still carry an `externalAgents` field are silently ignored.
     if (ai.defaultAgentId != null) localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, ai.defaultAgentId);
     if (ai.commandBlocklist != null) {
-      const hasSyncMarker = hasCommandBlocklistSyncMarker(ai.commandBlocklist);
-      const incomingSchemaVersion = getMatchingCommandBlocklistSchemaVersion(
-        ai.commandBlocklist,
-        ai.commandBlocklistSchema,
-      );
-      const acceptedSchemaVersion = incomingSchemaVersion != null
-        && incomingSchemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION
-        ? incomingSchemaVersion
-        : hasSyncMarker
-          ? COMMAND_BLOCKLIST_SCHEMA_VERSION
-          : null;
-      const unmarkedBlocklist = stripCommandBlocklistSyncMarker(ai.commandBlocklist);
-      const blocklist = acceptedSchemaVersion != null
-        ? unmarkedBlocklist
-        : migrateLegacyCommandBlocklist(unmarkedBlocklist);
-      persistCommandBlocklistSetting(
-        blocklist,
-        acceptedSchemaVersion ?? COMMAND_BLOCKLIST_SCHEMA_VERSION,
-      );
+      persistCommandBlocklistSetting(migrateLegacyCommandBlocklist(ai.commandBlocklist));
     }
     if (ai.commandTimeout != null) localStorageAdapter.writeNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT, ai.commandTimeout);
     if (ai.responseIdleTimeout != null) {

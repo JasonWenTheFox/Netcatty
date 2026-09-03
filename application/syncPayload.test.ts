@@ -2,10 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { SyncPayload } from "../domain/sync.ts";
-import {
-  addCommandBlocklistSyncMarker,
-  hasCommandBlocklistSyncMarker,
-} from "../domain/commandBlocklist.ts";
 import type { KnownHost } from "../domain/models.ts";
 import type { SyncableVaultData } from "./syncPayload.ts";
 import { parseTerminalFontSizeRecord } from "./state/terminalFontSizeSync.ts";
@@ -368,7 +364,6 @@ test("buildSyncPayload includes AI configuration settings", () => {
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_TOOL_INTEGRATION_MODE, "skills");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_DEFAULT_AGENT, "codex");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST, JSON.stringify(["rm -rf"]));
-  localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA, "1");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_TIMEOUT, "120");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_RESPONSE_IDLE_TIMEOUT, "600");
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_MAX_ITERATIONS, "10");
@@ -379,7 +374,6 @@ test("buildSyncPayload includes AI configuration settings", () => {
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_SHOW_TERMINAL_SELECTION_ACTION, "false");
 
   const payload = buildSyncPayload(vault([]));
-  const syncedCommandBlocklist = addCommandBlocklistSyncMarker(["rm -rf"]);
 
   // Device-bound enc:v1 apiKeys are stripped from portable sync settings.
   const { apiKey: _providerKey, ...providerWithoutKey } = providers[0]!;
@@ -391,11 +385,7 @@ test("buildSyncPayload includes AI configuration settings", () => {
     globalPermissionMode: "auto",
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
-    commandBlocklist: syncedCommandBlocklist,
-    commandBlocklistSchema: {
-      version: 1,
-      blocklist: syncedCommandBlocklist,
-    },
+    commandBlocklist: ["rm -rf"],
     commandTimeout: 120,
     responseIdleTimeout: 600,
     maxIterations: 10,
@@ -654,13 +644,12 @@ test("applySyncPayload restores AI configuration settings", async () => {
   assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_SHOW_TERMINAL_SELECTION_ACTION), "false");
 });
 
-test("applySyncPayload re-migrates an untouched legacy command blocklist received from sync", async () => {
+test("applySyncPayload migrates an untouched legacy command blocklist", async () => {
   const legacyDefaults = [
     ...commandBlocklistTable.common,
     ...commandBlocklistTable.posixNative,
     ...commandBlocklistTable.posix,
   ];
-  localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA, "1");
 
   await applySyncPayload({
     hosts: [],
@@ -677,10 +666,6 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
   } as SyncPayload, { importVaultData: () => {} });
 
   assert.deepEqual(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
-    { version: 1, blocklist: [...legacyDefaults, ...commandBlocklistTable.powershell] },
-  );
-  assert.deepEqual(
     JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
     [...legacyDefaults, ...commandBlocklistTable.powershell],
   );
@@ -690,7 +675,7 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
   );
 });
 
-test("initial command blocklist read persists the list before its schema version", () => {
+test("command blocklist read migrates an untouched local legacy list", () => {
   const legacyDefaults = [
     ...commandBlocklistTable.common,
     ...commandBlocklistTable.posixNative,
@@ -702,10 +687,6 @@ test("initial command blocklist read persists the list before its schema version
   assert.deepEqual(
     JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
     currentDefaults,
-  );
-  assert.deepEqual(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
-    { version: 1, blocklist: currentDefaults },
   );
 
   localStorage.setItem(
@@ -719,114 +700,7 @@ test("initial command blocklist read persists the list before its schema version
   ]);
 });
 
-test("old-client edits preserve the highest known command blocklist revision", async () => {
-  const currentDefaults = [
-    ...commandBlocklistTable.common,
-    ...commandBlocklistTable.posixNative,
-    ...commandBlocklistTable.posix,
-    ...commandBlocklistTable.powershell,
-  ];
-  const versionTwoList = [...currentDefaults, "future-v2-guard"];
-  localStorage.setItem(
-    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST,
-    JSON.stringify(versionTwoList),
-  );
-  localStorage.setItem(
-    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-    JSON.stringify({ version: 2, blocklist: versionTwoList }),
-  );
-
-  const oldClientEdit = addCommandBlocklistSyncMarker([...versionTwoList, "old-client-edit"]);
-  localStorage.setItem(
-    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST,
-    JSON.stringify(oldClientEdit),
-  );
-  const expected = [...versionTwoList, "old-client-edit"];
-  assert.deepEqual(readCommandBlocklistSetting(), expected);
-  assert.deepEqual(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
-    { version: 2, blocklist: expected },
-  );
-
-  const incomingOldClientEdit = addCommandBlocklistSyncMarker([...expected, "synced-old-client-edit"]);
-  await applySyncPayload({
-    hosts: [],
-    keys: [],
-    identities: [],
-    snippets: [],
-    customGroups: [],
-    settings: { ai: { commandBlocklist: incomingOldClientEdit } },
-    syncedAt: 1,
-  } as SyncPayload, { importVaultData: () => {} });
-
-  const applied = [...expected, "synced-old-client-edit"];
-  assert.deepEqual(readCommandBlocklistSetting(), applied);
-  assert.deepEqual(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
-    { version: 2, blocklist: applied },
-  );
-});
-
-test("applySyncPayload preserves an all-PowerShell-rules removal after an old-client round trip", async () => {
-  const customized = [
-    ...commandBlocklistTable.common,
-    ...commandBlocklistTable.posixNative,
-    ...commandBlocklistTable.posix,
-  ];
-
-  await applySyncPayload({
-    hosts: [],
-    keys: [],
-    identities: [],
-    snippets: [],
-    customGroups: [],
-    settings: {
-      ai: {
-        commandBlocklist: addCommandBlocklistSyncMarker(customized),
-      },
-    },
-    syncedAt: 1,
-  } as SyncPayload, { importVaultData: () => {} });
-
-  assert.deepEqual(readCommandBlocklistSetting(), customized);
-  assert.equal(
-    hasCommandBlocklistSyncMarker(
-      JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
-    ),
-    false,
-  );
-});
-
-test("applySyncPayload rejects a schema marker paired with a different command blocklist", async () => {
-  const legacyDefaults = [
-    ...commandBlocklistTable.common,
-    ...commandBlocklistTable.posixNative,
-    ...commandBlocklistTable.posix,
-  ];
-  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
-
-  await applySyncPayload({
-    hosts: [],
-    keys: [],
-    identities: [],
-    snippets: [],
-    customGroups: [],
-    settings: {
-      ai: {
-        commandBlocklist: legacyDefaults,
-        commandBlocklistSchema: {
-          version: 1,
-          blocklist: currentDefaults,
-        },
-      },
-    },
-    syncedAt: 1,
-  } as SyncPayload, { importVaultData: () => {} });
-
-  assert.deepEqual(readCommandBlocklistSetting(), currentDefaults);
-});
-
-test("applySyncPayload preserves a current customized PowerShell blocklist", async () => {
+test("applySyncPayload preserves a customized PowerShell blocklist", async () => {
   const currentCustomized = [
     ...commandBlocklistTable.common,
     ...commandBlocklistTable.posixNative,
@@ -843,19 +717,11 @@ test("applySyncPayload preserves a current customized PowerShell blocklist", asy
     settings: {
       ai: {
         commandBlocklist: currentCustomized,
-        commandBlocklistSchema: {
-          version: 1,
-          blocklist: currentCustomized,
-        },
       },
     },
     syncedAt: 1,
   } as SyncPayload, { importVaultData: () => {} });
 
-  assert.deepEqual(
-    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
-    { version: 1, blocklist: currentCustomized },
-  );
   assert.deepEqual(readCommandBlocklistSetting(), currentCustomized);
 });
 

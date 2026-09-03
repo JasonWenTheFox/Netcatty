@@ -1,14 +1,5 @@
 import commandBlocklistTable from '../../../lib/commandBlocklist.json';
-import shellInvocationDetector from '../../../lib/shellInvocationDetector.cjs';
 import { DEFAULT_COMMAND_BLOCKLIST } from '../types';
-
-const { detectShellInvocations, getShellCommandScanText } = shellInvocationDetector as {
-  detectShellInvocations: (
-    command: string,
-    shellKind?: string,
-  ) => Array<{ group: 'native' | 'posix' | 'powershell' | 'overflow'; command: string }>;
-  getShellCommandScanText: (command: string, shellKind?: string) => string;
-};
 
 /**
  * Check if a regex pattern is safe from ReDoS attacks.
@@ -93,7 +84,6 @@ function checkCommandAgainstGroups(
   command: string,
   blocklist: string[],
   groups: CompiledPattern[][],
-  defaultCommand = command,
 ): { blocked: boolean; matchedPattern?: string } {
   const enabledPatterns = new Set(blocklist);
 
@@ -111,7 +101,7 @@ function checkCommandAgainstGroups(
   // configured list. It must not restore a default the user removed/edited.
   for (const group of groups) {
     for (const { pattern, regex } of group) {
-      if (enabledPatterns.has(pattern) && regex.test(defaultCommand)) {
+      if (enabledPatterns.has(pattern) && regex.test(command)) {
         return { blocked: true, matchedPattern: pattern };
       }
     }
@@ -157,32 +147,7 @@ export function checkCommandSafety(
   blocklist: string[] = DEFAULT_COMMAND_BLOCKLIST,
   shellKind?: string,
 ): { blocked: boolean; matchedPattern?: string } {
-  const shellMatch = checkCommandAgainstGroups(
-    command,
-    blocklist,
-    selectDefaultGroups(shellKind),
-    getShellCommandScanText(command, shellKind),
-  );
-  if (shellMatch.blocked) return shellMatch;
-
-  const enabledPatterns = new Set(blocklist);
-  for (const invocation of detectShellInvocations(command, shellKind)) {
-    if (invocation.group === 'overflow') {
-      if (blocklist.length > 0) return { blocked: true, matchedPattern: 'nested-shell-scan-limit' };
-      continue;
-    }
-    const invocationGroups = invocation.group === 'native'
-      ? [compiledCommonGroup, compiledPosixNativeGroup]
-      : selectDefaultGroups(invocation.group);
-    for (const group of invocationGroups) {
-      for (const { pattern, regex } of group) {
-        if (enabledPatterns.has(pattern) && regex.test(invocation.command)) {
-          return { blocked: true, matchedPattern: pattern };
-        }
-      }
-    }
-  }
-  return { blocked: false };
+  return checkCommandAgainstGroups(command, blocklist, selectDefaultGroups(shellKind));
 }
 
 /**

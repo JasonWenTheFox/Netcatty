@@ -22,14 +22,9 @@
 const {
   DEFAULT_COMMAND_BLOCKLIST,
   COMMON_PATTERNS,
-  POSIX_NATIVE_PATTERNS,
   isDefaultBlocklistPattern,
   selectDefaultBlocklistPatterns,
 } = require("../../../lib/commandBlocklist.cjs");
-const {
-  detectShellInvocations,
-  getShellCommandScanText,
-} = require("../../../lib/shellInvocationDetector.cjs");
 const { resolveEffectiveShellKind } = require("./ptyExecHelpers.cjs");
 const {
   getFreshIdlePrompt,
@@ -64,7 +59,6 @@ function compiledDefaultPatternsFor(shellKind) {
 }
 
 const compiledCommonPatterns = compilePatterns(COMMON_PATTERNS);
-const compiledNativePatterns = compilePatterns([...COMMON_PATTERNS, ...POSIX_NATIVE_PATTERNS]);
 // User blocklists are stable between settings updates; compile each list once.
 const compiledUserCache = new WeakMap();
 
@@ -110,32 +104,11 @@ function checkBlocklistForShell(command, shellKind, configuredBlocklist = DEFAUL
   const blocklist = normalizeConfiguredBlocklist(configuredBlocklist);
   const userMatch = firstMatch(command, compiledUserPatterns(blocklist));
   if (userMatch) return userMatch;
-  const enabledPatterns = new Set(blocklist);
-  const shellMatch = firstEnabledDefaultMatch(
-    getShellCommandScanText(command, shellKind),
+  return firstEnabledDefaultMatch(
+    command,
     compiledDefaultPatternsFor(shellKind),
-    enabledPatterns,
-  );
-  if (shellMatch) return shellMatch;
-
-  for (const invocation of detectShellInvocations(command, shellKind)) {
-    if (invocation.group === "overflow") {
-      if (blocklist.length > 0) return { blocked: true, matchedPattern: "nested-shell-scan-limit" };
-      continue;
-    }
-    const patterns = invocation.group === "native"
-      ? compiledNativePatterns
-      : compiledDefaultPatternsFor(invocation.group);
-    if (patterns) {
-      const nestedMatch = firstEnabledDefaultMatch(
-        invocation.command,
-        patterns,
-        enabledPatterns,
-      );
-      if (nestedMatch) return nestedMatch;
-    }
-  }
-  return { blocked: false };
+    new Set(blocklist),
+  ) || { blocked: false };
 }
 
 /**
