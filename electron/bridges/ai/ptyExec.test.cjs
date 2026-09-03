@@ -330,12 +330,12 @@ test("loginShellHint selects fish/posix/powershell/cmd without pinning confirmed
 test("pending-input clear prefix covers interactive shells and skips raw devices", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "i\x15\x0b\x1b\x1bi\x08");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1bS\x1br\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
-test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes", async () => {
+test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor states", async () => {
   class PowerShellLinePty extends EventEmitter {
     constructor(editMode) {
       super();
@@ -343,6 +343,7 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes",
       this.pendingInput = "";
       this.cursor = 0;
       this.viInsertMode = true;
+      this.viReplacePending = false;
       this.emacsChord = false;
       this.submittedLines = [];
       this.writes = [];
@@ -370,8 +371,6 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes",
             this.cursor -= 1;
           }
         } else {
-          // Windows-mode PSReadLine does not bind Ctrl+U/Ctrl+K. Model them as
-          // residual input so a later Escape is required before the wrapper.
           this.insert(key);
         }
         return;
@@ -402,17 +401,24 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes",
         return;
       }
 
+      if (this.viReplacePending) {
+        this.viReplacePending = false;
+        return;
+      }
       if (!this.viInsertMode) {
-        if (key === "i") this.viInsertMode = true;
+        if (key === "S") {
+          this.pendingInput = "";
+          this.cursor = 0;
+          this.viInsertMode = true;
+        } else if (key === "i") {
+          this.viInsertMode = true;
+        } else if (key === "r") {
+          this.viReplacePending = true;
+        }
         return;
       }
       if (key === "\x1b") {
         this.viInsertMode = false;
-      } else if (key === "\x15") {
-        this.pendingInput = this.pendingInput.slice(this.cursor);
-        this.cursor = 0;
-      } else if (key === "\x0b") {
-        this.pendingInput = this.pendingInput.slice(0, this.cursor);
       } else if (key === "\x08") {
         if (this.cursor > 0) {
           this.pendingInput = `${this.pendingInput.slice(0, this.cursor - 1)}${this.pendingInput.slice(this.cursor)}`;
@@ -446,18 +452,26 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes",
     }
   }
 
-  for (const editMode of ["windows", "emacs", "vi"]) {
+  const editorCases = [
+    { editMode: "windows", cursorAtStart: false, viInsertMode: true },
+    { editMode: "emacs", cursorAtStart: true, viInsertMode: true },
+    { editMode: "vi", cursorAtStart: true, viInsertMode: true },
+    { editMode: "vi", cursorAtStart: true, viInsertMode: false },
+  ];
+  for (const { editMode, cursorAtStart, viInsertMode } of editorCases) {
     const pty = new PowerShellLinePty(editMode);
     const commands = ["Write-Output 'one'", "Write-Output 'two'"];
     for (const [index, command] of commands.entries()) {
       if (index === 1) {
         // Model input accepted by PSReadLine before its echo reaches the
-        // tracked PTY output. Emacs starts at the beginning of the line and Vi
-        // starts in command mode to cover text on both sides and mode restore.
-        const pendingInput = "Write-Output 'USER'; ";
+        // tracked PTY output. The leading semicolon makes a retained suffix
+        // executable after the wrapper, matching the dangerous Vi edge case.
+        const pendingInput = cursorAtStart
+          ? "; Write-Output 'USER'"
+          : "Write-Output 'USER'; ";
         pty.setPendingInput(pendingInput, {
-          cursor: editMode === "emacs" || editMode === "vi" ? 0 : pendingInput.length,
-          viInsertMode: editMode !== "vi",
+          cursor: cursorAtStart ? 0 : pendingInput.length,
+          viInsertMode,
         });
       }
       const job = startPtyJob(pty, command, {
@@ -472,7 +486,7 @@ test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes",
     assert.equal(pty.writes.length, 2);
     assert.equal(pty.submittedLines.length, 2);
     for (const [index, submittedLine] of pty.submittedLines.entries()) {
-      assert.ok(pty.writes[index].startsWith("i\x15\x0b\x1b\x1bi\x08$__NCMCP_"));
+      assert.ok(pty.writes[index].startsWith("\x1bS\x1br\x1b\x1bi\x08$__NCMCP_"));
       assert.ok(submittedLine.startsWith("$__NCMCP_"));
       assert.doesNotMatch(submittedLine, /Write-Output 'USER'/);
       assert.doesNotMatch(submittedLine, /cmd \/d \/s \/c/i);

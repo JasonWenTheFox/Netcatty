@@ -188,10 +188,10 @@ function buildPendingInputClearPrefix(shellKind) {
     case "cmd":
       return "\x1b";
     case "powershell":
-      // Clear Emacs/Vi first, then use Escape for Windows-mode RevertLine.
-      // The final i+Backspace restores Vi insert mode without leaving text in
-      // Windows/Emacs. This ordering works across all PSReadLine edit modes.
-      return "i\x15\x0b\x1b\x1bi\x08";
+      // Escape+S replaces the whole Vi line, while Escape+r is Emacs
+      // RevertLine. Repeated Escape clears Windows mode, and the final
+      // i+Backspace leaves every mode on an empty editable line.
+      return "\x1bS\x1br\x1b\x1bi\x08";
     default:
       return "\x15\x0b";
   }
