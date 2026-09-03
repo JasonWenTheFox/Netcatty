@@ -319,6 +319,34 @@ test("mergeSyncPayloads preserves one-sided settings on the first merge", () => 
   });
 });
 
+test("mergeSyncPayloads keeps the command blocklist schema paired with the winning list", () => {
+  const result = mergeSyncPayloads(
+    null,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: ["current-list"],
+          commandBlocklistSchema: {
+            version: 1,
+            blocklist: ["current-list"],
+          },
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: ["legacy-cloud-list"],
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: ["legacy-cloud-list"],
+  });
+});
+
 test("mergeSyncPayloads honors empty cloud setting maps as resets on the first merge", () => {
   const result = mergeSyncPayloads(
     null,

@@ -270,6 +270,45 @@ function isEmptyPlainObject(value: unknown): value is Record<string, never> {
     Object.keys(value).length === 0;
 }
 
+const COMMAND_BLOCKLIST_SETTING_KEYS = [
+  'commandBlocklist',
+  'commandBlocklistSchema',
+] as const;
+
+function commandBlocklistSetting(
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  if (source.commandBlocklist === undefined) return {};
+  return {
+    commandBlocklist: source.commandBlocklist,
+    ...(source.commandBlocklistSchema !== undefined
+      ? { commandBlocklistSchema: source.commandBlocklistSchema }
+      : {}),
+  };
+}
+
+/** Keep the schema descriptor from being selected independently of its list. */
+function mergeCommandBlocklistSetting(
+  base: Record<string, unknown>,
+  local: Record<string, unknown>,
+  remote: Record<string, unknown>,
+  preferRemoteOnConflict: boolean,
+): Record<string, unknown> {
+  const bVal = commandBlocklistSetting(base);
+  const lVal = commandBlocklistSetting(local);
+  const rVal = commandBlocklistSetting(remote);
+  const lChanged = fingerprint(lVal) !== fingerprint(bVal);
+  const rChanged = fingerprint(rVal) !== fingerprint(bVal);
+
+  if (!lChanged && !rChanged) return bVal;
+  if (lChanged && !rChanged) return lVal;
+  if (!lChanged && rChanged) return rVal;
+
+  const preferred = preferRemoteOnConflict ? rVal : lVal;
+  const fallback = preferRemoteOnConflict ? lVal : rVal;
+  return Object.keys(preferred).length > 0 ? preferred : fallback;
+}
+
 /** Recursively merge two plain objects against a base using three-way logic. */
 function mergeSettingsDeep(
   base: Record<string, unknown>,
@@ -283,6 +322,13 @@ function mergeSettingsDeep(
     ...Object.keys(remote),
   ]);
   const merged: Record<string, unknown> = {};
+  if (COMMAND_BLOCKLIST_SETTING_KEYS.some((key) => allKeys.has(key))) {
+    Object.assign(
+      merged,
+      mergeCommandBlocklistSetting(base, local, remote, preferRemoteOnConflict),
+    );
+    for (const key of COMMAND_BLOCKLIST_SETTING_KEYS) allKeys.delete(key);
+  }
   for (const key of allKeys) {
     const bVal = base[key];
     const lVal = local[key];

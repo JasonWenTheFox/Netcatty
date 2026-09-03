@@ -387,7 +387,10 @@ test("buildSyncPayload includes AI configuration settings", () => {
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
     commandBlocklist: ["rm -rf"],
-    commandBlocklistSchema: 1,
+    commandBlocklistSchema: {
+      version: 1,
+      blocklist: ["rm -rf"],
+    },
     commandTimeout: 120,
     responseIdleTimeout: 600,
     maxIterations: 10,
@@ -678,6 +681,34 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
   );
 });
 
+test("applySyncPayload rejects a schema marker paired with a different command blocklist", async () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+
+  await applySyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    settings: {
+      ai: {
+        commandBlocklist: legacyDefaults,
+        commandBlocklistSchema: {
+          version: 1,
+          blocklist: currentDefaults,
+        },
+      },
+    },
+    syncedAt: 1,
+  } as SyncPayload, { importVaultData: () => {} });
+
+  assert.deepEqual(readCommandBlocklistSetting(), currentDefaults);
+});
+
 test("applySyncPayload preserves a current customized PowerShell blocklist", async () => {
   const currentCustomized = [
     ...commandBlocklistTable.common,
@@ -694,7 +725,10 @@ test("applySyncPayload preserves a current customized PowerShell blocklist", asy
     settings: {
       ai: {
         commandBlocklist: currentCustomized,
-        commandBlocklistSchema: 1,
+        commandBlocklistSchema: {
+          version: 1,
+          blocklist: currentCustomized,
+        },
       },
     },
     syncedAt: 1,

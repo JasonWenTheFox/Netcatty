@@ -1,4 +1,5 @@
 import commandBlocklistTable from '../../lib/commandBlocklist.json';
+import type { CommandBlocklistSyncSchema } from '../../domain/sync';
 import { DEFAULT_COMMAND_BLOCKLIST } from '../../infrastructure/ai/types';
 import { STORAGE_KEY_AI_COMMAND_BLOCKLIST, STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA } from '../../infrastructure/config/storageKeys';
 import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
@@ -9,6 +10,31 @@ const LEGACY_DEFAULT_PATTERNS = [
   ...commandBlocklistTable.posix,
 ];
 
+export function createCommandBlocklistSyncSchema(
+  blocklist: string[],
+  version = COMMAND_BLOCKLIST_SCHEMA_VERSION,
+): CommandBlocklistSyncSchema {
+  return { version, blocklist: [...blocklist] };
+}
+
+export function getMatchingCommandBlocklistSchemaVersion(
+  blocklist: string[],
+  schema: unknown,
+): number | null {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null;
+  const candidate = schema as Partial<CommandBlocklistSyncSchema>;
+  if (
+    typeof candidate.version !== 'number'
+    || !Number.isInteger(candidate.version)
+    || !Array.isArray(candidate.blocklist)
+    || candidate.blocklist.length !== blocklist.length
+    || candidate.blocklist.some((pattern, index) => pattern !== blocklist[index])
+  ) {
+    return null;
+  }
+  return candidate.version;
+}
+
 /**
  * Add the new PowerShell defaults only when the saved list still contains the
  * complete pre-shell-aware default table. Customized/deleted lists remain
@@ -16,6 +42,9 @@ const LEGACY_DEFAULT_PATTERNS = [
  */
 export function migrateLegacyCommandBlocklist(blocklist: string[]): string[] {
   const configured = new Set(blocklist);
+  if (commandBlocklistTable.powershell.some((pattern) => configured.has(pattern))) {
+    return [...blocklist];
+  }
   if (!LEGACY_DEFAULT_PATTERNS.every((pattern) => configured.has(pattern))) {
     return [...blocklist];
   }

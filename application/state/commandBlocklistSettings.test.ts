@@ -28,3 +28,11 @@ test('legacy settings keep user additions while gaining new defaults', () => {
     [...customized, ...commandBlocklistTable.powershell],
   );
 });
+
+test('schema-less shell-aware settings preserve a removed PowerShell default', () => {
+  const customized = [
+    ...legacyDefaults,
+    ...commandBlocklistTable.powershell.slice(1),
+  ];
+  assert.deepEqual(migrateLegacyCommandBlocklist(customized), customized);
+});

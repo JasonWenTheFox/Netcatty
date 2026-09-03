@@ -10,7 +10,7 @@
  *   - live session objects: resolveSessionBlocklistShellKind(session) mirrors
  *     the inputs the AI PTY wrapper uses (confirmed kind, live idle prompt,
  *     remote login-shell hint)
- *   - metadata-only paths: meta.shellType (often empty — callers that know a
+ *   - metadata-only paths: meta.shellType (often empty; callers that know a
  *     downstream authoritative check re-runs the defaults should fall back to
  *     checkBlocklistCommonOnly instead of the strict full table, so
  *     POSIX-only patterns never block PowerShell-native commands)

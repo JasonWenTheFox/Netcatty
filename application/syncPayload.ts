@@ -119,6 +119,8 @@ import { isTerminalSidePanelAutoOpenTab } from '../domain/terminalSidePanelAutoO
 import { prepareRestoredPayloadConvergentWrites } from './convergentSyncReplica';
 import {
   COMMAND_BLOCKLIST_SCHEMA_VERSION,
+  createCommandBlocklistSyncSchema,
+  getMatchingCommandBlocklistSchemaVersion,
   migrateLegacyCommandBlocklist,
 } from './state/commandBlocklistSettings';
 
@@ -585,7 +587,10 @@ export function collectSyncableSettings(): SyncPayload['settings'] {
       STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
     );
     if (commandBlocklistSchema != null && commandBlocklistSchema > 0) {
-      ai.commandBlocklistSchema = commandBlocklistSchema;
+      ai.commandBlocklistSchema = createCommandBlocklistSyncSchema(
+        commandBlocklist,
+        commandBlocklistSchema,
+      );
     }
   }
   const commandTimeout = localStorageAdapter.readNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT);
@@ -839,10 +844,12 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
     // that still carry an `externalAgents` field are silently ignored.
     if (ai.defaultAgentId != null) localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, ai.defaultAgentId);
     if (ai.commandBlocklist != null) {
-      const incomingSchema = ai.commandBlocklistSchema;
-      const schemaIsCurrent = typeof incomingSchema === 'number'
-        && Number.isInteger(incomingSchema)
-        && incomingSchema >= COMMAND_BLOCKLIST_SCHEMA_VERSION;
+      const incomingSchemaVersion = getMatchingCommandBlocklistSchemaVersion(
+        ai.commandBlocklist,
+        ai.commandBlocklistSchema,
+      );
+      const schemaIsCurrent = incomingSchemaVersion != null
+        && incomingSchemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION;
       const blocklist = schemaIsCurrent
         ? ai.commandBlocklist
         : migrateLegacyCommandBlocklist(ai.commandBlocklist);
@@ -853,7 +860,7 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
       if (persisted) {
         localStorageAdapter.writeNumber(
           STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-          schemaIsCurrent ? incomingSchema : COMMAND_BLOCKLIST_SCHEMA_VERSION,
+          schemaIsCurrent ? incomingSchemaVersion : COMMAND_BLOCKLIST_SCHEMA_VERSION,
         );
       }
     }

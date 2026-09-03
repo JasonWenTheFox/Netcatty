@@ -258,6 +258,11 @@ export interface SyncFileMeta {
   syncSchemaVersion?: 2;
 }
 
+export interface CommandBlocklistSyncSchema {
+  version: number;
+  blocklist: string[];
+}
+
 /**
  * Complete synced file structure
  * The payload contains all encrypted user data
@@ -360,7 +365,7 @@ export interface SyncPayload {
       // (binary paths, OS-specific values) and don't survive cross-device sync.
       defaultAgentId?: string;
       commandBlocklist?: string[];
-      commandBlocklistSchema?: number;
+      commandBlocklistSchema?: CommandBlocklistSyncSchema;
       commandTimeout?: number;
       responseIdleTimeout?: number;
       maxIterations?: number;
