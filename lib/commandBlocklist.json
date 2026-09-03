@@ -35,7 +35,7 @@
     "fish": ["common", "posixNative", "posix"]
   },
   "shellInvocations": {
-    "posix": "(?:^|[;&|]\\s*|\\b(?:sudo|env|command|exec)\\s+)(?:[\"'][^\"']*[\\\\/](?:wsl(?:\\.exe)?|(?:ba|da|z|k|a)?sh(?:\\.exe)?|fish(?:\\.exe)?)[\"']|(?:[^\\s;&|]*[\\\\/])?(?:wsl(?:\\.exe)?|(?:ba|da|z|k|a)?sh(?:\\.exe)?|fish(?:\\.exe)?))(?=\\s|$)",
-    "powershell": "(?:^|[;&|]\\s*|\\b(?:sudo|env|command|exec)\\s+)(?:[\"'][^\"']*[\\\\/](?:powershell|pwsh)(?:\\.exe)?[\"']|(?:[^\\s;&|]*[\\\\/])?(?:powershell|pwsh)(?:\\.exe)?)(?=\\s|$)"
+    "posix": "(?:^|[;&|]\\s*|\\b(?:sudo|env|command|exec)\\s+)(?:[\"'](?:[^\"']*[\\\\/])?(?:wsl(?:\\.exe)?|(?:ba|da|z|k|a)?sh(?:\\.exe)?|fish(?:\\.exe)?)[\"']|(?:[^\\s;&|]*[\\\\/])?(?:wsl(?:\\.exe)?|(?:ba|da|z|k|a)?sh(?:\\.exe)?|fish(?:\\.exe)?))(?=\\s|$)",
+    "powershell": "(?:^|[;&|]\\s*|\\b(?:sudo|env|command|exec)\\s+)(?:[\"'](?:[^\"']*[\\\\/])?(?:powershell|pwsh)(?:\\.exe)?[\"']|(?:[^\\s;&|]*[\\\\/])?(?:powershell|pwsh)(?:\\.exe)?)(?=\\s|$)"
   }
 }

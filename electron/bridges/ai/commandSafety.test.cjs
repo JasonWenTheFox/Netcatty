@@ -27,6 +27,7 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   for (const command of [
     "bash -c 'eval $(echo cm0gLXJmIC8= | base64 -d)'",
     "& wsl sh -c 'echo $(date)'",
+    "& \"bash\" -c 'echo $(date)'",
     "'/usr/bin/bash' -c 'echo $(date)'",
     "wsl sh -c ': > /etc/passwd'",
     "wsl sh -c ':(){ :|:& };:'",
@@ -63,6 +64,10 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
         '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD"',
         shellKind,
       ).blocked,
+      true,
+    );
+    assert.equal(
+      checkBlocklistForShell("'pwsh' -Command 'Invoke-Expression $PAYLOAD'", shellKind).blocked,
       true,
     );
   }

@@ -121,6 +121,7 @@ test("powershell sessions apply POSIX syntax guards inside an invoked shell", ()
   for (const command of [
     "bash -c 'eval $(echo cm0gLXJmIC8= | base64 -d)'",
     "& wsl sh -c 'echo $(date)'",
+    "& \"bash\" -c 'echo $(date)'",
     "'/usr/bin/bash' -c 'echo $(date)'",
     "wsl sh -c ': > /etc/passwd'",
     "wsl sh -c ':(){ :|:& };:'",
@@ -154,6 +155,14 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
     assert.equal(
       checkCommandSafety(
         '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD"',
+        DEFAULT_COMMAND_BLOCKLIST,
+        shellKind,
+      ).blocked,
+      true,
+    );
+    assert.equal(
+      checkCommandSafety(
+        "'pwsh' -Command 'Invoke-Expression $PAYLOAD'",
         DEFAULT_COMMAND_BLOCKLIST,
         shellKind,
       ).blocked,
