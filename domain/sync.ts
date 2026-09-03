@@ -264,45 +264,6 @@ export interface CommandBlocklistSyncSchema {
 }
 
 /**
- * In-list compatibility marker retained by older clients that do not know
- * about commandBlocklistSchema. Current clients remove it before persistence.
- */
-export const COMMAND_BLOCKLIST_SYNC_MARKER = '(?!)netcatty-shell-aware-v1';
-
-const COMMAND_BLOCKLIST_SYNC_MARKER_PREFIX = '(?:';
-const COMMAND_BLOCKLIST_SYNC_MARKER_SUFFIX = `)|${COMMAND_BLOCKLIST_SYNC_MARKER}`;
-
-export function markCommandBlocklistPatternForSync(pattern: string): string {
-  return `${COMMAND_BLOCKLIST_SYNC_MARKER_PREFIX}${pattern}${COMMAND_BLOCKLIST_SYNC_MARKER_SUFFIX}`;
-}
-
-export function hasCommandBlocklistSyncMarker(blocklist: string[]): boolean {
-  return blocklist.some((pattern) => (
-    pattern === COMMAND_BLOCKLIST_SYNC_MARKER
-    || (
-      pattern.startsWith(COMMAND_BLOCKLIST_SYNC_MARKER_PREFIX)
-      && pattern.endsWith(COMMAND_BLOCKLIST_SYNC_MARKER_SUFFIX)
-    )
-  ));
-}
-
-export function stripCommandBlocklistSyncMarker(blocklist: string[]): string[] {
-  return blocklist.flatMap((pattern) => {
-    if (pattern === COMMAND_BLOCKLIST_SYNC_MARKER) return [];
-    if (
-      pattern.startsWith(COMMAND_BLOCKLIST_SYNC_MARKER_PREFIX)
-      && pattern.endsWith(COMMAND_BLOCKLIST_SYNC_MARKER_SUFFIX)
-    ) {
-      return [pattern.slice(
-        COMMAND_BLOCKLIST_SYNC_MARKER_PREFIX.length,
-        -COMMAND_BLOCKLIST_SYNC_MARKER_SUFFIX.length,
-      )];
-    }
-    return [pattern];
-  });
-}
-
-/**
  * Complete synced file structure
  * The payload contains all encrypted user data
  */

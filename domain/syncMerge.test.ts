@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import commandBlocklistTable from "../lib/commandBlocklist.json";
 
 import { mergeSyncPayloads } from "./syncMerge.ts";
 import { withSyncReliabilityMeta } from "./syncReliability.ts";
 import {
+  addCommandBlocklistSyncMarker,
+  createCommandBlocklistSyncSchema,
   markCommandBlocklistPatternForSync,
-  type SyncPayload,
-} from "./sync.ts";
+} from "./commandBlocklist.ts";
+import type { SyncPayload } from "./sync.ts";
 
 function payload(overrides: Partial<SyncPayload> = {}): SyncPayload {
   return {
@@ -374,6 +377,84 @@ test("mergeSyncPayloads does not let a schema-only upgrade hide a remote list ed
 
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: ["remote-edit"],
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(["remote-edit"]),
+  });
+});
+
+test("mergeSyncPayloads does not let automatically added defaults hide a remote list edit", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const markedCurrentDefaults = addCommandBlocklistSyncMarker(currentDefaults);
+  const base = payload({
+    settings: { ai: { commandBlocklist: legacyDefaults } },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: markedCurrentDefaults,
+          commandBlocklistSchema: {
+            version: 1,
+            blocklist: markedCurrentDefaults,
+          },
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: { commandBlocklist: [...legacyDefaults, "remote-user-rule"] },
+      },
+    }),
+  );
+
+  const expected = addCommandBlocklistSyncMarker([
+    ...legacyDefaults,
+    "remote-user-rule",
+    ...commandBlocklistTable.powershell,
+  ]);
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: expected,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(expected),
+  });
+});
+
+test("mergeSyncPayloads preserves a remote default-rule deletion during a local upgrade", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const markedCurrentDefaults = addCommandBlocklistSyncMarker(currentDefaults);
+  const remoteEdit = legacyDefaults.filter((pattern) => pattern !== "\\bmkfs\\.");
+  const base = payload({
+    settings: { ai: { commandBlocklist: legacyDefaults } },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: markedCurrentDefaults,
+          commandBlocklistSchema: {
+            version: 1,
+            blocklist: markedCurrentDefaults,
+          },
+        },
+      },
+    }),
+    payload({ settings: { ai: { commandBlocklist: remoteEdit } } }),
+  );
+
+  const expected = addCommandBlocklistSyncMarker(remoteEdit);
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: expected,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(expected),
   });
 });
 

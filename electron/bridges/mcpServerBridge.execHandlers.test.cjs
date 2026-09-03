@@ -241,8 +241,8 @@ test("MCP exec probes an unclassified PowerShell session before the authoritativ
     stream: pty,
     shellKind: "",
     remoteSshVersion: "OpenSSH_for_Windows_9.5",
-    lastIdlePrompt: "λ ",
-    _promptTrackTail: "custom prompt\r\nλ ",
+    lastIdlePrompt: "custom% ",
+    _promptTrackTail: "custom prompt\r\ncustom% ",
     _shellKindExecProbe: async () => (
       "DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n"
     ),

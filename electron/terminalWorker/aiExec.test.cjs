@@ -356,8 +356,8 @@ test("worker exec keeps shell-selected defaults: powershell frees $(), dangerous
       stream: pty,
       shellKind: "",
       remoteSshVersion: "OpenSSH_for_Windows_9.5",
-      lastIdlePrompt: "λ ",
-      _promptTrackTail: "custom prompt\r\nλ ",
+      lastIdlePrompt: "custom% ",
+      _promptTrackTail: "custom prompt\r\ncustom% ",
       _shellKindExecProbe: async () => (
         "DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n"
       ),
@@ -431,8 +431,8 @@ test("worker background job probes before blocking a first PowerShell command", 
       stream: pty,
       shellKind: "",
       remoteSshVersion: "OpenSSH_for_Windows_9.5",
-      lastIdlePrompt: "λ ",
-      _promptTrackTail: "custom prompt\r\nλ ",
+      lastIdlePrompt: "custom% ",
+      _promptTrackTail: "custom prompt\r\ncustom% ",
       _shellKindExecProbe: async () => (
         "DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n"
       ),

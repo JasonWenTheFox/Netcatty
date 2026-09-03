@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  addCommandBlocklistSyncMarker,
   COMMAND_BLOCKLIST_SYNC_MARKER,
   hasCommandBlocklistSyncMarker,
-} from '../../domain/sync';
-import commandBlocklistTable from '../../lib/commandBlocklist.json';
-import {
-  addCommandBlocklistSyncMarker,
   migrateLegacyCommandBlocklist,
-} from './commandBlocklistSettings';
+} from '../../domain/commandBlocklist';
+import commandBlocklistTable from '../../lib/commandBlocklist.json';
 
 const legacyDefaults = [
   ...commandBlocklistTable.common,

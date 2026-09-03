@@ -21,12 +21,18 @@
 
 import { carryForwardSyncDeletions, getDeletedEntityIds } from './syncReliability';
 import {
-  hasCommandBlocklistSyncMarker,
   sanitizeHostsForSync,
-  stripCommandBlocklistSyncMarker,
   type CloudSyncPayloadEntityKey,
   type SyncPayload,
 } from './sync';
+import {
+  addCommandBlocklistSyncMarker,
+  createCommandBlocklistSyncSchema,
+  getCurrentCommandBlocklistRevisionVersion,
+  hasCurrentCommandBlocklistRevision,
+  migrateLegacyCommandBlocklist,
+  stripCommandBlocklistSyncMarker,
+} from './commandBlocklist';
 import { mergePluginSyncSidecarsThreeWay } from './pluginSyncSidecar';
 
 // ---------------------------------------------------------------------------
@@ -291,17 +297,61 @@ function commandBlocklistSetting(
 
 function effectiveCommandBlocklist(source: Record<string, unknown>): unknown {
   const value = source.commandBlocklist;
-  return Array.isArray(value)
+  return Array.isArray(value) && value.every((pattern) => typeof pattern === 'string')
     ? stripCommandBlocklistSyncMarker(value)
     : value;
 }
 
 function hasCommandBlocklistRevision(source: Record<string, unknown>): boolean {
-  return source.commandBlocklistSchema !== undefined
-    || (
-      Array.isArray(source.commandBlocklist)
-      && hasCommandBlocklistSyncMarker(source.commandBlocklist)
+  return Array.isArray(source.commandBlocklist)
+    && source.commandBlocklist.every((pattern) => typeof pattern === 'string')
+    && hasCurrentCommandBlocklistRevision(
+      source.commandBlocklist,
+      source.commandBlocklistSchema,
     );
+}
+
+function commandBlocklistComparisonBase(
+  base: Record<string, unknown>,
+  source: Record<string, unknown>,
+  baseContent: unknown,
+): unknown {
+  if (
+    hasCommandBlocklistRevision(source)
+    && !hasCommandBlocklistRevision(base)
+    && Array.isArray(baseContent)
+    && baseContent.every((pattern) => typeof pattern === 'string')
+  ) {
+    return migrateLegacyCommandBlocklist(baseContent);
+  }
+  return baseContent;
+}
+
+function carryCommandBlocklistRevisionOntoEdit(
+  edited: Record<string, unknown>,
+  revisionSource: Record<string, unknown>,
+): Record<string, unknown> {
+  const editedContent = effectiveCommandBlocklist(edited);
+  if (
+    !Array.isArray(editedContent)
+    || !editedContent.every((pattern) => typeof pattern === 'string')
+    || !Array.isArray(revisionSource.commandBlocklist)
+    || !revisionSource.commandBlocklist.every((pattern) => typeof pattern === 'string')
+  ) {
+    return commandBlocklistSetting(edited);
+  }
+
+  const migratedEdit = migrateLegacyCommandBlocklist(editedContent);
+  const markedEdit = addCommandBlocklistSyncMarker(migratedEdit);
+  const version = getCurrentCommandBlocklistRevisionVersion(
+    revisionSource.commandBlocklist,
+    revisionSource.commandBlocklistSchema,
+  );
+  if (version == null) return commandBlocklistSetting(edited);
+  return {
+    commandBlocklist: markedEdit,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(markedEdit, version),
+  };
 }
 
 /** Keep the schema descriptor from being selected independently of its list. */
@@ -315,16 +365,26 @@ function mergeCommandBlocklistSetting(
   const lVal = commandBlocklistSetting(local);
   const rVal = commandBlocklistSetting(remote);
   const bContent = effectiveCommandBlocklist(base);
-  const lChanged = fingerprint(effectiveCommandBlocklist(local)) !== fingerprint(bContent);
-  const rChanged = fingerprint(effectiveCommandBlocklist(remote)) !== fingerprint(bContent);
+  const lChanged = fingerprint(effectiveCommandBlocklist(local))
+    !== fingerprint(commandBlocklistComparisonBase(base, local, bContent));
+  const rChanged = fingerprint(effectiveCommandBlocklist(remote))
+    !== fingerprint(commandBlocklistComparisonBase(base, remote, bContent));
 
   if (!lChanged && !rChanged) {
     if (hasCommandBlocklistRevision(local)) return lVal;
     if (hasCommandBlocklistRevision(remote)) return rVal;
     return bVal;
   }
-  if (lChanged && !rChanged) return lVal;
-  if (!lChanged && rChanged) return rVal;
+  if (lChanged && !rChanged) {
+    return hasCommandBlocklistRevision(remote) && !hasCommandBlocklistRevision(local)
+      ? carryCommandBlocklistRevisionOntoEdit(local, remote)
+      : lVal;
+  }
+  if (!lChanged && rChanged) {
+    return hasCommandBlocklistRevision(local) && !hasCommandBlocklistRevision(remote)
+      ? carryCommandBlocklistRevisionOntoEdit(remote, local)
+      : rVal;
+  }
 
   const preferred = preferRemoteOnConflict ? rVal : lVal;
   const fallback = preferRemoteOnConflict ? lVal : rVal;

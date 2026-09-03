@@ -23,13 +23,20 @@ import {
   CLOUD_SYNC_PAYLOAD_ENTITY_KEYS,
   SYNC_PAYLOAD_ENTITY_KEYS,
   SYNC_STORAGE_KEYS,
-  hasCommandBlocklistSyncMarker,
   hasSyncPayloadEntityData,
   retainLocalHostLastConnectedAt,
   sanitizeHostsForSync,
-  stripCommandBlocklistSyncMarker,
   type SyncPayload,
 } from '../domain/sync';
+import {
+  COMMAND_BLOCKLIST_SCHEMA_VERSION,
+  addCommandBlocklistSyncMarker,
+  createCommandBlocklistSyncSchema,
+  getMatchingCommandBlocklistSchemaVersion,
+  hasCommandBlocklistSyncMarker,
+  migrateLegacyCommandBlocklist,
+  stripCommandBlocklistSyncMarker,
+} from '../domain/commandBlocklist';
 import { migrateHostsFromLegacyLineTimestamps } from '../domain/host';
 import { toPersistedPortForwardingRules } from '../domain/portForwardingPersistence';
 import {
@@ -119,13 +126,6 @@ import {
 } from '../infrastructure/config/storageKeys';
 import { isTerminalSidePanelAutoOpenTab } from '../domain/terminalSidePanelAutoOpen';
 import { prepareRestoredPayloadConvergentWrites } from './convergentSyncReplica';
-import {
-  COMMAND_BLOCKLIST_SCHEMA_VERSION,
-  addCommandBlocklistSyncMarker,
-  createCommandBlocklistSyncSchema,
-  getMatchingCommandBlocklistSchemaVersion,
-  migrateLegacyCommandBlocklist,
-} from './state/commandBlocklistSettings';
 
 // ---------------------------------------------------------------------------
 // Input types

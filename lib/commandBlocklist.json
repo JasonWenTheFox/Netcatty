@@ -27,5 +27,11 @@
     "\\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\\b[^\\n;&|]*\\|\\s*(iex|Invoke-Expression)\\b",
     "\\bSet-ExecutionPolicy\\b[^\\n;&|]*\\b(Bypass|Unrestricted)\\b",
     "\\b(Format-Volume|Clear-Disk|Initialize-Disk|Stop-Computer|Restart-Computer)\\b"
-  ]
+  ],
+  "shellGroups": {
+    "powershell": ["common", "posixNative", "powershell"],
+    "cmd": ["common"],
+    "posix": ["common", "posixNative", "posix"],
+    "fish": ["common", "posixNative", "posix"]
+  }
 }

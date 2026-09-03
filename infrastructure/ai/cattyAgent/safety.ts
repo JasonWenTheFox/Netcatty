@@ -51,6 +51,12 @@ const compiledCommonGroup = compileGroup(commandBlocklistTable.common);
 const compiledPosixNativeGroup = compileGroup(commandBlocklistTable.posixNative);
 const compiledPosixGroup = compileGroup(commandBlocklistTable.posix);
 const compiledPowershellGroup = compileGroup(commandBlocklistTable.powershell);
+const compiledGroups = {
+  common: compiledCommonGroup,
+  posixNative: compiledPosixNativeGroup,
+  posix: compiledPosixGroup,
+  powershell: compiledPowershellGroup,
+};
 const compiledAllGroups = [
   compiledCommonGroup,
   compiledPosixNativeGroup,
@@ -67,17 +73,12 @@ const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
  * session keep the strict behavior.
  */
 function selectDefaultGroups(shellKind?: string): CompiledPattern[][] {
-  switch (String(shellKind ?? '').toLowerCase()) {
-    case 'powershell':
-      return [compiledCommonGroup, compiledPosixNativeGroup, compiledPowershellGroup];
-    case 'cmd':
-      return [compiledCommonGroup];
-    case 'posix':
-    case 'fish':
-      return [compiledCommonGroup, compiledPosixNativeGroup, compiledPosixGroup];
-    default:
-      return compiledAllGroups;
-  }
+  const groupNames = commandBlocklistTable.shellGroups[
+    String(shellKind ?? '').toLowerCase() as keyof typeof commandBlocklistTable.shellGroups
+  ];
+  return groupNames
+    ? groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups])
+    : compiledAllGroups;
 }
 
 function checkCommandAgainstGroups(

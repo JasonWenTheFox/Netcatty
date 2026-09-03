@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import type { SyncPayload } from "../domain/sync.ts";
 import {
+  addCommandBlocklistSyncMarker,
   hasCommandBlocklistSyncMarker,
-  type SyncPayload,
-} from "../domain/sync.ts";
+} from "../domain/commandBlocklist.ts";
 import type { KnownHost } from "../domain/models.ts";
 import type { SyncableVaultData } from "./syncPayload.ts";
 import { parseTerminalFontSizeRecord } from "./state/terminalFontSizeSync.ts";
@@ -60,10 +61,7 @@ const {
 const storageKeys = await import("../infrastructure/config/storageKeys.ts");
 const { SYNC_STORAGE_KEYS } = await import("../domain/sync.ts");
 const { localStorageAdapter } = await import("../infrastructure/persistence/localStorageAdapter.ts");
-const {
-  addCommandBlocklistSyncMarker,
-  readCommandBlocklistSetting,
-} = await import("./state/commandBlocklistSettings.ts");
+const { readCommandBlocklistSetting } = await import("./state/commandBlocklistSettings.ts");
 
 const knownHost = (id = "kh-1"): KnownHost => ({
   id,
