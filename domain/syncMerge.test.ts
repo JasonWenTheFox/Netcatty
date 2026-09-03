@@ -350,6 +350,7 @@ test("mergeSyncPayloads keeps the command blocklist schema paired with the winni
 
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: ["legacy-cloud-list"],
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(["legacy-cloud-list"]),
   });
 });
 
@@ -478,6 +479,161 @@ test("mergeSyncPayloads retains a blocklist schema upgrade when the rules did no
   );
 
   assert.deepEqual(result.payload.settings?.ai, upgraded);
+});
+
+test("mergeSyncPayloads preserves the highest blocklist schema revision for identical rules", () => {
+  const blocklist = [markCommandBlocklistPatternForSync("custom-base")];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: blocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(blocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: blocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(blocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: blocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(blocklist, 2),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: blocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(blocklist, 2),
+  });
+});
+
+test("mergeSyncPayloads preserves the highest schema when both sides make the same edit", () => {
+  const baseBlocklist = [markCommandBlocklistPatternForSync("custom-base")];
+  const editedBlocklist = [markCommandBlocklistPatternForSync("shared-edit")];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: editedBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: editedBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: editedBlocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
+});
+
+test("mergeSyncPayloads carries a higher remote schema onto a one-sided local edit", () => {
+  const baseBlocklist = [markCommandBlocklistPatternForSync("custom-base")];
+  const editedBlocklist = ["local-edit"];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: editedBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: baseBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist, 2),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: editedBlocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
+});
+
+test("carrying a higher schema does not restore a user-removed PowerShell rule", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const baseBlocklist = addCommandBlocklistSyncMarker(currentDefaults);
+  const editedBlocklist = addCommandBlocklistSyncMarker(
+    currentDefaults.filter((pattern) => pattern !== commandBlocklistTable.powershell[0]),
+  );
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: editedBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: baseBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist, 2),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: editedBlocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
 });
 
 test("mergeSyncPayloads honors empty cloud setting maps as resets on the first merge", () => {

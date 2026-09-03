@@ -30,7 +30,7 @@
   ],
   "shellGroups": {
     "powershell": ["common", "posixNative", "powershell"],
-    "cmd": ["common"],
+    "cmd": ["common", "posixNative"],
     "posix": ["common", "posixNative", "posix"],
     "fish": ["common", "posixNative", "posix"]
   }

@@ -29,7 +29,6 @@ import {
   addCommandBlocklistSyncMarker,
   createCommandBlocklistSyncSchema,
   getCurrentCommandBlocklistRevisionVersion,
-  hasCurrentCommandBlocklistRevision,
   migrateLegacyCommandBlocklist,
   stripCommandBlocklistSyncMarker,
 } from './commandBlocklist';
@@ -303,12 +302,39 @@ function effectiveCommandBlocklist(source: Record<string, unknown>): unknown {
 }
 
 function hasCommandBlocklistRevision(source: Record<string, unknown>): boolean {
+  return commandBlocklistRevisionVersion(source) != null;
+}
+
+function commandBlocklistRevisionVersion(source: Record<string, unknown>): number | null {
   return Array.isArray(source.commandBlocklist)
     && source.commandBlocklist.every((pattern) => typeof pattern === 'string')
-    && hasCurrentCommandBlocklistRevision(
+    ? getCurrentCommandBlocklistRevisionVersion(
       source.commandBlocklist,
       source.commandBlocklistSchema,
-    );
+    )
+    : null;
+}
+
+function highestCommandBlocklistRevisionSetting(
+  sources: Record<string, unknown>[],
+  expectedContent: unknown,
+): Record<string, unknown> | null {
+  let selected: Record<string, unknown> | null = null;
+  let selectedVersion = -1;
+  const expectedFingerprint = fingerprint(expectedContent);
+
+  for (const source of sources) {
+    const version = commandBlocklistRevisionVersion(source);
+    if (
+      version != null
+      && version > selectedVersion
+      && fingerprint(effectiveCommandBlocklist(source)) === expectedFingerprint
+    ) {
+      selected = commandBlocklistSetting(source);
+      selectedVersion = version;
+    }
+  }
+  return selected;
 }
 
 function commandBlocklistComparisonBase(
@@ -341,7 +367,9 @@ function carryCommandBlocklistRevisionOntoEdit(
     return commandBlocklistSetting(edited);
   }
 
-  const migratedEdit = migrateLegacyCommandBlocklist(editedContent);
+  const migratedEdit = hasCommandBlocklistRevision(edited)
+    ? editedContent
+    : migrateLegacyCommandBlocklist(editedContent);
   const markedEdit = addCommandBlocklistSyncMarker(migratedEdit);
   const version = getCurrentCommandBlocklistRevisionVersion(
     revisionSource.commandBlocklist,
@@ -352,6 +380,27 @@ function carryCommandBlocklistRevisionOntoEdit(
     commandBlocklist: markedEdit,
     commandBlocklistSchema: createCommandBlocklistSyncSchema(markedEdit, version),
   };
+}
+
+function carryHighestCommandBlocklistRevisionOntoEdit(
+  edited: Record<string, unknown>,
+  sources: Record<string, unknown>[],
+): Record<string, unknown> {
+  const editedVersion = commandBlocklistRevisionVersion(edited) ?? -1;
+  let revisionSource: Record<string, unknown> | null = null;
+  let revisionVersion = editedVersion;
+
+  for (const source of sources) {
+    const sourceVersion = commandBlocklistRevisionVersion(source);
+    if (sourceVersion != null && sourceVersion > revisionVersion) {
+      revisionSource = source;
+      revisionVersion = sourceVersion;
+    }
+  }
+
+  return revisionSource
+    ? carryCommandBlocklistRevisionOntoEdit(edited, revisionSource)
+    : commandBlocklistSetting(edited);
 }
 
 /** Keep the schema descriptor from being selected independently of its list. */
@@ -371,24 +420,40 @@ function mergeCommandBlocklistSetting(
     !== fingerprint(commandBlocklistComparisonBase(base, remote, bContent));
 
   if (!lChanged && !rChanged) {
+    const matchingRevision = highestCommandBlocklistRevisionSetting(
+      [local, remote, base],
+      effectiveCommandBlocklist(local),
+    );
+    if (
+      matchingRevision
+      && fingerprint(effectiveCommandBlocklist(local)) === fingerprint(effectiveCommandBlocklist(remote))
+    ) {
+      return matchingRevision;
+    }
     if (hasCommandBlocklistRevision(local)) return lVal;
     if (hasCommandBlocklistRevision(remote)) return rVal;
     return bVal;
   }
   if (lChanged && !rChanged) {
-    return hasCommandBlocklistRevision(remote) && !hasCommandBlocklistRevision(local)
-      ? carryCommandBlocklistRevisionOntoEdit(local, remote)
-      : lVal;
+    return carryHighestCommandBlocklistRevisionOntoEdit(local, [remote, base]);
   }
   if (!lChanged && rChanged) {
-    return hasCommandBlocklistRevision(local) && !hasCommandBlocklistRevision(remote)
-      ? carryCommandBlocklistRevisionOntoEdit(remote, local)
-      : rVal;
+    return carryHighestCommandBlocklistRevisionOntoEdit(remote, [local, base]);
+  }
+
+  if (fingerprint(effectiveCommandBlocklist(local)) === fingerprint(effectiveCommandBlocklist(remote))) {
+    return highestCommandBlocklistRevisionSetting(
+      [local, remote],
+      effectiveCommandBlocklist(local),
+    ) ?? (preferRemoteOnConflict ? rVal : lVal);
   }
 
   const preferred = preferRemoteOnConflict ? rVal : lVal;
-  const fallback = preferRemoteOnConflict ? lVal : rVal;
-  return Object.keys(preferred).length > 0 ? preferred : fallback;
+  const preferredSource = preferRemoteOnConflict ? remote : local;
+  const fallbackSource = preferRemoteOnConflict ? local : remote;
+  return Object.keys(preferred).length > 0
+    ? carryHighestCommandBlocklistRevisionOntoEdit(preferredSource, [fallbackSource, base])
+    : carryHighestCommandBlocklistRevisionOntoEdit(fallbackSource, [base]);
 }
 
 /** Recursively merge two plain objects against a base using three-way logic. */

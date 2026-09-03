@@ -117,9 +117,11 @@ test("powershell sessions retain native Unix destructive command rules", () => {
   );
 });
 
-test("cmd sessions keep shell-independent guards without POSIX false positives", () => {
+test("cmd sessions keep native-command guards without POSIX syntax false positives", () => {
   assert.equal(checkCommandSafety("echo $(date)", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, false);
   assert.equal(checkCommandSafety("shutdown /r /t 0", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
+  assert.equal(checkCommandSafety("wsl dd if=/dev/zero of=/dev/sda", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
+  assert.equal(checkCommandSafety("wsl chmod -R 777 /", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
 });
 
 test("user-added blocklist patterns apply on every shell", () => {

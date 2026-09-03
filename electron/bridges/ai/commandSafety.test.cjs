@@ -23,9 +23,11 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   assert.equal(checkBlocklistForShell("mkfs.ext4 /dev/sda", "powershell").blocked, true);
   assert.equal(checkBlocklistForShell("dd if=/dev/zero of=/dev/sda", "powershell").blocked, true);
   assert.equal(checkBlocklistForShell("chmod -R 777 /", "powershell").blocked, true);
-  // cmd keeps only the shell-independent guards.
+  // cmd omits POSIX syntax while retaining guards for native tools it can launch.
   assert.equal(checkBlocklistForShell("echo $(date)", "cmd").blocked, false);
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);
+  assert.equal(checkBlocklistForShell("wsl dd if=/dev/zero of=/dev/sda", "cmd").blocked, true);
+  assert.equal(checkBlocklistForShell("wsl chmod -R 777 /", "cmd").blocked, true);
 });
 
 test("checkBlocklistCommonOnly never applies POSIX or PowerShell patterns", () => {
