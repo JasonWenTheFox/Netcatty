@@ -188,9 +188,10 @@ function buildPendingInputClearPrefix(shellKind) {
     case "cmd":
       return "\x1b";
     case "powershell":
-      // Escape = Windows-mode PSReadLine RevertLine (issue reporter default).
-      // Ctrl+U/Ctrl+K are not bound in that mode and can corrupt the command.
-      return "\x1b";
+      // Clear Emacs/Vi first, then use Escape for Windows-mode RevertLine.
+      // The final i+Backspace restores Vi insert mode without leaving text in
+      // Windows/Emacs. This ordering works across all PSReadLine edit modes.
+      return "i\x15\x0b\x1b\x1bi\x08";
     default:
       return "\x15\x0b";
   }

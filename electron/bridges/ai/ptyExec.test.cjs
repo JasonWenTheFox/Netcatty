@@ -330,29 +330,113 @@ test("loginShellHint selects fish/posix/powershell/cmd without pinning confirmed
 test("pending-input clear prefix covers interactive shells and skips raw devices", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "i\x15\x0b\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
-test("startPtyJob clears unobserved PowerShell input across consecutive jobs", async () => {
+test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi edit modes", async () => {
   class PowerShellLinePty extends EventEmitter {
-    constructor() {
+    constructor(editMode) {
       super();
+      this.editMode = editMode;
       this.pendingInput = "";
+      this.cursor = 0;
+      this.viInsertMode = true;
+      this.emacsChord = false;
       this.submittedLines = [];
       this.writes = [];
+    }
+
+    setPendingInput(text, { cursor = text.length, viInsertMode = true } = {}) {
+      this.pendingInput = text;
+      this.cursor = cursor;
+      this.viInsertMode = viInsertMode;
+    }
+
+    insert(text) {
+      this.pendingInput = `${this.pendingInput.slice(0, this.cursor)}${text}${this.pendingInput.slice(this.cursor)}`;
+      this.cursor += text.length;
+    }
+
+    applyEditKey(key) {
+      if (this.editMode === "windows") {
+        if (key === "\x1b") {
+          this.pendingInput = "";
+          this.cursor = 0;
+        } else if (key === "\x08") {
+          if (this.cursor > 0) {
+            this.pendingInput = `${this.pendingInput.slice(0, this.cursor - 1)}${this.pendingInput.slice(this.cursor)}`;
+            this.cursor -= 1;
+          }
+        } else {
+          // Windows-mode PSReadLine does not bind Ctrl+U/Ctrl+K. Model them as
+          // residual input so a later Escape is required before the wrapper.
+          this.insert(key);
+        }
+        return;
+      }
+
+      if (this.editMode === "emacs") {
+        if (this.emacsChord) {
+          this.emacsChord = false;
+          if (key.toLowerCase() === "r") {
+            this.pendingInput = "";
+            this.cursor = 0;
+          }
+        } else if (key === "\x1b") {
+          this.emacsChord = true;
+        } else if (key === "\x15") {
+          this.pendingInput = this.pendingInput.slice(this.cursor);
+          this.cursor = 0;
+        } else if (key === "\x0b") {
+          this.pendingInput = this.pendingInput.slice(0, this.cursor);
+        } else if (key === "\x08") {
+          if (this.cursor > 0) {
+            this.pendingInput = `${this.pendingInput.slice(0, this.cursor - 1)}${this.pendingInput.slice(this.cursor)}`;
+            this.cursor -= 1;
+          }
+        } else {
+          this.insert(key);
+        }
+        return;
+      }
+
+      if (!this.viInsertMode) {
+        if (key === "i") this.viInsertMode = true;
+        return;
+      }
+      if (key === "\x1b") {
+        this.viInsertMode = false;
+      } else if (key === "\x15") {
+        this.pendingInput = this.pendingInput.slice(this.cursor);
+        this.cursor = 0;
+      } else if (key === "\x0b") {
+        this.pendingInput = this.pendingInput.slice(0, this.cursor);
+      } else if (key === "\x08") {
+        if (this.cursor > 0) {
+          this.pendingInput = `${this.pendingInput.slice(0, this.cursor - 1)}${this.pendingInput.slice(this.cursor)}`;
+          this.cursor -= 1;
+        }
+      } else {
+        this.insert(key);
+      }
     }
 
     write(data) {
       const text = String(data);
       this.writes.push(text);
 
-      const hasRevertLine = text.startsWith("\x1b");
-      if (hasRevertLine) this.pendingInput = "";
-      const submittedLine = `${this.pendingInput}${text.slice(hasRevertLine ? 1 : 0)}`;
+      const clearPrefix = buildPendingInputClearPrefix("powershell");
+      assert.ok(text.startsWith(clearPrefix));
+      for (const key of clearPrefix) this.applyEditKey(key);
+      const wrapper = text.slice(clearPrefix.length);
+      const submittedLine = this.viInsertMode
+        ? `${this.pendingInput.slice(0, this.cursor)}${wrapper}${this.pendingInput.slice(this.cursor)}`
+        : this.pendingInput;
       this.submittedLines.push(submittedLine);
       this.pendingInput = "";
+      this.cursor = 0;
 
       const marker = submittedLine.match(/__NCMCP_[0-9a-z]+_[0-9a-f]+__/)?.[0];
       assert.ok(marker);
@@ -362,30 +446,37 @@ test("startPtyJob clears unobserved PowerShell input across consecutive jobs", a
     }
   }
 
-  const pty = new PowerShellLinePty();
-  const commands = ["Write-Output 'one'", "Write-Output 'two'"];
-  for (const [index, command] of commands.entries()) {
-    if (index === 1) {
-      // Model input accepted by PSReadLine before its echo reaches the tracked
-      // PTY output. The cached prompt still looks fresh in this window.
-      pty.pendingInput = "Write-Output 'USER'; ";
+  for (const editMode of ["windows", "emacs", "vi"]) {
+    const pty = new PowerShellLinePty(editMode);
+    const commands = ["Write-Output 'one'", "Write-Output 'two'"];
+    for (const [index, command] of commands.entries()) {
+      if (index === 1) {
+        // Model input accepted by PSReadLine before its echo reaches the
+        // tracked PTY output. Emacs starts at the beginning of the line and Vi
+        // starts in command mode to cover text on both sides and mode restore.
+        const pendingInput = "Write-Output 'USER'; ";
+        pty.setPendingInput(pendingInput, {
+          cursor: editMode === "emacs" || editMode === "vi" ? 0 : pendingInput.length,
+          viInsertMode: editMode !== "vi",
+        });
+      }
+      const job = startPtyJob(pty, command, {
+        shellKind: "unknown",
+        loginShellHint: "cmd",
+        timeoutMs: 50,
+        expectedPrompt: "PS C:\\Users\\alice>",
+      });
+      await job.resultPromise;
     }
-    const job = startPtyJob(pty, command, {
-      shellKind: "unknown",
-      loginShellHint: "cmd",
-      timeoutMs: 50,
-      expectedPrompt: "PS C:\\Users\\alice>",
-    });
-    await job.resultPromise;
-  }
 
-  assert.equal(pty.writes.length, 2);
-  assert.equal(pty.submittedLines.length, 2);
-  for (const [index, submittedLine] of pty.submittedLines.entries()) {
-    assert.ok(pty.writes[index].startsWith("\x1b$__NCMCP_"));
-    assert.ok(submittedLine.startsWith("$__NCMCP_"));
-    assert.doesNotMatch(submittedLine, /Write-Output 'USER'/);
-    assert.doesNotMatch(submittedLine, /cmd \/d \/s \/c/i);
+    assert.equal(pty.writes.length, 2);
+    assert.equal(pty.submittedLines.length, 2);
+    for (const [index, submittedLine] of pty.submittedLines.entries()) {
+      assert.ok(pty.writes[index].startsWith("i\x15\x0b\x1b\x1bi\x08$__NCMCP_"));
+      assert.ok(submittedLine.startsWith("$__NCMCP_"));
+      assert.doesNotMatch(submittedLine, /Write-Output 'USER'/);
+      assert.doesNotMatch(submittedLine, /cmd \/d \/s \/c/i);
+    }
   }
 });
 
