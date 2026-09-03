@@ -142,6 +142,22 @@ test("powershell sessions apply POSIX syntax guards inside an invoked shell", ()
   );
   assert.equal(
     checkCommandSafety(
+      'Write-Host "now: $(Get-Date)"; bash -c \'echo safe\'',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Host "$(bash -c \'eval echo PWNED\')"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
       "Start-Process bash.exe -ArgumentList '-c','eval echo'",
       DEFAULT_COMMAND_BLOCKLIST,
       "powershell",
@@ -182,9 +198,18 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
         DEFAULT_COMMAND_BLOCKLIST,
         shellKind,
       ).blocked,
-      true,
+      shellKind !== "cmd",
     );
   }
+
+  assert.equal(
+    checkCommandSafety(
+      'pwsh -Command \'Write-Host "now: $(Get-Date)"\'',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "posix",
+    ).blocked,
+    false,
+  );
 
   for (const command of [
     "PAYLOAD='Remove-Item -Recurse -Force C:\\important' pwsh -NoProfile -Command 'Invoke-Expression $env:PAYLOAD'",
@@ -196,6 +221,14 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
   assert.equal(
     checkCommandSafety(
       'start "" /wait powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'start "" /d C:\\Temp powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
       DEFAULT_COMMAND_BLOCKLIST,
       "cmd",
     ).blocked,
@@ -219,6 +252,14 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
   );
   assert.equal(
     checkCommandSafety(
+      'cmd /c "powershell.exe -NoProfile -Command Remove-Item -Recurse -Force C:/important"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
       '"C:\\Program Files"\\PowerShell\\7\\pwsh.exe -Command "Invoke-Expression $env:PAYLOAD"',
       DEFAULT_COMMAND_BLOCKLIST,
       "cmd",
@@ -227,12 +268,67 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
   );
   assert.equal(
     checkCommandSafety(
-      'bash -c \'pwsh -Command "Invoke-Expression $env:PAYLOAD"\'',
+      'bash -c "pwsh -Command \'Invoke-Expression $env:PAYLOAD\'"',
       DEFAULT_COMMAND_BLOCKLIST,
       "cmd",
     ).blocked,
     true,
   );
+  assert.equal(
+    checkCommandSafety(
+      'bash -lc \'pwsh -NoProfile -Command "Remove-Item -Recurse -Force C:/important"\'',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "posix",
+    ).blocked,
+    true,
+  );
+  for (const command of [
+    "wsl pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+    "wsl -- pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+    "wsl -e pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+  ]) {
+    assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
+  }
+  assert.equal(
+    checkCommandSafety(
+      'wsl pwsh -Command "Write-Host $(Get-Date)"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      '# & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'echo \'safe & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'echo safe; powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    false,
+  );
+  for (const command of [
+    'env -S "pwsh -Command \'Invoke-Expression $PAYLOAD\'"',
+    "sudo -D /tmp pwsh -Command Invoke-Expression",
+    "env -S 'rm -rf /'",
+    "wsl 'dd' if=/dev/zero of=/dev/sda",
+  ]) {
+    assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, "posix").blocked, true);
+  }
   assert.equal(
     checkCommandSafety(
       'Write-Output "safe; pwsh -Command Invoke-Expression"',
@@ -248,7 +344,7 @@ test("cmd sessions keep native-command guards without POSIX syntax false positiv
   assert.equal(checkCommandSafety("shutdown /r /t 0", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
   assert.equal(checkCommandSafety("wsl dd if=/dev/zero of=/dev/sda", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
   assert.equal(checkCommandSafety("wsl chmod -R 777 /", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
-  assert.equal(checkCommandSafety("bash -c 'echo $(date)'", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
+  assert.equal(checkCommandSafety('bash -c "echo $(date)"', DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
 });
 
 test("user-added blocklist patterns apply on every shell", () => {

@@ -22,12 +22,14 @@
 const {
   DEFAULT_COMMAND_BLOCKLIST,
   COMMON_PATTERNS,
-  POSIX_PATTERNS,
-  POWERSHELL_PATTERNS,
+  POSIX_NATIVE_PATTERNS,
   isDefaultBlocklistPattern,
   selectDefaultBlocklistPatterns,
 } = require("../../../lib/commandBlocklist.cjs");
-const { detectInvokedShellGroups } = require("../../../lib/shellInvocationDetector.cjs");
+const {
+  detectShellInvocations,
+  getShellCommandScanText,
+} = require("../../../lib/shellInvocationDetector.cjs");
 const { resolveEffectiveShellKind } = require("./ptyExecHelpers.cjs");
 const {
   getFreshIdlePrompt,
@@ -62,11 +64,7 @@ function compiledDefaultPatternsFor(shellKind) {
 }
 
 const compiledCommonPatterns = compilePatterns(COMMON_PATTERNS);
-const compiledInvocationGroups = {
-  posix: compilePatterns(POSIX_PATTERNS),
-  powershell: compilePatterns(POWERSHELL_PATTERNS),
-};
-
+const compiledNativePatterns = compilePatterns([...COMMON_PATTERNS, ...POSIX_NATIVE_PATTERNS]);
 // User blocklists are stable between settings updates; compile each list once.
 const compiledUserCache = new WeakMap();
 
@@ -114,17 +112,19 @@ function checkBlocklistForShell(command, shellKind, configuredBlocklist = DEFAUL
   if (userMatch) return userMatch;
   const enabledPatterns = new Set(blocklist);
   const shellMatch = firstEnabledDefaultMatch(
-    command,
+    getShellCommandScanText(command, shellKind),
     compiledDefaultPatternsFor(shellKind),
     enabledPatterns,
   );
   if (shellMatch) return shellMatch;
 
-  for (const groupName of detectInvokedShellGroups(command, shellKind)) {
-    const patterns = compiledInvocationGroups[groupName];
+  for (const invocation of detectShellInvocations(command, shellKind)) {
+    const patterns = invocation.group === "native"
+      ? compiledNativePatterns
+      : compiledDefaultPatternsFor(invocation.group);
     if (patterns) {
       const nestedMatch = firstEnabledDefaultMatch(
-        command,
+        invocation.command,
         patterns,
         enabledPatterns,
       );

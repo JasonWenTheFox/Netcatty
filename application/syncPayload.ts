@@ -52,6 +52,11 @@ import { localStorageAdapter } from '../infrastructure/persistence/localStorageA
 import { decryptField, encryptField } from '../infrastructure/persistence/secureFieldAdapter';
 import { sanitizeQuickMessages } from '../infrastructure/ai/quickMessages';
 import { emitAIStateChanged } from './state/aiStateEvents';
+import {
+  persistCommandBlocklistSetting,
+  readCommandBlocklistSetting,
+  readStoredCommandBlocklistSchemaVersion,
+} from './state/commandBlocklistSettings';
 import { rehydrateGlobalSftpBookmarks } from './state/sftp/globalSftpBookmarks';
 import {
   nextTerminalFontSizeSyncVersion,
@@ -583,13 +588,12 @@ export function collectSyncableSettings(): SyncPayload['settings'] {
   // externalAgents intentionally not collected: command/args/env are device-local.
   const defaultAgentId = localStorageAdapter.readString(STORAGE_KEY_AI_DEFAULT_AGENT);
   if (defaultAgentId != null) ai.defaultAgentId = defaultAgentId;
-  const commandBlocklist = localStorageAdapter.read<string[]>(STORAGE_KEY_AI_COMMAND_BLOCKLIST);
-  if (Array.isArray(commandBlocklist)) {
+  const storedCommandBlocklist = localStorageAdapter.read<string[]>(STORAGE_KEY_AI_COMMAND_BLOCKLIST);
+  if (Array.isArray(storedCommandBlocklist)) {
+    const commandBlocklist = readCommandBlocklistSetting();
     const syncedCommandBlocklist = addCommandBlocklistSyncMarker(commandBlocklist);
     ai.commandBlocklist = syncedCommandBlocklist;
-    const commandBlocklistSchema = localStorageAdapter.readNumber(
-      STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-    );
+    const commandBlocklistSchema = readStoredCommandBlocklistSchemaVersion(commandBlocklist);
     if (commandBlocklistSchema != null && commandBlocklistSchema > 0) {
       ai.commandBlocklistSchema = createCommandBlocklistSyncSchema(
         syncedCommandBlocklist,
@@ -863,16 +867,10 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
       const blocklist = acceptedSchemaVersion != null
         ? unmarkedBlocklist
         : migrateLegacyCommandBlocklist(unmarkedBlocklist);
-      const persisted = localStorageAdapter.write(
-        STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+      persistCommandBlocklistSetting(
         blocklist,
+        acceptedSchemaVersion ?? COMMAND_BLOCKLIST_SCHEMA_VERSION,
       );
-      if (persisted) {
-        localStorageAdapter.writeNumber(
-          STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-          acceptedSchemaVersion ?? COMMAND_BLOCKLIST_SCHEMA_VERSION,
-        );
-      }
     }
     if (ai.commandTimeout != null) localStorageAdapter.writeNumber(STORAGE_KEY_AI_COMMAND_TIMEOUT, ai.commandTimeout);
     if (ai.responseIdleTimeout != null) {

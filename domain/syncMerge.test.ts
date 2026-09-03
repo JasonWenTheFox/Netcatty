@@ -759,6 +759,71 @@ test("same-version upgrades merge independent edits made from a legacy base", ()
   });
 });
 
+test("an old client addition does not delete new defaults from a migrated edit", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const deletedRule = commandBlocklistTable.powershell[0];
+  const localBlocklist = addCommandBlocklistSyncMarker(
+    currentDefaults.filter((rule) => rule !== deletedRule),
+  );
+  const remoteBlocklist = [...legacyDefaults, "remote-user-rule"];
+  const result = mergeSyncPayloads(
+    payload({ settings: { ai: { commandBlocklist: legacyDefaults } } }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist),
+        },
+      },
+    }),
+    payload({ settings: { ai: { commandBlocklist: remoteBlocklist } } }),
+  );
+
+  const expected = addCommandBlocklistSyncMarker([
+    ...legacyDefaults,
+    ...commandBlocklistTable.powershell.slice(1),
+    "remote-user-rule",
+  ]);
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: expected,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(expected),
+  });
+});
+
+test("first sync preserves newer-version rules against an older cloud list", () => {
+  const localBlocklist = ["base-guard", "future-v2-guard"];
+  const remoteBlocklist = ["base-guard"];
+  const result = mergeSyncPayloads(
+    null,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist, 2),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: remoteBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(remoteBlocklist),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: localBlocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist, 2),
+  });
+});
+
 test("cross-version conflicts preserve both a deletion and a newer rule addition", () => {
   const baseBlocklist = ["base-guard"];
   const localBlocklist: string[] = [];

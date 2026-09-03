@@ -675,7 +675,10 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
     syncedAt: 1,
   } as SyncPayload, { importVaultData: () => {} });
 
-  assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA), "1");
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
+    { version: 1, blocklist: [...legacyDefaults, ...commandBlocklistTable.powershell] },
+  );
   assert.deepEqual(
     JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
     [...legacyDefaults, ...commandBlocklistTable.powershell],
@@ -684,6 +687,35 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
     readCommandBlocklistSetting(),
     [...legacyDefaults, ...commandBlocklistTable.powershell],
   );
+});
+
+test("initial command blocklist read persists the list before its schema version", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+
+  assert.deepEqual(readCommandBlocklistSetting(), currentDefaults);
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!),
+    currentDefaults,
+  );
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
+    { version: 1, blocklist: currentDefaults },
+  );
+
+  localStorage.setItem(
+    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+    JSON.stringify([...legacyDefaults, "old-client-user-rule"]),
+  );
+  assert.deepEqual(readCommandBlocklistSetting(), [
+    ...legacyDefaults,
+    "old-client-user-rule",
+    ...commandBlocklistTable.powershell,
+  ]);
 });
 
 test("applySyncPayload preserves an all-PowerShell-rules removal after an old-client round trip", async () => {
@@ -771,7 +803,10 @@ test("applySyncPayload preserves a current customized PowerShell blocklist", asy
     syncedAt: 1,
   } as SyncPayload, { importVaultData: () => {} });
 
-  assert.equal(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA), "1");
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
+    { version: 1, blocklist: currentCustomized },
+  );
   assert.deepEqual(readCommandBlocklistSetting(), currentCustomized);
 });
 

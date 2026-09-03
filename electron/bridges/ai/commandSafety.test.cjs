@@ -41,6 +41,14 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
     false,
   );
   assert.equal(
+    checkBlocklistForShell('Write-Host "now: $(Get-Date)"; bash -c \'echo safe\'', "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Host "$(bash -c \'eval echo PWNED\')"', "powershell").blocked,
+    true,
+  );
+  assert.equal(
     checkBlocklistForShell("Start-Process bash.exe -ArgumentList '-c','eval echo'", "powershell").blocked,
     true,
   );
@@ -49,7 +57,7 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);
   assert.equal(checkBlocklistForShell("wsl dd if=/dev/zero of=/dev/sda", "cmd").blocked, true);
   assert.equal(checkBlocklistForShell("wsl chmod -R 777 /", "cmd").blocked, true);
-  assert.equal(checkBlocklistForShell("bash -c 'echo $(date)'", "cmd").blocked, true);
+  assert.equal(checkBlocklistForShell('bash -c "echo $(date)"', "cmd").blocked, true);
 });
 
 test("explicit PowerShell invocations apply PowerShell guards from other shells", () => {
@@ -77,9 +85,14 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
     );
     assert.equal(
       checkBlocklistForShell("'pwsh' -Command 'Invoke-Expression $PAYLOAD'", shellKind).blocked,
-      true,
+      shellKind !== "cmd",
     );
   }
+
+  assert.equal(
+    checkBlocklistForShell('pwsh -Command \'Write-Host "now: $(Get-Date)"\'', "posix").blocked,
+    false,
+  );
 
   for (const command of [
     "PAYLOAD='Remove-Item -Recurse -Force C:\\important' pwsh -NoProfile -Command 'Invoke-Expression $env:PAYLOAD'",
@@ -91,6 +104,13 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
   assert.equal(
     checkBlocklistForShell(
       'start "" /wait powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'start "" /d C:\\Temp powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
       "cmd",
     ).blocked,
     true,
@@ -111,6 +131,13 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
   );
   assert.equal(
     checkBlocklistForShell(
+      'cmd /c "powershell.exe -NoProfile -Command Remove-Item -Recurse -Force C:/important"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
       '"C:\\Program Files"\\PowerShell\\7\\pwsh.exe -Command "Invoke-Expression $env:PAYLOAD"',
       "cmd",
     ).blocked,
@@ -118,11 +145,58 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
   );
   assert.equal(
     checkBlocklistForShell(
-      'bash -c \'pwsh -Command "Invoke-Expression $env:PAYLOAD"\'',
+      'bash -c "pwsh -Command \'Invoke-Expression $env:PAYLOAD\'"',
       "cmd",
     ).blocked,
     true,
   );
+  assert.equal(
+    checkBlocklistForShell(
+      'bash -lc \'pwsh -NoProfile -Command "Remove-Item -Recurse -Force C:/important"\'',
+      "posix",
+    ).blocked,
+    true,
+  );
+  for (const command of [
+    "wsl pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+    "wsl -- pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+    "wsl -e pwsh -NoProfile -Command Remove-Item -Recurse -Force C:/important",
+  ]) {
+    assert.equal(checkBlocklistForShell(command, "cmd").blocked, true);
+  }
+  assert.equal(
+    checkBlocklistForShell('wsl pwsh -Command "Write-Host $(Get-Date)"', "cmd").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      '# & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'echo \'safe & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'echo safe; powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    false,
+  );
+  for (const command of [
+    'env -S "pwsh -Command \'Invoke-Expression $PAYLOAD\'"',
+    "sudo -D /tmp pwsh -Command Invoke-Expression",
+    "env -S 'rm -rf /'",
+    "wsl 'dd' if=/dev/zero of=/dev/sda",
+  ]) {
+    assert.equal(checkBlocklistForShell(command, "posix").blocked, true);
+  }
   assert.equal(
     checkBlocklistForShell('Write-Output "safe; pwsh -Command Invoke-Expression"', "posix").blocked,
     false,

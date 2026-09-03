@@ -2,8 +2,12 @@ import commandBlocklistTable from '../../../lib/commandBlocklist.json';
 import shellInvocationDetector from '../../../lib/shellInvocationDetector.cjs';
 import { DEFAULT_COMMAND_BLOCKLIST } from '../types';
 
-const { detectInvokedShellGroups } = shellInvocationDetector as {
-  detectInvokedShellGroups: (command: string, shellKind?: string) => string[];
+const { detectShellInvocations, getShellCommandScanText } = shellInvocationDetector as {
+  detectShellInvocations: (
+    command: string,
+    shellKind?: string,
+  ) => Array<{ group: 'native' | 'posix' | 'powershell'; command: string }>;
+  getShellCommandScanText: (command: string, shellKind?: string) => string;
 };
 
 /**
@@ -76,25 +80,20 @@ const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
  * intentionally fall back to every group so callers that cannot classify a
  * session keep the strict behavior.
  */
-function selectDefaultGroups(command: string, shellKind?: string): CompiledPattern[][] {
+function selectDefaultGroups(shellKind?: string): CompiledPattern[][] {
   const groupNames = commandBlocklistTable.shellGroups[
     String(shellKind ?? '').toLowerCase() as keyof typeof commandBlocklistTable.shellGroups
   ];
   if (!groupNames) return compiledAllGroups;
 
-  const groups = groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups]);
-  for (const groupName of detectInvokedShellGroups(command, shellKind)) {
-    if (groupName in compiledGroups && !groupNames.includes(groupName as keyof typeof compiledGroups)) {
-      groups.push(compiledGroups[groupName as keyof typeof compiledGroups]);
-    }
-  }
-  return groups;
+  return groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups]);
 }
 
 function checkCommandAgainstGroups(
   command: string,
   blocklist: string[],
   groups: CompiledPattern[][],
+  defaultCommand = command,
 ): { blocked: boolean; matchedPattern?: string } {
   const enabledPatterns = new Set(blocklist);
 
@@ -112,7 +111,7 @@ function checkCommandAgainstGroups(
   // configured list. It must not restore a default the user removed/edited.
   for (const group of groups) {
     for (const { pattern, regex } of group) {
-      if (enabledPatterns.has(pattern) && regex.test(command)) {
+      if (enabledPatterns.has(pattern) && regex.test(defaultCommand)) {
         return { blocked: true, matchedPattern: pattern };
       }
     }
@@ -158,7 +157,28 @@ export function checkCommandSafety(
   blocklist: string[] = DEFAULT_COMMAND_BLOCKLIST,
   shellKind?: string,
 ): { blocked: boolean; matchedPattern?: string } {
-  return checkCommandAgainstGroups(command, blocklist, selectDefaultGroups(command, shellKind));
+  const shellMatch = checkCommandAgainstGroups(
+    command,
+    blocklist,
+    selectDefaultGroups(shellKind),
+    getShellCommandScanText(command, shellKind),
+  );
+  if (shellMatch.blocked) return shellMatch;
+
+  const enabledPatterns = new Set(blocklist);
+  for (const invocation of detectShellInvocations(command, shellKind)) {
+    const invocationGroups = invocation.group === 'native'
+      ? [compiledCommonGroup, compiledPosixNativeGroup]
+      : selectDefaultGroups(invocation.group);
+    for (const group of invocationGroups) {
+      for (const { pattern, regex } of group) {
+        if (enabledPatterns.has(pattern) && regex.test(invocation.command)) {
+          return { blocked: true, matchedPattern: pattern };
+        }
+      }
+    }
+  }
+  return { blocked: false };
 }
 
 /**

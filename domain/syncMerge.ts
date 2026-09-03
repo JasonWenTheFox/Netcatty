@@ -418,9 +418,7 @@ function mergeDivergentVersionedCommandBlocklists(
   const lContent = effectiveCommandBlocklist(local);
   const rContent = effectiveCommandBlocklist(remote);
   if (
-    !Array.isArray(bContent)
-    || !bContent.every((pattern) => typeof pattern === 'string')
-    || !Array.isArray(lContent)
+    !Array.isArray(lContent)
     || !lContent.every((pattern) => typeof pattern === 'string')
     || !Array.isArray(rContent)
     || !rContent.every((pattern) => typeof pattern === 'string')
@@ -433,10 +431,30 @@ function mergeDivergentVersionedCommandBlocklists(
   const bVersion = commandBlocklistRevisionVersion(base);
   if (bVersion === lVersion && lVersion === rVersion) return null;
 
+  if (!Array.isArray(bContent) || !bContent.every((pattern) => typeof pattern === 'string')) {
+    if (lVersion == null || rVersion == null || lVersion === rVersion) return null;
+    const mergedContent = mergeStringArrays([], lContent, rContent);
+    const markedContent = addCommandBlocklistSyncMarker(mergedContent);
+    const highestVersion = Math.max(lVersion, rVersion);
+    return {
+      commandBlocklist: markedContent,
+      commandBlocklistSchema: createCommandBlocklistSyncSchema(markedContent, highestVersion),
+    };
+  }
+
   const mergeBase = bVersion == null && (lVersion != null || rVersion != null)
     ? migrateLegacyCommandBlocklist(bContent)
     : bContent;
-  const mergedContent = mergeStringArrays(mergeBase, lContent, rContent);
+  const normalizeLegacySide = (content: string[], version: number | null): string[] => (
+    bVersion == null && version == null && (lVersion != null || rVersion != null)
+      ? migrateLegacyCommandBlocklist(content)
+      : content
+  );
+  const mergedContent = mergeStringArrays(
+    mergeBase,
+    normalizeLegacySide(lContent, lVersion),
+    normalizeLegacySide(rContent, rVersion),
+  );
   const markedContent = addCommandBlocklistSyncMarker(mergedContent);
   const highestVersion = [
     bVersion,
