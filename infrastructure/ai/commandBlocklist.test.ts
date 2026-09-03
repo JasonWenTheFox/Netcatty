@@ -8,18 +8,29 @@ import { DEFAULT_COMMAND_BLOCKLIST } from "./types";
 const require = createRequire(import.meta.url);
 const blocklistTable = require("../../lib/commandBlocklist.json") as {
   common: string[];
+  posixNative: string[];
   posix: string[];
   powershell: string[];
 };
 const cjsBlocklist = require("../../lib/commandBlocklist.cjs");
 
-const flatTable = [...blocklistTable.common, ...blocklistTable.posix, ...blocklistTable.powershell];
+const flatTable = [
+  ...blocklistTable.common,
+  ...blocklistTable.posixNative,
+  ...blocklistTable.posix,
+  ...blocklistTable.powershell,
+];
 
 test("AI command blocklist uses the shared JSON source", () => {
   assert.deepEqual(DEFAULT_COMMAND_BLOCKLIST, flatTable);
   assert.deepEqual(Array.from(cjsBlocklist.DEFAULT_COMMAND_BLOCKLIST), flatTable);
   assert.deepEqual(
-    [...cjsBlocklist.COMMON_PATTERNS, ...cjsBlocklist.POSIX_PATTERNS, ...cjsBlocklist.POWERSHELL_PATTERNS],
+    [
+      ...cjsBlocklist.COMMON_PATTERNS,
+      ...cjsBlocklist.POSIX_NATIVE_PATTERNS,
+      ...cjsBlocklist.POSIX_PATTERNS,
+      ...cjsBlocklist.POWERSHELL_PATTERNS,
+    ],
     flatTable,
   );
 });
@@ -86,6 +97,24 @@ test("powershell sessions gain PowerShell-specific dangerous command rules", () 
       `expected blocklist to block: ${command}`,
     );
   }
+});
+
+test("powershell sessions retain native Unix destructive command rules", () => {
+  for (const command of [
+    "mkfs.ext4 /dev/sda",
+    "dd if=/dev/zero of=/dev/sda",
+    "chmod -R 777 /",
+  ]) {
+    assert.equal(
+      checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
+      true,
+      `expected blocklist to block: ${command}`,
+    );
+  }
+  assert.equal(
+    checkCommandSafety('Write-Host "now: $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
+    false,
+  );
 });
 
 test("cmd sessions keep shell-independent guards without POSIX false positives", () => {

@@ -48,9 +48,15 @@ const compileGroup = (patterns: string[]): CompiledPattern[] =>
   });
 
 const compiledCommonGroup = compileGroup(commandBlocklistTable.common);
+const compiledPosixNativeGroup = compileGroup(commandBlocklistTable.posixNative);
 const compiledPosixGroup = compileGroup(commandBlocklistTable.posix);
 const compiledPowershellGroup = compileGroup(commandBlocklistTable.powershell);
-const compiledAllGroups = [compiledCommonGroup, compiledPosixGroup, compiledPowershellGroup];
+const compiledAllGroups = [
+  compiledCommonGroup,
+  compiledPosixNativeGroup,
+  compiledPosixGroup,
+  compiledPowershellGroup,
+];
 
 const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
 
@@ -63,12 +69,12 @@ const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
 function selectDefaultGroups(shellKind?: string): CompiledPattern[][] {
   switch (String(shellKind ?? '').toLowerCase()) {
     case 'powershell':
-      return [compiledCommonGroup, compiledPowershellGroup];
+      return [compiledCommonGroup, compiledPosixNativeGroup, compiledPowershellGroup];
     case 'cmd':
       return [compiledCommonGroup];
     case 'posix':
     case 'fish':
-      return [compiledCommonGroup, compiledPosixGroup];
+      return [compiledCommonGroup, compiledPosixNativeGroup, compiledPosixGroup];
     default:
       return compiledAllGroups;
   }

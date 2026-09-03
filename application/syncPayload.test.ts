@@ -57,7 +57,10 @@ const {
 const storageKeys = await import("../infrastructure/config/storageKeys.ts");
 const { SYNC_STORAGE_KEYS } = await import("../domain/sync.ts");
 const { localStorageAdapter } = await import("../infrastructure/persistence/localStorageAdapter.ts");
-const { readCommandBlocklistSetting } = await import("./state/commandBlocklistSettings.ts");
+const {
+  COMMAND_BLOCKLIST_SYNC_MARKER,
+  readCommandBlocklistSetting,
+} = await import("./state/commandBlocklistSettings.ts");
 
 const knownHost = (id = "kh-1"): KnownHost => ({
   id,
@@ -386,10 +389,10 @@ test("buildSyncPayload includes AI configuration settings", () => {
     globalPermissionMode: "auto",
     toolIntegrationMode: "skills",
     defaultAgentId: "codex",
-    commandBlocklist: ["rm -rf"],
+    commandBlocklist: ["rm -rf", COMMAND_BLOCKLIST_SYNC_MARKER],
     commandBlocklistSchema: {
       version: 1,
-      blocklist: ["rm -rf"],
+      blocklist: ["rm -rf", COMMAND_BLOCKLIST_SYNC_MARKER],
     },
     commandTimeout: 120,
     responseIdleTimeout: 600,
@@ -652,6 +655,7 @@ test("applySyncPayload restores AI configuration settings", async () => {
 test("applySyncPayload re-migrates an untouched legacy command blocklist received from sync", async () => {
   const legacyDefaults = [
     ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
     ...commandBlocklistTable.posix,
   ];
   localStorage.setItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA, "1");
@@ -681,9 +685,40 @@ test("applySyncPayload re-migrates an untouched legacy command blocklist receive
   );
 });
 
+test("applySyncPayload preserves an all-PowerShell-rules removal after an old-client round trip", async () => {
+  const customized = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+
+  await applySyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    settings: {
+      ai: {
+        commandBlocklist: [...customized, COMMAND_BLOCKLIST_SYNC_MARKER],
+      },
+    },
+    syncedAt: 1,
+  } as SyncPayload, { importVaultData: () => {} });
+
+  assert.deepEqual(readCommandBlocklistSetting(), customized);
+  assert.equal(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST)!).includes(
+      COMMAND_BLOCKLIST_SYNC_MARKER,
+    ),
+    false,
+  );
+});
+
 test("applySyncPayload rejects a schema marker paired with a different command blocklist", async () => {
   const legacyDefaults = [
     ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
     ...commandBlocklistTable.posix,
   ];
   const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
@@ -712,6 +747,7 @@ test("applySyncPayload rejects a schema marker paired with a different command b
 test("applySyncPayload preserves a current customized PowerShell blocklist", async () => {
   const currentCustomized = [
     ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
     ...commandBlocklistTable.posix,
     ...commandBlocklistTable.powershell.slice(1),
   ];

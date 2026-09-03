@@ -119,9 +119,12 @@ import { isTerminalSidePanelAutoOpenTab } from '../domain/terminalSidePanelAutoO
 import { prepareRestoredPayloadConvergentWrites } from './convergentSyncReplica';
 import {
   COMMAND_BLOCKLIST_SCHEMA_VERSION,
+  COMMAND_BLOCKLIST_SYNC_MARKER,
+  addCommandBlocklistSyncMarker,
   createCommandBlocklistSyncSchema,
   getMatchingCommandBlocklistSchemaVersion,
   migrateLegacyCommandBlocklist,
+  stripCommandBlocklistSyncMarker,
 } from './state/commandBlocklistSettings';
 
 // ---------------------------------------------------------------------------
@@ -582,13 +585,14 @@ export function collectSyncableSettings(): SyncPayload['settings'] {
   if (defaultAgentId != null) ai.defaultAgentId = defaultAgentId;
   const commandBlocklist = localStorageAdapter.read<string[]>(STORAGE_KEY_AI_COMMAND_BLOCKLIST);
   if (Array.isArray(commandBlocklist)) {
-    ai.commandBlocklist = commandBlocklist;
+    const syncedCommandBlocklist = addCommandBlocklistSyncMarker(commandBlocklist);
+    ai.commandBlocklist = syncedCommandBlocklist;
     const commandBlocklistSchema = localStorageAdapter.readNumber(
       STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
     );
     if (commandBlocklistSchema != null && commandBlocklistSchema > 0) {
       ai.commandBlocklistSchema = createCommandBlocklistSyncSchema(
-        commandBlocklist,
+        syncedCommandBlocklist,
         commandBlocklistSchema,
       );
     }
@@ -844,15 +848,21 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
     // that still carry an `externalAgents` field are silently ignored.
     if (ai.defaultAgentId != null) localStorageAdapter.writeString(STORAGE_KEY_AI_DEFAULT_AGENT, ai.defaultAgentId);
     if (ai.commandBlocklist != null) {
+      const hasSyncMarker = ai.commandBlocklist.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
       const incomingSchemaVersion = getMatchingCommandBlocklistSchemaVersion(
         ai.commandBlocklist,
         ai.commandBlocklistSchema,
       );
-      const schemaIsCurrent = incomingSchemaVersion != null
-        && incomingSchemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION;
-      const blocklist = schemaIsCurrent
-        ? ai.commandBlocklist
-        : migrateLegacyCommandBlocklist(ai.commandBlocklist);
+      const acceptedSchemaVersion = incomingSchemaVersion != null
+        && incomingSchemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION
+        ? incomingSchemaVersion
+        : hasSyncMarker
+          ? COMMAND_BLOCKLIST_SCHEMA_VERSION
+          : null;
+      const unmarkedBlocklist = stripCommandBlocklistSyncMarker(ai.commandBlocklist);
+      const blocklist = acceptedSchemaVersion != null
+        ? unmarkedBlocklist
+        : migrateLegacyCommandBlocklist(unmarkedBlocklist);
       const persisted = localStorageAdapter.write(
         STORAGE_KEY_AI_COMMAND_BLOCKLIST,
         blocklist,
@@ -860,7 +870,7 @@ async function applySyncableSettings(settings: NonNullable<SyncPayload['settings
       if (persisted) {
         localStorageAdapter.writeNumber(
           STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-          schemaIsCurrent ? incomingSchemaVersion : COMMAND_BLOCKLIST_SCHEMA_VERSION,
+          acceptedSchemaVersion ?? COMMAND_BLOCKLIST_SCHEMA_VERSION,
         );
       }
     }

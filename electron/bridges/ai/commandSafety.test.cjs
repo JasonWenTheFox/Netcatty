@@ -19,6 +19,10 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   // PowerShell kind frees the POSIX substitution rules.
   assert.equal(checkBlocklistForShell('Write-Host "now: $(Get-Date)"', "powershell").blocked, false);
   assert.equal(checkBlocklistForShell("Remove-Item -Recurse -Force C:\\x", "powershell").blocked, true);
+  // Native Unix commands remain dangerous when launched from pwsh on Unix.
+  assert.equal(checkBlocklistForShell("mkfs.ext4 /dev/sda", "powershell").blocked, true);
+  assert.equal(checkBlocklistForShell("dd if=/dev/zero of=/dev/sda", "powershell").blocked, true);
+  assert.equal(checkBlocklistForShell("chmod -R 777 /", "powershell").blocked, true);
   // cmd keeps only the shell-independent guards.
   assert.equal(checkBlocklistForShell("echo $(date)", "cmd").blocked, false);
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);

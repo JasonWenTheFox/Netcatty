@@ -388,6 +388,7 @@ export interface AISettings {
 
 export const DEFAULT_COMMAND_BLOCKLIST = [
   ...commandBlocklistTable.common,
+  ...commandBlocklistTable.posixNative,
   ...commandBlocklistTable.posix,
   ...commandBlocklistTable.powershell,
 ];

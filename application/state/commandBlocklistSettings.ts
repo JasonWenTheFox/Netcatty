@@ -5,10 +5,23 @@ import { STORAGE_KEY_AI_COMMAND_BLOCKLIST, STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHE
 import { localStorageAdapter } from '../../infrastructure/persistence/localStorageAdapter';
 
 export const COMMAND_BLOCKLIST_SCHEMA_VERSION = 1;
+export const COMMAND_BLOCKLIST_SYNC_MARKER = '(?!)netcatty-shell-aware-v1';
 const LEGACY_DEFAULT_PATTERNS = [
   ...commandBlocklistTable.common,
+  ...commandBlocklistTable.posixNative,
   ...commandBlocklistTable.posix,
 ];
+
+export function addCommandBlocklistSyncMarker(blocklist: string[]): string[] {
+  return [
+    ...blocklist.filter((pattern) => pattern !== COMMAND_BLOCKLIST_SYNC_MARKER),
+    COMMAND_BLOCKLIST_SYNC_MARKER,
+  ];
+}
+
+export function stripCommandBlocklistSyncMarker(blocklist: string[]): string[] {
+  return blocklist.filter((pattern) => pattern !== COMMAND_BLOCKLIST_SYNC_MARKER);
+}
 
 export function createCommandBlocklistSyncSchema(
   blocklist: string[],
@@ -41,19 +54,20 @@ export function getMatchingCommandBlocklistSchemaVersion(
  * authoritative.
  */
 export function migrateLegacyCommandBlocklist(blocklist: string[]): string[] {
-  const configured = new Set(blocklist);
-  if (commandBlocklistTable.powershell.some((pattern) => configured.has(pattern))) {
-    return [...blocklist];
-  }
+  const hasSyncMarker = blocklist.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
+  const unmarked = stripCommandBlocklistSyncMarker(blocklist);
+  if (hasSyncMarker) return unmarked;
+
+  const configured = new Set(unmarked);
   if (!LEGACY_DEFAULT_PATTERNS.every((pattern) => configured.has(pattern))) {
-    return [...blocklist];
+    return unmarked;
   }
   const missingPowershellPatterns = commandBlocklistTable.powershell.filter(
     (pattern) => !configured.has(pattern),
   );
   return missingPowershellPatterns.length > 0
-    ? [...blocklist, ...missingPowershellPatterns]
-    : [...blocklist];
+    ? [...unmarked, ...missingPowershellPatterns]
+    : unmarked;
 }
 
 export function readCommandBlocklistSetting(): string[] {
@@ -64,17 +78,26 @@ export function readCommandBlocklistSetting(): string[] {
 
   const current = stored ?? [...DEFAULT_COMMAND_BLOCKLIST];
   const schemaVersion = localStorageAdapter.readNumber(STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA) ?? 0;
-  if (schemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION) return current;
-
-  const migrated = stored == null ? current : migrateLegacyCommandBlocklist(current);
+  const hasSyncMarker = current.includes(COMMAND_BLOCKLIST_SYNC_MARKER);
+  const migrated = stored == null
+    ? current
+    : schemaVersion >= COMMAND_BLOCKLIST_SCHEMA_VERSION && !hasSyncMarker
+      ? current
+      : migrateLegacyCommandBlocklist(current);
   let migrationPersisted = true;
-  if (stored != null && migrated.length !== current.length) {
+  if (
+    stored != null
+    && (
+      migrated.length !== current.length
+      || migrated.some((pattern, index) => pattern !== current[index])
+    )
+  ) {
     migrationPersisted = localStorageAdapter.write(STORAGE_KEY_AI_COMMAND_BLOCKLIST, migrated);
   }
   if (migrationPersisted) {
     localStorageAdapter.writeNumber(
       STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-      COMMAND_BLOCKLIST_SCHEMA_VERSION,
+      Math.max(schemaVersion, COMMAND_BLOCKLIST_SCHEMA_VERSION),
     );
   }
   return migrated;
