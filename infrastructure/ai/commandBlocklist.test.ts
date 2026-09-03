@@ -132,6 +132,22 @@ test("powershell sessions apply POSIX syntax guards inside an invoked shell", ()
     checkCommandSafety('Write-Host "bash text: $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
     false,
   );
+  assert.equal(
+    checkCommandSafety('Write-Host "safe; bash $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety('Write-Host "example: foo; bash -c echo $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      "Start-Process bash.exe -ArgumentList '-c','eval echo'",
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
 });
 
 test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", () => {
@@ -169,6 +185,62 @@ test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", (
       true,
     );
   }
+
+  for (const command of [
+    "PAYLOAD='Remove-Item -Recurse -Force C:\\important' pwsh -NoProfile -Command 'Invoke-Expression $env:PAYLOAD'",
+    "env PAYLOAD=x pwsh -Command 'Invoke-Expression $env:PAYLOAD'",
+    "sudo -u root pwsh -Command 'Remove-Item -Recurse -Force C:\\important'",
+  ]) {
+    assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, "posix").blocked, true);
+  }
+  assert.equal(
+    checkCommandSafety(
+      'start "" /wait powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'call powershell.exe -Command "Remove-Item -Recurse -Force C:\\important"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'cmd /c powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      '"C:\\Program Files"\\PowerShell\\7\\pwsh.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'bash -c \'pwsh -Command "Invoke-Expression $env:PAYLOAD"\'',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Output "safe; pwsh -Command Invoke-Expression"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "posix",
+    ).blocked,
+    false,
+  );
 });
 
 test("cmd sessions keep native-command guards without POSIX syntax false positives", () => {

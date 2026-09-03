@@ -35,6 +35,15 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
     assert.equal(checkBlocklistForShell(command, "powershell").blocked, true);
   }
   assert.equal(checkBlocklistForShell('Write-Host "bash text: $(Get-Date)"', "powershell").blocked, false);
+  assert.equal(checkBlocklistForShell('Write-Host "safe; bash $(Get-Date)"', "powershell").blocked, false);
+  assert.equal(
+    checkBlocklistForShell('Write-Host "example: foo; bash -c echo $(Get-Date)"', "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell("Start-Process bash.exe -ArgumentList '-c','eval echo'", "powershell").blocked,
+    true,
+  );
   // cmd omits POSIX syntax while retaining guards for native tools it can launch.
   assert.equal(checkBlocklistForShell("echo $(date)", "cmd").blocked, false);
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);
@@ -71,6 +80,53 @@ test("explicit PowerShell invocations apply PowerShell guards from other shells"
       true,
     );
   }
+
+  for (const command of [
+    "PAYLOAD='Remove-Item -Recurse -Force C:\\important' pwsh -NoProfile -Command 'Invoke-Expression $env:PAYLOAD'",
+    "env PAYLOAD=x pwsh -Command 'Invoke-Expression $env:PAYLOAD'",
+    "sudo -u root pwsh -Command 'Remove-Item -Recurse -Force C:\\important'",
+  ]) {
+    assert.equal(checkBlocklistForShell(command, "posix").blocked, true);
+  }
+  assert.equal(
+    checkBlocklistForShell(
+      'start "" /wait powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'call powershell.exe -Command "Remove-Item -Recurse -Force C:\\important"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'cmd /c powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      '"C:\\Program Files"\\PowerShell\\7\\pwsh.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell(
+      'bash -c \'pwsh -Command "Invoke-Expression $env:PAYLOAD"\'',
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Output "safe; pwsh -Command Invoke-Expression"', "posix").blocked,
+    false,
+  );
 });
 
 test("checkBlocklistCommonOnly never applies POSIX or PowerShell patterns", () => {

@@ -1,5 +1,10 @@
 import commandBlocklistTable from '../../../lib/commandBlocklist.json';
+import shellInvocationDetector from '../../../lib/shellInvocationDetector.cjs';
 import { DEFAULT_COMMAND_BLOCKLIST } from '../types';
+
+const { detectInvokedShellGroups } = shellInvocationDetector as {
+  detectInvokedShellGroups: (command: string, shellKind?: string) => string[];
+};
 
 /**
  * Check if a regex pattern is safe from ReDoS attacks.
@@ -63,13 +68,6 @@ const compiledAllGroups = [
   compiledPosixGroup,
   compiledPowershellGroup,
 ];
-const shellInvocationRegexes = Object.entries(commandBlocklistTable.shellInvocations).map(
-  ([groupName, pattern]) => ({
-    groupName: groupName as keyof typeof compiledGroups,
-    regex: new RegExp(pattern, 'i'),
-  }),
-);
-
 const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
 
 /**
@@ -85,9 +83,9 @@ function selectDefaultGroups(command: string, shellKind?: string): CompiledPatte
   if (!groupNames) return compiledAllGroups;
 
   const groups = groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups]);
-  for (const { groupName, regex } of shellInvocationRegexes) {
-    if (!groupNames.includes(groupName) && regex.test(command)) {
-      groups.push(compiledGroups[groupName]);
+  for (const groupName of detectInvokedShellGroups(command, shellKind)) {
+    if (groupName in compiledGroups && !groupNames.includes(groupName as keyof typeof compiledGroups)) {
+      groups.push(compiledGroups[groupName as keyof typeof compiledGroups]);
     }
   }
   return groups;

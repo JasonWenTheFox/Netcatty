@@ -29,6 +29,7 @@ import {
   addCommandBlocklistSyncMarker,
   createCommandBlocklistSyncSchema,
   getCurrentCommandBlocklistRevisionVersion,
+  hasCommandBlocklistSyncMarker,
   migrateLegacyCommandBlocklist,
   stripCommandBlocklistSyncMarker,
 } from './commandBlocklist';
@@ -357,9 +358,12 @@ function carryCommandBlocklistRevisionOntoEdit(
   edited: Record<string, unknown>,
   revisionSource: Record<string, unknown>,
 ): Record<string, unknown> {
+  const editedBlocklist = edited.commandBlocklist;
   const editedContent = effectiveCommandBlocklist(edited);
   if (
-    !Array.isArray(editedContent)
+    !Array.isArray(editedBlocklist)
+    || !editedBlocklist.every((pattern) => typeof pattern === 'string')
+    || !Array.isArray(editedContent)
     || !editedContent.every((pattern) => typeof pattern === 'string')
     || !Array.isArray(revisionSource.commandBlocklist)
     || !revisionSource.commandBlocklist.every((pattern) => typeof pattern === 'string')
@@ -370,7 +374,9 @@ function carryCommandBlocklistRevisionOntoEdit(
   const migratedEdit = hasCommandBlocklistRevision(edited)
     ? editedContent
     : migrateLegacyCommandBlocklist(editedContent);
-  const markedEdit = addCommandBlocklistSyncMarker(migratedEdit);
+  const markedEdit = hasCommandBlocklistSyncMarker(editedBlocklist)
+    ? [...editedBlocklist]
+    : addCommandBlocklistSyncMarker(migratedEdit);
   const version = getCurrentCommandBlocklistRevisionVersion(
     revisionSource.commandBlocklist,
     revisionSource.commandBlocklistSchema,
@@ -424,12 +430,16 @@ function mergeDivergentVersionedCommandBlocklists(
 
   const lVersion = commandBlocklistRevisionVersion(local);
   const rVersion = commandBlocklistRevisionVersion(remote);
-  if (lVersion === rVersion) return null;
+  const bVersion = commandBlocklistRevisionVersion(base);
+  if (bVersion === lVersion && lVersion === rVersion) return null;
 
-  const mergedContent = mergeStringArrays(bContent, lContent, rContent);
+  const mergeBase = bVersion == null && (lVersion != null || rVersion != null)
+    ? migrateLegacyCommandBlocklist(bContent)
+    : bContent;
+  const mergedContent = mergeStringArrays(mergeBase, lContent, rContent);
   const markedContent = addCommandBlocklistSyncMarker(mergedContent);
   const highestVersion = [
-    commandBlocklistRevisionVersion(base),
+    bVersion,
     lVersion,
     rVersion,
   ].reduce<number | null>((highest, version) => (
@@ -483,10 +493,8 @@ function mergeCommandBlocklistSetting(
   }
 
   if (fingerprint(effectiveCommandBlocklist(local)) === fingerprint(effectiveCommandBlocklist(remote))) {
-    return highestCommandBlocklistRevisionSetting(
-      [local, remote],
-      effectiveCommandBlocklist(local),
-    ) ?? (preferRemoteOnConflict ? rVal : lVal);
+    const preferred = preferRemoteOnConflict ? remote : local;
+    return carryHighestCommandBlocklistRevisionOntoEdit(preferred, [local, remote, base]);
   }
 
   const mergedVersionedEdits = mergeDivergentVersionedCommandBlocklists(base, local, remote);

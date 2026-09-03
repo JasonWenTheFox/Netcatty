@@ -553,6 +553,34 @@ test("mergeSyncPayloads preserves the highest schema when both sides make the sa
   });
 });
 
+test("matching edits from older clients do not downgrade a newer base schema", () => {
+  const baseBlocklist = [markCommandBlocklistPatternForSync("custom-base")];
+  const editedBlocklist = [markCommandBlocklistPatternForSync("shared-edit")];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist, 2),
+      },
+    },
+  });
+  const oldClientEdit = payload({
+    settings: {
+      ai: {
+        commandBlocklist: editedBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist),
+      },
+    },
+  });
+
+  const result = mergeSyncPayloads(base, oldClientEdit, oldClientEdit);
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: editedBlocklist,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
+});
+
 test("mergeSyncPayloads carries a higher remote schema onto a one-sided local edit", () => {
   const baseBlocklist = [markCommandBlocklistPatternForSync("custom-base")];
   const editedBlocklist = ["local-edit"];
@@ -632,6 +660,102 @@ test("carrying a higher schema does not restore a user-removed PowerShell rule",
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: editedBlocklist,
     commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
+});
+
+test("a migrated deletion is preserved when a newer client adds a future rule", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const deletedRule = commandBlocklistTable.powershell[0];
+  const localBlocklist = addCommandBlocklistSyncMarker(
+    currentDefaults.filter((pattern) => pattern !== deletedRule),
+  );
+  const remoteBlocklist = addCommandBlocklistSyncMarker([
+    ...currentDefaults,
+    "future-v2-guard",
+  ]);
+  const base = payload({
+    settings: { ai: { commandBlocklist: legacyDefaults } },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: remoteBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(remoteBlocklist, 2),
+        },
+      },
+    }),
+  );
+
+  const expected = addCommandBlocklistSyncMarker([
+    ...currentDefaults.filter((pattern) => pattern !== deletedRule),
+    "future-v2-guard",
+  ]);
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: expected,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(expected, 2),
+  });
+});
+
+test("same-version upgrades merge independent edits made from a legacy base", () => {
+  const legacyDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+  ];
+  const currentDefaults = [...legacyDefaults, ...commandBlocklistTable.powershell];
+  const deletedRule = commandBlocklistTable.powershell[0];
+  const localBlocklist = addCommandBlocklistSyncMarker(
+    currentDefaults.filter((pattern) => pattern !== deletedRule),
+  );
+  const remoteBlocklist = addCommandBlocklistSyncMarker([
+    ...currentDefaults,
+    "remote-user-rule",
+  ]);
+  const base = payload({
+    settings: { ai: { commandBlocklist: legacyDefaults } },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: remoteBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(remoteBlocklist),
+        },
+      },
+    }),
+  );
+
+  const expected = addCommandBlocklistSyncMarker([
+    ...currentDefaults.filter((pattern) => pattern !== deletedRule),
+    "remote-user-rule",
+  ]);
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: expected,
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(expected),
   });
 });
 
