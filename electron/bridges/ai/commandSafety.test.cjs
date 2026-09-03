@@ -23,11 +23,49 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   assert.equal(checkBlocklistForShell("mkfs.ext4 /dev/sda", "powershell").blocked, true);
   assert.equal(checkBlocklistForShell("dd if=/dev/zero of=/dev/sda", "powershell").blocked, true);
   assert.equal(checkBlocklistForShell("chmod -R 777 /", "powershell").blocked, true);
+  // POSIX syntax is checked when PowerShell explicitly invokes a POSIX shell.
+  for (const command of [
+    "bash -c 'eval $(echo cm0gLXJmIC8= | base64 -d)'",
+    "& wsl sh -c 'echo $(date)'",
+    "'/usr/bin/bash' -c 'echo $(date)'",
+    "wsl sh -c ': > /etc/passwd'",
+    "wsl sh -c ':(){ :|:& };:'",
+  ]) {
+    assert.equal(checkBlocklistForShell(command, "powershell").blocked, true);
+  }
+  assert.equal(checkBlocklistForShell('Write-Host "bash text: $(Get-Date)"', "powershell").blocked, false);
   // cmd omits POSIX syntax while retaining guards for native tools it can launch.
   assert.equal(checkBlocklistForShell("echo $(date)", "cmd").blocked, false);
   assert.equal(checkBlocklistForShell("shutdown /r /t 0", "cmd").blocked, true);
   assert.equal(checkBlocklistForShell("wsl dd if=/dev/zero of=/dev/sda", "cmd").blocked, true);
   assert.equal(checkBlocklistForShell("wsl chmod -R 777 /", "cmd").blocked, true);
+  assert.equal(checkBlocklistForShell("bash -c 'echo $(date)'", "cmd").blocked, true);
+});
+
+test("explicit PowerShell invocations apply PowerShell guards from other shells", () => {
+  for (const shellKind of ["posix", "fish", "cmd"]) {
+    assert.equal(
+      checkBlocklistForShell(
+        'powershell.exe -NoProfile -Command "Invoke-Expression $env:PAYLOAD"',
+        shellKind,
+      ).blocked,
+      true,
+    );
+    assert.equal(
+      checkBlocklistForShell(
+        'pwsh -Command "Remove-Item -Recurse -Force C:\\important"',
+        shellKind,
+      ).blocked,
+      true,
+    );
+    assert.equal(
+      checkBlocklistForShell(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD"',
+        shellKind,
+      ).blocked,
+      true,
+    );
+  }
 });
 
 test("checkBlocklistCommonOnly never applies POSIX or PowerShell patterns", () => {

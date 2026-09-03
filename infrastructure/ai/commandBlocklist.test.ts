@@ -117,11 +117,57 @@ test("powershell sessions retain native Unix destructive command rules", () => {
   );
 });
 
+test("powershell sessions apply POSIX syntax guards inside an invoked shell", () => {
+  for (const command of [
+    "bash -c 'eval $(echo cm0gLXJmIC8= | base64 -d)'",
+    "& wsl sh -c 'echo $(date)'",
+    "'/usr/bin/bash' -c 'echo $(date)'",
+    "wsl sh -c ': > /etc/passwd'",
+    "wsl sh -c ':(){ :|:& };:'",
+  ]) {
+    assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked, true);
+  }
+  assert.equal(
+    checkCommandSafety('Write-Host "bash text: $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST, "powershell").blocked,
+    false,
+  );
+});
+
+test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", () => {
+  for (const shellKind of ["posix", "fish", "cmd"]) {
+    assert.equal(
+      checkCommandSafety(
+        'powershell.exe -NoProfile -Command "Invoke-Expression $env:PAYLOAD"',
+        DEFAULT_COMMAND_BLOCKLIST,
+        shellKind,
+      ).blocked,
+      true,
+    );
+    assert.equal(
+      checkCommandSafety(
+        'pwsh -Command "Remove-Item -Recurse -Force C:\\important"',
+        DEFAULT_COMMAND_BLOCKLIST,
+        shellKind,
+      ).blocked,
+      true,
+    );
+    assert.equal(
+      checkCommandSafety(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD"',
+        DEFAULT_COMMAND_BLOCKLIST,
+        shellKind,
+      ).blocked,
+      true,
+    );
+  }
+});
+
 test("cmd sessions keep native-command guards without POSIX syntax false positives", () => {
   assert.equal(checkCommandSafety("echo $(date)", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, false);
   assert.equal(checkCommandSafety("shutdown /r /t 0", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
   assert.equal(checkCommandSafety("wsl dd if=/dev/zero of=/dev/sda", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
   assert.equal(checkCommandSafety("wsl chmod -R 777 /", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
+  assert.equal(checkCommandSafety("bash -c 'echo $(date)'", DEFAULT_COMMAND_BLOCKLIST, "cmd").blocked, true);
 });
 
 test("user-added blocklist patterns apply on every shell", () => {

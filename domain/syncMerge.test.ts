@@ -350,7 +350,6 @@ test("mergeSyncPayloads keeps the command blocklist schema paired with the winni
 
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: ["legacy-cloud-list"],
-    commandBlocklistSchema: createCommandBlocklistSyncSchema(["legacy-cloud-list"]),
   });
 });
 
@@ -633,6 +632,82 @@ test("carrying a higher schema does not restore a user-removed PowerShell rule",
   assert.deepEqual(result.payload.settings?.ai, {
     commandBlocklist: editedBlocklist,
     commandBlocklistSchema: createCommandBlocklistSyncSchema(editedBlocklist, 2),
+  });
+});
+
+test("cross-version conflicts preserve both a deletion and a newer rule addition", () => {
+  const baseBlocklist = ["base-guard"];
+  const localBlocklist: string[] = [];
+  const remoteBlocklist = ["base-guard", "future-v2-guard"];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: remoteBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(remoteBlocklist, 2),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: ["future-v2-guard"],
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(["future-v2-guard"], 2),
+  });
+});
+
+test("cross-version conflicts preserve a newer local rule and an older remote deletion", () => {
+  const baseBlocklist = ["base-guard"];
+  const localBlocklist = ["base-guard", "future-v2-guard"];
+  const remoteBlocklist: string[] = [];
+  const base = payload({
+    settings: {
+      ai: {
+        commandBlocklist: baseBlocklist,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(baseBlocklist),
+      },
+    },
+  });
+  const result = mergeSyncPayloads(
+    base,
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: localBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(localBlocklist, 2),
+        },
+      },
+    }),
+    payload({
+      settings: {
+        ai: {
+          commandBlocklist: remoteBlocklist,
+          commandBlocklistSchema: createCommandBlocklistSyncSchema(remoteBlocklist),
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.payload.settings?.ai, {
+    commandBlocklist: ["future-v2-guard"],
+    commandBlocklistSchema: createCommandBlocklistSyncSchema(["future-v2-guard"], 2),
   });
 });
 

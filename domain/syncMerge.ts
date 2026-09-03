@@ -403,6 +403,47 @@ function carryHighestCommandBlocklistRevisionOntoEdit(
     : commandBlocklistSetting(edited);
 }
 
+function mergeDivergentVersionedCommandBlocklists(
+  base: Record<string, unknown>,
+  local: Record<string, unknown>,
+  remote: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const bContent = effectiveCommandBlocklist(base);
+  const lContent = effectiveCommandBlocklist(local);
+  const rContent = effectiveCommandBlocklist(remote);
+  if (
+    !Array.isArray(bContent)
+    || !bContent.every((pattern) => typeof pattern === 'string')
+    || !Array.isArray(lContent)
+    || !lContent.every((pattern) => typeof pattern === 'string')
+    || !Array.isArray(rContent)
+    || !rContent.every((pattern) => typeof pattern === 'string')
+  ) {
+    return null;
+  }
+
+  const lVersion = commandBlocklistRevisionVersion(local);
+  const rVersion = commandBlocklistRevisionVersion(remote);
+  if (lVersion === rVersion) return null;
+
+  const mergedContent = mergeStringArrays(bContent, lContent, rContent);
+  const markedContent = addCommandBlocklistSyncMarker(mergedContent);
+  const highestVersion = [
+    commandBlocklistRevisionVersion(base),
+    lVersion,
+    rVersion,
+  ].reduce<number | null>((highest, version) => (
+    version != null && (highest == null || version > highest) ? version : highest
+  ), null);
+
+  return {
+    commandBlocklist: markedContent,
+    ...(highestVersion != null
+      ? { commandBlocklistSchema: createCommandBlocklistSyncSchema(markedContent, highestVersion) }
+      : {}),
+  };
+}
+
 /** Keep the schema descriptor from being selected independently of its list. */
 function mergeCommandBlocklistSetting(
   base: Record<string, unknown>,
@@ -448,12 +489,12 @@ function mergeCommandBlocklistSetting(
     ) ?? (preferRemoteOnConflict ? rVal : lVal);
   }
 
+  const mergedVersionedEdits = mergeDivergentVersionedCommandBlocklists(base, local, remote);
+  if (mergedVersionedEdits) return mergedVersionedEdits;
+
   const preferred = preferRemoteOnConflict ? rVal : lVal;
-  const preferredSource = preferRemoteOnConflict ? remote : local;
-  const fallbackSource = preferRemoteOnConflict ? local : remote;
-  return Object.keys(preferred).length > 0
-    ? carryHighestCommandBlocklistRevisionOntoEdit(preferredSource, [fallbackSource, base])
-    : carryHighestCommandBlocklistRevisionOntoEdit(fallbackSource, [base]);
+  const fallback = preferRemoteOnConflict ? lVal : rVal;
+  return Object.keys(preferred).length > 0 ? preferred : fallback;
 }
 
 /** Recursively merge two plain objects against a base using three-way logic. */

@@ -63,6 +63,12 @@ const compiledAllGroups = [
   compiledPosixGroup,
   compiledPowershellGroup,
 ];
+const shellInvocationRegexes = Object.entries(commandBlocklistTable.shellInvocations).map(
+  ([groupName, pattern]) => ({
+    groupName: groupName as keyof typeof compiledGroups,
+    regex: new RegExp(pattern, 'i'),
+  }),
+);
 
 const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
 
@@ -72,13 +78,19 @@ const DEFAULT_PATTERN_SET = new Set(DEFAULT_COMMAND_BLOCKLIST);
  * intentionally fall back to every group so callers that cannot classify a
  * session keep the strict behavior.
  */
-function selectDefaultGroups(shellKind?: string): CompiledPattern[][] {
+function selectDefaultGroups(command: string, shellKind?: string): CompiledPattern[][] {
   const groupNames = commandBlocklistTable.shellGroups[
     String(shellKind ?? '').toLowerCase() as keyof typeof commandBlocklistTable.shellGroups
   ];
-  return groupNames
-    ? groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups])
-    : compiledAllGroups;
+  if (!groupNames) return compiledAllGroups;
+
+  const groups = groupNames.map((name) => compiledGroups[name as keyof typeof compiledGroups]);
+  for (const { groupName, regex } of shellInvocationRegexes) {
+    if (!groupNames.includes(groupName) && regex.test(command)) {
+      groups.push(compiledGroups[groupName]);
+    }
+  }
+  return groups;
 }
 
 function checkCommandAgainstGroups(
@@ -148,7 +160,7 @@ export function checkCommandSafety(
   blocklist: string[] = DEFAULT_COMMAND_BLOCKLIST,
   shellKind?: string,
 ): { blocked: boolean; matchedPattern?: string } {
-  return checkCommandAgainstGroups(command, blocklist, selectDefaultGroups(shellKind));
+  return checkCommandAgainstGroups(command, blocklist, selectDefaultGroups(command, shellKind));
 }
 
 /**

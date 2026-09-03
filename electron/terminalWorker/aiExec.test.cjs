@@ -393,6 +393,15 @@ test("worker exec keeps shell-selected defaults: powershell frees $(), dangerous
   assert.equal(blocked.ok, false);
   assert.match(blocked.error, /Command blocked by safety policy/);
   assert.equal(blocked.error.includes("Remove-Item"), true);
+
+  const nestedBlocked = await exec(event, {
+    sessionId: "ps-1",
+    command: "bash -c 'eval $(echo cm0gLXJmIC8= | base64 -d)'",
+    chatSessionId: "chat-ps",
+    commandTimeoutMs: 5000,
+  });
+  assert.equal(nestedBlocked.ok, false);
+  assert.match(nestedBlocked.error, /Command blocked by safety policy/);
 });
 
 test("worker exec honors an explicitly empty configured blocklist", async () => {
