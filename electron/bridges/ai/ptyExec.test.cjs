@@ -330,34 +330,62 @@ test("loginShellHint selects fish/posix/powershell/cmd without pinning confirmed
 test("pending-input clear prefix covers interactive shells and skips raw devices", () => {
   assert.equal(buildPendingInputClearPrefix("posix"), "\x15\x0b");
   assert.equal(buildPendingInputClearPrefix("fish"), "\x15\x0b");
-  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b\x15\x0b");
+  assert.equal(buildPendingInputClearPrefix("powershell"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
 });
 
-test("startPtyJob trusts a live PowerShell prompt over a cmd login hint without clearing it", async () => {
-  for (const command of ["Write-Output 'one'", "Write-Output 'two'"]) {
-    const writes = [];
-    class CapturePty extends EventEmitter {
-      write(data) {
-        writes.push(String(data));
-      }
+test("startPtyJob clears unobserved PowerShell input across consecutive jobs", async () => {
+  class PowerShellLinePty extends EventEmitter {
+    constructor() {
+      super();
+      this.pendingInput = "";
+      this.submittedLines = [];
+      this.writes = [];
     }
-    const pty = new CapturePty();
+
+    write(data) {
+      const text = String(data);
+      this.writes.push(text);
+
+      const hasRevertLine = text.startsWith("\x1b");
+      if (hasRevertLine) this.pendingInput = "";
+      const submittedLine = `${this.pendingInput}${text.slice(hasRevertLine ? 1 : 0)}`;
+      this.submittedLines.push(submittedLine);
+      this.pendingInput = "";
+
+      const marker = submittedLine.match(/__NCMCP_[0-9a-z]+_[0-9a-f]+__/)?.[0];
+      assert.ok(marker);
+      queueMicrotask(() => {
+        this.emit("data", Buffer.from(`${marker}_S\r\n${marker}_E:0\r\nPS C:\\Users\\alice>`));
+      });
+    }
+  }
+
+  const pty = new PowerShellLinePty();
+  const commands = ["Write-Output 'one'", "Write-Output 'two'"];
+  for (const [index, command] of commands.entries()) {
+    if (index === 1) {
+      // Model input accepted by PSReadLine before its echo reaches the tracked
+      // PTY output. The cached prompt still looks fresh in this window.
+      pty.pendingInput = "Write-Output 'USER'; ";
+    }
     const job = startPtyJob(pty, command, {
       shellKind: "unknown",
       loginShellHint: "cmd",
       timeoutMs: 50,
       expectedPrompt: "PS C:\\Users\\alice>",
     });
-    assert.equal(writes.length, 1);
-    assert.ok(writes[0].startsWith("$__NCMCP_"));
-    assert.equal(writes[0].startsWith("\x1b\x15\x0b"), false);
-    assert.match(writes[0], /__NCMCP_/);
-    assert.doesNotMatch(writes[0], /cmd \/d \/s \/c/i);
-    job.cancel();
-    pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
     await job.resultPromise;
+  }
+
+  assert.equal(pty.writes.length, 2);
+  assert.equal(pty.submittedLines.length, 2);
+  for (const [index, submittedLine] of pty.submittedLines.entries()) {
+    assert.ok(pty.writes[index].startsWith("\x1b$__NCMCP_"));
+    assert.ok(submittedLine.startsWith("$__NCMCP_"));
+    assert.doesNotMatch(submittedLine, /Write-Output 'USER'/);
+    assert.doesNotMatch(submittedLine, /cmd \/d \/s \/c/i);
   }
 });
 

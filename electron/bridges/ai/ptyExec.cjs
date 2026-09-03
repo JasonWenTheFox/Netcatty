@@ -583,17 +583,7 @@ function startPtyJob(ptyStream, command, options) {
   }
 
   const wrapped = buildWrappedCommand(command, resolvedShellKind, marker);
-  // A recognized PowerShell prompt at the live PTY tail indicates the shell
-  // was idle at the last observed output. Avoid sending the PowerShell clear
-  // sequence in that state: edit modes do not share one portable
-  // Escape/Ctrl+U/Ctrl+K binding, and unsupported keys can leak into the next
-  // command. Preserve the existing pending-input defense for every other
-  // shell and when no live PowerShell prompt is available (#3252).
-  const skipPowerShellClear = resolvedShellKind === "powershell" && expectedPrompt;
-  const clearPrefix = skipPowerShellClear
-    ? ""
-    : buildPendingInputClearPrefix(resolvedShellKind);
-  ptyStream.write(`${clearPrefix}${wrapped}`);
+  ptyStream.write(`${buildPendingInputClearPrefix(resolvedShellKind)}${wrapped}`);
 
   return {
     marker,
