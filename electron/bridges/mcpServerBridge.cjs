@@ -500,6 +500,10 @@ function setCommandBlocklist(list) {
   commandBlocklist = list || [];
 }
 
+function getCommandBlocklist() {
+  return [...commandBlocklist];
+}
+
 function setCommandTimeout(seconds) {
   commandTimeoutMs = Math.max(1, Math.min(MAX_COMMAND_TIMEOUT_SECONDS, seconds || 60)) * 1000;
 }
@@ -1616,6 +1620,7 @@ async function handleWorkerTerminalExec(params = {}) {
       commandTimeoutMs,
       sessionMeta: meta,
       enforceWallTimeout: true,
+      commandBlocklist,
     }, {});
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };
@@ -1666,6 +1671,7 @@ async function handleWorkerJobStart(params = {}) {
       chatSessionId,
       commandTimeoutMs,
       sessionMeta: meta,
+      commandBlocklist,
     }, {});
     if (result?.ok && result.jobId) {
       if (pendingStart.cancelled || closingTerminalSessions.has(sessionId)) {
@@ -2211,6 +2217,7 @@ function cleanup() {
 module.exports = {
   init,
   setCommandBlocklist,
+  getCommandBlocklist,
   setCommandTimeout,
   getCommandTimeoutMs,
   setSessionIdleTimeoutMinutes,

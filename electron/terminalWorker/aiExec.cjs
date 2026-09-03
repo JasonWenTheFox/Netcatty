@@ -236,6 +236,7 @@ function createWorkerAiExecHandler({
       commandTimeoutMs,
       sessionMeta,
       enforceWallTimeout,
+      commandBlocklist,
     } = payload;
     const session = sessions?.get(sessionId);
     if (!session) {
@@ -247,17 +248,6 @@ function createWorkerAiExecHandler({
     const meta = sessionMeta || {};
     const { sessionProtocol, isNetworkDevice } = isNetworkDeviceSession(session, meta);
     const timeoutMs = Number.isFinite(commandTimeoutMs) ? commandTimeoutMs : 60000;
-
-    // Authoritative shell-aware blocklist check for worker-hosted sessions.
-    // Upstream bridge paths only pre-filter settings additions plus common
-    // defaults; here the live session resolves the shell kind the same way the
-    // PTY wrapper will (confirmed kind, idle prompt, login-shell hint).
-    if (!isNetworkDevice) {
-      const safety = checkBlocklistForShell(command, resolveSessionBlocklistShellKind(session));
-      if (safety.blocked) {
-        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
-      }
-    }
 
     if ((session.protocol === "local" || session.type === "local") && session.shellKind === "unknown") {
       return {
@@ -286,6 +276,14 @@ function createWorkerAiExecHandler({
         chatSessionId,
       });
       if (!probed.ok) return probed;
+      const safety = checkBlocklistForShell(
+        command,
+        resolveSessionBlocklistShellKind(session),
+        commandBlocklist,
+      );
+      if (safety.blocked) {
+        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
+      }
       return execViaPty(ptyStream, command, {
         stripMarkers: true,
         trackForCancellation: activePtyExecs,
@@ -312,6 +310,19 @@ function createWorkerAiExecHandler({
 
     const sshClient = session.sshClient || session.conn;
     if (sshClient && typeof sshClient.exec === "function") {
+      const probed = await ensureSessionShellKindForExec(session, {
+        trackForCancellation: activePtyExecs,
+        chatSessionId,
+      });
+      if (!probed.ok) return probed;
+      const safety = checkBlocklistForShell(
+        command,
+        resolveSessionBlocklistShellKind(session),
+        commandBlocklist,
+      );
+      if (safety.blocked) {
+        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
+      }
       return execViaChannel(sshClient, command, {
         timeoutMs,
         trackForCancellation: activePtyExecs,
@@ -347,6 +358,7 @@ function createWorkerAiJobStartHandler({
       chatSessionId,
       commandTimeoutMs,
       sessionMeta,
+      commandBlocklist,
     } = payload;
     if (!sessionId || !command) {
       return { ok: false, error: "sessionId and command are required" };
@@ -377,15 +389,6 @@ function createWorkerAiJobStartHandler({
         ok: false,
         error: "Background execution currently supports shell-backed PTY sessions only.",
       };
-    }
-
-    // Authoritative shell-aware blocklist check for worker-hosted background
-    // jobs — same resolution as the foreground exec path above.
-    {
-      const safety = checkBlocklistForShell(command, resolveSessionBlocklistShellKind(session));
-      if (safety.blocked) {
-        return { ok: false, error: `Command blocked by safety policy. Pattern: ${safety.matchedPattern}` };
-      }
     }
 
     const ptyStream = session.stream || session.pty || session.proc;
@@ -456,6 +459,21 @@ function createWorkerAiJobStartHandler({
         sessionId,
         status: "cancelled",
       };
+    }
+
+    const safety = checkBlocklistForShell(
+      command,
+      resolveSessionBlocklistShellKind(session),
+      commandBlocklist,
+    );
+    if (safety.blocked) {
+      job.status = "failed";
+      job.error = `Command blocked by safety policy. Pattern: ${safety.matchedPattern}`;
+      job.updatedAt = Date.now();
+      job.pendingShellProbe = false;
+      backgroundJobs.delete(jobId);
+      if (activeSessionJobs.get(sessionId) === jobId) activeSessionJobs.delete(sessionId);
+      return { ok: false, error: job.error };
     }
 
     const timeoutMs = Math.max(

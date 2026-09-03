@@ -19,8 +19,8 @@
     "`.+`"
   ],
   "powershell": [
-    "\\bRemove-Item\\b[^\\n;&|]*-(rec\\w*|re)\\b[^\\n;&|]*-(fo\\w*|f)\\b",
-    "\\bRemove-Item\\b[^\\n;&|]*-(fo\\w*|f)\\b[^\\n;&|]*-(rec\\w*|re)\\b",
+    "\\b(Remove-Item|del|erase|rd|ri|rm|rmdir)\\b[^\\n;&|]*-(rec\\w*|re|r)\\b[^\\n;&|]*-(fo\\w*|f)\\b",
+    "\\b(Remove-Item|del|erase|rd|ri|rm|rmdir)\\b[^\\n;&|]*-(fo\\w*|f)\\b[^\\n;&|]*-(rec\\w*|re|r)\\b",
     "\\b(iex|Invoke-Expression)\\b",
     "\\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\\b[^\\n;&|]*\\|\\s*(iex|Invoke-Expression)\\b",
     "\\bSet-ExecutionPolicy\\b[^\\n;&|]*\\b(Bypass|Unrestricted)\\b",

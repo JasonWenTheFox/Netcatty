@@ -4,7 +4,10 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const test = require("node:test");
 
-const { registerWorkerAiExecHandlers } = require("./aiExec.cjs");
+const {
+  createWorkerAiJobStartHandler,
+  registerWorkerAiExecHandlers,
+} = require("./aiExec.cjs");
 const { PROBE_OUTPUT_MARKER } = require("../bridges/ai/sessionShellKind.cjs");
 
 class FakePty extends EventEmitter {
@@ -352,8 +355,12 @@ test("worker exec keeps shell-selected defaults: powershell frees $(), dangerous
       protocol: "ssh",
       stream: pty,
       shellKind: "",
-      lastIdlePrompt: "PS C:\\Users\\dev> ",
-      _promptTrackTail: "Microsoft Windows [Version 10.0.26200]\r\nPS C:\\Users\\dev> ",
+      remoteSshVersion: "OpenSSH_for_Windows_9.5",
+      lastIdlePrompt: "λ ",
+      _promptTrackTail: "custom prompt\r\nλ ",
+      _shellKindExecProbe: async () => (
+        "DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n"
+      ),
     }],
   ]);
   const ipcMain = createFakeIpcMain();
@@ -386,6 +393,70 @@ test("worker exec keeps shell-selected defaults: powershell frees $(), dangerous
   assert.equal(blocked.ok, false);
   assert.match(blocked.error, /Command blocked by safety policy/);
   assert.equal(blocked.error.includes("Remove-Item"), true);
+});
+
+test("worker exec honors an explicitly empty configured blocklist", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([
+    ["posix-no-blocklist", {
+      protocol: "ssh",
+      stream: pty,
+      shellKind: "posix",
+    }],
+  ]);
+  const ipcMain = createFakeIpcMain();
+  registerWorkerAiExecHandlers(ipcMain, { sessions });
+
+  const execution = ipcMain.handlers.get("netcatty:ai:exec")(createFakeEvent(), {
+    sessionId: "posix-no-blocklist",
+    command: "rm -rf /tmp/test-only",
+    chatSessionId: "chat-no-blocklist",
+    commandTimeoutMs: 300,
+    commandBlocklist: [],
+  });
+  await nextTick();
+
+  assert.ok(
+    pty.writes.some((entry) => entry.includes("__NCMCP_")),
+    "disabled defaults must allow the command to reach the PTY wrapper",
+  );
+  await execution.catch(() => {});
+});
+
+test("worker background job probes before blocking a first PowerShell command", async () => {
+  const pty = new FakePty();
+  const sessions = new Map([
+    ["ps-danger-first", {
+      protocol: "ssh",
+      stream: pty,
+      shellKind: "",
+      remoteSshVersion: "OpenSSH_for_Windows_9.5",
+      lastIdlePrompt: "λ ",
+      _promptTrackTail: "custom prompt\r\nλ ",
+      _shellKindExecProbe: async () => (
+        "DefaultShell    REG_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n"
+      ),
+    }],
+  ]);
+  const backgroundJobs = new Map();
+  const activeSessionJobs = new Map();
+  const start = createWorkerAiJobStartHandler({
+    sessions,
+    backgroundJobs,
+    activeSessionJobs,
+  });
+
+  const result = await start(createFakeEvent(), {
+    sessionId: "ps-danger-first",
+    command: "Remove-Item -Recurse -Force C:\\important",
+    chatSessionId: "chat-ps-danger",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Command blocked by safety policy/);
+  assert.equal(pty.writes.length, 0);
+  assert.equal(backgroundJobs.size, 0);
+  assert.equal(activeSessionJobs.size, 0);
 });
 
 test("worker exec on an unclassified posix session still blocks command substitution", async () => {

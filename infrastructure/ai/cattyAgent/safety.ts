@@ -74,6 +74,35 @@ function selectDefaultGroups(shellKind?: string): CompiledPattern[][] {
   }
 }
 
+function checkCommandAgainstGroups(
+  command: string,
+  blocklist: string[],
+  groups: CompiledPattern[][],
+): { blocked: boolean; matchedPattern?: string } {
+  const enabledPatterns = new Set(blocklist);
+
+  // Settings entries that are not built-in defaults are user patterns and
+  // remain shell-independent.
+  for (const pattern of blocklist) {
+    if (DEFAULT_PATTERN_SET.has(pattern)) continue;
+    const regex = getCompiledPattern(pattern);
+    if (regex && regex.test(command)) {
+      return { blocked: true, matchedPattern: pattern };
+    }
+  }
+
+  // Shell selection narrows the built-in entries that are enabled in the
+  // configured list. It must not restore a default the user removed/edited.
+  for (const group of groups) {
+    for (const { pattern, regex } of group) {
+      if (enabledPatterns.has(pattern) && regex.test(command)) {
+        return { blocked: true, matchedPattern: pattern };
+      }
+    }
+  }
+  return { blocked: false };
+}
+
 /** Cache for user-provided (non-default) blocklist patterns. */
 const userPatternCache = new Map<string, RegExp | null>();
 
@@ -100,11 +129,9 @@ function getCompiledPattern(pattern: string): RegExp | null {
  * Check if a command matches any pattern in the blocklist.
  * Returns the matching pattern if blocked, null if safe.
  *
- * The caller's list is split: patterns that are not part of the default table
- * are treated as user additions and always apply, while default patterns are
- * selected by shell kind — POSIX-only patterns (`$(`, backticks) do not block
- * PowerShell-native commands, and PowerShell gets its own dangerous-command
- * set. Unknown shell kinds fall back to the full default table.
+ * The caller's list remains authoritative. User patterns apply on every shell,
+ * while enabled default patterns are narrowed by shell kind. Unknown shell
+ * kinds fall back to every enabled default group.
  *
  * Default blocklist patterns are pre-compiled at module load time.
  * User-provided patterns are compiled once and cached.
@@ -114,22 +141,17 @@ export function checkCommandSafety(
   blocklist: string[] = DEFAULT_COMMAND_BLOCKLIST,
   shellKind?: string,
 ): { blocked: boolean; matchedPattern?: string } {
-  // User additions beyond the default table always apply, on every shell.
-  for (const pattern of blocklist) {
-    if (DEFAULT_PATTERN_SET.has(pattern)) continue;
-    const regex = getCompiledPattern(pattern);
-    if (regex && regex.test(command)) {
-      return { blocked: true, matchedPattern: pattern };
-    }
-  }
+  return checkCommandAgainstGroups(command, blocklist, selectDefaultGroups(shellKind));
+}
 
-  // Fast path: pre-compiled default groups selected by shell kind.
-  for (const group of selectDefaultGroups(shellKind)) {
-    for (const { pattern, regex } of group) {
-      if (regex.test(command)) {
-        return { blocked: true, matchedPattern: pattern };
-      }
-    }
-  }
-  return { blocked: false };
+/**
+ * Apply user patterns and enabled shell-independent defaults only. This is the
+ * safe pre-filter for renderer metadata that does not yet know the remote shell;
+ * the live bridge performs the final shell-selected check after probing.
+ */
+export function checkCommandSafetyCommonOnly(
+  command: string,
+  blocklist: string[] = DEFAULT_COMMAND_BLOCKLIST,
+): { blocked: boolean; matchedPattern?: string } {
+  return checkCommandAgainstGroups(command, blocklist, [compiledCommonGroup]);
 }

@@ -42,6 +42,14 @@ test("user-added settings patterns always apply regardless of shell kind", () =>
   assert.equal(checkBlocklistForShell("echo $(date)", "posix", withDefaults).blocked, true);
 });
 
+test("configured removal of defaults remains authoritative", () => {
+  const defaults = require("../../../lib/commandBlocklist.cjs");
+  const withoutRm = defaults.filter((pattern) => !pattern.startsWith("\\brm\\s+"));
+  assert.equal(checkBlocklistForShell("rm -rf /", "posix", withoutRm).blocked, false);
+  assert.equal(checkBlocklistForShell("rm -rf /", "posix", []).blocked, false);
+  assert.equal(checkBlocklistCommonOnly("rm -rf /", []).blocked, false);
+});
+
 test("resolveSessionBlocklistShellKind mirrors the PTY wrapper inputs", () => {
   // Confirmed shell kind wins as-is.
   assert.equal(
@@ -73,8 +81,8 @@ test("resolveSessionBlocklistShellKind mirrors the PTY wrapper inputs", () => {
     }),
     "posix",
   );
-  // No information at all resolves to posix (wrapper default), which keeps
-  // the POSIX pattern group active for unknown remote shells.
-  assert.equal(resolveSessionBlocklistShellKind({}), "posix");
+  // No information stays unknown so safety retains the strict all-groups
+  // fallback instead of inheriting the wrapper's POSIX compatibility default.
+  assert.equal(resolveSessionBlocklistShellKind({}), "");
   assert.equal(resolveSessionBlocklistShellKind(null), "");
 });

@@ -47,6 +47,9 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
     getCommandTimeoutMs() {
       return 12345;
     },
+    getCommandBlocklist() {
+      return [];
+    },
     activePtyExecs: new Map(),
   };
 
@@ -81,6 +84,7 @@ test("catty AI exec proxies to the terminal worker when the real session lives i
         chatSessionId: "chat-1",
         commandTimeoutMs: 12345,
         sessionMeta: { protocol: "ssh", deviceType: "", hostname: "host.example" },
+        commandBlocklist: [],
       },
       options: { webContentsId: 7 },
     },

