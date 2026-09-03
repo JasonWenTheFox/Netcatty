@@ -718,6 +718,54 @@ test("initial command blocklist read persists the list before its schema version
   ]);
 });
 
+test("old-client edits preserve the highest known command blocklist revision", async () => {
+  const currentDefaults = [
+    ...commandBlocklistTable.common,
+    ...commandBlocklistTable.posixNative,
+    ...commandBlocklistTable.posix,
+    ...commandBlocklistTable.powershell,
+  ];
+  const versionTwoList = [...currentDefaults, "future-v2-guard"];
+  localStorage.setItem(
+    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+    JSON.stringify(versionTwoList),
+  );
+  localStorage.setItem(
+    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
+    JSON.stringify({ version: 2, blocklist: versionTwoList }),
+  );
+
+  const oldClientEdit = addCommandBlocklistSyncMarker([...versionTwoList, "old-client-edit"]);
+  localStorage.setItem(
+    storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST,
+    JSON.stringify(oldClientEdit),
+  );
+  const expected = [...versionTwoList, "old-client-edit"];
+  assert.deepEqual(readCommandBlocklistSetting(), expected);
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
+    { version: 2, blocklist: expected },
+  );
+
+  const incomingOldClientEdit = addCommandBlocklistSyncMarker([...expected, "synced-old-client-edit"]);
+  await applySyncPayload({
+    hosts: [],
+    keys: [],
+    identities: [],
+    snippets: [],
+    customGroups: [],
+    settings: { ai: { commandBlocklist: incomingOldClientEdit } },
+    syncedAt: 1,
+  } as SyncPayload, { importVaultData: () => {} });
+
+  const applied = [...expected, "synced-old-client-edit"];
+  assert.deepEqual(readCommandBlocklistSetting(), applied);
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(storageKeys.STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA)!),
+    { version: 2, blocklist: applied },
+  );
+});
+
 test("applySyncPayload preserves an all-PowerShell-rules removal after an old-client round trip", async () => {
   const customized = [
     ...commandBlocklistTable.common,

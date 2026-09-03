@@ -174,6 +174,101 @@ test("powershell sessions apply POSIX syntax guards inside an invoked shell", ()
   );
 });
 
+test("nested shell checks cover wrappers, control flow, encoded commands, and argument arrays", () => {
+  const encodedIex = "SQBuAHYAbwBrAGUALQBFAHgAcAByAGUAcwBzAGkAbwBuACAAJABlAG4AdgA6AFAAQQBZAEwATwBBAEQA";
+  for (const [shellKind, command] of [
+    ["posix", `env -S'pwsh -Command "Remove-Item -Recurse -Force C:/important"'`],
+    ["posix", "sudo PAYLOAD=x pwsh -Command 'Remove-Item -Recurse -Force C:/important'"],
+    ["posix", "if true; then pwsh -Command 'Invoke-Expression $PAYLOAD'; fi"],
+    ["powershell", "if ($true) { bash -c 'eval echo PWNED' }"],
+    ["cmd", 'if 1==1 powershell.exe -Command "Invoke-Expression $env:PAYLOAD"'],
+    ["powershell", "Start-Process pwsh -ArgumentList @('-Command', '\"Remove-Item -Recurse -Force C:/important\"')"],
+    ["powershell", "Start-Process -FilePath:bash -ArgumentList '-c','eval $PAYLOAD'"],
+    ["powershell", "Start-Process -EA SilentlyContinue bash -ArgumentList '-c','eval $PAYLOAD'"],
+    ["powershell", "Start-Process -ArgumentList @('-c','eval $PAYLOAD') -FilePath bash"],
+    ["powershell", "if ($true) { Start-Process bash -ArgumentList '-c','eval $PAYLOAD' }"],
+    ["cmd", 'cmd /c ""C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD""'],
+    ["posix", ">/tmp/x pwsh -Command 'Invoke-Expression $PAYLOAD'"],
+  ] as const) {
+    assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, shellKind).blocked, true, command);
+  }
+  for (const shellKind of ["posix", "powershell", "cmd"] as const) {
+    assert.equal(
+      checkCommandSafety(
+        `powershell.exe -EncodedCommand ${encodedIex}`,
+        DEFAULT_COMMAND_BLOCKLIST,
+        shellKind,
+      ).blocked,
+      true,
+      shellKind,
+    );
+  }
+  assert.equal(
+    checkCommandSafety(
+      'cmd /c echo "safe & powershell.exe -Command Invoke-Expression"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'cmd /c echo safe & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "cmd",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Host "`$(bash -c \'eval echo PWNED\')"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Host "$(bash -c \'eval echo PWNED\')"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      '$names = @("bash"); Write-Host "$(Get-Date)"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Host "Invoke-Expression is blocked by policy"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    false,
+  );
+  assert.equal(
+    checkCommandSafety(
+      'Write-Host "$(Invoke-Expression $env:PAYLOAD)"',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
+  assert.equal(
+    checkCommandSafety(
+      '& "Remove-Item" -Recurse -Force C:\\important',
+      DEFAULT_COMMAND_BLOCKLIST,
+      "powershell",
+    ).blocked,
+    true,
+  );
+});
+
 test("POSIX and cmd sessions apply PowerShell guards inside an invoked shell", () => {
   for (const shellKind of ["posix", "fish", "cmd"]) {
     assert.equal(

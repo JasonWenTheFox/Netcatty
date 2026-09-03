@@ -67,6 +67,65 @@ test("checkBlocklistForShell selects default groups by shell kind", () => {
   assert.equal(checkBlocklistForShell('bash -c "echo $(date)"', "cmd").blocked, true);
 });
 
+test("nested shell checks cover wrappers, control flow, encoded commands, and argument arrays", () => {
+  const encodedIex = "SQBuAHYAbwBrAGUALQBFAHgAcAByAGUAcwBzAGkAbwBuACAAJABlAG4AdgA6AFAAQQBZAEwATwBBAEQA";
+  for (const [shellKind, command] of [
+    ["posix", `env -S'pwsh -Command "Remove-Item -Recurse -Force C:/important"'`],
+    ["posix", "sudo PAYLOAD=x pwsh -Command 'Remove-Item -Recurse -Force C:/important'"],
+    ["posix", "if true; then pwsh -Command 'Invoke-Expression $PAYLOAD'; fi"],
+    ["powershell", "if ($true) { bash -c 'eval echo PWNED' }"],
+    ["cmd", 'if 1==1 powershell.exe -Command "Invoke-Expression $env:PAYLOAD"'],
+    ["powershell", "Start-Process pwsh -ArgumentList @('-Command', '\"Remove-Item -Recurse -Force C:/important\"')"],
+    ["powershell", "Start-Process -FilePath:bash -ArgumentList '-c','eval $PAYLOAD'"],
+    ["powershell", "Start-Process -EA SilentlyContinue bash -ArgumentList '-c','eval $PAYLOAD'"],
+    ["powershell", "Start-Process -ArgumentList @('-c','eval $PAYLOAD') -FilePath bash"],
+    ["powershell", "if ($true) { Start-Process bash -ArgumentList '-c','eval $PAYLOAD' }"],
+    ["cmd", 'cmd /c ""C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD""'],
+    ["posix", ">/tmp/x pwsh -Command 'Invoke-Expression $PAYLOAD'"],
+  ]) {
+    assert.equal(checkBlocklistForShell(command, shellKind).blocked, true, command);
+  }
+  for (const shellKind of ["posix", "powershell", "cmd"]) {
+    assert.equal(
+      checkBlocklistForShell(`powershell.exe -EncodedCommand ${encodedIex}`, shellKind).blocked,
+      true,
+      shellKind,
+    );
+  }
+  assert.equal(
+    checkBlocklistForShell('cmd /c echo "safe & powershell.exe -Command Invoke-Expression"', "cmd").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell('cmd /c echo safe & powershell.exe -Command "Invoke-Expression $env:PAYLOAD"', "cmd").blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Host "`$(bash -c \'eval echo PWNED\')"', "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Host "$(bash -c \'eval echo PWNED\')"', "powershell").blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell('$names = @("bash"); Write-Host "$(Get-Date)"', "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Host "Invoke-Expression is blocked by policy"', "powershell").blocked,
+    false,
+  );
+  assert.equal(
+    checkBlocklistForShell('Write-Host "$(Invoke-Expression $env:PAYLOAD)"', "powershell").blocked,
+    true,
+  );
+  assert.equal(
+    checkBlocklistForShell('& "Remove-Item" -Recurse -Force C:\\important', "powershell").blocked,
+    true,
+  );
+});
+
 test("explicit PowerShell invocations apply PowerShell guards from other shells", () => {
   for (const shellKind of ["posix", "fish", "cmd"]) {
     assert.equal(

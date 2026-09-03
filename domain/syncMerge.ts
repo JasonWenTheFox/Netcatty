@@ -429,16 +429,42 @@ function mergeDivergentVersionedCommandBlocklists(
   const lVersion = commandBlocklistRevisionVersion(local);
   const rVersion = commandBlocklistRevisionVersion(remote);
   const bVersion = commandBlocklistRevisionVersion(base);
-  if (bVersion === lVersion && lVersion === rVersion) return null;
 
   if (!Array.isArray(bContent) || !bContent.every((pattern) => typeof pattern === 'string')) {
-    if (lVersion == null || rVersion == null || lVersion === rVersion) return null;
-    const mergedContent = mergeStringArrays([], lContent, rContent);
+    if (lVersion === rVersion) {
+      if (lVersion == null) return null;
+      const localSet = new Set(lContent);
+      const remoteSet = new Set(rContent);
+      const oneSideContainsTheOther = lContent.every((pattern) => remoteSet.has(pattern))
+        || rContent.every((pattern) => localSet.has(pattern));
+      if (oneSideContainsTheOther) return null;
+      const mergedContent = mergeStringArrays([], lContent, rContent);
+      const markedContent = addCommandBlocklistSyncMarker(mergedContent);
+      return {
+        commandBlocklist: markedContent,
+        commandBlocklistSchema: createCommandBlocklistSyncSchema(markedContent, lVersion),
+      };
+    }
+    const localIsNewer = (lVersion ?? 0) > (rVersion ?? 0);
+    const newerContent = localIsNewer ? lContent : rContent;
+    const olderContent = localIsNewer ? rContent : lContent;
+    const newerSet = new Set(newerContent);
+    const olderSet = new Set(olderContent);
+    const oneSideContainsTheOther = newerContent.every((pattern) => olderSet.has(pattern))
+      || olderContent.every((pattern) => newerSet.has(pattern));
+    // Without a stored merge base, a newer-schema subset is the only
+    // unambiguous deletion signal. Divergent unique entries are independent
+    // additions, so retain both rather than silently dropping either side.
+    const mergedContent = oneSideContainsTheOther
+      ? newerContent
+      : mergeStringArrays([], newerContent, olderContent);
     const markedContent = addCommandBlocklistSyncMarker(mergedContent);
-    const highestVersion = Math.max(lVersion, rVersion);
+    const highestVersion = Math.max(lVersion ?? 0, rVersion ?? 0);
     return {
       commandBlocklist: markedContent,
-      commandBlocklistSchema: createCommandBlocklistSyncSchema(markedContent, highestVersion),
+      ...(highestVersion > 0
+        ? { commandBlocklistSchema: createCommandBlocklistSyncSchema(markedContent, highestVersion) }
+        : {}),
     };
   }
 
@@ -557,13 +583,13 @@ function mergeSettingsDeep(
     } else if (!lChanged && rChanged) {
       if (rVal !== undefined) merged[key] = rVal;
     } else {
-      // Both changed — recurse if both are plain objects, else prefer local
+      // Both changed — recurse if both are plain objects, else prefer local.
       if (
         lVal && rVal &&
         typeof lVal === 'object' && !Array.isArray(lVal) &&
         typeof rVal === 'object' && !Array.isArray(rVal)
       ) {
-        merged[key] = preferRemoteOnConflict && isEmptyPlainObject(rVal)
+        merged[key] = preferRemoteOnConflict && rChanged && isEmptyPlainObject(rVal)
           ? rVal
           : mergeSettingsDeep(
             (bVal && typeof bVal === 'object' && !Array.isArray(bVal) ? bVal : {}) as Record<string, unknown>,
@@ -620,6 +646,30 @@ function mergeSettings(
     const lChanged = fingerprint(lVal) !== fingerprint(bVal);
     const rChanged = fingerprint(rVal) !== fingerprint(bVal);
 
+    const plainObjects = Boolean(
+      lVal && rVal &&
+      typeof lVal === 'object' && !Array.isArray(lVal) &&
+      typeof rVal === 'object' && !Array.isArray(rVal)
+    );
+    const hasNestedCommandBlocklist = plainObjects
+      && key === 'ai'
+      && COMMAND_BLOCKLIST_SETTING_KEYS.some((settingKey) => (
+      (bVal && typeof bVal === 'object' && settingKey in bVal)
+      || (settingKey in (lVal as Record<string, unknown>))
+      || (settingKey in (rVal as Record<string, unknown>))
+      ));
+    if (plainObjects && ((lChanged && rChanged) || hasNestedCommandBlocklist)) {
+      merged[key] = preferRemoteOnConflict && rChanged && isEmptyPlainObject(rVal)
+        ? rVal
+        : mergeSettingsDeep(
+          (bVal && typeof bVal === 'object' && !Array.isArray(bVal) ? bVal : {}) as Record<string, unknown>,
+          lVal as Record<string, unknown>,
+          rVal as Record<string, unknown>,
+          preferRemoteOnConflict,
+        );
+      continue;
+    }
+
     if (!lChanged && !rChanged) {
       if (bVal !== undefined) merged[key] = bVal;
     } else if (lChanged && !rChanged) {
@@ -627,21 +677,8 @@ function mergeSettings(
     } else if (!lChanged && rChanged) {
       if (rVal !== undefined) merged[key] = rVal;
     } else {
-      // Both changed — deep merge if both are plain objects, else prefer local
+      // Both changed — merge entity arrays when possible, else prefer local.
       if (
-        lVal && rVal &&
-        typeof lVal === 'object' && !Array.isArray(lVal) &&
-        typeof rVal === 'object' && !Array.isArray(rVal)
-      ) {
-        merged[key] = preferRemoteOnConflict && isEmptyPlainObject(rVal)
-          ? rVal
-          : mergeSettingsDeep(
-            (bVal && typeof bVal === 'object' && !Array.isArray(bVal) ? bVal : {}) as Record<string, unknown>,
-            lVal as Record<string, unknown>,
-            rVal as Record<string, unknown>,
-            preferRemoteOnConflict,
-          );
-      } else if (
         Array.isArray(lVal) && Array.isArray(rVal) &&
         (isIdArray(lVal) || isIdArray(rVal) || isIdArray(Array.isArray(bVal) ? bVal as unknown[] : []))
       ) {

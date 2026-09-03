@@ -36,15 +36,17 @@ function readStoredCommandBlocklistSchemaVersionUnchecked(): number | null {
 
 export function persistCommandBlocklistSetting(
   blocklist: string[],
-  version = Math.max(
-    readStoredCommandBlocklistSchemaVersionUnchecked() ?? 0,
-    COMMAND_BLOCKLIST_SCHEMA_VERSION,
-  ),
+  version = COMMAND_BLOCKLIST_SCHEMA_VERSION,
 ): boolean {
+  const preservedVersion = Math.max(
+    readStoredCommandBlocklistSchemaVersionUnchecked() ?? 0,
+    version,
+    COMMAND_BLOCKLIST_SCHEMA_VERSION,
+  );
   if (!localStorageAdapter.write(STORAGE_KEY_AI_COMMAND_BLOCKLIST, blocklist)) return false;
   return localStorageAdapter.write(
     STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
-    createCommandBlocklistSyncSchema(blocklist, version),
+    createCommandBlocklistSyncSchema(blocklist, preservedVersion),
   );
 }
 
@@ -56,6 +58,10 @@ export function readCommandBlocklistSetting(): string[] {
 
   const current = stored ?? [...DEFAULT_COMMAND_BLOCKLIST];
   const schemaVersion = readStoredCommandBlocklistSchemaVersion(current) ?? 0;
+  const knownSchemaVersion = Math.max(
+    schemaVersion,
+    readStoredCommandBlocklistSchemaVersionUnchecked() ?? 0,
+  );
   const hasSyncMarker = hasCommandBlocklistSyncMarker(current);
   const migrated = stored == null
     ? current
@@ -72,7 +78,7 @@ export function readCommandBlocklistSetting(): string[] {
   ) {
     migrationPersisted = persistCommandBlocklistSetting(
       migrated,
-      Math.max(schemaVersion, COMMAND_BLOCKLIST_SCHEMA_VERSION),
+      Math.max(knownSchemaVersion, COMMAND_BLOCKLIST_SCHEMA_VERSION),
     );
   }
   if (migrationPersisted && stored != null) {
@@ -80,7 +86,7 @@ export function readCommandBlocklistSetting(): string[] {
       STORAGE_KEY_AI_COMMAND_BLOCKLIST_SCHEMA,
       createCommandBlocklistSyncSchema(
         migrated,
-        Math.max(schemaVersion, COMMAND_BLOCKLIST_SCHEMA_VERSION),
+        Math.max(knownSchemaVersion, COMMAND_BLOCKLIST_SCHEMA_VERSION),
       ),
     );
   }

@@ -45,6 +45,14 @@ test("detectInvokedShellGroups recognizes executable positions and wrappers", ()
     detectInvokedShellGroups("sudo -D /tmp pwsh -Command Invoke-Expression", "posix"),
     ["powershell"],
   );
+  assert.deepEqual(
+    detectInvokedShellGroups(`env -S'pwsh -Command "Remove-Item -Recurse -Force C:/important"'`, "posix"),
+    ["powershell"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups("sudo PAYLOAD=x pwsh -Command Invoke-Expression", "posix"),
+    ["powershell"],
+  );
 });
 
 test("detectInvokedShellGroups ignores shell names inside ordinary quoted arguments", () => {
@@ -91,5 +99,61 @@ test("detectShellInvocations scopes nested checks to executable command text", (
       { group: "native", command: "pwsh -Command Write-Host $(Get-Date)" },
       { group: "powershell", command: "Write-Host $(Get-Date)" },
     ],
+  );
+});
+
+test("detectShellInvocations follows control flow and encoded or array arguments", () => {
+  const encodedIex = "SQBuAHYAbwBrAGUALQBFAHgAcAByAGUAcwBzAGkAbwBuACAAJABlAG4AdgA6AFAAQQBZAEwATwBBAEQA";
+  assert.deepEqual(
+    detectInvokedShellGroups("if true; then pwsh -Command 'Invoke-Expression $PAYLOAD'; fi", "posix"),
+    ["powershell"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups("if ($true) { bash -c 'eval echo PWNED' }", "powershell"),
+    ["posix"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups('if 1==1 powershell.exe -Command "Invoke-Expression $env:PAYLOAD"', "cmd"),
+    ["powershell"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups(
+      "Start-Process pwsh -ArgumentList @('-Command', '\"Remove-Item -Recurse -Force C:/important\"')",
+      "powershell",
+    ),
+    ["powershell"],
+  );
+  for (const command of [
+    "Start-Process -FilePath:bash -ArgumentList '-c','eval $PAYLOAD'",
+    "Start-Process -EA SilentlyContinue bash -ArgumentList '-c','eval $PAYLOAD'",
+    "Start-Process -ArgumentList @('-c','eval $PAYLOAD') -FilePath bash",
+    "if ($true) { Start-Process bash -ArgumentList '-c','eval $PAYLOAD' }",
+  ]) {
+    assert.deepEqual(detectInvokedShellGroups(command, "powershell"), ["posix"]);
+  }
+  for (const shellKind of ["posix", "powershell", "cmd"]) {
+    assert.deepEqual(
+      detectInvokedShellGroups(`powershell.exe -EncodedCommand ${encodedIex}`, shellKind),
+      ["powershell"],
+    );
+  }
+  assert.deepEqual(
+    detectInvokedShellGroups('cmd /c echo "safe & powershell.exe -Command Invoke-Expression"', "cmd"),
+    [],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups(
+      'cmd /c ""C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD""',
+      "cmd",
+    ),
+    ["powershell"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups(">/tmp/x pwsh -Command 'Invoke-Expression $PAYLOAD'", "posix"),
+    ["powershell"],
+  );
+  assert.deepEqual(
+    detectInvokedShellGroups('Write-Host "`$(bash -c \'eval echo PWNED\')"', "powershell"),
+    [],
   );
 });
