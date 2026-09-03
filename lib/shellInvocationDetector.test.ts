@@ -157,3 +157,14 @@ test("detectShellInvocations follows control flow and encoded or array arguments
     [],
   );
 });
+
+test("detectShellInvocations scans inline scripts piped into shells", () => {
+  assert.deepEqual(
+    detectShellInvocations("printf 'eval $(echo payload)' | bash", "posix"),
+    [{ group: "posix", command: "printf eval $(echo payload)" }],
+  );
+  assert.deepEqual(
+    detectShellInvocations("printf 'eval $(echo payload)' | bash script.sh", "posix"),
+    [{ group: "posix", command: "bash script.sh" }],
+  );
+});

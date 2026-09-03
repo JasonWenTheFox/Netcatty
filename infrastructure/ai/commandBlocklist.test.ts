@@ -189,6 +189,7 @@ test("nested shell checks cover wrappers, control flow, encoded commands, and ar
     ["powershell", "if ($true) { Start-Process bash -ArgumentList '-c','eval $PAYLOAD' }"],
     ["cmd", 'cmd /c ""C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Invoke-Expression $env:PAYLOAD""'],
     ["posix", ">/tmp/x pwsh -Command 'Invoke-Expression $PAYLOAD'"],
+    ["posix", "printf 'eval $(echo cm0gLXJmIC9pbXBvcnRhbnQ= | base64 -d)' | bash"],
   ] as const) {
     assert.equal(checkCommandSafety(command, DEFAULT_COMMAND_BLOCKLIST, shellKind).blocked, true, command);
   }
