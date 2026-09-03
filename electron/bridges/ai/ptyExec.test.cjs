@@ -18,6 +18,10 @@ const {
   buildPendingInputClearPrefix,
   buildWrappedCommand,
 } = require("./ptyExecHelpers.cjs");
+const {
+  getFreshIdlePrompt,
+  trackSessionIdlePrompt,
+} = require("./shellUtils.cjs");
 
 class ShellBackedPty extends EventEmitter {
   write(data) {
@@ -333,6 +337,229 @@ test("pending-input clear prefix covers interactive shells and skips raw devices
   assert.equal(buildPendingInputClearPrefix("powershell"), "\x1bggd2147483647d\x1br\x1b\x1bi\x08");
   assert.equal(buildPendingInputClearPrefix("cmd"), "\x1b");
   assert.equal(buildPendingInputClearPrefix("raw"), "");
+});
+
+test("consecutive jobs wait for the PowerShell prompt after a split end marker", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+    }
+  }
+  const pty = new CapturePty();
+  const session = { _loginShellKind: "cmd" };
+  pty.on("data", (data) => trackSessionIdlePrompt(session, String(data)));
+  trackSessionIdlePrompt(session, "Microsoft Windows...\r\nPS C:\\Users\\alice>");
+
+  for (const probe of ["PROBE_1", "PROBE_2"]) {
+    const job = startPtyJob(pty, `Write-Output '${probe}'`, {
+      shellKind: session.shellKind,
+      loginShellHint: session._loginShellKind,
+      timeoutMs: 20,
+      expectedPrompt: getFreshIdlePrompt(session),
+    });
+    const write = writes.at(-1);
+    assert.match(write, /\$__NCMCP_/);
+    assert.doesNotMatch(write, /cmd \/d \/s \/c/i);
+
+    pty.emit(
+      "data",
+      Buffer.from(`${job.marker}_S\r\n${probe}\r\n${job.marker}_E:0\r\n`),
+    );
+    let settled = false;
+    job.resultPromise.then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(settled, false);
+
+    pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
+    const result = await job.resultPromise;
+    assert.equal(result.ok, true);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, probe);
+  }
+});
+
+test("non-target shells still finish at the end marker without waiting for a prompt", async () => {
+  class CapturePty extends EventEmitter {
+    write() {}
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "printf done", {
+    shellKind: "posix",
+    timeoutMs: 20,
+    expectedPrompt: "alice@host:~$",
+  });
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\ndone\r\n${job.marker}_E:0\r\n`));
+
+  let settled = false;
+  job.resultPromise.then(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  if (!settled) job.cancel();
+  assert.equal(settled, true);
+});
+
+test("cancel retries stop after an end marker while the prompt is delayed", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+    }
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "Start-Sleep 10", {
+    shellKind: "unknown",
+    loginShellHint: "cmd",
+    timeoutMs: 1000,
+    expectedPrompt: "PS C:\\Users\\alice>",
+  });
+  job.cancel();
+  assert.equal(writes.filter((write) => write === "\x03").length, 1);
+
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\n${job.marker}_E:130\r\n`));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(writes.filter((write) => write === "\x03").length, 1);
+
+  pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
+  const result = await job.resultPromise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Cancelled");
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stdout, /__NCMCP_/);
+});
+
+test("cancelled output strips an end marker delivered with the prompt", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+    }
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "Start-Sleep 10", {
+    shellKind: "unknown",
+    loginShellHint: "cmd",
+    timeoutMs: 1000,
+    expectedPrompt: "PS C:\\Users\\alice>",
+  });
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\n`));
+  job.cancel();
+
+  pty.emit(
+    "data",
+    Buffer.from(`${job.marker}_E:130\r\nPS C:\\Users\\alice>`),
+  );
+  const result = await job.resultPromise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Cancelled");
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stdout, /__NCMCP_/);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(writes.filter((write) => write === "\x03").length, 1);
+});
+
+test("cancel after an end marker keeps waiting without interrupting the prompt", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+    }
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "Write-Output 'DONE'", {
+    shellKind: "unknown",
+    loginShellHint: "cmd",
+    timeoutMs: 1000,
+    expectedPrompt: "PS C:\\Users\\alice>",
+  });
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\nDONE\r\n${job.marker}_E:0\r\n`));
+  job.cancel();
+
+  let settled = false;
+  job.resultPromise.then(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(writes.filter((write) => write === "\x03").length, 0);
+
+  pty.emit("data", Buffer.from("PS C:\\Users\\alice>"));
+  const result = await job.resultPromise;
+  assert.equal(result.ok, true);
+  assert.equal(result.stdout, "DONE");
+});
+
+test("stream termination after an end marker preserves the completed result", async (t) => {
+  for (const termination of ["close", "error", "exit"]) {
+    await t.test(termination, async () => {
+      class CapturePty extends EventEmitter {
+        write() {}
+
+        onExit(callback) {
+          this.exitCallback = callback;
+          return { dispose() {} };
+        }
+      }
+      const pty = new CapturePty();
+      const job = startPtyJob(pty, "Write-Output 'DONE'", {
+        shellKind: "unknown",
+        loginShellHint: "cmd",
+        timeoutMs: 1000,
+        expectedPrompt: "PS C:\\Users\\alice>",
+      });
+      pty.emit("data", Buffer.from(`${job.marker}_S\r\nDONE\r\n${job.marker}_E:7\r\n`));
+      if (termination === "error") {
+        pty.emit("error", new Error("disconnected"));
+      } else if (termination === "exit") {
+        pty.exitCallback();
+      } else {
+        pty.emit("close");
+      }
+
+      const result = await job.resultPromise;
+      assert.equal(result.ok, false);
+      assert.equal(result.exitCode, 7);
+      assert.equal(result.stdout, "DONE");
+      assert.doesNotMatch(result.stdout, /__NCMCP_/);
+      assert.equal(result.error, undefined);
+    });
+  }
+});
+
+test("prompt waiting honors the original foreground wall deadline", async () => {
+  const writes = [];
+  class CapturePty extends EventEmitter {
+    write(data) {
+      writes.push(String(data));
+    }
+  }
+  const pty = new CapturePty();
+  const job = startPtyJob(pty, "Write-Output 'DONE'", {
+    shellKind: "unknown",
+    loginShellHint: "cmd",
+    timeoutMs: 120,
+    expectedPrompt: "PS C:\\Users\\alice>",
+    enforceWallTimeout: true,
+  });
+  pty.emit("data", Buffer.from(`${job.marker}_S\r\nDONE\r\n${job.marker}_E:0\r\n`));
+
+  let settled = false;
+  job.resultPromise.then(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(settled, false);
+  assert.equal(writes.filter((write) => write === "\x03").length, 0);
+
+  const didNotReachDeadline = Symbol("did not reach deadline");
+  const outcome = await Promise.race([
+    job.resultPromise,
+    new Promise((resolve) => setTimeout(() => resolve(didNotReachDeadline), 300)),
+  ]);
+  if (outcome === didNotReachDeadline) {
+    pty.emit("close");
+  }
+
+  assert.notEqual(outcome, didNotReachDeadline);
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.stdout, "DONE");
+  assert.equal(writes.filter((write) => write === "\x03").length, 0);
 });
 
 test("startPtyJob clears PowerShell input in Windows, Emacs, and Vi editor states", async () => {
